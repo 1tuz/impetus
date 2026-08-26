@@ -30,7 +30,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_subject(args: argparse.Namespace) -> str:
     if args.file is not None:
-        return args.file.read_text(encoding="utf-8").splitlines()[0].strip()
+        lines = args.file.read_text(encoding="utf-8").splitlines()
+        return lines[0].strip() if lines else ""
     if args.message is not None:
         return args.message.strip()
     return os.environ.get("COMMIT_SUBJECT", "").strip()
