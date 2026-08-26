@@ -6,6 +6,7 @@
 pub mod approval;
 pub mod ci;
 pub mod events;
+pub mod harness_api;
 pub mod ipc;
 pub mod plugins;
 pub mod policy;
@@ -24,6 +25,7 @@ pub use events::{
     AgentEvent, ApprovalEvent, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent,
     PlanEvent, RunEvent, SessionEvent, ToolEvent,
 };
+pub use harness_api::{Harness, redact_tool_outcome};
 pub use ipc::{
     AgentInfo, CheckpointView, DagNode, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
     LearningState, ProfileInfo, RiskItem, RiskState, Usage,
