@@ -49,7 +49,7 @@ Zap / CLI / optional GPUI client
 | Policy origin boundary | `ActionOrigin` и `Allow/NeedsApproval/Deny` реализованы | Origin определяется доверенной IPC/capability boundary | Caller может сконструировать `origin=user`; нет revision binding | P0 | критический | M |
 | System sandbox | `SandboxScope` проверяет пути и network flag | OS-enforced process/file/network isolation | Текущее имя не означает реальную системную изоляцию | P0 | критический | L |
 | Capability manifests | Статический JSON валидируется; все реализации `planned` | Узкий typed capability host | Нет lifecycle, availability probe и execution gate | P0 | высокий | L |
-| Read-only workspace tools | Отсутствуют | `list/read/search` с provenance и limits | Нет первого безопасного evidence vertical slice | P0 | средний | M |
+| Read-only workspace tools | `crate::tools::ReadOnlyTools`: list/read/search с provenance, bounded output и disk-backed artifact store; deny при escape | `list/read/search` с provenance и limits | Нет первого безопасного evidence vertical slice | P0 | средний | M |
 | Provider loop | Есть только example profiles | Mock provider, затем один streaming adapter | Нет stream/cancel/retry/profile validation | P0 | высокий | L |
 | Credential boundary | В документах и example config только opaque refs | macOS Keychain adapter и local/no-secret profile | Нет runtime adapter и redaction test | P0 | критический | M |
 | Bounded output / artifacts | GPUI ограничивает видимый CI log 600 строками | Disk-backed artifact store + bounded hot window | CI channel unbounded; local run копит полный `String`; нет source ref | P0/P1 | высокий | M |

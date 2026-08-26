@@ -158,12 +158,12 @@ Gate: модель не выбирает произвольный host; host-key
 
 ## Ближайший исполнимый slice
 
-Только Gate 0.1:
+Только Gate 0.5:
 
-1. RFC уровня code comments/tests для `EventEnvelope` и payload enum.
-2. Pure projection с `Intent`, `Plan`, `Tool`, `Agent`, `Approval`, `Notice`.
-3. SQLite migration/read compatibility.
-4. Tests: round-trip, deterministic replay, malformed/unknown version, reopen.
-5. Обязательный `task verify`.
+1. Один OpenAI-compatible streaming adapter с cancellation, retry budget и provider health state.
+2. Explicit profile: DeepSeek / OpenRouter / custom / local endpoint; выбор только явным profile.
+3. Keychain credential reference и local/no-secret profile; raw token никогда не попадает в events/log/export.
+4. Redaction/export tests без token, callback и raw credential.
+5. Обязательный `task verify` и локальный CI job.
 
-Не входит: daemon, provider API, IPC, sandbox implementation, checkpoints, index, swarm или новый UI.
+Не входит: единый unrestricted execution seam, OS sandbox proof, SSH/tmux/SFTP, checkpoints, index, swarm или новый UI.

@@ -33,7 +33,7 @@
 - [x] Добавить CLI reference client: create/attach/list/prompt/status/cancel из Zap и Terminal.app.
 - [x] Добавить durable event stream в daemon/CLI: attach/reconnect видит те же event IDs без SQLite доступа.
 - [x] Подключить mock stream/restart к daemon и CLI: attach/reconnect видит durable Agent chunks без дубликата после restart.
-- [ ] Добавить read-only workspace tools: list/read/search с provenance, bounded output и artifact references.
+- [x] Добавить read-only workspace tools: list/read/search с provenance, bounded output и artifact references.
 - [ ] Реализовать первый OpenAI-compatible adapter: streaming + cancellation + DeepSeek/OpenRouter/custom/local endpoint profile.
 - [ ] Реализовать Keychain credential reference и local/no-secret profile; token не попадает в events/log/export.
 - [ ] Ввести единый normalized policy/capability execution seam; не включать unrestricted effects без OS sandbox proof.
