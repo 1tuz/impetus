@@ -1,0 +1,25 @@
+# Референсы и как они используются
+
+Это не список зависимостей «на всякий случай». Каждый референс привязан к конкретному контракту и этапу roadmap.
+
+| Источник                                                                                                                                  | Что берём                                                                                          | Что намеренно не переносим                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [GPUI-CE](https://github.com/gpui-ce/gpui-ce)                                                                                             | GPUI/Metal macOS UI, App/Window/Entity модели; один pinned commit для `gpui` и `gpui_platform`     | браузерный UI и зависимость от WebView                                     |
+| [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples)                                                 | актуальные паттерны окна, layout, focus/input и tests; сверять только с pinned API                 | старые tutorials с `Application::new()` без проверки версии                |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)                                                                       | capability composition, manifest/service boundary, append-only trace, изолируемая сборка runtime   | Node/Cordis/Web UI и исполнение сторонних plugins в UI process             |
+| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) и [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | stdio JSON-RPC к внешним coding-agents, capability negotiation, sessions и ACP auth elicitation; `2.x` — major SDK crate, не автоматическое включение draft protocol v2 | выдачу ACP за универсальный model API, перенос токенов или unstable protocol features без RFC |
+| [Qwen Code: fork subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md)                              | immutable fork point и shared prompt-cache prefix как provider hint                                | бесконтрольное создание subagents без budget/policy                        |
+| [Claude Code Auto mode docs](https://code.claude.com/docs/en/permission-modes) и [engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode) | отдельные input probe/action reviewer, intent-aware проверки, fail-closed fallback и недоверие к repo-local allow | bypass permissions, передачу raw tool output reviewer-у и слепое копирование version-specific правил |
+| [ACP content](https://agentclientprotocol.com/protocol/v1/content) и [Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision) | negotiated image/resource blocks, typed attachment transport и provider file references | implicit upload, base64 в event log и обещание multimodal support без negotiation |
+| [Zap](https://github.com/cristianoliveira/zap)                                                                                            | local-first terminal + natural-language workflow, Blocks/notifications как продуктовая поверхность | перенос всего Warp terminal engine и SSH implementation без audit          |
+| [portable-pty](https://crates.io/crates/portable-pty)                                                                                     | cross-platform PTY seam для v0.2                                                                   | подмена PTY одноразовым `Command::output`                                  |
+| [Alacritty terminal](https://github.com/alacritty/alacritty)                                                                              | кандидат на ANSI/VT parser/terminal state; сначала spike и license/API audit                       | самописный ANSI parser                                                     |
+| [russh](https://github.com/Eugeny/russh)                                                                                                  | async Rust SSH transport для v0.6                                                                  | agent-controlled raw `ssh` command/flags                                   |
+
+## Правило проверки источника
+
+Перед добавлением API-зависимого кода coding-агент обязан сверить exact pinned crate/commit, найти 1–3 реальных использования и указать в PR/отчёте версию. Нельзя переносить snippets из старой статьи или отвечать «это похоже на API». Manifest с `availability=planned` остаётся документацией контракта и не доказывает наличие implementation.
+
+## Внешние ссылки не являются разрешениями
+
+Референс может объяснять подход, но не расширяет права модели. Любая зависимость, capability или remote action проходит review, manifest permissions, policy и approval проекта.

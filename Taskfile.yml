@@ -1,0 +1,61 @@
+version: '3'
+
+set: [errexit, nounset, pipefail]
+
+tasks:
+  default:
+    desc: Показать доступные команды
+    cmds:
+      - task --list
+
+  setup:
+    desc: Проверить macOS/Xcode/Metal/Rust и подключить Git hooks
+    cmds:
+      - ./scripts/bootstrap-macos.sh
+      - |
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+          git config core.hooksPath .githooks
+          echo 'Git hooks подключены из .githooks/'
+        fi
+
+  fmt:
+    desc: Проверить форматирование Rust
+    cmds:
+      - cargo fmt --all -- --check
+
+  test:
+    desc: Запустить unit-тесты core
+    cmds:
+      - cargo test -p agentic-terminal-core
+
+  check:
+    desc: Проверить весь Rust workspace
+    cmds:
+      - cargo check --workspace
+
+  lint:
+    desc: Запустить Clippy без предупреждений
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  verify:
+    desc: Выполнить обязательный pre-commit набор
+    cmds:
+      - task: fmt
+      - task: test
+      - task: check
+      - task: lint
+
+  run:
+    desc: Запустить native GPUI приложение
+    cmds:
+      - cargo run -p agentic-terminal-app
+
+  commit:check:
+    desc: 'Проверить Git subject (KEY-123 type: Результат)'
+    requires:
+      vars: [MESSAGE]
+    env:
+      COMMIT_SUBJECT: '{{.MESSAGE}}'
+    cmds:
+      - python3 scripts/check-commit-subject.py

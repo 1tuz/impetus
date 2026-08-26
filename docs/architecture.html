@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentic Terminal — архитектура</title>
+  <style>
+    :root { --paper:#f5f5f7; --ink:#1d1d1f; --muted:#6e6e73; --rule:#d2d2d7; --accent:#007aff; --tint:#e8f3ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font-family:-apple-system, BlinkMacSystemFont, "SF Pro Text", Arial, sans-serif; }
+    main { max-width:1680px; margin:0 auto; padding:32px 28px 44px; }
+    h1 { margin:0; font-size:32px; letter-spacing:-.035em; }
+    p { color:var(--muted); margin:8px 0 24px; max-width:1040px; line-height:1.45; }
+    svg { width:100%; height:auto; display:block; background:var(--paper); pointer-events:none; }
+    .zone { fill:rgba(29,29,31,.018); stroke:#c7c7cc; stroke-width:1; stroke-dasharray:4 4; }
+    .node { fill:#fff; stroke:#1d1d1f; stroke-width:1.2; }
+    .focus { fill:var(--tint); stroke:var(--accent); stroke-width:1.5; }
+    .store { fill:#ededf0; stroke:#6e6e73; stroke-width:1.2; }
+    .path { fill:none; stroke:#6e6e73; stroke-width:1.5; marker-end:url(#arrow); }
+    .primary { fill:none; stroke:var(--accent); stroke-width:2; marker-end:url(#arrow-accent); }
+    .blocked { fill:none; stroke:#6e6e73; stroke-width:1.2; stroke-dasharray:4 4; }
+    .name { font-size:16px; font-weight:650; fill:#1d1d1f; }
+    .sub { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#6e6e73; }
+    .tag { font:8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.16em; fill:#6e6e73; }
+    .label { font:8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.06em; fill:#4f4f54; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Agentic Terminal — два входа, один контролируемый эффект</h1>
+  <p>Команда человека и intent для агента получают явный origin. Policy либо запрещает действие, либо пропускает безопасное действие, либо требует подтверждение. Модель не может выдать себе origin=user и не имеет прямого пути к PTY, файловой системе или сети.</p>
+  <svg viewBox="0 0 1600 920" role="img" aria-labelledby="agentic-terminal-title agentic-terminal-desc">
+    <title id="agentic-terminal-title">Архитектура безопасности Agentic Terminal</title>
+    <desc id="agentic-terminal-desc">Пользователь работает через GPUI. Session runtime маркирует источник действия, policy выбирает deny, allow или approval, после чего sandbox и capability исполняют эффект. События сохраняются в SQLite, а секреты представлены только ссылками на Keychain.</desc>
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6e6e73"/></marker>
+      <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#007aff"/></marker>
+    </defs>
+
+    <rect class="zone" x="48" y="48" width="1504" height="184" rx="8"/>
+    <rect x="72" y="52" width="320" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="tag" font-size="8" x="80" y="64">PRESENTATION · MACOS / METAL</text>
+    <rect class="zone" x="48" y="280" width="1504" height="296" rx="8"/>
+    <rect x="72" y="284" width="352" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="tag" font-size="8" x="80" y="296">DURABLE RUNTIME · TOKIO / POLICY</text>
+    <rect class="zone" x="48" y="624" width="1504" height="208" rx="8"/>
+    <rect x="72" y="628" width="400" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="tag" font-size="8" x="80" y="640">LOCAL-FIRST EXECUTION / STATE BOUNDARY</text>
+
+    <line class="path" x1="272" y1="144" x2="368" y2="144"/>
+    <rect x="272" y="116" width="96" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="320" y="128" text-anchor="middle">INPUT</text>
+    <path class="primary" d="M 504 208 V 336 Q 504 344 496 344 H 280 Q 272 344 272 352 V 384"/>
+    <rect x="344" y="316" width="176" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="432" y="328" text-anchor="middle">COMMAND / INTENT</text>
+    <line class="primary" x1="384" y1="440" x2="464" y2="440"/>
+    <rect x="376" y="412" width="96" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="424" y="424" text-anchor="middle">ACTION</text>
+    <line class="primary" x1="688" y1="440" x2="768" y2="440"/>
+    <rect x="672" y="412" width="112" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="728" y="424" text-anchor="middle">NEEDS ASK</text>
+    <line class="primary" x1="992" y1="440" x2="1072" y2="440"/>
+    <rect x="976" y="412" width="112" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="1032" y="424" text-anchor="middle">APPROVED</text>
+    <path class="primary" d="M 576 384 V 336 Q 576 328 584 328 H 1184 Q 1192 328 1192 336 V 384"/>
+    <rect x="840" y="300" width="96" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="888" y="312" text-anchor="middle">ALLOW</text>
+    <path class="blocked" d="M 576 496 V 548 H 700"/>
+    <line x1="700" y1="536" x2="700" y2="560" stroke="#6e6e73" stroke-width="2"/>
+    <rect x="584" y="516" width="96" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="632" y="528" text-anchor="middle">DENY</text>
+    <path class="primary" d="M 1192 496 V 604 Q 1192 612 1184 612 H 584 Q 576 612 576 620 V 688"/>
+    <rect x="824" y="584" width="128" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="888" y="596" text-anchor="middle">SCOPED CALL</text>
+    <path class="path" d="M 160 496 H 80 V 820 Q 80 828 88 828 H 1168 Q 1176 828 1176 820 V 792"/>
+    <rect x="440" y="800" width="144" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="512" y="812" text-anchor="middle">EVENT APPEND</text>
+    <path class="blocked" d="M 384 472 H 416 V 660 Q 416 668 424 668 H 448"/>
+    <line x1="448" y1="656" x2="448" y2="680" stroke="#6e6e73" stroke-width="2"/>
+    <rect x="268" y="640" width="176" height="16" rx="4" fill="#f5f5f7"/>
+    <text class="label" font-size="8" x="356" y="652" text-anchor="middle">RAW BYPASS BLOCKED</text>
+
+    <g>
+      <rect class="node" x="80" y="96" width="192" height="96" rx="8"/>
+      <text class="tag" font-size="8" x="116" y="120">ACTOR</text>
+      <text class="name" x="116" y="152">Пользователь</text>
+      <text class="sub" x="116" y="176">явное действие</text>
+    </g>
+    <g>
+      <rect class="node" x="368" y="80" width="272" height="128" rx="8"/>
+      <text class="tag" font-size="8" x="392" y="108">GPUI-CE · METAL</text>
+      <text class="name" x="392" y="144">Terminal + Blocks</text>
+      <text class="sub" x="392" y="168">tabs · focus · preview</text>
+      <text class="sub" x="392" y="188">agent / ACP status</text>
+    </g>
+    <g>
+      <rect class="node" x="96" y="384" width="288" height="112" rx="8"/>
+      <text class="tag" font-size="8" x="120" y="412">SESSION RUNTIME</text>
+      <text class="name" x="120" y="448">Supervisor + adapters</text>
+      <text class="sub" x="120" y="472">origin · events · adapters</text>
+    </g>
+    <g>
+      <rect class="focus" x="464" y="384" width="224" height="112" rx="8"/>
+      <text class="tag" font-size="8" x="488" y="412">POLICY</text>
+      <text class="name" x="488" y="448">Классификация</text>
+      <text class="sub" x="488" y="472">deny · allow · ask</text>
+    </g>
+    <g>
+      <rect class="node" x="768" y="384" width="224" height="112" rx="8"/>
+      <text class="tag" font-size="8" x="792" y="412">HUMAN GATE</text>
+      <text class="name" x="792" y="448">Approval</text>
+      <text class="sub" x="792" y="472">diff · cmd · target</text>
+    </g>
+    <g>
+      <rect class="focus" x="1072" y="384" width="240" height="112" rx="8"/>
+      <text class="tag" font-size="8" x="1096" y="412">SANDBOX + CAPABILITY</text>
+      <text class="name" x="1096" y="448">Scoped host</text>
+      <text class="sub" x="1096" y="472">root · time · perms</text>
+    </g>
+    <g>
+      <rect class="node" x="448" y="688" width="336" height="104" rx="8"/>
+      <text class="tag" font-size="8" x="472" y="716">EXECUTION</text>
+      <text class="name" x="472" y="752">Local PTY / future remote</text>
+      <text class="sub" x="472" y="776">typed implementation only</text>
+    </g>
+    <g>
+      <rect class="store" x="1008" y="688" width="336" height="104" rx="8"/>
+      <text class="tag" font-size="8" x="1032" y="716">DURABLE LOCAL STATE</text>
+      <text class="name" x="1032" y="752">SQLite + Keychain refs</text>
+      <text class="sub" x="1032" y="776">events · no secret bytes</text>
+    </g>
+
+    <line x1="48" y1="868" x2="1552" y2="868" stroke="#d2d2d7" stroke-width="1"/>
+    <text class="tag" font-size="8" x="64" y="892">LEGEND</text>
+    <line x1="176" y1="888" x2="224" y2="888" stroke="#007aff" stroke-width="2" marker-end="url(#arrow-accent)"/>
+    <text class="label" font-size="8" x="240" y="892">ALLOWED PATH</text>
+    <line x1="416" y1="888" x2="464" y2="888" stroke="#6e6e73" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <text class="label" font-size="8" x="480" y="892">DENY / BLOCKED BYPASS</text>
+    <rect x="736" y="880" width="16" height="16" rx="4" fill="#e8f3ff" stroke="#007aff" stroke-width="1"/>
+    <text class="label" font-size="8" x="768" y="892">ENFORCEMENT POINT</text>
+  </svg>
+</main>
+</body>
+</html>

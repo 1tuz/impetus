@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "acp.codex",
+      "kind": "acp_external_agent",
+      "discovery": "registry_or_manual",
+      "credential_strategy": "agent_owned",
+      "enabled": false,
+      "notes": "Выбранный Codex ACP adapter/CLI владеет своим login; секрет в этот файл не записывается."
+    },
+    {
+      "id": "acp.claude",
+      "kind": "acp_external_agent",
+      "discovery": "registry_or_manual",
+      "credential_strategy": "agent_owned",
+      "enabled": false
+    },
+    {
+      "id": "acp.cursor",
+      "kind": "acp_external_agent",
+      "discovery": "registry_or_manual",
+      "credential_strategy": "agent_owned",
+      "enabled": false
+    },
+    {
+      "id": "direct.deepseek",
+      "kind": "openai_compatible_provider",
+      "endpoint": "https://api.deepseek.com",
+      "credential_strategy": "keychain_ref",
+      "credential_ref": null,
+      "enabled": false
+    },
+    {
+      "id": "local.ollama",
+      "kind": "local_provider",
+      "endpoint": "http://127.0.0.1:11434",
+      "credential_strategy": "none",
+      "enabled": false
+    }
+  ]
+}

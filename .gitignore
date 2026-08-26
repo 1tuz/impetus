@@ -1,0 +1,10 @@
+/target
+/.agentic-terminal/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+/.obsidian/
+/.firecrawl/
+__pycache__/
+*.pyc
