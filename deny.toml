@@ -1,0 +1,40 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is transitive through the pinned GPUI Metal stack; RustSec has no safe upgrade." },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz is transitive through pinned GPUI/usvg; RustSec has no safe upgrade." },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is transitive through pinned GPUI font rendering; RustSec has no safe upgrade." },
+]
+
+[licenses]
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "NCSA",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[sources.allow-org]
+github = ["gpui-ce"]
