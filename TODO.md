@@ -1,68 +1,99 @@
-# TODO — Agentic Terminal для macOS
+# TODO — Agentic Harness для macOS
 
-## Сейчас: фундамент v0.1
+## Завершить фундамент v0.1
 
-- [x] Rust workspace: `app` и независимый `core`.
-- [x] GPUI-CE native window на macOS.
+- [x] Rust workspace: независимый `core` и отдельный GPUI reference client.
+- [x] GPUI-CE native preview на macOS.
 - [x] Rust `1.98.0` в `rust-toolchain.toml`.
 - [x] SQLite WAL event store, policy, approval и capability manifests.
 - [x] Русские README, архитектура, GUI/UX, референсы и `AGENTS.md`.
-- [x] Схема архитектуры в `docs/architecture.html` и PNG preview.
-- [x] Проверка Xcode/Metal/Rust в `scripts/bootstrap-macos.sh`.
-- [x] Добавить SQLite reopen test и записать первый RSS baseline в `docs/benchmarks/v0.1.md`.
-- [ ] Выполнить воспроизводимый native-window smoke на чистом Mac; локальный Apple Silicon запуск уже подтверждён.
+- [x] Редактируемая архитектурная схема и PNG preview.
+- [x] SQLite reopen test и первый RSS baseline диагностического клиента.
+- [ ] Выполнить воспроизводимый native-window smoke на чистом Mac; это последний gate старого v0.1, не зависимость harness v0.2.
 
-## Далее: v0.2 — настоящий local terminal
+## Сейчас: v0.2 — standalone harness core
 
-- [x] Добавить встроенный набор переключаемых терминальных тем: Dracula, One Dark, Nord, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Solarized Light, One Light, GitHub Light и Catppuccin Latte.
-- [ ] Исследовать и зафиксировать `portable-pty` + terminal parser (`alacritty_terminal`): версия, API, лицензия, небольшой spike.
-- [ ] Реализовать PTY capability: zsh, process lifecycle, resize, Ctrl-C, корректный tab close.
-- [ ] Сделать bounded disk-backed scrollback и горячее окно не более 8 MiB на tab.
-- [ ] Добавить терминальные tabs, focus, selection/copy и terminal Block projection.
-- [ ] Прогнать Unicode / 24-bit color / resize / long-output soak тесты.
+Подробный порядок, gates и риски: [аудит](docs/iteration-2-audit.md) и [roadmap второй итерации](docs/iteration-2-roadmap.md).
 
-## Затем: v0.3 — агент, ACP и модели
+### Gate 0.1 — готово
 
+- [x] Заменить свободный `Event.body` на versioned typed payloads для Session/Run/Intent/Plan/Tool/Agent/Approval/Notice lifecycle.
+- [x] Добавить pure event → projection слой без GPUI типов.
+- [x] Добавить SQLite migration/read compatibility без потери старых rows.
+- [x] Покрыть round-trip, deterministic replay, unknown version, malformed payload и reopen tests.
+
+### Gate 0.2 — готово
+
+- [x] Сделать session identity, sequence и pending approvals восстанавливаемыми после restart.
+- [x] Реализовать session supervisor: start, stream, soft interrupt, hard cancel, failure и provider restart.
+- [x] Добавить mock streaming provider для CI без модели и секрета.
+
+### Следующие gates v0.2
+- [x] Выделить долгоживущий headless Harness process с versioned Unix socket IPC, handshake и socket mode `0600`.
+- [x] Добавить CLI reference client: create/attach/list/prompt/status/cancel из Zap и Terminal.app.
+- [x] Добавить durable event stream в daemon/CLI: attach/reconnect видит те же event IDs без SQLite доступа.
+- [x] Подключить mock stream/restart к daemon и CLI: attach/reconnect видит durable Agent chunks без дубликата после restart.
+- [ ] Добавить read-only workspace tools: list/read/search с provenance, bounded output и artifact references.
+- [ ] Реализовать первый OpenAI-compatible adapter: streaming + cancellation + DeepSeek/OpenRouter/custom/local endpoint profile.
+- [ ] Реализовать Keychain credential reference и local/no-secret profile; token не попадает в events/log/export.
+- [ ] Ввести единый normalized policy/capability execution seam; не включать unrestricted effects без OS sandbox proof.
+- [ ] Зафиксировать harness RSS, queue/artifact limits, restart/cancel и context/token baseline.
+- [ ] Доказать отсутствующую зависимость headless runtime от GPUI, Metal, PTY и ANSI renderer.
+
+## Параллельный незавершённый клиентский срез
+
+- [ ] GitLab CI native smoke: установленными `gitlab-ci-local` и `glab` подтвердить общий `PipelineModel`, compact error fragment и keyboard disclosure лога.
+- [ ] Не считать 600-line client buffer bounded Harness output: заменить unbounded channel/full log только после общего artifact/execution seam.
+- [ ] Не расширять CI pane в отдельный runner/dashboard и не делать его gate harness v0.2.
+
+## Затем: v0.3 — clients, Zap, ACP и auth
+
+- [ ] Расширить v0.2 IPC: approvals, diffs, attachment refs и backend/auth states.
+- [ ] Сохранить capability negotiation и явный `Incompatible` state при расширении protocol.
+- [ ] Провести Zap baseline smoke: v0.2 harness CLI в обычной tab без модификации Zap.
+- [ ] Выбрать structured Zap path: adapter или личный fork; typed Blocks/approval обязательны, OSC-only недостаточно.
 - [ ] Добавить `agentic-terminal-acp` на официальном Rust SDK `agent-client-protocol = 2`.
-- [ ] Первый внешний ACP backend: initialize, session, text stream, cancel, exit/reconnect, Blocks.
-- [ ] Добавить mock ACP agent для CI без модели и без секрета.
-- [ ] Создать Auth Center UI: agent-owned CLI, Keychain API key, system-browser OAuth, local model.
-- [ ] Реализовать Keychain adapter; в SQLite хранить только opaque reference.
-- [ ] Первый direct OpenAI-compatible adapter: streaming + cancellation + DeepSeek/OpenRouter/custom endpoint profile.
-- [ ] Подключить Codex / Claude / Cursor / Gemini / Qwen только через registry/discovery и установленный CLI; не хардкодить несуществующие флаги.
-- [ ] Проверить, что ACP permission/tool request всегда проходит `Policy → Approval → Sandbox`.
-- [ ] Добавить `Manual | Safe Auto` state, mock safety reviewer и fail-closed typed verdict без host effects.
-- [ ] Добавить attachment refs, composer preview и ACP `image` / `embeddedContext` negotiation без bytes в events.
+- [ ] Добавить mock ACP agent: initialize, session, stream, cancel, permission, malformed stdout, exit/reconnect.
+- [ ] Подключать Codex / Claude / Cursor / Gemini / Qwen только через registry/discovery и установленный CLI.
+- [ ] Реализовать Auth Center contract: agent-owned CLI, system-browser OAuth и расширенные states поверх v0.2 Keychain/local profiles.
+- [ ] Проверить, что client/ACP permission всегда проходит `Policy → Approval → Sandbox` внутри harness.
+- [ ] Добавить `Manual | Safe Auto` mock state и attachment capability negotiation без host effects.
 
 ## v0.4 — длинные сессии
 
 - [ ] Token-budget context builder.
 - [ ] Versioned compaction: source event range, prompt/version, summary и восстановление.
-- [ ] Resume после restart.
+- [ ] Resume с compacted context после restart без изменения durable projection.
 - [ ] Fork с immutable parent prefix и видимым fork point.
-- [ ] Метрики: RSS, queued events, hot terminal bytes, Blocks, compaction ratio.
+- [ ] Метрики: RSS, queued events, bounded output bytes, Blocks и compaction ratio.
 
 ## v0.5 — локальные эффекты и capabilities
 
-- [ ] Approval card с точным diff, command и target.
+- [ ] Exact approval: diff, command и target.
 - [ ] Workspace sandbox с time/resource limits.
 - [ ] Capability host: manifest/version/permission validation.
 - [ ] Внешние capabilities только out-of-process по versioned IPC.
-- [ ] Включить Safe Auto enforcement: hard-deny, human-only, cache invalidation, block thresholds и input probe.
-- [ ] Добавить outbound attachment policy, MIME/size/secret checks и provider upload adapter.
+- [ ] Safe Auto enforcement: hard-deny, human-only, cache invalidation, block thresholds и input probe.
+- [ ] Outbound attachment policy, MIME/size/secret checks и provider upload adapter.
 
-## v0.6 — SSH, tmux и SFTP
+## v0.6 — remote capabilities
 
 - [ ] SSH profile manager и Keychain references.
-- [ ] Host-key verification и явный first-connect экран.
-- [ ] Remote PTY в выбранном profile.
-- [ ] Controlled tmux: list / create / attach.
-- [ ] SFTP browser с file-level upload/download approval и resume.
+- [ ] Host-key verification и явный first-connect flow в выбранном клиенте.
+- [ ] Controlled remote process/PTY в выбранном profile.
+- [ ] Controlled tmux: list/create/attach.
+- [ ] SFTP с file-level upload/download approval и resume.
 
 ## Перед рабочим MVP
 
 - [ ] Multi-session, search, notifications, export/delete и crash recovery.
 - [ ] Diagnostics bundle с redaction.
-- [ ] Apple Silicon и Intel smoke tests.
-- [ ] Проверить RAM baseline для четырёх tabs: local PTY, long scrollback, agent stream, SSH.
-- [ ] Packaging, update и notarization plan.
+- [ ] Apple Silicon и Intel harness smoke tests.
+- [ ] Packaging/update plan для harness и выбранного клиента.
+- [ ] Проверить end-to-end в Zap: prompt → plan → approval → effect → resume/fork.
+
+## Optional backlog: собственный GPUI terminal
+
+- [ ] После Zap spike записать конкретный неудовлетворённый requirement; без него не продолжать terminal emulator.
+- [ ] Если принято go: исследовать `portable-pty` + `alacritty_terminal`, lifecycle, bounded scrollback, tabs/focus/selection/copy и soak.
+- [ ] Если Zap закрывает требования: оставить GPUI app reference client, не превращать его в второй terminal product.

@@ -1,25 +1,26 @@
 # Референсы и как они используются
 
-Это не список зависимостей «на всякий случай». Каждый референс привязан к конкретному контракту и этапу roadmap.
+Референс объясняет подход, но не становится dependency или permission автоматически. Текущий приоритет — standalone harness; client и terminal engine выбираются отдельно.
 
-| Источник                                                                                                                                  | Что берём                                                                                          | Что намеренно не переносим                                                 |
-| ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [GPUI-CE](https://github.com/gpui-ce/gpui-ce)                                                                                             | GPUI/Metal macOS UI, App/Window/Entity модели; один pinned commit для `gpui` и `gpui_platform`     | браузерный UI и зависимость от WebView                                     |
-| [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples)                                                 | актуальные паттерны окна, layout, focus/input и tests; сверять только с pinned API                 | старые tutorials с `Application::new()` без проверки версии                |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)                                                                       | capability composition, manifest/service boundary, append-only trace, изолируемая сборка runtime   | Node/Cordis/Web UI и исполнение сторонних plugins в UI process             |
-| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) и [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | stdio JSON-RPC к внешним coding-agents, capability negotiation, sessions и ACP auth elicitation; `2.x` — major SDK crate, не автоматическое включение draft protocol v2 | выдачу ACP за универсальный model API, перенос токенов или unstable protocol features без RFC |
-| [Qwen Code: fork subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md)                              | immutable fork point и shared prompt-cache prefix как provider hint                                | бесконтрольное создание subagents без budget/policy                        |
-| [Claude Code Auto mode docs](https://code.claude.com/docs/en/permission-modes) и [engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode) | отдельные input probe/action reviewer, intent-aware проверки, fail-closed fallback и недоверие к repo-local allow | bypass permissions, передачу raw tool output reviewer-у и слепое копирование version-specific правил |
-| [ACP content](https://agentclientprotocol.com/protocol/v1/content) и [Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision) | negotiated image/resource blocks, typed attachment transport и provider file references | implicit upload, base64 в event log и обещание multimodal support без negotiation |
-| [Zap](https://github.com/cristianoliveira/zap)                                                                                            | local-first terminal + natural-language workflow, Blocks/notifications как продуктовая поверхность | перенос всего Warp terminal engine и SSH implementation без audit          |
-| [portable-pty](https://crates.io/crates/portable-pty)                                                                                     | cross-platform PTY seam для v0.2                                                                   | подмена PTY одноразовым `Command::output`                                  |
-| [Alacritty terminal](https://github.com/alacritty/alacritty)                                                                              | кандидат на ANSI/VT parser/terminal state; сначала spike и license/API audit                       | самописный ANSI parser                                                     |
-| [russh](https://github.com/Eugeny/russh)                                                                                                  | async Rust SSH transport для v0.6                                                                  | agent-controlled raw `ssh` command/flags                                   |
+| Источник | Что берём | Что не переносим автоматически |
+| --- | --- | --- |
+| [Zap](https://github.com/zerx-lab/zap) | основной terminal client, local-first UX, Blocks, SSH/tmux и допустимый личный fork | Zap-owned session/policy как source of truth harness-а |
+| [Zap roadmap](https://github.com/zerx-lab/zap/blob/main/docs/roadmap.md) | standalone harness service, versioned IPC, terminal как один из клиентов | roadmap-обещание как доказательство готового protocol API |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | agent loop/capability seams, manifests, append-only trace, изолируемый runtime | Node/Cordis/Web UI внутри нашего harness |
+| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) и [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | adapter к external coding-agents, sessions, updates, permission/auth interaction, negotiation | выдачу ACP за наш client IPC, universal provider API или перенос токенов |
+| [Qwen Code subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md) | immutable fork point и shared cache prefix как hint | бесконтрольное создание subagents |
+| [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes) и [Auto mode deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode) | input probe/action reviewer и fail-closed fallback | bypass permissions и raw tool output reviewer-у |
+| [ACP content](https://agentclientprotocol.com/protocol/v1/content) | negotiated image/resource blocks и typed attachment refs | implicit upload/base64 в event log |
+| [GPUI-CE](https://github.com/gpui-ce/gpui-ce) | optional native reference client на pinned commit | dependency headless harness-а |
+| [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples) | проверка pinned GPUI API при изменении reference client | старые tutorials без проверки версии |
+| [portable-pty](https://crates.io/crates/portable-pty) | optional controlled PTY/client fallback после Zap go/no-go | обязательный deliverable v0.2 |
+| [Alacritty terminal](https://github.com/alacritty/alacritty) | optional ANSI/VT engine после доказанного client gap | самописный parser или преждевременный terminal product |
+| [russh](https://github.com/Eugeny/russh) | кандидат remote transport v0.6 | agent-controlled raw `ssh` flags |
 
 ## Правило проверки источника
 
-Перед добавлением API-зависимого кода coding-агент обязан сверить exact pinned crate/commit, найти 1–3 реальных использования и указать в PR/отчёте версию. Нельзя переносить snippets из старой статьи или отвечать «это похоже на API». Manifest с `availability=planned` остаётся документацией контракта и не доказывает наличие implementation.
+Перед API-зависимым кодом сверить exact version/commit, найти 1–3 реальных использования и записать compatibility assumptions. `availability=planned` не доказывает implementation. OSC/notification integration не объявлять typed protocol без permission/lifecycle tests.
 
-## Внешние ссылки не являются разрешениями
+## Граница личного Zap fork
 
-Референс может объяснять подход, но не расширяет права модели. Любая зависимость, capability или remote action проходит review, manifest permissions, policy и approval проекта.
+Личный fork разрешён и рассматривается как нормальный structured client path. Его dependencies, license и UI architecture не переносятся в harness автоматически. Если появится публичное распространение, packaging/license boundary оценивается отдельным решением, а не блокирует личную разработку сейчас.

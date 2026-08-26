@@ -1,90 +1,129 @@
-# ACP и авторизация моделей/агентов
+# Client IPC, ACP и авторизация
 
-## Что добавлено в архитектуру
+## Три разные границы
 
-В проект добавлен обязательный слой **ACP Gateway + Auth Center**. Его задача — подключать внешние coding-agents как Blocks в общей сессии и давать человеку один экран подключения. Он не подменяет провайдера и не копирует чужие логины.
+Не смешивать протокол клиента, ACP и provider API:
 
 ```text
-Auth Center
- ├── Direct provider: Keychain API key / system-browser OAuth / local model
- └── ACP external agent: установленный CLI владеет своим login
-                              ↓
-                    ACP Gateway (stdio JSON-RPC)
-                              ↓
-              Codex / Claude / Cursor / Gemini / Qwen / …
+Zap / CLI / IDE / GPUI
+          │ versioned local client IPC
+          ▼
+       HARNESS
+       ├── Direct provider adapter ── Keychain ref / browser OAuth / local
+       └── ACP Gateway ─────────────── external coding-agent CLI owns login
 ```
 
-ACP стандартизирует диалог клиента и coding-agent: сессии, prompts, tool updates, permission requests, terminal и auth interaction. Он **не** является единым API к любой модели и не позволяет безопасно извлечь или «перенести» токен из Codex/Cursor/Claude.
+- **Client IPC** связывает наши клиенты с нашим harness: sessions, prompt, stream, status, cancel, approvals, diffs, attachment refs.
+- **ACP** связывает harness с внешним coding-agent: initialize, session, updates, permission/auth interaction.
+- **Provider API** даёт model inference, но не tools/policy/session permissions.
 
-## Три честных способа подключения
+Ни один из этих слоёв не является универсальным способом извлечь или перенести token из Codex/Cursor/Claude.
 
-| Режим | Для чего | Где секрет | Примеры |
-| --- | --- | --- | --- |
-| ACP agent-owned | полноценный внешний coding-agent внутри Blocks | его собственный CLI/OS keychain | Codex CLI, Claude Agent, Cursor, Gemini CLI, Qwen Code, Copilot — если установленная версия есть в ACP registry |
-| Direct provider | собственный model adapter runtime | reference на запись в macOS Keychain | OpenAI-compatible: DeepSeek, OpenRouter, локальный gateway; отдельные native adapters Anthropic/Gemini |
-| Local model | офлайн/local inference | отсутствует | Ollama, LM Studio или корпоративный endpoint через явный typed profile |
+## Client IPC v0.2 и расширение v0.3
 
-«Любая нейронка» означает: любой агент, реализующий ACP, либо любой провайдер с проверенным adapter-ом. Нельзя обещать login к закрытому продукту, который не даёт ACP, API или разрешённый OAuth flow.
+Base protocol v0.2 локальный, versioned и client-independent:
 
-## UX Auth Center
+- hello/version/capability negotiation;
+- session create/attach/list/status;
+- prompt и streaming typed events;
+- cancel и terminal outcome;
 
-1. Пользователь открывает `Settings → Agents & Models → Add`.
-2. Выбирает **External ACP Agent**, **Provider API**, **Browser OAuth** или **Local model**.
-3. Для ACP приложение скачивает лишь metadata из registry/выбирает локальный executable, показывает название, publisher, version, источник/checksum, requested capabilities и полный command с аргументами. Запуск — отдельное подтверждение; registry metadata не является разрешением на install/launch.
-4. Для API-key пользователь вставляет ключ в нативный защищённый control; сразу после сохранения он уходит в Keychain. В SQLite остаётся только opaque reference.
-5. Для OAuth открывается системный браузер по явно показанному URL. WebView запрещён. Callback привязывается к создаваемому profile и не попадает в prompt/event body.
-6. После проверки UI показывает `Connected`, `Needs login`, `Unavailable` или `Version incompatible`; никакого ложного «подключено».
+В v0.3 тот же protocol расширяется без смены владельца state:
 
-ACP поддерживает structured elicitation, включая URL mode для OAuth. Это идеально подходит к нашему Auth Center: credential не проходит ни через LLM, ни через ACP transcript.
+- diffs и attachment refs;
+- approval inspect/approve/reject с `request_id` и target revision;
+- backend/auth states;
+- `Unavailable`, `Incompatible`, `Interrupted — outcome unknown`.
 
-## Реализация ACP Gateway
+Harness остаётся source of truth. Клиент не получает SQLite connection, Keychain bytes, provider secret или capability implementation. Disconnect клиента не равен cancel и не уничтожает session.
 
-### v0.3a: внешний ACP backend
+## Zap integration
 
-- Использовать официальный Rust SDK crate `agent-client-protocol` major `2`. Это версия SDK crate, а не обещание draft wire protocol v2: по умолчанию используется стабильная согласованная protocol surface; feature `unstable_protocol_v2` не входит в MVP без отдельного RFC и compatibility tests.
-- Один дочерний процесс на выбранный external-agent profile; stdout зарезервирован для ACP JSON-RPC, логи — stderr.
-- Runtime маппит ACP session на внутреннюю Session и превращает update/tool/permission/auth события в наши durable Blocks.
-- Process lifecycle, cancel, reconnect и exit code записываются отдельными событиями.
-- Permission, file read/write и terminal requests превращаются в `origin=agent` actions и возвращаются в наш `Policy → Allow | NeedsApproval | Deny → Sandbox`; ACP backend не обходит этот путь и не может послать bytes в пользовательский PTY как `origin=user`.
-- В `Safe Auto` ACP permission request не auto-accept-ится на уровне протокольного client callback: он превращается в typed action и только затем проходит hard deny, human-only gate и отдельный reviewer. Пример ACP client, который выбирает первый permission option, является демонстрацией API, но запрещённой архитектурой для продукта.
+### Baseline
 
-Локальный референс `/Users/antony/Documents/Codex/2026-08-13/referenced-chatgpt-conversation-this-is-an-2/outputs/jcode-acp` полезен именно для Rust stdio/session/cancel mapping. Его не копируем как универсальный backend: он корректно оставляет модели и credentials у jcode, поэтому не умеет быть логином для Cursor/Claude/Codex.
+Headless CLI запускается в обычной Zap tab. Это даёт полноценный terminal UX без собственного PTY/ANSI renderer и не требует патча Zap.
 
-### v0.3b: registry и discovery
+### Structured path
 
-- Registry — источник обновляемых metadata, а не доверенная программа: перед install/launch показать publisher, version, checksum/источник и command.
-- Сначала поддержать ручной local executable profile; auto-install добавить только после signature/update/rollback design.
-- Проверять capability negotiation на старте сессии; не включать file/terminal/auth возможности, которых не заявили обе стороны.
-- Для image prompt требуется ACP `image` capability, для embedded file context — `embeddedContext`; unsupported content не кодируется молча в text/base64. Resource link допустим лишь при уже одобренном доступе agent к URI. См. [ATTACHMENTS.md](ATTACHMENTS.md).
+Adapter или личный fork Zap подключается к client IPC и отображает typed Blocks/diff/approval. OSC/notification events можно использовать для совместимости и уведомлений, но не для достоверного permission/lifecycle contract.
 
-## Модель данных без секретов
+Если Zap позднее поддержит подходящий стандартный client protocol, отдельный adapter можно заменить. До подтверждённой совместимости не обещать ACP support со стороны Zap.
+
+## Способы подключения backend
+
+| Режим | Для чего | Где секрет |
+| --- | --- | --- |
+| ACP agent-owned | внешний полноценный coding-agent | в его CLI/OS keychain |
+| Direct provider | собственный agent loop harness-а | opaque reference на macOS Keychain entry |
+| Browser OAuth | разрешённый provider flow | browser/provider store; callback не в events |
+| Local model | offline/local inference | секрет отсутствует |
+
+«Любая нейронка» означает: ACP-compatible agent либо provider с проверенным adapter/API/OAuth. Закрытый продукт без такого interface не становится поддержанным от одной записи в config.
+
+## ACP Gateway v0.3
+
+- Использовать официальный Rust SDK crate `agent-client-protocol` major `2`; `unstable_protocol_v2` не включать без RFC и compatibility tests.
+- Один дочерний process на выбранный external-agent profile; stdout зарезервирован под ACP JSON-RPC, logs — stderr.
+- ACP session маппится на внутреннюю durable Session.
+- Update/tool/permission/auth нормализуются в typed events/actions.
+- Permission request никогда не auto-accept-ится в protocol callback: он проходит `Policy → Allow | NeedsApproval | Deny` внутри harness.
+- ACP backend не может отправить bytes в пользовательский Zap PTY или присвоить `origin=user`.
+- Capability negotiation проверяется при initialize; unsupported modality получает явный отказ.
+
+Локальный `jcode-acp` остаётся полезным reference для Rust stdio/session/cancel mapping, но не универсальным backend/login.
+
+## Auth profiles
 
 ```text
 BackendProfile
-  id, display_name, kind, endpoint_or_command, capability_snapshot
+  id, display_name, kind, endpoint_or_command
+  protocol/capability snapshot
   credential_strategy: agent_owned | keychain_ref | browser_oauth | none
-  credential_ref: optional opaque Keychain label
+  credential_ref: optional opaque label
   status, verified_at, version, last_error_redacted
 ```
 
-`credential_ref` — не token. При export сессии выносятся только provider/agent name, версия и redacted status.
+Правила:
 
-Loopback HTTP и Unix socket — отдельные endpoint scopes, а не исключение из policy. Профиль хранит нормализованный transport/host/socket; `127.0.0.1` не включает общий network access, redirect на другой host повторно проходит policy.
+- raw API key не проходит через Zap/CLI IPC после сохранения;
+- в SQLite/export/log только reference/status/version;
+- OAuth URL показывается полностью и открывается только user action в system browser;
+- callback привязан к создаваемому profile и не попадает в prompt/event body;
+- manual executable profile идёт раньше auto-install;
+- registry metadata не является разрешением на install/launch;
+- loopback/Unix socket — отдельный endpoint scope, не общий `allow_network`.
+
+## Auth Center как projection
+
+Auth Center не обязан быть отдельным GPUI screen. Его states доступны через CLI и любой structured client:
+
+- `Connected`;
+- `Needs login`;
+- `Unavailable`;
+- `Incompatible`;
+- `Crashed`;
+- `Credential reference missing`.
+
+Zap fork может дать native settings UI, но validation, storage и status принадлежат harness.
 
 ## Критерии готовности
 
-- ACP smoke с mock agent: initialize, new session, streaming text, cancel, structured approval, malformed stdout, stderr flood и process exit.
-- Auth Center успешно различает `agent-owned`, `Keychain`, OAuth и local; token отсутствует в SQLite/event/export/log.
-- Один ACP agent с уже выполненным native login появляется как Block и способен создать сессию.
-- OAuth URL не открывается автоматически и показывается пользователю перед переходом.
-- Переключение/падение external agent не портит общую session history.
-- Typed event payload и redaction/export tests не допускают credential, OAuth callback data и raw secret-bearing terminal chunks.
+- Два клиента attach-ятся к одной session и видят одинаковые Block IDs/status.
+- Disconnect/reconnect не дублирует history и не меняет outcome.
+- Protocol version mismatch даёт явный `Incompatible`.
+- Mock ACP проходит initialize/session/stream/cancel/permission/malformed stdout/stderr flood/exit.
+- Один external agent с agent-owned login создаёт session без копирования credential.
+- Approval из client/ACP связан с exact revision и проходит policy.
+- OAuth не открывается автоматически.
+- Secret, callback data и raw attachment bytes отсутствуют в SQLite/export/log/tracing.
 
 ## Источники
 
-- ACP registry и список поддерживаемых agents: <https://agentclientprotocol.com/get-started/registry>
-- ACP agents: <https://agentclientprotocol.com/get-started/agents>
-- Официальный Rust SDK и сведения о stable/draft surfaces: <https://github.com/agentclientprotocol/rust-sdk>
-- Migration SDK crate 2.x: <https://github.com/agentclientprotocol/rust-sdk/blob/main/md/migration_v2.0.md>
-- ACP URL-mode elicitation/auth: <https://agentclientprotocol.com/rfds/elicitation>
-- ACP v1 content blocks: <https://agentclientprotocol.com/protocol/v1/content>
+- [ACP registry](https://agentclientprotocol.com/get-started/registry)
+- [ACP agents](https://agentclientprotocol.com/get-started/agents)
+- [Rust SDK](https://github.com/agentclientprotocol/rust-sdk)
+- [SDK 2.x migration](https://github.com/agentclientprotocol/rust-sdk/blob/main/md/migration_v2.0.md)
+- [ACP URL-mode elicitation](https://agentclientprotocol.com/rfds/elicitation)
+- [ACP v1 content blocks](https://agentclientprotocol.com/protocol/v1/content)
+- [Zap](https://github.com/zerx-lab/zap)
+- [Zap harness-first roadmap](https://github.com/zerx-lab/zap/blob/main/docs/roadmap.md)

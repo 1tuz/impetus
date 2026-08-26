@@ -1,107 +1,137 @@
-# Архитектура Agentic Terminal
+# Архитектура Agentic Harness
 
 ## Суть
 
-Нативный UI на macOS передаёт долговременному локальному runtime типизированное действие с обязательным `origin`: `user` или `agent`. Runtime проверяет policy и получает ровно один исход: `Allow`, `NeedsApproval` или `Deny`. Только `Allow` либо принятое человеком approval продолжаются через sandbox и capability. В будущем `Safe Auto` сможет разрешать узкий класс `NeedsApproval` через отдельный fail-closed reviewer, но не сможет переопределить hard deny или human-only gate. Обратный путь — append-only события, из которых UI строит Blocks.
+Harness — долговременный local-first Rust process, независимый от terminal emulator и GUI. Zap, headless CLI, будущий IDE adapter и существующий GPUI preview подключаются через versioned client protocol. Harness владеет session state, policy, approvals, capability scopes и audit; клиент только передаёт user intent/решение и отображает durable events.
 
-Открой [architecture.html](architecture.html): это редактируемая SVG-схема, не Mermaid и не скриншот. Схема показывает два разных входа — прямой пользовательский PTY и агентский/ACP intent — и точку, где их policy-пути расходятся. Отдельная схема [safe-auto-architecture.html](safe-auto-architecture.html) раскрывает hard-deny, human-only, reviewer и output-probe ветки.
+Канонический effect path: `Typed request → explicit origin → Policy → Deny | Allow | NeedsApproval → human/Safe Auto gate → Sandbox → Capability → Execution → durable event`. Модель не может выдать себе `origin=user`, approval или прямой доступ к host effects.
+
+Открой [architecture.html](architecture.html): редактируемая SVG-схема показывает сменные клиенты, versioned IPC, harness trust boundary и единственный paved road к эффекту. [safe-auto-architecture.html](safe-auto-architecture.html) отдельно раскрывает hard-deny, human-only, reviewer и output-probe ветки.
+
+## Стратегическое разделение
+
+| Понятие | Принадлежит | Входит в критический путь |
+| --- | --- | --- |
+| agent loop, sessions, tools, providers, policy, audit | harness | да, v0.2 |
+| create/attach/prompt/stream/status/cancel protocol | client IPC | да, v0.2 |
+| typed approvals/diffs/attachments/backend states | client IPC extension | да, v0.3 |
+| terminal emulator, ANSI/VT, tabs, selection, scrollback | Zap или другой client | нет |
+| controlled process/PTY для tool execution | capability host | только когда нужен конкретному tool/remote workflow |
+| Blocks/diff/approval presentation | Zap adapter/fork, CLI или GPUI client | v0.3, реализация сменная |
+
+Собственный terminal emulator не следует из необходимости запускать shell tool. Harness может исполнять bounded process и возвращать typed output, не владея ANSI renderer или пользовательской terminal tab.
 
 ## Текущий и целевой контур
 
-| Контур | Уже в v0.1 | Появится позже |
+| Контур | Уже есть | Следующий результат |
 | --- | --- | --- |
-| GPUI app | native window, темы preview, durable SQLite store | terminal tabs, Blocks, Auth Center |
-| core | events, action origin, file-scope policy, approvals, manifest validation | projections, Safe Auto reviewer contract, attachment refs, sandbox enforcement, execution lifecycle, resume/fork |
-| capabilities | только валидируемые `planned` manifests | PTY v0.2, ACP v0.3, local effects v0.5, SSH/tmux/SFTP v0.6 |
+| `agentic-terminal-core` | events, origin, file-scope policy, approvals, SQLite, manifests, CI projection | typed payloads/projections и deterministic replay v0.2 |
+| headless harness | supervisor, daemon/IPC, CLI и deterministic mock stream | read-only tools и direct provider v0.2 |
+| client protocol | Unix socket base, negotiation и session lifecycle v0.2 | structured extension v0.3 |
+| Zap | установленный внешний terminal/agent client | CLI baseline v0.2, затем adapter или личный fork v0.3 |
+| GPUI app | native preview, темы, CI pane | optional reference client; не terminal gate |
+| ACP/auth | спроектированы | external-agent gateway и profiles v0.3 |
+| local/remote effects | planned manifests | sandbox/capabilities v0.5–v0.6 |
 
-Наличие типа, event kind или manifest не означает готовую capability. До появления implementation runtime обязан безопасно отказать, а UI — показывать `Unavailable`, не «Loaded».
+Наличие type, event kind или manifest не означает готовую capability. До implementation runtime безопасно отвечает `Unavailable`.
 
-## Слои и владельцы
+## Клиенты
 
-| Слой | Отвечает за | Не должен делать |
-| --- | --- | --- |
-| `agentic-terminal-app` | GPUI entities, фокус/ввод, panes, виртуализацию Blocks, view models, создание узкого event-store adapter | принимать policy-решения, передавать SQLite connection во view, запускать shell/SSH |
-| `agentic-terminal-core` | события, сессии, планы, approvals, policy, sandbox-contract, SQLite repositories | зависеть от GPUI или Metal |
-| `terminal.pty` | PTY, процесс, ANSI-байты, scrollback chunks | общаться с моделью напрямую |
-| `ssh.manager` | выбранный профиль, host-key, один transport | выполнять строку `ssh` из текста модели |
-| `tmux` | список/attach/create в выбранном transport | автоматически подключаться к неизвестному host |
-| `sftp` | list/upload/download с file-level approval | выполнять широкую синхронизацию по умолчанию |
-| model adapter | streaming, cancellation, negotiated input modalities, provider-specific auth reference | доступ к fs/process/network, принятие policy-решений |
-| safety reviewer | проверить только `AutoReviewable` action по typed/redacted snapshot | видеть secret bytes/raw tool output, переопределять hard deny/human-only |
-| attachment pipeline | native selection, immutable blob, scan/redaction, capability negotiation | скрытый screen capture, implicit upload, хранение bytes в events |
+### Zap — основной путь
 
-## Два входа и один контролируемый эффект
+Базовая интеграция не требует форка: пользователь запускает headless CLI в обычной Zap tab. Zap владеет terminal rendering, shell lifecycle и своим scrollback; harness владеет только собственной task/session history.
 
-### Команда человека в локальном terminal tab
+Structured integration добавляется после стабилизации IPC. Adapter или личный fork Zap может отображать Intent/Plan/Tool/Approval/Summary Blocks, но не получает SQLite connection, raw credential или право принимать policy decision. OSC/desktop notifications допустимы как совместимость, но не как источник typed approval или достоверного lifecycle.
 
-1. Человек явно создаёт local tab; действие получает `origin=user`.
-2. Policy разрешает создание локального PTY только внутри выбранного workspace/session scope. Отдельная approval-card не нужна: создание tab уже является прямым действием человека.
-3. Клавиши и shell-команды идут в этот PTY, не в модель. Агент не может незаметно инжектировать туда bytes.
-4. Lifecycle процесса и ограниченный scrollback записываются событиями; секретный terminal output не попадает в model context без явного preview.
+### CLI reference client
 
-### Фраза человека агенту
+CLI нужен для contract tests и recovery без GUI: start, attach, stream, status, cancel, inspect approval, approve/reject. Он не реализует terminal emulator.
 
-1. Пользователь: «найди, почему nginx не стартует, и предложи безопасную правку».
-2. UI записывает `IntentCreated`; runtime создаёт видимый Plan Block и помечает предложенные действия `origin=agent`.
-3. Policy детерминированно возвращает:
-   - `Deny` — поток останавливается;
-   - `Allow` — только для безопасного действия с проверенным target внутри scope;
-   - `NeedsApproval` — для write/process/network/SSH/SFTP/tmux.
-4. При `NeedsApproval` человек видит точный command/diff/host/file и подтверждает либо отклоняет его.
-5. `Allow` или принятое approval создаёт узкий `SandboxScope`; затем выбирается только capability, чьи manifest permissions укладываются в этот scope.
-6. Capability добавляет durable start/output/finish/failure events. UI строит из них Blocks.
+### GPUI reference client
 
-Канонический поток: `Origin → Policy → Deny | Allow | NeedsApproval → Manual approval или Safe Auto review → Sandbox → Capability → Execution`. Ветка `Allow` пропускает human gate, ветка `Deny` не достигает sandbox. В `Safe Auto` hard-deny останавливается до reviewer, human-only остаётся у человека, а timeout/invalid verdict означает block. Постоянное разрешение — пользовательское ограниченное правило с истечением срока, не предпочтение модели. Полный контракт: [SAFE_AUTO_MODE.md](SAFE_AUTO_MODE.md).
+Существующий `agentic-terminal-app` сохраняется как диагностический клиент и площадка CI preview/themes. Полноценный PTY/ANSI renderer возвращается только после Zap go/no-go и зафиксированного requirement.
+
+## Два независимых пути shell
+
+### Прямая команда пользователя в Zap
+
+Пользовательская команда, введённая в обычный shell Zap вне harness task, исполняется терминалом/OS и не считается audit-событием harness. Harness не перехватывает и не переименовывает её в typed action.
+
+### Tool/effect внутри harness task
+
+1. Клиент отправляет user intent либо явно выбранный user action.
+2. Provider/ACP backend предлагает только `origin=agent` actions.
+3. Policy возвращает `Deny`, `Allow` или `NeedsApproval`.
+4. Клиент показывает exact diff/command/target из typed approval request; решение подписано текущей session/revision.
+5. Harness создаёт узкий `SandboxScope` и выбирает capability, permissions которой укладываются в scope.
+6. Start/output/finish/failure записываются как durable events; клиент строит projection.
+
+Клиент не может отправить произвольные terminal bytes и объявить их `origin=user`. Прямой shell и controlled harness execution остаются разными каналами.
+
+## Versioned client protocol
+
+Local IPC переносит только typed messages:
+
+- hello/version/capability negotiation;
+- session create/attach/list/status;
+- prompt и attachment refs;
+- streaming Intent/Plan/Tool/Agent/Notice/Summary events;
+- cancellation и terminal outcome;
+- approval request/inspect/approve/reject с revision binding;
+- explicit `Unavailable`, `Incompatible`, `Interrupted — outcome unknown`.
+
+Protocol не переносит SQLite connection, Keychain bytes или raw unrestricted host handle. Disconnect клиента не останавливает run автоматически; reconnect восстанавливает projection из durable source.
+
+## ACP и providers
+
+ACP Gateway — adapter к внешнему coding-agent, а не client protocol harness-а и не универсальный provider API. ACP update/tool/permission/auth события нормализуются во внутренние typed events/actions. Direct provider adapter владеет только streaming/cancellation и opaque credential reference; доступа к fs/process/network у него нет.
 
 ## Безопасный model context
 
-Результаты tools, web, terminal, ACP/MCP и files являются недоверенным вводом. Перед попаданием в agent context они проходят input-provenance/probe layer; safety reviewer получает только user intent, typed action и redacted snapshot, но не raw tool output. Это разделяет проверку того, **что агент прочитал**, и того, **что он собирается сделать**.
+Tool output, web/file data, ACP/MCP results и attachments являются недоверенным вводом. До model context они проходят provenance/probe/redaction. Safety reviewer получает user intent, typed action и redacted snapshot, но не raw tool output или credential.
 
-Файлы и скриншоты появляются как immutable local blobs с typed metadata и SHA-256. Events содержат только references. Отправка требует preview, exact backend и negotiated ACP/provider capability; `Safe Auto` не может сам выбрать, снять или отправить новый attachment. Контракт и lifecycle: [ATTACHMENTS.md](ATTACHMENTS.md).
+Attachments хранятся как immutable local blobs; events содержат references/hash/metadata. Отправка требует exact backend, preview и negotiated modality.
 
-## Local persistence
+## Persistence и bounded memory
 
-SQLite в WAL-режиме — источник истины для append-only событий. Состояние UI — пересчитываемая projection.
+SQLite WAL — source of truth для append-only events; projections пересчитываются.
 
-| Данные | Где хранятся | Правило |
+| Данные | Где | Правило |
 | --- | --- | --- |
-| сессии, Blocks, tool events, approvals | SQLite | локально; экспорт/удаление по сессии |
-| compaction summary | SQLite event | сохраняет диапазон исходных событий и версию prompt |
-| terminal scrollback | chunk store на диске | ограничен по байтам/возрасту; не растёт в RAM бесконечно |
-| API key / SSH-key | macOS Keychain | в БД лишь стабильная reference-метка |
-| SSH profile и fingerprint | SQLite | профиль, label и audit trail видимы человеку |
-| attachment bytes | локальный bounded blob store | immutable original/transform; в events только reference/hash/metadata |
+| sessions, typed Blocks, tools, approvals | SQLite | durable, replayable, export/delete по session |
+| compaction summary | SQLite event | source range + prompt/version |
+| bounded tool/process output | chunk/artifact store | byte/age limits; в RAM только hot window |
+| API/SSH key | macOS Keychain | в БД только opaque reference |
+| attachment bytes | bounded blob store | immutable; events содержат reference/hash |
+| terminal scrollback обычной Zap tab | Zap | не копируется в harness автоматически |
 
-В v0.1 приложение открывает store в `~/Library/Application Support/Agentic Terminal/events.sqlite3`; `AGENTIC_TERMINAL_DATA_DIR` существует только для изолированного smoke/test запуска. UI получает runtime, но не `rusqlite::Connection`. Уникальность `(session_id, sequence)` защищает порядок новых баз; reopen проверяется отдельным тестом.
+Правила back-pressure:
 
-`Event.body` пока является v0.1 JSON-envelope, а не разрешением писать произвольные данные. До подключения ACP/provider streaming в v0.3 должны появиться typed payloads и единая redaction/export-проверка; raw credential и неотфильтрованный terminal transcript запрещены уже сейчас.
+- bounded channels с документированной overflow policy;
+- progress coalescing, но terminal result/error не теряется молча;
+- один управляемый async runtime;
+- model context compaction не удаляет исходные события;
+- diagnostics: RSS, queued events, hot output bytes, Blocks, compaction ratio.
 
-## Память и back-pressure
+## GitLab CI experimental slice
 
-- Виртуализируются Blocks и terminal rows; не хранить GPUI Element на каждую строку.
-- PTY пишет fixed-size чанки на диск, горячее окно на tab не больше 8 MiB.
-- Tokio channels ограничены; при отставании UI второстепенный progress coalescing, а не бесконечная очередь.
-- Один общий Tokio runtime; blocking workers — лишь для PTY/crypto, если это измерено.
-- Compaction ограничивает model context по бюджету, но не удаляет исходные события.
-- В diagnostics должны быть RSS, hot-terminal bytes, queued events, Blocks и compaction ratio.
+Существующий CI pane — независимый client experiment, не harness stage. `LocalGitlabBackend` использует `gitlab-ci-local`, `RemoteGitlabBackend` — structured JSON `glab`; оба маппятся в `Pipeline → Stage → Job`. Local output не попадает в model context и ограничен 600 строками. После появления общего artifact store временный buffer можно заменить durable bounded output.
 
-Измеримые gates заданы в roadmap: для одного terminal tab RSS после прогрева не должен превышать idle baseline более чем на 128 MiB, а рост между 5-й и 30-й минутами soak — 32 MiB. Это первоначальные инженерные границы, которые меняются только вместе со сценарием и новым baseline.
+Remote mutations `run/retry/cancel` остаются unavailable до exact action/target и approval contract.
 
-## Перевод идей референсов в контракт
+## Перевод референсов в контракт
 
 | Референс | Контракт проекта |
 | --- | --- |
-| persistent runtime / jcode-подход | Tokio session supervisor и durable event log, а не одноразовый prompt executor |
-| DeepSeek Harness | capability — явный заменяемый seam с manifest, availability, permission и lifecycle; конфигурация не превращает `planned` capability в доступную |
-| Claude Code compaction | summary — версия события с source range, никогда не скрытое удаление истории |
-| Qwen Code fork/cache | child session хранит immutable parent prefix + fork point; cache key — только hint провайдеру |
-| Codex-style safety | deterministic policy до approval, execution только в scope |
-| Claude Code Auto mode | отдельные input probe и action reviewer; raw tool outputs исключены; no verdict fail-closed |
-| ACP content blocks | image/resource передаются только после capability negotiation и outbound policy |
-| Zap/Warp Blocks | plan, terminal, tool, approval, notice и ответ — самостоятельные объекты общей ленты |
+| Zap roadmap | harness — standalone service; terminal является одним клиентом |
+| Zap/Warp Blocks | typed plan/tool/approval/notice — client projection, не UI-owned state machine |
+| DeepSeek Harness | capability — заменяемый seam с manifest, availability, permission и lifecycle |
+| ACP | adapter к external coding-agent с negotiation, не universal login/provider API |
+| Codex-style safety | deterministic policy до approval; execution только в scope |
+| Claude Code compaction/fork | summary имеет source range; child хранит immutable parent prefix |
 
 ## Remote safety
 
-SSH/SFTP не являются «инструментом shell для модели». Человек выбирает profile, на первом соединении сверяет fingerprint, затем одобряет конкретное действие. tmux доступен только внутри уже одобренного transport. В audit log записываются profile ID, host label и решение — не пароль, private key и не секретный terminal output.
+SSH/SFTP/tmux — capabilities harness-а, а не строковые команды модели. Человек выбирает profile и проверяет first-connect fingerprint; approval содержит profile/host/file target. Представление может жить в Zap fork, CLI или другом client, но transport identity и policy state принадлежат harness.
 
-Loopback provider (`127.0.0.1`/Unix socket) в v0.3 получает отдельный typed endpoint scope. Он не должен неявно включать общий `allow_network` и не считается «локальным» только из-за строки URL.
+Loopback provider (`127.0.0.1`/Unix socket) получает отдельный typed endpoint scope и не расширяет общий network access.

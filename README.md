@@ -1,37 +1,45 @@
-# Agentic Terminal для macOS
+# Agentic Harness для macOS
 
-Нативный терминал на Rust, в котором обычные shell-команды и задачи, написанные человеческим языком, живут в одном окне. Источник действия всегда явный: команда человека идёт в уже открытый им PTY, а предложение агента проходит `Policy → Allow | NeedsApproval | Deny`; только `Allow` или подтверждённый `NeedsApproval` продолжаются через `Sandbox → Capability → Execution`. Решения и эффекты записываются в локальную историю.
+Local-first Rust harness для coding-agents: долговечные сессии, typed events, provider/ACP adapters и контролируемые эффекты. Harness не зависит от конкретного terminal emulator или GUI. Основной пользовательский путь — запуск из [Zap](https://github.com/zerx-lab/zap); CLI, IDE adapter и существующий GPUI preview остаются сменными клиентами одной session model.
 
-Это небольшой, проверяемый каркас текущего этапа v0.1. Он запускает окно GPUI-CE, использует SQLite WAL для event store и содержит policy/approval и валидируемый каталог будущих capabilities. Настоящий PTY, LLM, SSH, tmux и SFTP появляются только на следующих последовательных этапах.
-
-Будущий [Safe Auto mode](docs/SAFE_AUTO_MODE.md) не является bypass: hard-deny и human-only действия не разрешает классификатор, а любой сбой reviewer закрывается блокировкой. [Скриншоты и файлы](docs/ATTACHMENTS.md) будут передаваться только после preview, outbound policy и capability negotiation; сырые bytes не хранятся в event log.
+Репозиторий исторически называется `agentic-terminal`, поэтому имена crates и data directory пока сохранены. Смена стратегии не выдаёт запланированное за готовое: сейчас реализованы безопасный core-фундамент, SQLite event store, policy/approval, capability manifests, headless daemon/CLI с deterministic mock stream, диагностический GPUI client и экспериментальный GitLab CI pane. Model-backed agent loop, read-only tools, ACP и local effects ещё предстоят.
 
 ## Принципы
 
-- **macOS-first:** Rust + GPUI-CE + Metal. Нет Electron, Chromium, Tauri/WebView и локального web-интерфейса.
-- **local-first:** история сессий и настройки лежат на Mac; удалённые подключения включаются человеком через профиль.
-- **Ограниченная RAM:** отображаются только видимые Blocks/строки; PTY-вывод будет храниться чанками на диске с маленьким горячим окном в памяти.
-- **Терминал без агента:** прямой ввод команды не проходит через модель и работает без сетевого провайдера.
-- **Безопасность по умолчанию:** модель может предложить действие, но не может сама его одобрить.
+- **Harness-first:** agent loop, sessions, tools, policy и audit строятся раньше собственного terminal UI.
+- **Сменные клиенты:** Zap — основной клиент и допустимый личный fork; CLI/IDE/GPUI используют versioned protocol и не владеют policy state.
+- **macOS-first и local-first:** Rust runtime, SQLite WAL, Keychain references; удалённые подключения включаются только явным профилем.
+- **Ограниченная RAM:** bounded channels/output, durable chunks и измеримый harness RSS; память конкретного terminal emulator считается отдельно.
+- **Явный origin:** модель создаёт только `origin=agent`; действие проходит `Policy → Allow | NeedsApproval | Deny`, затем `Sandbox → Capability → Execution`.
+- **Терминал не равен harness:** controlled process/PTY может быть capability, но ANSI renderer, tabs и scrollback UI не обязательны.
+
+## Клиентская стратегия
+
+1. v0.2: долгоживущий Harness, versioned Unix socket IPC и headless CLI запускаются из обычной Zap tab без модификации Zap.
+2. v0.3: stable IPC расширяется typed approvals/diffs/attachments и ACP/backend states.
+3. Для structured Blocks/diff/approval допускается adapter или личный fork Zap.
+4. Собственный GPUI terminal продолжается только после зафиксированного требования, которое Zap/fork не закрывает.
 
 ## Что уже есть
 
-| Слой | Состояние v0.1 |
+| Слой | Текущее состояние |
 | --- | --- |
-| Нативное окно GPUI-CE | минимально реализовано |
-| События / runtime | реализованы базовые типы; resume и execution lifecycle ещё не входят в v0.1 |
-| SQLite | WAL event store подключён к приложению; reopen покрыт тестом |
-| Policy / approval | различает user/agent origin, проверяет file scope и покрыт unit-тестами |
-| Capability manifests | каталог валидируется; все пять implementation помечены `planned` |
-| PTY, ANSI, LLM, SSH, tmux, SFTP | спроектированы, но сознательно отложены |
+| `agentic-terminal-core` | базовые events/runtime types, policy/approval, SQLite WAL, manifest validation и CI projection |
+| GPUI reference client | native Metal window, темы preview, session state и экспериментальный CI pane |
+| GitLab CI slice | общий local/remote `PipelineModel`; native smoke требует установленные `gitlab-ci-local` и `glab` |
+| Standalone harness | v0.2: typed projections, supervisor, daemon/IPC, CLI и deterministic mock provider; read-only tools и direct provider ещё не реализованы |
+| Client IPC | Unix socket base входит в v0.2; structured extensions спроектированы для v0.3 |
+| Zap bridge / ACP | v0.3: спроектированы, но не реализованы |
+| Собственный PTY/ANSI terminal | optional backlog после Zap go/no-go |
+| Local effects, SSH, tmux, SFTP | последующие этапы после policy/sandbox gates |
 
 ## Требования macOS
 
-1. Xcode и Command Line Tools: GPUI-CE использует Metal.
-2. Rust `1.98.0`: фиксируется в `rust-toolchain.toml`.
-3. Сеть нужна только для первого скачивания Cargo-зависимостей и для явно одобренных remote capabilities.
+1. Rust `1.98.0`, зафиксированный в `rust-toolchain.toml`.
+2. Для существующего GPUI reference client — Xcode и Command Line Tools с Metal.
+3. Сеть нужна только для первого скачивания dependencies и явно выбранных provider/remote scopes.
 
-Быстрая проверка окружения:
+Проверка окружения существующего workspace:
 
 ```zsh
 ./scripts/bootstrap-macos.sh
@@ -39,37 +47,47 @@
 
 ## Запуск и проверка
 
+Headless daemon и CLI уже покрывают базовый session lifecycle. Запусти daemon в одной обычной terminal tab, затем CLI в другой:
+
 ```zsh
 cargo fmt --all -- --check
-cargo test -p agentic-terminal-core
+cargo test --workspace
 cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p agentic-terminal-harness
+cargo run -p agentic-terminal-cli -- create
 cargo run -p agentic-terminal-app
 ```
 
-Повторяемые команды собраны в [Taskfile.yml](Taskfile.yml):
+CLI умеет `create`, `list`, `attach SESSION_ID`, `stream SESSION_ID [AFTER_SEQUENCE]`, `prompt SESSION_ID TEXT` и `cancel SESSION_ID`. `stream` читает durable typed events после указанной sequence; SQLite connection клиенту не отдаётся. Пока `prompt` запускает deterministic mock provider: он записывает Agent chunks, переживает один имитированный restart и не использует модель, сеть или секреты.
+
+Повторяемые команды:
 
 ```zsh
-task setup     # Xcode/Metal/Rust и Git hooks
-task verify    # fmt, core tests, workspace check, clippy
-task run       # native GPUI приложение
-task --list    # все доступные задачи
+task setup
+task verify
+task run       # существующий GPUI reference client
+task --list
 ```
 
-Нужен [Task v3](https://taskfile.dev/docs/installation); на macOS официальный способ — `brew install go-task`. Git subject проверяется repository-owned `commit-msg` hook и командой `task commit:check MESSAGE='ATM-123 docs: Описана схема'`.
+GitLab pipeline в `.gitlab-ci.yml` содержит stage `verify` (`fmt`, `test`, `check`, `clippy`) и stage `security` (`cargo-audit`, `cargo-deny`). Для проверки dependency policy отдельно есть `task security`. Для trusted local workspace: `task ci:list`, затем `task ci:local`; это использует shell executor с уже установленным Rust и не меняет container image pipeline.
+
+Нужен [Task v3](https://taskfile.dev/docs/installation). Git subject проверяется repository-owned `commit-msg` hook и командой `task commit:check MESSAGE='ATM-123 docs: Описана схема'`.
 
 ## Документация
 
 - [Архитектура и границы ответственности](docs/ARCHITECTURE.md)
-- [Наглядная схема архитектуры](docs/architecture.html)
-- [Детальная схема Safe Auto](docs/safe-auto-architecture.html)
-- [GUI/UX-спецификация](docs/GUI_UX.md)
-- [ACP, Auth Center и внешние coding-agents](docs/ACP_AND_AUTH.md)
+- [Наглядная схема architecture](docs/architecture.html)
+- [Roadmap harness-first](docs/ROADMAP.md)
+- [Аудит второй итерации](docs/iteration-2-audit.md)
+- [Детальный roadmap второй итерации](docs/iteration-2-roadmap.md)
+- [Ближайший исполнимый TODO](TODO.md)
+- [Клиентский UX: Zap, CLI и optional GPUI](docs/GUI_UX.md)
+- [ACP, client IPC и auth](docs/ACP_AND_AUTH.md)
 - [Safe Auto mode и threat model](docs/SAFE_AUTO_MODE.md)
 - [Скриншоты, файлы и model context](docs/ATTACHMENTS.md)
-- [Roadmap v0.1–v0.7 и критерии готовности](docs/ROADMAP.md)
-- [Измерения и ограничения v0.1](docs/benchmarks/v0.1.md)
-- [Ближайший исполнимый список задач](TODO.md)
+- [GitLab CI experimental slice](docs/GITLAB_CI.md)
+- [Baseline v0.1 GPUI preview](docs/benchmarks/v0.1.md)
 - [Промт для coding-агента](docs/CODING_AGENT_PROMPT_RU.md)
 - [Правила для coding-агентов](AGENTS.md)
 - [Референсы и статус их использования](docs/REFERENCES.md)
@@ -77,19 +95,23 @@ task --list    # все доступные задачи
 ## Структура
 
 ```text
-crates/agentic-terminal-app/   GPUI-CE представление и macOS процесс
 crates/agentic-terminal-core/  события, policy, approvals, SQLite, manifests
-config/capabilities.json       декларативный каталог встроенных capabilities
-docs/                          русская архитектурная и продуктовая документация
+crates/agentic-terminal-app/   optional GPUI reference client и CI preview
+crates/agentic-terminal-harness/ headless daemon и Unix socket IPC
+crates/agentic-terminal-cli/   reference CLI для обычной terminal/Zap tab
+config/capabilities.json       декларативный каталог capabilities
+docs/                          архитектура, roadmap и client contracts
 scripts/                       проверка/подготовка macOS окружения
 ```
 
-## Версии UI-стека
+Headless runtime и client protocol живут в отдельных crates, зависят от core и не зависят от `agentic-terminal-app`.
 
-`gpui` и `gpui_platform` зафиксированы на одном GPUI-CE commit `9949f8b2d27bb1d6dbc1efe90be039634cf1fb6b`. Их нельзя обновлять порознь: смешивание опубликованного UI-crate и git-платформы создаёт несовместимые типы. Для разработки включён `runtime_shaders`; перед релизом нужно сравнить старт приложения с предкомпилированными shader-ами.
+## GPUI reference client
 
-По умолчанию event store находится в `~/Library/Application Support/Agentic Terminal/events.sqlite3`. Для изолированного smoke-теста путь можно переопределить через `AGENTIC_TERMINAL_DATA_DIR`; секреты туда записывать запрещено.
+`gpui` и `gpui_platform` зафиксированы на одном GPUI-CE commit `9949f8b2d27bb1d6dbc1efe90be039634cf1fb6b`. Их нельзя обновлять порознь. Этот pin относится к optional reference client и не должен попадать в dependency graph headless harness.
+
+По умолчанию текущий event store находится в `~/Library/Application Support/Agentic Terminal/events.sqlite3`. `AGENTIC_TERMINAL_DATA_DIR` существует для изолированного smoke/test запуска. Секреты туда записывать запрещено.
 
 ## Лицензия
 
-Apache-2.0, см. [LICENSE](LICENSE). Перед публичной публикацией проверь владельца copyright и сторонние notices.
+Apache-2.0, см. [LICENSE](LICENSE). Zap используется как отдельный клиент или личный fork; вопрос распространения производного продукта оценивается только если появится намерение его публиковать.
