@@ -1,6 +1,6 @@
 use crate::{
     Action, ApprovalEvent, ApprovalState, Event, EventPayload, EventStore, IntentEvent,
-    NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError, RunEvent, reduce,
+    NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -150,6 +150,19 @@ impl AgentRuntime {
         }
     }
 
+    pub fn record_tool_started(&self, name: &str) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Tool(ToolEvent::Started {
+            name: name.to_owned(),
+        }))
+    }
+
+    pub fn record_tool_finished(&self, name: &str, summary: &str) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Tool(ToolEvent::Finished {
+            name: name.to_owned(),
+            summary: summary.to_owned(),
+        }))
+    }
+
     pub fn resolve_approval(&self, id: Uuid, accepted: bool) -> Result<(), RuntimeError> {
         let mut approval = self
             .projection()?
@@ -207,6 +220,12 @@ impl AgentRuntime {
     fn record(&self, payload: EventPayload) -> Result<(), RuntimeError> {
         self.store.append_next(self.session_id, payload)?;
         Ok(())
+    }
+
+    /// Public event recording surface for tool and capability helpers that emit
+    /// durable lifecycle events on behalf of a runtime.
+    pub fn record_event(&self, payload: EventPayload) -> Result<(), RuntimeError> {
+        self.record(payload)
     }
 }
 

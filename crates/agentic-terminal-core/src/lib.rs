@@ -13,6 +13,7 @@ pub mod projection;
 pub mod runtime;
 pub mod storage;
 pub mod supervisor;
+pub mod tools;
 
 pub use approval::{ApprovalId, ApprovalRequest, ApprovalState};
 pub use ci::{
@@ -30,3 +31,7 @@ pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
 pub use supervisor::{MockStreamItem, MockStreamingProvider, SessionSupervisor, SupervisorError};
+pub use tools::{
+    ArtifactMeta, ArtifactRef, ArtifactStore, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
+    ToolError, ToolOutcome, ToolProvenance, ToolResult,
+};

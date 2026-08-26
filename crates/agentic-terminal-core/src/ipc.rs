@@ -27,6 +27,12 @@ pub enum IpcRequest {
     Cancel {
         session_id: Uuid,
     },
+    Tool {
+        session_id: Uuid,
+        kind: crate::ReadOnlyToolKind,
+        target: String,
+        pattern: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +56,10 @@ pub enum IpcResponse {
     Status {
         session_id: Uuid,
         status: RuntimeStatus,
+    },
+    ToolResult {
+        session_id: Uuid,
+        outcome: crate::ToolOutcome,
     },
     Incompatible {
         supported_version: u16,
