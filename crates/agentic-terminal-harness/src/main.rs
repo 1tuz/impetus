@@ -1,8 +1,8 @@
 use agentic_terminal_core::{
-    AgentRuntime, ArtifactStore, EventStore, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
-    MockStreamItem, MockStreamingProvider, PolicyEngine, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, RuntimeError, RuntimeStatus, SandboxScope, SessionSupervisor, SqliteEventStore,
-    SupervisorError, ToolOutcome,
+    AgentInfo, AgentRuntime, ArtifactStore, EventStore, IPC_VERSION, IpcErrorCode, IpcRequest,
+    IpcResponse, LearningState, MockStreamItem, MockStreamingProvider, PolicyEngine, ProfileInfo,
+    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, RiskState, RuntimeError, RuntimeStatus,
+    SandboxScope, SessionSupervisor, SqliteEventStore, SupervisorError, ToolOutcome, Usage,
 };
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -90,6 +90,17 @@ fn handle_request(store: Arc<dyn EventStore>, request: IpcRequest) -> IpcRespons
                 "status".into(),
                 "cancel".into(),
                 "tool".into(),
+                "subscribe".into(),
+                "fork".into(),
+                "list_agents".into(),
+                "get_dag".into(),
+                "get_checkpoints".into(),
+                "revert".into(),
+                "get_usage".into(),
+                "get_risk_state".into(),
+                "get_profiles".into(),
+                "set_profile".into(),
+                "get_learning_state".into(),
             ],
         },
         IpcRequest::CreateSession => match AgentRuntime::create(store, policy()) {
@@ -190,6 +201,73 @@ fn handle_request(store: Arc<dyn EventStore>, request: IpcRequest) -> IpcRespons
                 Err(error) => runtime_error(error),
             }
         }
+        IpcRequest::Subscribe {
+            session_id,
+            after_sequence: _,
+        } => match AgentRuntime::attach(store, policy(), session_id)
+            .map(|runtime| runtime.session_id())
+        {
+            Ok(_) => IpcResponse::Subscribed { session_id },
+            Err(error) => runtime_error(error),
+        },
+        IpcRequest::Fork { session_id, label } => {
+            match AgentRuntime::attach(store, policy(), session_id).map(|runtime| {
+                let _ = label;
+                runtime.session_id()
+            }) {
+                Ok(new_session_id) => IpcResponse::Forked {
+                    session_id,
+                    new_session_id,
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
+        IpcRequest::ListAgents { session_id } => IpcResponse::Agents {
+            session_id,
+            agents: vec![AgentInfo {
+                id: session_id,
+                role: "primary".into(),
+                task: "idle".into(),
+                status: "idle".into(),
+            }],
+        },
+        IpcRequest::GetDag { session_id } => IpcResponse::Dag {
+            session_id,
+            nodes: vec![],
+        },
+        IpcRequest::GetCheckpoints { session_id } => IpcResponse::Checkpoints {
+            session_id,
+            checkpoints: vec![],
+        },
+        IpcRequest::Revert {
+            session_id,
+            checkpoint_id,
+        } => IpcResponse::Reverted {
+            session_id,
+            checkpoint_id,
+        },
+        IpcRequest::GetUsage { session_id } => IpcResponse::Usage {
+            session_id,
+            usage: Usage::default(),
+        },
+        IpcRequest::GetRiskState { session_id } => IpcResponse::Risk {
+            session_id,
+            risk: RiskState::default(),
+        },
+        IpcRequest::GetProfiles { session_id } => IpcResponse::Profiles {
+            session_id,
+            profiles: vec![ProfileInfo {
+                name: "default".into(),
+                source: "builtin".into(),
+                inherits: None,
+                active: true,
+            }],
+        },
+        IpcRequest::SetProfile { session_id, name } => IpcResponse::ProfileSet { session_id, name },
+        IpcRequest::GetLearningState { session_id } => IpcResponse::Learning {
+            session_id,
+            learning: LearningState::default(),
+        },
     }
 }
 
