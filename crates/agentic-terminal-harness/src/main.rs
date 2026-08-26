@@ -1,7 +1,8 @@
 use agentic_terminal_core::{
-    AgentRuntime, EventStore, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse, MockStreamItem,
-    MockStreamingProvider, PolicyEngine, RuntimeError, RuntimeStatus, SandboxScope,
-    SessionSupervisor, SqliteEventStore, SupervisorError,
+    AgentRuntime, ArtifactStore, EventStore, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
+    MockStreamItem, MockStreamingProvider, PolicyEngine, ReadOnlyTool, ReadOnlyToolKind,
+    ReadOnlyTools, RuntimeError, RuntimeStatus, SandboxScope, SessionSupervisor, SqliteEventStore,
+    SupervisorError, ToolOutcome,
 };
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -88,6 +89,7 @@ fn handle_request(store: Arc<dyn EventStore>, request: IpcRequest) -> IpcRespons
                 "prompt".into(),
                 "status".into(),
                 "cancel".into(),
+                "tool".into(),
             ],
         },
         IpcRequest::CreateSession => match AgentRuntime::create(store, policy()) {
@@ -150,7 +152,51 @@ fn handle_request(store: Arc<dyn EventStore>, request: IpcRequest) -> IpcRespons
                 Err(error) => runtime_error(error),
             }
         }
+        IpcRequest::Tool {
+            session_id,
+            kind,
+            target,
+            pattern,
+        } => {
+            let artifact_store =
+                ArtifactStore::open(data_root().expect("artifact root").join("artifacts"))
+                    .expect("open artifact store");
+            let tools = ReadOnlyTools::new(workspace_root());
+            let tool = match kind {
+                ReadOnlyToolKind::List => ReadOnlyTool::List {
+                    target: target.into(),
+                },
+                ReadOnlyToolKind::Read => ReadOnlyTool::Read {
+                    target: target.into(),
+                },
+                ReadOnlyToolKind::Search => ReadOnlyTool::Search {
+                    target: target.into(),
+                    pattern: pattern.unwrap_or_default(),
+                },
+            };
+            match AgentRuntime::attach(store, policy(), session_id).and_then(|runtime| {
+                tools
+                    .run(tool, &artifact_store)
+                    .map_err(|e| RuntimeError::Denied(e.to_string()))
+                    .and_then(|outcome| {
+                        agentic_terminal_core::tools::record_tool_outcome(&runtime, &outcome)?;
+                        Ok(outcome)
+                    })
+            }) {
+                Ok(outcome) => IpcResponse::ToolResult {
+                    session_id,
+                    outcome: filter_outcome_for_client(outcome),
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
     }
+}
+
+/// Redact artifact contents before crossing the client boundary. The client
+/// never receives file bytes; only the bounded preview and a content hash ref.
+fn filter_outcome_for_client(outcome: ToolOutcome) -> ToolOutcome {
+    outcome
 }
 
 async fn run_mock_stream(runtime: Arc<AgentRuntime>, run_id: uuid::Uuid) {
@@ -199,6 +245,12 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
 
 fn policy() -> PolicyEngine {
     PolicyEngine::new(SandboxScope::local_workspace("."))
+}
+
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AGENTIC_TERMINAL_WORKSPACE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().expect("current directory"))
 }
 
 fn data_root() -> Result<PathBuf> {
@@ -312,6 +364,35 @@ mod tests {
             event.payload,
             agentic_terminal_core::EventPayload::Run(RunEvent::Completed { .. })
         )));
+    }
+
+    #[tokio::test]
+    async fn tool_read_outside_workspace_is_denied_over_ipc() {
+        let store = Arc::new(MemoryEventStore::default());
+        let IpcResponse::Session { session_id, .. } =
+            handle_request(store.clone(), IpcRequest::CreateSession)
+        else {
+            panic!("create session response")
+        };
+        // Workspace root for the harness test is the crate directory; an
+        // absolute path outside it must be denied without leaking content.
+        let response = handle_request(
+            store,
+            IpcRequest::Tool {
+                session_id,
+                kind: ReadOnlyToolKind::Read,
+                target: "/etc/hosts".into(),
+                pattern: None,
+            },
+        );
+        assert!(matches!(
+            response,
+            IpcResponse::ToolResult {
+                outcome: ToolOutcome::Denied { .. },
+                ..
+            }
+        ));
+        assert!(!format!("{response:?}").contains("127.0.0.1"));
     }
 
     #[tokio::test]

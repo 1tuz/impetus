@@ -1,4 +1,4 @@
-use agentic_terminal_core::{IPC_VERSION, IpcRequest, IpcResponse};
+use agentic_terminal_core::{IPC_VERSION, IpcRequest, IpcResponse, ReadOnlyToolKind};
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -69,8 +69,32 @@ fn parse_request(arguments: Vec<String>) -> Result<IpcRequest> {
             session_id: Uuid::parse_str(session_id)?,
             text: text.clone(),
         }),
+        [command, session_id, sub, target] if command == "tool" && sub == "list" => {
+            Ok(IpcRequest::Tool {
+                session_id: Uuid::parse_str(session_id)?,
+                kind: ReadOnlyToolKind::List,
+                target: target.to_string(),
+                pattern: None,
+            })
+        }
+        [command, session_id, sub, target] if command == "tool" && sub == "read" => {
+            Ok(IpcRequest::Tool {
+                session_id: Uuid::parse_str(session_id)?,
+                kind: ReadOnlyToolKind::Read,
+                target: target.to_string(),
+                pattern: None,
+            })
+        }
+        [command, session_id, sub, target, pattern] if command == "tool" && sub == "search" => {
+            Ok(IpcRequest::Tool {
+                session_id: Uuid::parse_str(session_id)?,
+                kind: ReadOnlyToolKind::Search,
+                target: target.to_string(),
+                pattern: Some(pattern.to_string()),
+            })
+        }
         _ => bail!(
-            "usage: agentic-terminal-cli <create|list|attach SESSION_ID|stream SESSION_ID [AFTER_SEQUENCE]|prompt SESSION_ID TEXT|cancel SESSION_ID>"
+            "usage: agentic-terminal-cli <create|list|attach SESSION_ID|stream SESSION_ID [AFTER_SEQUENCE]|prompt SESSION_ID TEXT|cancel SESSION_ID|tool SESSION_ID <list|read|search> TARGET [PATTERN]>"
         ),
     }
 }
