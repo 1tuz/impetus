@@ -42,11 +42,17 @@ impl UnixSocketTransport {
         };
         match transport.hello().await? {
             IpcResponse::Hello { .. } => Ok(transport),
-            IpcResponse::Incompatible { supported_version, upgrade_recommendation, .. } => bail!(
+            IpcResponse::Incompatible {
+                supported_version,
+                upgrade_recommendation,
+                ..
+            } => bail!(
                 "harness protocol incompatible: client={} supported={} ({})",
                 IPC_VERSION,
                 supported_version,
-                upgrade_recommendation.as_deref().unwrap_or("no recommendation")
+                upgrade_recommendation
+                    .as_deref()
+                    .unwrap_or("no recommendation")
             ),
             other => bail!("unexpected handshake response: {:?}", other),
         }
@@ -87,11 +93,17 @@ impl EventSubscription for UnixEventSubscription {
                 {
                     IpcResponse::Events { events, .. } if !events.is_empty() => return Ok(events),
                     IpcResponse::Events { .. } | IpcResponse::Subscribed { .. } => {}
-                    IpcResponse::Incompatible { supported_version, upgrade_recommendation, .. } => bail!(
+                    IpcResponse::Incompatible {
+                        supported_version,
+                        upgrade_recommendation,
+                        ..
+                    } => bail!(
                         "harness protocol incompatible: client={} supported={} ({})",
                         IPC_VERSION,
                         supported_version,
-                        upgrade_recommendation.as_deref().unwrap_or("no recommendation")
+                        upgrade_recommendation
+                            .as_deref()
+                            .unwrap_or("no recommendation")
                     ),
                     IpcResponse::Error { message, .. } => {
                         bail!("event subscription failed: {message}")
@@ -160,11 +172,17 @@ impl HarnessClient for UnixSocketTransport {
                     .iter()
                     .any(|capability| capability == "subscribe") => {}
             IpcResponse::Hello { .. } => bail!("harness did not negotiate event subscription"),
-            IpcResponse::Incompatible { supported_version, upgrade_recommendation, .. } => bail!(
+            IpcResponse::Incompatible {
+                supported_version,
+                upgrade_recommendation,
+                ..
+            } => bail!(
                 "harness protocol incompatible: client={} supported={} ({})",
                 IPC_VERSION,
                 supported_version,
-                upgrade_recommendation.as_deref().unwrap_or("no recommendation")
+                upgrade_recommendation
+                    .as_deref()
+                    .unwrap_or("no recommendation")
             ),
             response => bail!("unexpected event handshake: {response:?}"),
         }

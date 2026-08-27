@@ -1,115 +1,140 @@
-use agentic_terminal_client::{HarnessClient, UnixSocketTransport};
-use agentic_terminal_core::{IpcRequest, ReadOnlyToolKind};
-use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use agentic_terminal_client::HarnessClient;
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
 use uuid::Uuid;
+
+#[derive(Parser)]
+#[command(name = "agentic-terminal")]
+#[command(about = "Agentic Terminal CLI - interact with headless harness")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Create a new session
+    Create,
+    /// Stream events from a session
+    Stream {
+        /// Session ID to stream from
+        session_id: Uuid,
+    },
+    /// Cancel a running session
+    Cancel {
+        /// Session ID to cancel
+        session_id: Uuid,
+    },
+    /// Send a prompt to a session
+    Prompt {
+        /// Session ID to prompt
+        session_id: Uuid,
+        /// The prompt text
+        text: String,
+    },
+    /// List all sessions
+    List,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let request = parse_request(std::env::args().skip(1).collect())?;
-    let client = UnixSocketTransport::connect(socket_path()?)
+    let cli = Cli::parse();
+
+    let socket_path = std::env::var("AGENTIC_TERMINAL_SOCKET").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").expect("HOME not set");
+        format!("{home}/Library/Application Support/Agentic Terminal/harness.sock")
+    });
+
+    let client = agentic_terminal_client::UnixSocketTransport::connect(&socket_path)
         .await
-        .context("connect to harness; start agentic-terminal-harness first")?;
-    let response = dispatch(&client, request).await?;
-    println!("{}", serde_json::to_string_pretty(&response)?);
+        .context("connect to harness socket")?;
+
+    match cli.command {
+        Commands::Create => {
+            let response = client
+                .request(agentic_terminal_core::IpcRequest::CreateSession)
+                .await?;
+            match response {
+                agentic_terminal_core::IpcResponse::Session { session_id, status } => {
+                    println!("Created session: {session_id}");
+                    println!("Status: {status:?}");
+                }
+                agentic_terminal_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error creating session: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+        Commands::Stream { session_id } => {
+            let response = client
+                .request(agentic_terminal_core::IpcRequest::Stream {
+                    session_id,
+                    after_sequence: 0,
+                })
+                .await?;
+            match response {
+                agentic_terminal_core::IpcResponse::Events { events, .. } => {
+                    println!("Events from session {session_id}:");
+                    for event in events {
+                        println!("  [{}] {:?}", event.sequence, event.payload);
+                    }
+                }
+                agentic_terminal_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error streaming: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+        Commands::Cancel { session_id } => {
+            let response = client
+                .request(agentic_terminal_core::IpcRequest::Cancel { session_id })
+                .await?;
+            match response {
+                agentic_terminal_core::IpcResponse::Status { status, .. } => {
+                    println!("Session {session_id} cancelled, status: {status:?}");
+                }
+                agentic_terminal_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error cancelling: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+        Commands::Prompt { session_id, text } => {
+            let response = client
+                .request(agentic_terminal_core::IpcRequest::Prompt { session_id, text })
+                .await?;
+            match response {
+                agentic_terminal_core::IpcResponse::Status { status, .. } => {
+                    println!("Prompt sent to {session_id}, status: {status:?}");
+                }
+                agentic_terminal_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error sending prompt: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+        Commands::List => {
+            let response = client
+                .request(agentic_terminal_core::IpcRequest::ListSessions)
+                .await?;
+            match response {
+                agentic_terminal_core::IpcResponse::Sessions { sessions } => {
+                    if sessions.is_empty() {
+                        println!("No sessions found.");
+                    } else {
+                        println!("Sessions:");
+                        for session_id in sessions {
+                            println!("  {session_id}");
+                        }
+                    }
+                }
+                agentic_terminal_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error listing sessions: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+    }
+
     Ok(())
-}
-
-/// Keep the reference CLI on the same public client contract as TUI and
-/// adapters. Raw IPC stays encapsulated in `UnixSocketTransport`.
-async fn dispatch(
-    client: &impl HarnessClient,
-    request: IpcRequest,
-) -> Result<agentic_terminal_core::IpcResponse> {
-    match request {
-        IpcRequest::CreateSession => client.create_session().await,
-        IpcRequest::Attach { session_id } => client.resume_session(session_id).await,
-        IpcRequest::Prompt { session_id, text } => client.send_message(session_id, text).await,
-        IpcRequest::Cancel { session_id } => client.soft_interrupt(session_id).await,
-        request => client.request(request).await,
-    }
-}
-
-fn parse_request(arguments: Vec<String>) -> Result<IpcRequest> {
-    match arguments.as_slice() {
-        [command] if command == "create" => Ok(IpcRequest::CreateSession),
-        [command] if command == "list" => Ok(IpcRequest::ListSessions),
-        [command, session_id] if command == "stream" => Ok(IpcRequest::Stream {
-            session_id: Uuid::parse_str(session_id)?,
-            after_sequence: 0,
-        }),
-        [command, session_id, after_sequence] if command == "stream" => Ok(IpcRequest::Stream {
-            session_id: Uuid::parse_str(session_id)?,
-            after_sequence: after_sequence.parse()?,
-        }),
-        [command, session_id] if command == "attach" => Ok(IpcRequest::Attach {
-            session_id: Uuid::parse_str(session_id)?,
-        }),
-        [command, session_id] if command == "cancel" => Ok(IpcRequest::Cancel {
-            session_id: Uuid::parse_str(session_id)?,
-        }),
-        [command, session_id, text] if command == "prompt" => Ok(IpcRequest::Prompt {
-            session_id: Uuid::parse_str(session_id)?,
-            text: text.clone(),
-        }),
-        [command, session_id, sub, target] if command == "tool" && sub == "list" => {
-            Ok(IpcRequest::Tool {
-                session_id: Uuid::parse_str(session_id)?,
-                kind: ReadOnlyToolKind::List,
-                target: target.to_string(),
-                pattern: None,
-            })
-        }
-        [command, session_id, sub, target] if command == "tool" && sub == "read" => {
-            Ok(IpcRequest::Tool {
-                session_id: Uuid::parse_str(session_id)?,
-                kind: ReadOnlyToolKind::Read,
-                target: target.to_string(),
-                pattern: None,
-            })
-        }
-        [command, session_id, sub, target, pattern] if command == "tool" && sub == "search" => {
-            Ok(IpcRequest::Tool {
-                session_id: Uuid::parse_str(session_id)?,
-                kind: ReadOnlyToolKind::Search,
-                target: target.to_string(),
-                pattern: Some(pattern.to_string()),
-            })
-        }
-        _ => bail!(
-            "usage: agentic-terminal-cli <create|list|attach SESSION_ID|stream SESSION_ID [AFTER_SEQUENCE]|prompt SESSION_ID TEXT|cancel SESSION_ID|tool SESSION_ID <list|read|search> TARGET [PATTERN]>"
-        ),
-    }
-}
-
-fn socket_path() -> Result<PathBuf> {
-    let data_root = std::env::var_os("AGENTIC_TERMINAL_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Agentic Terminal")
-        });
-    Ok(std::env::var_os("AGENTIC_TERMINAL_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or(data_root.join("harness.sock")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use agentic_terminal_client::InMemoryTransport;
-    use agentic_terminal_core::{IpcResponse, MemoryEventStore, PolicyEngine, SandboxScope};
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn cli_dispatch_uses_transport_neutral_contract() {
-        let client = InMemoryTransport::new(
-            Arc::new(MemoryEventStore::default()),
-            PolicyEngine::new(SandboxScope::local_workspace(".")),
-        );
-        assert!(matches!(
-            dispatch(&client, IpcRequest::CreateSession).await.unwrap(),
-            IpcResponse::Session { .. }
-        ));
-    }
 }

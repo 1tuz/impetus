@@ -836,12 +836,12 @@ mod tests {
             })
             .expect("approval request in events");
 
-        let IpcResponse::ApprovalDetail { detail, .. } = harness.handle(
-            IpcRequest::GetApprovalDetail {
+        let IpcResponse::ApprovalDetail { detail, .. } =
+            harness.handle(IpcRequest::GetApprovalDetail {
                 session_id,
                 approval_id,
-            },
-        ) else {
+            })
+        else {
             panic!("approval detail response");
         };
 
