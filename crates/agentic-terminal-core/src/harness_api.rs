@@ -285,6 +285,30 @@ fn handle_request(
             Ok(_) => IpcResponse::Subscribed { session_id },
             Err(error) => runtime_error(error),
         },
+        IpcRequest::ResolveApproval {
+            session_id,
+            approval_id,
+            accepted,
+        } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
+            let request = runtime
+                .pending_approval(approval_id)?
+                .ok_or(RuntimeError::MissingApproval(approval_id))?;
+            let resolution = crate::ApprovalResolution {
+                id: approval_id,
+                resolver: crate::ApprovalResolver::User,
+                action_fingerprint: request.action_fingerprint.clone(),
+                intent_revision: request.intent_revision,
+                accepted,
+            };
+            runtime.resolve_approval(resolution)?;
+            Ok(session_id)
+        }) {
+            Ok(session_id) => IpcResponse::ApprovalResolved {
+                session_id,
+                approval_id,
+            },
+            Err(error) => runtime_error(error),
+        },
     }
 }
 
@@ -630,5 +654,92 @@ mod tests {
         assert!(!exported.contains("opaque-account-label"));
         assert!(!exported.contains("Keychain unavailable"));
         assert!(exported.contains("provider credential is required but unavailable"));
+    }
+
+    #[tokio::test]
+    async fn ipc_resolve_approval_requires_exact_pending_approval() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let harness = Harness::new(store.clone(), policy.clone());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("session creation response");
+        };
+
+        let runtime = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("attach to created session");
+
+        // Submit intent to establish revision
+        runtime
+            .submit_intent("write a test file")
+            .expect("submit intent");
+
+        // Request an action that needs approval
+        let action = crate::Action {
+            origin: crate::ActionOrigin::Agent,
+            kind: crate::ActionKind::WriteFile,
+            summary: "write file".into(),
+            target: Some("test.txt".into()),
+        };
+        runtime
+            .request_action(action)
+            .expect("request action that needs approval");
+
+        // Get the approval ID from events
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response");
+        };
+
+        let approval_id = events
+            .iter()
+            .find_map(|e| {
+                if let crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) =
+                    &e.payload
+                {
+                    Some(request.id)
+                } else {
+                    None
+                }
+            })
+            .expect("approval request in events");
+
+        let IpcResponse::ApprovalResolved {
+            approval_id: resolved_id,
+            ..
+        } = harness.handle(IpcRequest::ResolveApproval {
+            session_id,
+            approval_id,
+            accepted: true,
+        })
+        else {
+            panic!("approval resolution response");
+        };
+        assert_eq!(resolved_id, approval_id);
+
+        let remaining = runtime
+            .pending_approval(approval_id)
+            .expect("check pending approval");
+        assert!(remaining.is_none(), "approval must be resolved");
+
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response");
+        };
+        let resolved_event = events.iter().find(|e| {
+            matches!(
+                e.payload,
+                crate::EventPayload::Approval(crate::ApprovalEvent::Resolved { .. })
+            )
+        });
+        assert!(
+            resolved_event.is_some(),
+            "resolved event must be in the stream"
+        );
     }
 }
