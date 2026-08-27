@@ -53,6 +53,29 @@ pub struct ApprovalRequest {
     pub state: ApprovalState,
 }
 
+/// Extended approval detail for structured client presentation.
+/// Provides diff preview, scope estimate, and attachment references.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApprovalDetail {
+    pub request: ApprovalRequest,
+    /// Diff preview for write actions (unified format, max 50 lines).
+    pub diff_preview: Option<String>,
+    /// Affected file paths.
+    pub affected_files: Vec<String>,
+    /// Estimated scope: line count, byte size, or operation count.
+    pub estimated_scope: Option<ScopeEstimate>,
+    /// Artifact/output attachment IDs for full content retrieval.
+    pub attachment_refs: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ScopeEstimate {
+    Lines(u32),
+    Bytes(u64),
+    Operations(u32),
+}
+
 impl ApprovalRequest {
     pub fn pending(action: Action, reason: String, intent_revision: u64) -> Self {
         Self {

@@ -19,7 +19,8 @@ pub mod supervisor;
 pub mod tools;
 
 pub use approval::{
-    ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
+    ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
+    ApprovalState, ScopeEstimate,
 };
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
@@ -30,8 +31,8 @@ pub use effects::{
     NormalizedEffect, ReadOnlySandbox,
 };
 pub use events::{
-    AgentEvent, ApprovalEvent, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent,
-    PlanEvent, RunEvent, SessionEvent, ToolEvent,
+    AgentEvent, ApprovalEvent, BackendEvent, EVENT_SCHEMA_VERSION, Event, EventPayload,
+    IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};

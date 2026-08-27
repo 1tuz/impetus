@@ -13,6 +13,8 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "tool",
     "subscribe",
     "resolve_approval",
+    "get_attachment",
+    "get_approval_detail",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +55,14 @@ pub enum IpcRequest {
         approval_id: Uuid,
         accepted: bool,
     },
+    GetAttachment {
+        session_id: Uuid,
+        attachment_id: Uuid,
+    },
+    GetApprovalDetail {
+        session_id: Uuid,
+        approval_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,6 +97,16 @@ pub enum IpcResponse {
     ApprovalResolved {
         session_id: Uuid,
         approval_id: Uuid,
+    },
+    Attachment {
+        session_id: Uuid,
+        attachment_id: Uuid,
+        content_type: String,
+        content: Vec<u8>,
+    },
+    ApprovalDetail {
+        session_id: Uuid,
+        detail: crate::ApprovalDetail,
     },
     Incompatible {
         supported_version: u16,

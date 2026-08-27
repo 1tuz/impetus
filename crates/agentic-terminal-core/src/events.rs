@@ -24,6 +24,7 @@ pub enum EventPayload {
     Tool(ToolEvent),
     Agent(AgentEvent),
     Approval(ApprovalEvent),
+    Backend(BackendEvent),
     Notice(NoticeEvent),
 }
 
@@ -80,6 +81,31 @@ pub enum AgentEvent {
 pub enum ApprovalEvent {
     Requested { request: ApprovalRequest },
     Resolved { request: ApprovalRequest },
+}
+
+/// Backend and auth state changes for structured client presentation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BackendEvent {
+    ProviderHealthy {
+        profile: String,
+    },
+    ProviderDegraded {
+        profile: String,
+        reason: String,
+    },
+    ProviderUnavailable {
+        profile: String,
+        reason: String,
+    },
+    KeychainAvailable,
+    KeychainUnavailable {
+        reason: String,
+    },
+    TokenExpiryWarning {
+        profile: String,
+        expires_in_seconds: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
