@@ -1,6 +1,6 @@
 use crate::{
-    Action, ApprovalEvent, ApprovalResolution, ApprovalResolver, ApprovalState, Event,
-    EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision, PolicyEngine,
+    Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
+    Event, EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision, PolicyEngine,
     ProjectionError, RunEvent, ToolEvent, reduce,
 };
 use serde::{Deserialize, Serialize};
@@ -243,6 +243,10 @@ impl AgentRuntime {
             Some(RunEvent::Started { .. }) => RuntimeStatus::Running,
             None => RuntimeStatus::Idle,
         })
+    }
+
+    pub fn pending_approval(&self, id: Uuid) -> Result<Option<ApprovalRequest>, RuntimeError> {
+        Ok(self.projection()?.pending_approvals.get(&id).cloned())
     }
 
     pub fn cancel(&self) -> Result<RuntimeStatus, RuntimeError> {

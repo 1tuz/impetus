@@ -215,6 +215,7 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::Cancel { .. } => "cancel",
         IpcRequest::Tool { .. } => "tool",
         IpcRequest::Subscribe { .. } => "subscribe",
+        IpcRequest::ResolveApproval { .. } => "resolve_approval",
     }
 }
 

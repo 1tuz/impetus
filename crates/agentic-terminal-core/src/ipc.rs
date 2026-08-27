@@ -12,6 +12,7 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "cancel",
     "tool",
     "subscribe",
+    "resolve_approval",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +48,11 @@ pub enum IpcRequest {
         session_id: Uuid,
         after_sequence: u64,
     },
+    ResolveApproval {
+        session_id: Uuid,
+        approval_id: Uuid,
+        accepted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,6 +83,10 @@ pub enum IpcResponse {
     },
     Subscribed {
         session_id: Uuid,
+    },
+    ApprovalResolved {
+        session_id: Uuid,
+        approval_id: Uuid,
     },
     Incompatible {
         supported_version: u16,
