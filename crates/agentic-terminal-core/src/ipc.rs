@@ -110,6 +110,8 @@ pub enum IpcResponse {
     },
     Incompatible {
         supported_version: u16,
+        client_version: u16,
+        upgrade_recommendation: Option<String>,
     },
     Error {
         code: IpcErrorCode,

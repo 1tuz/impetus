@@ -307,7 +307,13 @@ mod tests {
                 }
             ),
             IpcResponse::Incompatible {
-                supported_version: IPC_VERSION
+                supported_version: IPC_VERSION,
+                client_version: IPC_VERSION + 1,
+                upgrade_recommendation: Some(format!(
+                    "Client version {} is newer than harness {}. Upgrade harness.",
+                    IPC_VERSION + 1,
+                    IPC_VERSION
+                )),
             }
         );
     }

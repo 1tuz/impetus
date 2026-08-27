@@ -118,9 +118,24 @@ fn handle_request(
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
-        IpcRequest::Hello { version, .. } if version != IPC_VERSION => IpcResponse::Incompatible {
-            supported_version: IPC_VERSION,
-        },
+        IpcRequest::Hello { version, .. } if version != IPC_VERSION => {
+            let upgrade_recommendation = if version < IPC_VERSION {
+                Some(format!(
+                    "Client version {} is older than harness {}. Upgrade client.",
+                    version, IPC_VERSION
+                ))
+            } else {
+                Some(format!(
+                    "Client version {} is newer than harness {}. Upgrade harness.",
+                    version, IPC_VERSION
+                ))
+            };
+            IpcResponse::Incompatible {
+                supported_version: IPC_VERSION,
+                client_version: version,
+                upgrade_recommendation,
+            }
+        }
         IpcRequest::Hello { capabilities, .. } => IpcResponse::Hello {
             version: IPC_VERSION,
             capabilities: IPC_CAPABILITIES
