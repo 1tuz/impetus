@@ -1,4 +1,9 @@
-# Roadmap третьей итерации
+# Historical audit: идеи третьей итерации
+
+> Этот файл **не active roadmap**. Канонический порядок работ находится в
+> [ROADMAP.md](ROADMAP.md). Он сохраняет полезный аудит идей (client contract,
+> TUI, profiles, learning), но не разрешает начать TUI раньше v0.2 provider /
+> execution gates и Zap decision.
 
 Опирается на `iteration-3-audit.md`. Iteration 3 делает Harness самостоятельным coding-agent продуктом: полноценный terminal TUI (клиент), единый Harness Client Contract, Session DAG/checkpoints/swarm/risk/token UX, Agent Profile/SOUL и event-driven Failure Learning. Граница неизменна: TUI — только клиент, runtime/state/safety/context/learning принадлежат harnessd.
 
@@ -100,6 +105,8 @@ Zap / Terminal.app / iTerm2 / SSH
 
 См. п.40 требований Iteration 3 (23 пункта). Phase 3B покрывает критерии 2,3,4,5; 3C — 1,5,6; 3D — 7,8,9,10,11; 3E — 12,13,14; 3F/3G — 15–20; 3H — 21,22,23 (без регрессии Iteration 2).
 
-## Порядок начала работы
+## Historical recommendation
 
-Сначала только документы (этот аудит + roadmap). Implementation начинается с **Phase 3B** после подтверждения плана. Не строить coding agent с нуля: переиспользуем rich event model, supervisor, policy, IPC, tools; добавляем минимальный недостающий слой поверх ratatui/crossterm.
+Этот порядок был предложением для отдельной третьей итерации, не разрешением
+немедленно строить TUI. Если когда-либо начнётся соответствующий scope, сначала
+нужны v0.2 provider/execution gates и Zap decision из [ROADMAP.md](ROADMAP.md).

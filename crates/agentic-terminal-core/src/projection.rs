@@ -11,6 +11,7 @@ pub struct SessionProjection {
     pub session_id: Uuid,
     pub last_sequence: u64,
     pub latest_intent: Option<String>,
+    pub latest_intent_revision: Option<u64>,
     pub latest_plan: Option<String>,
     pub tool_summaries: BTreeMap<String, String>,
     pub agent_output: String,
@@ -39,6 +40,7 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         session_id: first.session_id,
         last_sequence: 0,
         latest_intent: None,
+        latest_intent_revision: None,
         latest_plan: None,
         tool_summaries: BTreeMap::new(),
         agent_output: String::new(),
@@ -71,7 +73,8 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         projection.last_sequence = event.sequence;
         match &event.payload {
             EventPayload::Intent(IntentEvent { text }) => {
-                projection.latest_intent = Some(text.clone())
+                projection.latest_intent = Some(text.clone());
+                projection.latest_intent_revision = Some(event.sequence);
             }
             EventPayload::Plan(PlanEvent { summary }) => {
                 projection.latest_plan = Some(summary.clone())

@@ -4,7 +4,7 @@
     "version": "0.1.0",
     "description": "Owns local PTY lifecycle and terminal byte stream.",
     "availability": "planned",
-    "roadmap_phase": "v0.2",
+    "roadmap_phase": "v0.6",
     "permissions": ["process.spawn"],
     "entrypoint": "builtin:terminal_pty"
   },

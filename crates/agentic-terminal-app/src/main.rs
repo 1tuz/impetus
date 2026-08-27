@@ -1,14 +1,13 @@
 use agentic_terminal_core::{
-    Action, ActionKind, ActionOrigin, AgentRuntime, CapabilityRegistry, CiBackend, CiProject,
-    EventStore, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, Pipeline, PolicyEngine,
-    RemoteGitlabBackend, RuntimeStatus, SandboxScope, SqliteEventStore,
+    CapabilityRegistry, CiBackend, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend,
+    Pipeline, RemoteGitlabBackend,
 };
 use gpui::{
     AnyElement, App, Bounds, Context, FocusHandle, IntoElement, KeyBinding, Render, SharedString,
     Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
-use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 use tracing_subscriber::EnvFilter;
 
 mod terminal_themes;
@@ -57,7 +56,6 @@ enum CiOutputTone {
 struct AgenticTerminalView {
     headline: SharedString,
     status: SharedString,
-    runtime: AgentRuntime,
     selected_theme_id: &'static str,
     focus_handle: FocusHandle,
     ci_visible: bool,
@@ -78,19 +76,14 @@ impl AgenticTerminalView {
                 .expect("validate bundled capability catalog")
                 .all()
                 .count();
-        let runtime = AgentRuntime::new(
-            open_event_store(),
-            PolicyEngine::new(SandboxScope::local_workspace(".")),
-        );
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         Self {
             headline: "Agentic Terminal — local-first".into(),
             status: format!(
-                "Durable runtime online · policy gate enabled · {capability_count} planned capabilities"
+                "Client-only preview · no harness state ownership · {capability_count} planned capabilities"
             )
             .into(),
-            runtime,
             selected_theme_id: "dracula",
             focus_handle,
             ci_visible: true,
@@ -115,10 +108,8 @@ impl AgenticTerminalView {
     }
 
     fn start_local(&mut self, cx: &mut Context<Self>) {
-        if !self.authorize_direct_ci_action("run local GitLab CI", "gitlab-ci-local") {
-            cx.notify();
-            return;
-        }
+        // Explicit GPUI button action outside a harness task. This client-only
+        // experiment owns neither policy nor durable session state.
         self.reset_ci(CiSource::Local, "Preparing gitlab-ci-local…");
         let workspace = match std::env::current_dir() {
             Ok(workspace) => workspace,
@@ -181,10 +172,8 @@ impl AgenticTerminalView {
     }
 
     fn refresh_remote(&mut self, cx: &mut Context<Self>) {
-        if !self.authorize_direct_ci_action("read GitLab CI status", "glab") {
-            cx.notify();
-            return;
-        }
+        // Explicit GPUI button action outside a harness task; `glab` owns its
+        // own authentication and the result is not a harness audit event.
         self.reset_ci(CiSource::Remote, "Reading GitLab status through glab…");
         let workspace = match std::env::current_dir() {
             Ok(workspace) => workspace,
@@ -229,25 +218,6 @@ impl AgenticTerminalView {
         self.ci_log_was_trimmed = false;
         self.selected_ci_job = 0;
         self.ci_details = CiDetails::Hidden;
-    }
-
-    fn authorize_direct_ci_action(&mut self, summary: &str, target: &str) -> bool {
-        match self.runtime.request_action(Action {
-            origin: ActionOrigin::User,
-            kind: ActionKind::SpawnProcess,
-            summary: summary.into(),
-            target: Some(target.into()),
-        }) {
-            Ok(RuntimeStatus::Idle) => true,
-            Ok(status) => {
-                self.ci_status = format!("CI is waiting for policy state: {status:?}").into();
-                false
-            }
-            Err(error) => {
-                self.ci_status = format!("CI was blocked by policy: {error}").into();
-                false
-            }
-        }
     }
 
     fn apply_local_ci_event(&mut self, event: LocalCiEvent, cx: &mut Context<Self>) {
@@ -407,21 +377,8 @@ impl AgenticTerminalView {
     }
 }
 
-fn open_event_store() -> Arc<dyn EventStore> {
-    let data_root = std::env::var_os("AGENTIC_TERMINAL_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Agentic Terminal")
-        });
-    std::fs::create_dir_all(&data_root).expect("create Agentic Terminal data directory");
-    SqliteEventStore::open(data_root.join("events.sqlite3"))
-        .expect("open durable SQLite event store")
-}
-
 impl Render for AgenticTerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = self.runtime.session_id().to_string();
         let theme = self.selected_theme();
         let theme_choices = STANDARD_TERMINAL_THEMES
             .into_iter()
@@ -486,7 +443,7 @@ impl Render for AgenticTerminalView {
                     .bg(rgb(theme.selection))
                     .p_4()
                     .text_color(rgb(theme.foreground))
-                    .child("$ describe a task in natural language (input control is v0.2)"),
+                    .child("$ harness input arrives after client IPC wiring"),
             )
             .child(
                 div()
@@ -518,7 +475,7 @@ impl Render for AgenticTerminalView {
                 div()
                     .text_sm()
                     .text_color(rgb(theme.ansi[8]))
-                    .child(format!("session: {session}")),
+                    .child("session: connect through harness client IPC"),
             )
     }
 }

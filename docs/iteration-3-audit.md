@@ -4,7 +4,7 @@
 
 ## Метод
 
-Проверено: workspace Cargo.toml, Cargo.toml каждого crate, исходники `crates/*/src`, наличие TUI-зависимостей (ratatui/crossterm) в графе, доступность исходников jcode для reuse, существующие события и client surface (IPC/CLI), текущая документация client boundary (ARCHITECTURE.md, GUI_UX.md).
+Проверено: workspace Cargo.toml, Cargo.toml каждого crate, исходники `crates/*/src`, наличие TUI-зависимостей (ratatui/crossterm) в графе, доступность исходников jcode для reuse, существующие события и client surface (IPC/CLI), текущая документация client boundary (root [ARCHITECTURE.md](../ARCHITECTURE.md), [GUI_UX.md](GUI_UX.md)).
 
 ## Ключевые факты
 

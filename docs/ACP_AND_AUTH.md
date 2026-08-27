@@ -13,7 +13,7 @@ Zap / CLI / IDE / GPUI
        └── ACP Gateway ─────────────── external coding-agent CLI owns login
 ```
 
-- **Client IPC** связывает наши клиенты с нашим harness: sessions, prompt, stream, status, cancel, approvals, diffs, attachment refs.
+- **Client IPC** связывает наши клиенты с нашим harness. В v0.2 это sessions, prompt, stream, status и cancel; approvals, diffs и attachment refs добавляются в v0.3.
 - **ACP** связывает harness с внешним coding-agent: initialize, session, updates, permission/auth interaction.
 - **Provider API** даёт model inference, но не tools/policy/session permissions.
 
@@ -21,9 +21,10 @@ Zap / CLI / IDE / GPUI
 
 ## Client IPC v0.2 и расширение v0.3
 
-Base protocol v0.2 локальный, versioned и client-independent:
+Base protocol v0.2 локальный, client-independent; текущая wire schema —
+`IPC_VERSION=2`:
 
-- hello/version/capability negotiation;
+- обязательный hello/version handshake и пересечение requested/supported capabilities;
 - session create/attach/list/status;
 - prompt и streaming typed events;
 - cancel и terminal outcome;

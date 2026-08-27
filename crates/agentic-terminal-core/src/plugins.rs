@@ -132,7 +132,7 @@ mod tests {
             version: "0.1.0".into(),
             description: "PTY".into(),
             availability: CapabilityAvailability::Planned,
-            roadmap_phase: Some("v0.2".into()),
+            roadmap_phase: Some("v0.6".into()),
             permissions: vec![],
             entrypoint: None,
         };
@@ -154,6 +154,12 @@ mod tests {
             registry
                 .all()
                 .all(|manifest| manifest.availability == CapabilityAvailability::Planned)
+        );
+        assert_eq!(
+            registry
+                .get("terminal.pty")
+                .and_then(|manifest| manifest.roadmap_phase.as_deref()),
+            Some("v0.6")
         );
     }
 

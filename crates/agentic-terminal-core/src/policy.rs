@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +27,27 @@ pub struct Action {
     pub kind: ActionKind,
     pub summary: String,
     pub target: Option<String>,
+}
+
+/// A stable digest of the complete, normalized action that a person reviews.
+/// It is persisted with an approval so a different action cannot reuse it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ActionFingerprint(String);
+
+impl ActionFingerprint {
+    pub fn for_action(action: &Action) -> Self {
+        let encoded = serde_json::to_vec(action).expect("action serialization is infallible");
+        let digest =
+            Sha256::digest([b"agentic-terminal-action-v1\0".as_slice(), &encoded].concat());
+        Self(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+}
+
+impl Action {
+    pub fn fingerprint(&self) -> ActionFingerprint {
+        ActionFingerprint::for_action(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,5 +239,22 @@ mod tests {
             target: Some("new-file-that-does-not-exist.txt".into()),
         });
         assert!(matches!(decision, PolicyDecision::NeedsApproval { .. }));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_the_reviewed_action_changes() {
+        let action = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "update config".into(),
+            target: Some("config.toml".into()),
+        };
+        let changed_target = Action {
+            target: Some("Cargo.toml".into()),
+            ..action.clone()
+        };
+
+        assert_ne!(action.fingerprint(), changed_target.fingerprint());
+        assert_eq!(action.fingerprint(), action.fingerprint());
     }
 }

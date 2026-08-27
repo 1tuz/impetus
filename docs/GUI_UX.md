@@ -2,7 +2,7 @@
 
 ## Главный принцип
 
-Harness не владеет окном. Он отдаёт versioned typed events и принимает typed user decisions. Zap — основной терминальный клиент; headless CLI — обязательный reference client; GPUI app — optional экспериментальная поверхность. Любой клиент показывает одинаковую session truth и не реализует собственную policy state machine.
+Harness не владеет окном. Он отдаёт versioned typed events и принимает typed user decisions. Zap — основной терминальный клиент; headless CLI — обязательный reference client; GPUI app — optional экспериментальная поверхность. Любой подключённый к harness клиент показывает одинаковую session truth и не реализует собственную policy state machine; текущий GPUI CI preview к harness session ещё не подключён.
 
 Прямая shell-команда в обычной Zap tab остаётся командой терминала и не попадает в harness audit. Harness task начинается только после явного запуска/attach CLI или structured client request.
 
@@ -10,7 +10,7 @@ Harness не владеет окном. Он отдаёт versioned typed events
 
 ### 1. Baseline без форка
 
-Пользователь запускает harness CLI в Zap. CLI показывает stream, status, diff и approval prompt. Zap отвечает за PTY/ANSI/tabs/scrollback; harness — за task lifecycle, provider, tools, policy и durable history.
+Пользователь запускает harness CLI в Zap. В v0.2 CLI показывает session status, durable event stream и bounded read-only tool results. Diff и approval prompt относятся к structured IPC extension v0.3. Zap отвечает за PTY/ANSI/tabs/scrollback; harness — за task lifecycle, provider, tools, policy и durable history.
 
 ### 2. Structured adapter или личный fork
 
@@ -22,7 +22,7 @@ Zap подключается к local IPC и отображает typed Blocks. 
 
 ## Компактная GitLab CI-панель
 
-CI pane — уже добавленный независимый client experiment. **Run local** запускает `gitlab-ci-local`; **Remote status** читает structured JSON через авторизованный `glab`. Обе ветки строят одинаковые stage/job rows: `✓ success`, `✕ failed`, `● running`, `○ pending`, `- skipped`, `? unknown`.
+CI pane — уже добавленный независимый client experiment. Его кнопки являются прямыми user actions вне harness task/audit: **Run local** запускает `gitlab-ci-local`, **Remote status** читает structured JSON через авторизованный `glab`. Pane не владеет SQLite или policy state. Обе ветки строят одинаковые stage/job rows: `✓ success`, `✕ failed`, `● running`, `○ pending`, `- skipped`, `? unknown`.
 
 `↑`/`↓` выбирают job, `Enter` показывает compact error, повторный `Enter` или `l` раскрывает log, `r` обновляет remote status, `q` закрывает панель. Во время local run последние 12 строк имеют semantic color: command/running, success, warning и failure; raw log остаётся доступен отдельно. `retry/cancel` отсутствуют до exact approval. Live buffer в 600 строк — временная client-защита, не часть harness protocol и не gate v0.2.
 

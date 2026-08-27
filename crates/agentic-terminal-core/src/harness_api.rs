@@ -8,14 +8,26 @@
 //! the client.
 
 use crate::{
-    AgentInfo, AgentRuntime, ArtifactStore, EventStore, IPC_VERSION, IpcErrorCode, IpcRequest,
-    IpcResponse, LearningState, MockStreamItem, MockStreamingProvider, PolicyEngine, ProfileInfo,
-    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, RiskState, RuntimeError, RuntimeStatus,
-    SandboxScope, SessionSupervisor, SupervisorError, ToolOutcome, Usage,
+    AgentRuntime, ArtifactStore, CredentialResolver, EventStore, IPC_CAPABILITIES, IPC_VERSION,
+    IpcErrorCode, IpcRequest, IpcResponse, MockStreamItem, MockStreamingProvider,
+    NoCredentialResolver, OpenAiCompatibleProvider, PolicyEngine, ProviderError, ReadOnlySandbox,
+    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, RuntimeError, RuntimeStatus, SandboxScope,
+    SessionSupervisor, SupervisorError, ToolOutcome,
 };
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+enum ProviderBackend {
+    Mock,
+    OpenAi {
+        provider: Arc<OpenAiCompatibleProvider>,
+        credential_resolver: Arc<dyn CredentialResolver>,
+    },
+}
 
 /// A reusable harness request dispatcher.
 ///
@@ -25,11 +37,55 @@ use std::sync::Arc;
 pub struct Harness {
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
+    request_lock: Mutex<()>,
+    provider: ProviderBackend,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
 }
 
 impl Harness {
     pub fn new(store: Arc<dyn EventStore>, policy: PolicyEngine) -> Self {
-        Self { store, policy }
+        Self {
+            store,
+            policy,
+            request_lock: Mutex::new(()),
+            provider: ProviderBackend::Mock,
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Use a user-selected direct-provider profile. The profile is supplied by
+    /// daemon startup, not client IPC; credentials remain outside this type.
+    pub fn with_openai_provider(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        provider: OpenAiCompatibleProvider,
+    ) -> Self {
+        Self::with_openai_provider_and_resolver(
+            store,
+            policy,
+            provider,
+            Arc::new(NoCredentialResolver),
+        )
+    }
+
+    /// The resolver is injected by the harness and is called only while a
+    /// provider request is active. It never enters SQLite, events, or IPC.
+    pub fn with_openai_provider_and_resolver(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        provider: OpenAiCompatibleProvider,
+        credential_resolver: Arc<dyn CredentialResolver>,
+    ) -> Self {
+        Self {
+            store,
+            policy,
+            request_lock: Mutex::new(()),
+            provider: ProviderBackend::OpenAi {
+                provider: Arc::new(provider),
+                credential_resolver,
+            },
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn policy(&self) -> PolicyEngine {
@@ -38,42 +94,44 @@ impl Harness {
 
     /// Resolve a single client request into a response.
     pub fn handle(&self, request: IpcRequest) -> IpcResponse {
-        handle_request(self.store.clone(), self.policy.clone(), request)
+        let Ok(_guard) = self.request_lock.lock() else {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: "harness request lock poisoned".into(),
+            };
+        };
+        handle_request(
+            self.store.clone(),
+            self.policy.clone(),
+            self.provider.clone(),
+            self.cancellations.clone(),
+            request,
+        )
     }
 }
 
 fn handle_request(
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
+    provider: ProviderBackend,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
         IpcRequest::Hello { version, .. } if version != IPC_VERSION => IpcResponse::Incompatible {
             supported_version: IPC_VERSION,
         },
-        IpcRequest::Hello { .. } => IpcResponse::Hello {
+        IpcRequest::Hello { capabilities, .. } => IpcResponse::Hello {
             version: IPC_VERSION,
-            capabilities: vec![
-                "session_create".into(),
-                "session_attach".into(),
-                "session_list".into(),
-                "event_stream".into(),
-                "prompt".into(),
-                "status".into(),
-                "cancel".into(),
-                "tool".into(),
-                "subscribe".into(),
-                "fork".into(),
-                "list_agents".into(),
-                "get_dag".into(),
-                "get_checkpoints".into(),
-                "revert".into(),
-                "get_usage".into(),
-                "get_risk_state".into(),
-                "get_profiles".into(),
-                "set_profile".into(),
-                "get_learning_state".into(),
-            ],
+            capabilities: IPC_CAPABILITIES
+                .iter()
+                .filter(|supported| {
+                    capabilities
+                        .iter()
+                        .any(|requested| requested == **supported)
+                })
+                .map(|capability| (*capability).to_owned())
+                .collect(),
         },
         IpcRequest::CreateSession => match AgentRuntime::create(store, policy) {
             Ok(runtime) => IpcResponse::Session {
@@ -114,12 +172,37 @@ fn handle_request(
         },
         IpcRequest::Prompt { session_id, text } => {
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-                runtime.submit_intent(text)?;
                 let runtime = Arc::new(runtime);
-                let run_id = runtime.start_run()?;
+                let provider_message = text.clone();
+                let run_id = runtime.submit_intent_and_start_run(text)?;
+                let runtime_session_id = runtime.session_id();
                 let task_runtime = runtime.clone();
+                let cancellation = CancellationToken::new();
+                if let Ok(mut active) = cancellations.lock() {
+                    active.insert(runtime_session_id, cancellation.clone());
+                }
+                let task_cancellations = cancellations.clone();
                 tokio::spawn(async move {
-                    run_mock_stream(task_runtime, run_id).await;
+                    match provider {
+                        ProviderBackend::Mock => run_mock_stream(task_runtime, run_id).await,
+                        ProviderBackend::OpenAi {
+                            provider,
+                            credential_resolver,
+                        } => {
+                            run_openai_stream(
+                                task_runtime,
+                                run_id,
+                                provider,
+                                credential_resolver,
+                                provider_message,
+                                cancellation,
+                            )
+                            .await;
+                        }
+                    }
+                    if let Ok(mut active) = task_cancellations.lock() {
+                        active.remove(&runtime_session_id);
+                    }
                 });
                 runtime.status()
             }) {
@@ -128,6 +211,13 @@ fn handle_request(
             }
         }
         IpcRequest::Cancel { session_id } => {
+            if let Ok(active) = cancellations.lock()
+                && let Some(cancellation) = active.get(&session_id)
+            {
+                // A session has at most one active run; cancellation is kept
+                // outside durable events so no handle leaks through SQLite.
+                cancellation.cancel();
+            }
             match AgentRuntime::attach(store, policy, session_id)
                 .and_then(|runtime| runtime.cancel())
             {
@@ -143,7 +233,16 @@ fn handle_request(
         } => {
             let artifact_store = ArtifactStore::open(artifact_root().join("artifacts"))
                 .expect("open artifact store");
-            let tools = ReadOnlyTools::new(workspace_root());
+            // The IPC effect scope is owned by the harness policy, not by the
+            // daemon's current directory or an independently constructed tool
+            // policy.  This keeps the fixed effect path coherent all the way
+            // to capability execution.
+            let workspace_root = policy.scope().workspace_root.clone();
+            let tools = ReadOnlyTools::new(&workspace_root);
+            let effect_seam = crate::EffectSeam::with_sandbox(
+                policy.clone(),
+                ReadOnlySandbox::workspace(&workspace_root),
+            );
             let tool = match kind {
                 ReadOnlyToolKind::List => ReadOnlyTool::List {
                     target: target.into(),
@@ -158,7 +257,12 @@ fn handle_request(
             };
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 tools
-                    .run(tool, &artifact_store)
+                    .run_with_seam(
+                        tool,
+                        crate::ActionOrigin::User,
+                        &artifact_store,
+                        &effect_seam,
+                    )
                     .map_err(|e| RuntimeError::Denied(e.to_string()))
                     .and_then(|outcome| {
                         crate::tools::record_tool_outcome(&runtime, &outcome)?;
@@ -181,70 +285,75 @@ fn handle_request(
             Ok(_) => IpcResponse::Subscribed { session_id },
             Err(error) => runtime_error(error),
         },
-        IpcRequest::Fork { session_id, label } => {
-            match AgentRuntime::attach(store, policy, session_id).map(|runtime| {
-                let _ = label;
-                runtime.session_id()
-            }) {
-                Ok(new_session_id) => IpcResponse::Forked {
-                    session_id,
-                    new_session_id,
-                },
-                Err(error) => runtime_error(error),
-            }
-        }
-        IpcRequest::ListAgents { session_id } => IpcResponse::Agents {
-            session_id,
-            agents: vec![AgentInfo {
-                id: session_id,
-                role: "primary".into(),
-                task: "idle".into(),
-                status: "idle".into(),
-            }],
-        },
-        IpcRequest::GetDag { session_id } => IpcResponse::Dag {
-            session_id,
-            nodes: vec![],
-        },
-        IpcRequest::GetCheckpoints { session_id } => IpcResponse::Checkpoints {
-            session_id,
-            checkpoints: vec![],
-        },
-        IpcRequest::Revert {
-            session_id,
-            checkpoint_id,
-        } => IpcResponse::Reverted {
-            session_id,
-            checkpoint_id,
-        },
-        IpcRequest::GetUsage { session_id } => IpcResponse::Usage {
-            session_id,
-            usage: Usage::default(),
-        },
-        IpcRequest::GetRiskState { session_id } => IpcResponse::Risk {
-            session_id,
-            risk: RiskState::default(),
-        },
-        IpcRequest::GetProfiles { session_id } => IpcResponse::Profiles {
-            session_id,
-            profiles: vec![ProfileInfo {
-                name: "default".into(),
-                source: "builtin".into(),
-                inherits: None,
-                active: true,
-            }],
-        },
-        IpcRequest::SetProfile { session_id, name } => IpcResponse::ProfileSet { session_id, name },
-        IpcRequest::GetLearningState { session_id } => IpcResponse::Learning {
-            session_id,
-            learning: LearningState::default(),
-        },
     }
 }
 
-/// Redact artifact contents before crossing the client boundary. The client
-/// never receives file bytes; only the bounded preview and a content hash ref.
-pub fn redact_tool_outcome(outcome: ToolOutcome) -> ToolOutcome {
+async fn run_openai_stream(
+    runtime: Arc<AgentRuntime>,
+    run_id: uuid::Uuid,
+    provider: Arc<OpenAiCompatibleProvider>,
+    credential_resolver: Arc<dyn CredentialResolver>,
+    message: String,
+    cancellation: CancellationToken,
+) {
+    let mut next_chunk_id = runtime
+        .events()
+        .ok()
+        .and_then(|events| {
+            events.iter().rev().find_map(|event| match &event.payload {
+                crate::EventPayload::Agent(crate::AgentEvent::Chunk {
+                    run_id: event_run,
+                    chunk_id,
+                    ..
+                }) if *event_run == run_id => Some(*chunk_id + 1),
+                _ => None,
+            })
+        })
+        .unwrap_or(1);
+    let result = match credential_resolver.resolve(provider.profile()) {
+        Ok(credential) => {
+            provider
+                .stream_user_message(
+                    &message,
+                    credential.as_deref(),
+                    cancellation.clone(),
+                    |chunk| {
+                        let chunk_id = next_chunk_id;
+                        next_chunk_id += 1;
+                        runtime
+                            .record_agent_chunk(run_id, chunk_id, chunk)
+                            .map(|_| ())
+                            .map_err(|error| ProviderError::RequestFailed(error.to_string()))
+                    },
+                )
+                .await
+        }
+        // Resolver implementations are platform adapters. Their diagnostic
+        // details, including a Keychain service/account or OS error, are not
+        // safe to persist in a run event.
+        Err(_) => Err(ProviderError::MissingCredential),
+    };
+    match result {
+        Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
+            let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
+        }
+        Err(ProviderError::Cancelled) => {}
+        Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
+            let _ = runtime.finish_run(crate::RunEvent::Failed {
+                run_id,
+                reason: format!("provider stream failed: {error}"),
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Apply defense-in-depth redaction before tool data crosses client IPC. Full
+/// file bytes and artifact filesystem paths never enter the response DTO.
+pub fn redact_tool_outcome(mut outcome: ToolOutcome) -> ToolOutcome {
+    if let ToolOutcome::Allowed { result } = &mut outcome {
+        result.preview = crate::tools::redact_text(&result.preview);
+    }
     outcome
 }
 
@@ -274,17 +383,30 @@ async fn run_mock_stream(runtime: Arc<AgentRuntime>, run_id: uuid::Uuid) {
         Err(SupervisorError::ProviderDisconnected)
             if matches!(runtime.status(), Ok(RuntimeStatus::Running)) =>
         {
-            let _ = supervisor.resume_mock(run_id, &restarted_attempt).await;
+            if let Err(error) = supervisor.resume_mock(run_id, &restarted_attempt).await
+                && matches!(runtime.status(), Ok(RuntimeStatus::Running))
+            {
+                let _ = runtime.finish_run(crate::RunEvent::Failed {
+                    run_id,
+                    reason: format!("provider restart failed: {error}"),
+                });
+            }
+        }
+        Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
+            let _ = runtime.finish_run(crate::RunEvent::Failed {
+                run_id,
+                reason: format!("provider stream failed: {error}"),
+            });
         }
         Ok(_) | Err(_) => {}
     }
 }
 
 fn runtime_error(error: RuntimeError) -> IpcResponse {
-    let code = if matches!(error, RuntimeError::MissingSession(_)) {
-        IpcErrorCode::MissingSession
-    } else {
-        IpcErrorCode::Internal
+    let code = match &error {
+        RuntimeError::MissingSession(_) => IpcErrorCode::MissingSession,
+        RuntimeError::ActiveRun(_) => IpcErrorCode::Conflict,
+        _ => IpcErrorCode::Internal,
     };
     IpcResponse::Error {
         code,
@@ -294,12 +416,6 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
 
 pub fn policy() -> PolicyEngine {
     PolicyEngine::new(SandboxScope::local_workspace("."))
-}
-
-fn workspace_root() -> PathBuf {
-    std::env::var_os("AGENTIC_TERMINAL_WORKSPACE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current directory"))
 }
 
 fn data_root() -> Result<PathBuf> {
@@ -315,4 +431,204 @@ fn artifact_root() -> PathBuf {
     data_root()
         .map(|root| root.join("artifacts"))
         .unwrap_or_else(|_| PathBuf::from("artifacts"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CredentialStrategy, EventPayload, MemoryEventStore, ProviderProfile, RetryBudget};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn explicit_local_profile_streams_durable_chunks_through_harness() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = std::str::from_utf8(&request[..read]).unwrap();
+            assert!(request.contains("POST /v1/chat/completions HTTP/1.1"));
+            assert!(request.contains("user question"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"evidence \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\ndata: [DONE]\n\n")
+                .await
+                .unwrap();
+        });
+        let provider = OpenAiCompatibleProvider::new(
+            ProviderProfile {
+                id: "local-test".into(),
+                endpoint: format!("http://{address}"),
+                model: "test-model".into(),
+                credential_strategy: CredentialStrategy::None,
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let harness = Harness::with_openai_provider(
+            Arc::new(MemoryEventStore::default()),
+            policy(),
+            provider,
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("session creation response")
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "user question".into(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        for _ in 0..20 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response")
+        };
+        assert!(matches!(
+            events.last().map(|event| &event.payload),
+            Some(EventPayload::Run(crate::RunEvent::Completed { .. }))
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::Agent(crate::AgentEvent::Chunk { text, .. }) =>
+                        Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            "evidence answer"
+        );
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn ipc_tool_uses_the_harness_owned_policy_scope() {
+        let root =
+            std::env::temp_dir().join(format!("harness-tool-scope-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create workspace");
+        std::fs::write(root.join("evidence.txt"), "scoped evidence").expect("write fixture");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(&root)),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("session creation response");
+        };
+
+        let response = harness.handle(IpcRequest::Tool {
+            session_id,
+            kind: ReadOnlyToolKind::Read,
+            target: "evidence.txt".into(),
+            pattern: None,
+        });
+        assert!(matches!(
+            response,
+            IpcResponse::ToolResult {
+                outcome: ToolOutcome::Allowed { .. },
+                ..
+            }
+        ));
+    }
+
+    struct CountingKeychainCredential {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CredentialResolver for CountingKeychainCredential {
+        fn resolve(&self, _profile: &ProviderProfile) -> Result<Option<String>, ProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(ProviderError::RequestFailed(
+                "Keychain unavailable for opaque-service-label/opaque-account-label".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn keychain_lookup_is_lazy_and_missing_or_unavailable_results_are_redacted() {
+        let store = Arc::new(MemoryEventStore::default());
+        let provider = OpenAiCompatibleProvider::new(
+            ProviderProfile {
+                id: "remote-profile".into(),
+                endpoint: "https://api.example.test".into(),
+                model: "test-model".into(),
+                credential_strategy: CredentialStrategy::KeychainReference {
+                    service: "opaque-service-label".into(),
+                    account: "opaque-account-label".into(),
+                },
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolver = CountingKeychainCredential {
+            calls: calls.clone(),
+        };
+        let harness = Harness::with_openai_provider_and_resolver(
+            store.clone(),
+            policy(),
+            provider,
+            Arc::new(resolver),
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("session creation response")
+        };
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "question without credential".into(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        for _ in 0..20 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Failed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response")
+        };
+        let exported = serde_json::to_string(&events).unwrap();
+        assert!(!exported.contains("opaque-service-label"));
+        assert!(!exported.contains("opaque-account-label"));
+        assert!(!exported.contains("Keychain unavailable"));
+        assert!(exported.contains("provider credential is required but unavailable"));
+    }
 }

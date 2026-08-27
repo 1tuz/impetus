@@ -1,79 +1,83 @@
-# Roadmap v0.1 → рабочий harness
+# Roadmap — один активный путь
 
-Каждый этап имеет собственную демонстрацию и завершается только по указанным критериям. Главная продуктовая линия — переносимый local-first harness. Zap, CLI, IDE и экспериментальный GPUI-клиент являются сменными поверхностями над ним; собственный terminal emulator не является обязательной частью MVP.
+Это единственный исполнимый roadmap. `TODO.md` — короткая очередь из него.
+`iteration-2-roadmap.md` и `iteration-3-roadmap.md` сохраняют аудит/идеи, но
+не могут объявлять второй текущий этап.
 
-Фактический delta текущего рабочего дерева зафиксирован в [аудите второй итерации](iteration-2-audit.md). Исполнимые P0-P5 gates и ближайший slice находятся в [детальном roadmap](iteration-2-roadmap.md).
+## Статус версий
 
-## v0.1 — безопасный фундамент
+| Версия | Состояние | Смысл |
+| --- | --- | --- |
+| v0.1 | Фундамент реализован | core, durable events/SQLite, policy/approvals, mock runtime и GPUI reference preview |
+| v0.2 | В работе | standalone headless harness с real provider и безопасным execution path |
+| v0.3–v0.7 | Запланировано | следующие продуктовые версии; к ним не переходить раньше v0.2 gates |
 
-**Результат:** независимый Rust core, append-only события, SQLite WAL, policy, approval, capability manifests и диагностический GPUI preview.
+Native-window smoke для optional GPUI client остаётся незакрытым хвостом v0.1.
+Это не причина приостанавливать v0.2.
 
-**Готово, когда:** форматирование, core tests, `cargo check --workspace` и clippy проходят; agent-write внутри workspace создаёт `ApprovalRequested`; выход file target за workspace и SSH в local-only scope получают `Deny`; записанные SQLite события переживают reopen; зафиксирован baseline диагностического клиента; native Metal window открывается без WebView. Воспроизводимый smoke на чистом Mac остаётся незакрытым последним gate v0.1.
+## Текущий релиз: v0.2 — standalone harness
 
-## v0.2 — standalone harness core
+**Цель:** headless local-first harness с durable sessions, read-only repo
+inspection и одним explicit provider profile. Zap/Terminal.app запускают CLI в
+обычной tab; GPUI остаётся optional reference client.
 
-**Результат:** долгоживущий headless Harness без зависимости от GPUI и terminal renderer: typed event payloads/projections, recoverable session supervisor, bounded artifacts, read-only tools, один OpenAI-compatible streaming adapter, Unix socket IPC и CLI reference client. Harness запускается из любого обычного терминала, включая Zap, но продолжает session независимо от client process.
+**Уже подтверждено:** typed event log/replay, SQLite WAL, policy/approval,
+supervisor с mock restart/cancel, Unix socket, CLI, read-only tools/artifacts,
+`HarnessClient` с in-memory/Unix transports и sequence-based event subscription.
 
-Вертикальные gates выполняются по порядку:
+### Оставшиеся шаги — строго по порядку
 
-1. typed `Intent → Plan → Tool → Agent` events, schema migration и deterministic projection из SQLite;
-2. durable session identity/sequence/approvals и mock provider → stream/cancel/error/restart;
-3. headless daemon + versioned Unix socket IPC → create/attach/stream/status/cancel;
-4. CLI reference client → close/reconnect без остановки run;
-5. read-only `list/read/search` tools → provenance, bounded output и artifact references;
-6. direct OpenAI-compatible profile → Keychain reference или local/no-secret endpoint;
-7. единый normalized policy/capability seam без включения unrestricted effects.
+1. **Provider boundary.** Один OpenAI-compatible streaming adapter;
+   explicit local/no-secret и Keychain-reference profiles; cancellation, retry
+   budget, health state и redaction tests. Поддерживаемые endpoints выбираются
+   profile, а не догадкой.
+2. **Execution seam.** `NormalizedEffect → Policy → Allow | NeedsApproval |
+   Deny → Sandbox → Capability → Execution`; никаких unrestricted effects без
+   macOS sandbox proof. [Seatbelt spike](MACOS_SANDBOX_SPIKE.md) подтверждает
+   механизм, но не включает mutating capabilities.
+3. **Measured limits.** Baselines для RSS, queue, artifact/output bytes,
+   restart/cancel latency и context/token accounting. Отдельно доказать, что
+   headless graph не содержит GPUI, Metal, PTY и ANSI renderer.
 
-**Готово, когда:** команда из Zap или Terminal.app запускает Harness; закрытие и повторный attach client не останавливают run и не дублируют history; «объясни репозиторий» даёт evidence-backed ответ без mutation; cancel завершается за ограниченное время; provider/Harness restart восстанавливает ту же projection; большой output не растит RAM/context линейно; secret и raw credential отсутствуют в SQLite/export/log; headless dependency graph не содержит GPUI, Metal, PTY или ANSI renderer.
+**v0.2 готово, когда:** session переживает client/provider restart без
+дубликатов; repo question имеет evidence-backed read-only answer; cancel
+ограничен по времени; secret отсутствует в SQLite/export/log; headless runtime
+не зависит от GPUI/terminal renderer.
 
-Компактный GitLab CI frontend уже существует как независимый экспериментальный клиентский срез. Его native smoke полезен, но не блокирует harness v0.2.
+## Потом — v0.3: structured clients и external agents
 
-## v0.3 — сменные клиенты, Zap и внешние agents
+1. IPC extension: typed approvals, diffs, attachment refs, backend/auth states
+   и negotiated `Incompatible`.
+2. Zap baseline smoke в обычной tab, затем decision: adapter или private fork
+   только если нужен structured Blocks/diff/approval UX.
+3. ACP gateway: manual executable profile, mock agent
+   initialize/session/stream/cancel/permission/exit, agent-owned login.
+4. Auth Center contract: Keychain reference, system-browser OAuth and local
+   no-secret profiles. OAuth URL открывается только действием пользователя.
 
-**Результат:** structured extension уже работающего local IPC, Zap integration spike, ACP Gateway для внешних coding-agents, manual executable profiles, Auth Center contract и клиентские Blocks. Harness остаётся источником policy/session state; клиент не принимает решения за него.
+**Не строить TUI или terminal emulator в этом этапе.** Они возможны лишь после
+Zap spike и зафиксированного неудовлетворённого requirement.
 
-Вертикальные gates:
+## Далее — продуктовые возможности
 
-1. IPC extension → approval request/response, diffs, attachment refs и backend/auth states;
-2. Zap baseline smoke → v0.2 CLI работает в обычной Zap tab без патча Zap;
-3. Zap structured path → отдельный adapter или личный fork отображает typed Blocks, diff и approval; OSC/notification hooks не считаются полным протоколом;
-4. mock ACP agent → initialize/session/stream/cancel/permission/exit;
-5. manual local executable profile → capability negotiation и lifecycle;
-6. Auth profiles → agent-owned CLI, system-browser OAuth и расширенные backend states поверх v0.2 Keychain/local profiles;
-7. Safe Auto mock reviewer и attachment negotiation без host effects.
+| Версия | Результат | Главный gate |
+| --- | --- | --- |
+| v0.4 | long-session context, compaction, immutable fork/checkpoint | restart/fork даёт deterministic projection и bounded memory |
+| v0.5 | local effects и capability SDK | exact approval, sandbox/reviewer fail closed, policy replay |
+| v0.6 | remote profiles: SSH, controlled process/PTY, tmux, SFTP | host-key/target/file approval переживают restart |
+| v0.7 | MVP: sessions, search, notifications, export/delete, chosen client path | task проходит intent → evidence → approval → effect → resume/fork |
 
-**Готово, когда:** CLI и Zap используют одну durable session model; disconnect клиента не убивает harness run; protocol mismatch даёт явное `Incompatible`; mock ACP проходит полный smoke; structured permission всегда превращается в typed action; OAuth URL не открывается без человека; unsupported attachment получает явный отказ; клиент и harness могут обновляться независимо в пределах negotiated version.
+## Не является roadmap stage
 
-## v0.4 — long-session context, compaction и fork
+- **GPUI CI pane** — изолированный client experiment, не gate harness.
+- **Native-window smoke старого v0.1** — технический хвост reference client,
+  не блокирует v0.2.
+- **Custom terminal/TUI** — optional research after Zap decision, не следующий
+  «этап 0.2».
+- Cloud sync, marketplace, multi-user auth, Windows/Linux parity — вне MVP.
 
-**Результат:** token-budget context builder, versioned compaction с source range, resume с compacted context, immutable parent prefix/fork point, local file checkpoints и bounded attachment lifecycle.
+## Правило статуса
 
-**Готово, когда:** restart даёт ту же projection; summary показывает source range и версию; child не меняет parent history; long-session harness benchmark держит заданный RSS и queue ceiling независимо от клиента.
-
-## v0.5 — локальные эффекты и capability SDK
-
-**Результат:** typed manifest/permissions/version, exact approval diff/command/target, workspace sandbox, sample external capability, enforced Safe Auto reviewer/input probe и outbound attachment policy.
-
-**Готово, когда:** edit не применим до approval/reviewer allow; command не выходит за scope/time/resource limit; hard-deny и human-only не auto-approve; classifier outage/invalid verdict не достигает execution; malformed или over-permissioned plugin безопасно отклонён; policy replay детерминирован.
-
-## v0.6 — remote capabilities
-
-**Результат:** SSH profiles, Keychain refs, known-host, controlled remote process/PTY, tmux и SFTP transfer events. Представление может жить в Zap fork, CLI или отдельном клиенте.
-
-**Готово, когда:** host-key change блокирует connection; model не выбирает произвольный hostname; tmux требует profile + выбранную session; transfer требует file-level approval и восстанавливается после restart.
-
-## v0.7 — рабочий MVP
-
-**Результат:** multi-session, search, notifications, export/delete, crash recovery, migrations, performance suite и выбранный поддерживаемый клиентский путь.
-
-**Главный gate:** пользователь запускает harness из Zap или другого клиента, формулирует задачу, видит plan/tool evidence, одобряет одну точную правку, resume/fork-ит сессию и выполняет один remote workflow. У каждого эффекта есть audit record; kill/restart не выдаёт ложное «готово»; harness держит memory ceiling без привязки к RSS конкретного терминала.
-
-## Опционально — собственный terminal client
-
-Собственный GPUI PTY/ANSI renderer не входит в критический путь. Существующий `agentic-terminal-app`, темы и CI pane сохраняются как reference client и экспериментальная площадка.
-
-Go/no-go принимается после Zap integration spike. Продолжать полноценный terminal emulator стоит только если подтверждён конкретный разрыв: невозможен typed approval/Blocks, нарушается граница `origin`, нет стабильного integration seam, Zap fork непригоден по UX/производительности или нужен отдельный распространяемый продукт. До такого факта `portable-pty`, `alacritty_terminal`, tabs, selection/copy и scrollback остаются optional backlog.
-
-## Намеренно вне MVP
-
-Cloud sync, collaboration, marketplace с неограниченными plugins, обязательный собственный terminal emulator, Windows/Linux parity, IDE/editor и multi-user auth меняют trust/memory model и требуют отдельного решения.
+Нельзя называть planned interface или empty DTO готовой feature. Каждый gate
+закрывается только tests + applicable runtime smoke + `task verify`; для
+Rust/CI/dependency changes также local GitLab job и `task security`.

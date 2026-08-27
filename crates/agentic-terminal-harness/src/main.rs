@@ -1,8 +1,12 @@
-use agentic_terminal_core::{EventStore, IpcErrorCode, IpcRequest, IpcResponse, SqliteEventStore};
+use agentic_terminal_core::{
+    CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
+    OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
+};
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 #[cfg(test)]
@@ -26,53 +30,236 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(parent).context("create harness data directory")?;
     std::fs::create_dir_all(&data_root).context("create harness event-store directory")?;
     let store = SqliteEventStore::open(data_root.join("events.sqlite3"))?;
+    let harness = Arc::new(configured_harness(store)?);
     let listener = UnixListener::bind(&socket_path).context("bind harness Unix socket")?;
     set_socket_permissions(&socket_path)?;
     loop {
         let (stream, _) = listener.accept().await.context("accept harness client")?;
-        let store = store.clone();
+        let harness = harness.clone();
         tokio::spawn(async move {
-            let _ = serve_client(stream, store).await;
+            let _ = serve_client(stream, harness).await;
         });
     }
 }
 
-async fn serve_client(stream: UnixStream, store: Arc<dyn EventStore>) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line).await?;
-        if read == 0 {
-            return Ok(());
-        }
-        let response = if line.len() > MAX_IPC_LINE_BYTES {
-            IpcResponse::Error {
-                code: IpcErrorCode::InvalidRequest,
-                message: "request exceeds 64 KiB".into(),
-            }
-        } else {
-            match serde_json::from_str::<IpcRequest>(&line) {
-                Ok(request) => handle_request(store.clone(), request),
-                Err(error) => IpcResponse::Error {
-                    code: IpcErrorCode::InvalidRequest,
-                    message: error.to_string(),
-                },
-            }
+/// Direct providers are enabled only by an explicit daemon-start profile file.
+/// The file is deserialized into a deny-unknown-fields DTO, so a raw token
+/// cannot be silently accepted as configuration.
+fn configured_harness(store: Arc<dyn agentic_terminal_core::EventStore>) -> Result<Harness> {
+    let mut arguments = std::env::args_os().skip(1);
+    let Some(flag) = arguments.next() else {
+        return Ok(Harness::new(
+            store,
+            agentic_terminal_core::harness_api::policy(),
+        ));
+    };
+    if flag != "--provider-profile" {
+        bail!("usage: agentic-terminal-harness [--provider-profile PATH]");
+    }
+    let profile_path = arguments
+        .next()
+        .context("--provider-profile requires PATH")?;
+    if arguments.next().is_some() {
+        bail!("usage: agentic-terminal-harness [--provider-profile PATH]");
+    }
+    let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
+    let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
+        .context("provider profile must contain only the documented non-secret fields")?;
+    let provider = OpenAiCompatibleProvider::new(profile, RetryBudget::default())
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(Harness::with_openai_provider_and_resolver(
+        store,
+        agentic_terminal_core::harness_api::policy(),
+        provider,
+        Arc::new(MacosKeychainResolver),
+    ))
+}
+
+/// The daemon owns the macOS Keychain lookup. The resolver returns only a
+/// transient request credential and intentionally suppresses platform errors,
+/// so neither a Keychain detail nor a credential can enter an event or log.
+struct MacosKeychainResolver;
+
+impl CredentialResolver for MacosKeychainResolver {
+    fn resolve(&self, profile: &ProviderProfile) -> Result<Option<String>, ProviderError> {
+        let CredentialStrategy::KeychainReference { service, account } =
+            &profile.credential_strategy
+        else {
+            return Ok(None);
         };
-        writer
-            .write_all(serde_json::to_string(&response)?.as_bytes())
-            .await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
+        read_keychain_credential(service, account).map(Some)
     }
 }
 
-fn handle_request(store: Arc<dyn EventStore>, request: IpcRequest) -> IpcResponse {
-    let harness =
-        agentic_terminal_core::Harness::new(store, agentic_terminal_core::harness_api::policy());
-    harness.handle(request)
+#[cfg(target_os = "macos")]
+fn read_keychain_credential(service: &str, account: &str) -> Result<String, ProviderError> {
+    let bytes = security_framework::passwords::get_generic_password(service, account)
+        .map_err(|_| ProviderError::MissingCredential)?;
+    String::from_utf8(bytes).map_err(|_| ProviderError::MissingCredential)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_keychain_credential(_service: &str, _account: &str) -> Result<String, ProviderError> {
+    Err(ProviderError::MissingCredential)
+}
+
+async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut negotiated = None::<BTreeSet<String>>;
+    let mut subscription = None;
+    let mut event_poll = tokio::time::interval(std::time::Duration::from_millis(25));
+    loop {
+        tokio::select! {
+            _ = event_poll.tick(), if subscription.is_some() => {
+                let (session_id, after_sequence) = subscription.expect("checked above");
+                match harness.handle(IpcRequest::Stream { session_id, after_sequence }) {
+                    IpcResponse::Events { events, .. } if !events.is_empty() => {
+                        subscription = events.last().map(|last| (session_id, last.sequence));
+                        write_response(&mut writer, &IpcResponse::Events { session_id, events }).await?;
+                    }
+                    IpcResponse::Events { .. } => {}
+                    error @ IpcResponse::Error { .. } => {
+                        write_response(&mut writer, &error).await?;
+                        return Ok(());
+                    }
+                    _ => unreachable!("stream request returns events or error"),
+                }
+            }
+            read = read_bounded_line(&mut reader) => {
+                let line = match read? {
+                    LineRead::Eof => return Ok(()),
+                    LineRead::TooLarge => {
+                        write_response(&mut writer, &IpcResponse::Error {
+                        code: IpcErrorCode::InvalidRequest,
+                        message: "request exceeds 64 KiB".into(),
+                        }).await?;
+                        return Ok(());
+                    }
+                    LineRead::Line(line) => line,
+                };
+                let response = match serde_json::from_slice::<IpcRequest>(&line) {
+                    Ok(request @ IpcRequest::Hello { .. }) => {
+                        let response = harness.handle(request);
+                        match &response {
+                            IpcResponse::Hello { capabilities, .. } => {
+                                negotiated = Some(capabilities.iter().cloned().collect());
+                            }
+                            IpcResponse::Incompatible { .. } => {
+                                write_response(&mut writer, &response).await?;
+                                return Ok(());
+                            }
+                            _ => unreachable!("hello returns hello or incompatible"),
+                        }
+                        response
+                    }
+                    Ok(request) => {
+                        let Some(capabilities) = negotiated.as_ref() else {
+                            write_response(&mut writer, &IpcResponse::Error {
+                                code: IpcErrorCode::InvalidRequest,
+                                message: "successful hello is required before requests".into(),
+                            }).await?;
+                            continue;
+                        };
+                        let required = required_capability(&request);
+                        if !capabilities.contains(required) {
+                            IpcResponse::Error {
+                                code: IpcErrorCode::Unavailable,
+                                message: format!("capability `{required}` was not negotiated"),
+                            }
+                        } else {
+                            let requested_subscription = match &request {
+                                IpcRequest::Subscribe { session_id, after_sequence } => {
+                                    Some((*session_id, *after_sequence))
+                                }
+                                _ => None,
+                            };
+                            let response = harness.handle(request);
+                            if matches!(response, IpcResponse::Subscribed { .. }) {
+                                subscription = requested_subscription;
+                            }
+                            response
+                        }
+                    }
+                    Err(error) => IpcResponse::Error {
+                            code: IpcErrorCode::InvalidRequest,
+                            message: error.to_string(),
+                    },
+                };
+                write_response(&mut writer, &response).await?;
+            }
+        }
+    }
+}
+
+async fn write_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &IpcResponse,
+) -> Result<()> {
+    writer
+        .write_all(serde_json::to_string(response)?.as_bytes())
+        .await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+fn required_capability(request: &IpcRequest) -> &'static str {
+    match request {
+        IpcRequest::Hello { .. } => unreachable!("hello is negotiated separately"),
+        IpcRequest::CreateSession => "session_create",
+        IpcRequest::Attach { .. } => "session_attach",
+        IpcRequest::ListSessions => "session_list",
+        IpcRequest::Stream { .. } => "event_stream",
+        IpcRequest::Prompt { .. } => "prompt",
+        IpcRequest::Cancel { .. } => "cancel",
+        IpcRequest::Tool { .. } => "tool",
+        IpcRequest::Subscribe { .. } => "subscribe",
+    }
+}
+
+enum LineRead {
+    Eof,
+    Line(Vec<u8>),
+    TooLarge,
+}
+
+async fn read_bounded_line<R>(reader: &mut R) -> std::io::Result<LineRead>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut output = Vec::new();
+    loop {
+        let (chunk, complete) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                if output.is_empty() {
+                    return Ok(LineRead::Eof);
+                }
+                (Vec::new(), true)
+            } else if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
+                (available[..=newline].to_vec(), true)
+            } else {
+                (available.to_vec(), false)
+            }
+        };
+        reader.consume(chunk.len());
+        if output.len().saturating_add(chunk.len()) > MAX_IPC_LINE_BYTES {
+            return Ok(LineRead::TooLarge);
+        }
+        output.extend_from_slice(&chunk);
+        if complete {
+            return Ok(LineRead::Line(output));
+        }
+    }
+}
+
+#[cfg(test)]
+fn handle_request(
+    store: Arc<dyn agentic_terminal_core::EventStore>,
+    request: IpcRequest,
+) -> IpcResponse {
+    Harness::new(store, agentic_terminal_core::harness_api::policy()).handle(request)
 }
 
 fn data_root() -> Result<PathBuf> {
@@ -102,7 +289,8 @@ fn set_socket_permissions(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use agentic_terminal_core::{
-        IPC_VERSION, MemoryEventStore, ReadOnlyToolKind, RuntimeStatus, ToolOutcome,
+        EventPayload, EventStore, IPC_VERSION, MemoryEventStore, NoticeEvent, ReadOnlyToolKind,
+        RuntimeStatus, ToolOutcome,
     };
 
     #[test]
@@ -265,5 +453,184 @@ mod tests {
             event.payload,
             agentic_terminal_core::EventPayload::Run(RunEvent::Completed { .. })
         )));
+    }
+
+    #[tokio::test]
+    async fn second_prompt_is_rejected_while_run_is_active() {
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(store.clone(), agentic_terminal_core::harness_api::policy());
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("create session response")
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "first".into(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "second".into(),
+            }),
+            IpcResponse::Error {
+                code: IpcErrorCode::Conflict,
+                ..
+            }
+        ));
+        let started = store
+            .list(session_id)
+            .expect("list events")
+            .into_iter()
+            .fold((0, 0), |(started, intents), event| match event.payload {
+                EventPayload::Run(RunEvent::Started { .. }) => (started + 1, intents),
+                EventPayload::Intent(_) => (started, intents + 1),
+                _ => (started, intents),
+            });
+        assert_eq!(started, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn wire_requires_hello_and_negotiated_capability() {
+        let harness = Arc::new(Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            agentic_terminal_core::harness_api::policy(),
+        ));
+        let (server, client) = UnixStream::pair().expect("create Unix pair");
+        let server_task = tokio::spawn(async move { serve_client(server, harness).await });
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        writer
+            .write_all(b"{\"method\":\"list_sessions\"}\n")
+            .await
+            .expect("send request before hello");
+        writer.flush().await.expect("flush request");
+        let response: IpcResponse = serde_json::from_str(
+            &lines
+                .next_line()
+                .await
+                .expect("read pre-hello response")
+                .expect("pre-hello response"),
+        )
+        .expect("parse pre-hello response");
+        assert!(matches!(
+            response,
+            IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+
+        for request in [
+            IpcRequest::Hello {
+                version: IPC_VERSION,
+                capabilities: vec!["session_create".into()],
+            },
+            IpcRequest::ListSessions,
+        ] {
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(&request).unwrap()).as_bytes())
+                .await
+                .expect("send negotiated request");
+        }
+        writer.flush().await.expect("flush negotiated requests");
+        assert!(matches!(
+            serde_json::from_str::<IpcResponse>(
+                &lines.next_line().await.unwrap().expect("hello response")
+            )
+            .unwrap(),
+            IpcResponse::Hello { capabilities, .. }
+                if capabilities == vec!["session_create"]
+        ));
+        assert!(matches!(
+            serde_json::from_str::<IpcResponse>(
+                &lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("capability response")
+            )
+            .unwrap(),
+            IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                ..
+            }
+        ));
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn subscription_pushes_new_durable_events_after_backfill_cursor() {
+        let store = Arc::new(MemoryEventStore::default());
+        let session_id = store.create_session().expect("create session");
+        let (server, client) = UnixStream::pair().expect("create Unix pair");
+        let server_harness = Arc::new(Harness::new(
+            store.clone(),
+            agentic_terminal_core::harness_api::policy(),
+        ));
+        let server_task = tokio::spawn(async move { serve_client(server, server_harness).await });
+
+        let (reader, mut writer) = client.into_split();
+        writer
+            .write_all(
+                format!(
+                    "{}\n{}\n",
+                    serde_json::to_string(&IpcRequest::Hello {
+                        version: IPC_VERSION,
+                        capabilities: vec!["subscribe".into()],
+                    })
+                    .expect("encode hello"),
+                    serde_json::to_string(&IpcRequest::Subscribe {
+                        session_id,
+                        after_sequence: 1,
+                    })
+                    .expect("encode subscription"),
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("send subscription");
+        writer.flush().await.expect("flush subscription");
+
+        let mut lines = BufReader::new(reader).lines();
+        assert!(matches!(
+            serde_json::from_str::<IpcResponse>(
+                &lines.next_line().await.expect("hello read").expect("hello")
+            )
+            .expect("parse hello"),
+            IpcResponse::Hello { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<IpcResponse>(
+                &lines.next_line().await.expect("ack read").expect("ack")
+            )
+            .expect("parse ack"),
+            IpcResponse::Subscribed { session_id: actual } if actual == session_id
+        ));
+
+        store
+            .append_next(session_id, EventPayload::Notice(NoticeEvent::PolicyAllowed))
+            .expect("append durable event");
+        let response = serde_json::from_str::<IpcResponse>(
+            &tokio::time::timeout(std::time::Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("event push timeout")
+                .expect("event read")
+                .expect("event line"),
+        )
+        .expect("parse event");
+        assert!(matches!(
+            response,
+            IpcResponse::Events { session_id: actual, events }
+                if actual == session_id && events.len() == 1 && events[0].sequence == 2
+        ));
+
+        server_task.abort();
     }
 }

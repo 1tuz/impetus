@@ -2,12 +2,12 @@
 
 Local-first Rust harness для coding-agents: долговечные сессии, typed events, provider/ACP adapters и контролируемые эффекты. Harness не зависит от конкретного terminal emulator или GUI. Основной пользовательский путь — запуск из [Zap](https://github.com/zerx-lab/zap); CLI, IDE adapter и существующий GPUI preview остаются сменными клиентами одной session model.
 
-Репозиторий исторически называется `agentic-terminal`, поэтому имена crates и data directory пока сохранены. Смена стратегии не выдаёт запланированное за готовое: сейчас реализованы безопасный core-фундамент, SQLite event store, policy/approval, capability manifests, headless daemon/CLI с deterministic mock stream, диагностический GPUI client и экспериментальный GitLab CI pane. Model-backed agent loop, read-only tools, ACP и local effects ещё предстоят.
+Репозиторий исторически называется `agentic-terminal`, поэтому имена crates и data directory пока сохранены. Смена стратегии не выдаёт запланированное за готовое: сейчас реализованы core-фундамент, SQLite event store, policy/approval, capability manifests, headless daemon/CLI с deterministic mock stream, workspace-scoped read-only tools, client contract и экспериментальный GPUI CI pane. Model-backed agent loop, provider profiles, ACP и local effects ещё предстоят.
 
 ## Принципы
 
 - **Harness-first:** agent loop, sessions, tools, policy и audit строятся раньше собственного terminal UI.
-- **Сменные клиенты:** Zap — основной клиент и допустимый личный fork; CLI/IDE/GPUI используют versioned protocol и не владеют policy state.
+- **Сменные клиенты:** Zap — основной клиент и допустимый личный fork; CLI уже использует versioned protocol, будущие IDE/structured GPUI surfaces обязаны использовать тот же contract и не владеть policy state.
 - **macOS-first и local-first:** Rust runtime, SQLite WAL, Keychain references; удалённые подключения включаются только явным профилем.
 - **Ограниченная RAM:** bounded channels/output, durable chunks и измеримый harness RSS; память конкретного terminal emulator считается отдельно.
 - **Явный origin:** модель создаёт только `origin=agent`; действие проходит `Policy → Allow | NeedsApproval | Deny`, затем `Sandbox → Capability → Execution`.
@@ -25,9 +25,9 @@ Local-first Rust harness для coding-agents: долговечные сесси
 | Слой | Текущее состояние |
 | --- | --- |
 | `agentic-terminal-core` | базовые events/runtime types, policy/approval, SQLite WAL, manifest validation и CI projection |
-| GPUI reference client | native Metal window, темы preview, session state и экспериментальный CI pane |
+| GPUI reference client | native Metal window, темы preview и экспериментальный CI pane; durable session state не хранит |
 | GitLab CI slice | общий local/remote `PipelineModel`; native smoke требует установленные `gitlab-ci-local` и `glab` |
-| Standalone harness | v0.2: typed projections, supervisor, daemon/IPC, CLI и deterministic mock provider; read-only tools и direct provider ещё не реализованы |
+| Standalone harness | v0.2: typed projections, supervisor, daemon/IPC, CLI, mock provider, bounded/redacted read-only tools и один OpenAI-compatible direct-provider adapter |
 | Client IPC | Unix socket base входит в v0.2; structured extensions спроектированы для v0.3 |
 | Zap bridge / ACP | v0.3: спроектированы, но не реализованы |
 | Собственный PTY/ANSI terminal | optional backlog после Zap go/no-go |
@@ -59,7 +59,22 @@ cargo run -p agentic-terminal-cli -- create
 cargo run -p agentic-terminal-app
 ```
 
-CLI умеет `create`, `list`, `attach SESSION_ID`, `stream SESSION_ID [AFTER_SEQUENCE]`, `prompt SESSION_ID TEXT` и `cancel SESSION_ID`. `stream` читает durable typed events после указанной sequence; SQLite connection клиенту не отдаётся. Пока `prompt` запускает deterministic mock provider: он записывает Agent chunks, переживает один имитированный restart и не использует модель, сеть или секреты.
+CLI умеет `create`, `list`, `attach SESSION_ID`, `stream SESSION_ID [AFTER_SEQUENCE]`, `prompt SESSION_ID TEXT`, `cancel SESSION_ID` и workspace-scoped `tool`. `stream` читает durable typed events после указанной sequence; SQLite connection клиенту не отдаётся. Wire contract `IPC_VERSION=2`: перед запросами клиент и daemon выполняют version/capability handshake. Пока `prompt` запускает deterministic mock provider: он записывает Agent chunks, переживает один имитированный restart и не использует модель, сеть или секреты.
+
+Для явного local/no-secret OpenAI-compatible endpoint daemon принимает отдельный
+profile JSON без token-полей и только из local loopback scope:
+
+```json
+{"id":"local","endpoint":"http://127.0.0.1:11434","model":"model-name","credential_strategy":{"kind":"none"}}
+```
+
+Запуск: `cargo run -p agentic-terminal-harness -- --provider-profile /absolute/path/profile.json`.
+Profile с неизвестными полями (включая raw token) отклоняется. HTTPS profile
+может содержать только opaque Keychain `service`/`account` reference; daemon
+читает generic-password item через macOS Security Framework только перед
+provider request. Credential не сохраняется в SQLite/events/logs и не проходит
+через client IPC. Отсутствующий или недоступный item завершает run redacted
+ошибкой без деталей Keychain.
 
 Повторяемые команды:
 
@@ -76,11 +91,11 @@ GitLab pipeline в `.gitlab-ci.yml` содержит stage `verify` (`fmt`, `tes
 
 ## Документация
 
-- [Архитектура и границы ответственности](docs/ARCHITECTURE.md)
+- [Архитектура: hierarchy, зависимости, ownership и границы](ARCHITECTURE.md)
 - [Наглядная схема architecture](docs/architecture.html)
 - [Roadmap harness-first](docs/ROADMAP.md)
 - [Аудит второй итерации](docs/iteration-2-audit.md)
-- [Детальный roadmap второй итерации](docs/iteration-2-roadmap.md)
+- [Историческая детализация gates v0.2](docs/iteration-2-roadmap.md)
 - [Ближайший исполнимый TODO](TODO.md)
 - [Клиентский UX: Zap, CLI и optional GPUI](docs/GUI_UX.md)
 - [ACP, client IPC и auth](docs/ACP_AND_AUTH.md)
@@ -98,6 +113,7 @@ GitLab pipeline в `.gitlab-ci.yml` содержит stage `verify` (`fmt`, `tes
 crates/agentic-terminal-core/  события, policy, approvals, SQLite, manifests
 crates/agentic-terminal-app/   optional GPUI reference client и CI preview
 crates/agentic-terminal-harness/ headless daemon и Unix socket IPC
+crates/agentic-terminal-client/ transport-neutral client contract
 crates/agentic-terminal-cli/   reference CLI для обычной terminal/Zap tab
 config/capabilities.json       декларативный каталог capabilities
 docs/                          архитектура, roadmap и client contracts

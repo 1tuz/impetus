@@ -1,6 +1,7 @@
 use crate::{
-    Action, ApprovalEvent, ApprovalState, Event, EventPayload, EventStore, IntentEvent,
-    NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
+    Action, ApprovalEvent, ApprovalResolution, ApprovalResolver, ApprovalState, Event,
+    EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision, PolicyEngine,
+    ProjectionError, RunEvent, ToolEvent, reduce,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -31,10 +32,18 @@ pub enum RuntimeError {
     MissingApproval(Uuid),
     #[error("approval `{0}` is not pending")]
     ApprovalNotPending(Uuid),
+    #[error("action needs a durable user intent revision before it can be approved")]
+    MissingIntentRevision,
+    #[error("approval `{0}` must be resolved by a user")]
+    ApprovalResolverNotUser(Uuid),
+    #[error("approval `{0}` is stale because its action or user intent changed")]
+    StaleApproval(Uuid),
     #[error("action denied by policy: {0}")]
     Denied(String),
     #[error("run `{0}` is not active")]
     InactiveRun(Uuid),
+    #[error("run `{0}` is already active")]
+    ActiveRun(Uuid),
 }
 
 pub struct AgentRuntime {
@@ -81,7 +90,21 @@ impl AgentRuntime {
         self.record(EventPayload::Intent(IntentEvent { text: text.into() }))
     }
 
+    pub fn submit_intent_and_start_run(
+        &self,
+        text: impl Into<String>,
+    ) -> Result<Uuid, RuntimeError> {
+        if let Some(run_id) = self.projection()?.active_run_id {
+            return Err(RuntimeError::ActiveRun(run_id));
+        }
+        self.submit_intent(text)?;
+        self.start_run()
+    }
+
     pub fn start_run(&self) -> Result<Uuid, RuntimeError> {
+        if let Some(run_id) = self.projection()?.active_run_id {
+            return Err(RuntimeError::ActiveRun(run_id));
+        }
         let run_id = Uuid::new_v4();
         self.record(EventPayload::Run(RunEvent::Started { run_id }))?;
         Ok(run_id)
@@ -141,7 +164,11 @@ impl AgentRuntime {
                 Err(RuntimeError::Denied(reason))
             }
             PolicyDecision::NeedsApproval { reason } => {
-                let approval = crate::ApprovalRequest::pending(action, reason);
+                let intent_revision = self
+                    .projection()?
+                    .latest_intent_revision
+                    .ok_or(RuntimeError::MissingIntentRevision)?;
+                let approval = crate::ApprovalRequest::pending(action, reason, intent_revision);
                 self.record(EventPayload::Approval(ApprovalEvent::Requested {
                     request: approval,
                 }))?;
@@ -163,16 +190,30 @@ impl AgentRuntime {
         }))
     }
 
-    pub fn resolve_approval(&self, id: Uuid, accepted: bool) -> Result<(), RuntimeError> {
+    pub fn resolve_approval(&self, resolution: ApprovalResolution) -> Result<(), RuntimeError> {
         let mut approval = self
             .projection()?
             .pending_approvals
-            .remove(&id)
-            .ok_or(RuntimeError::MissingApproval(id))?;
+            .remove(&resolution.id)
+            .ok_or(RuntimeError::MissingApproval(resolution.id))?;
         if approval.state != ApprovalState::Pending {
-            return Err(RuntimeError::ApprovalNotPending(id));
+            return Err(RuntimeError::ApprovalNotPending(resolution.id));
         }
-        approval.state = if accepted {
+        if resolution.resolver != ApprovalResolver::User {
+            return Err(RuntimeError::ApprovalResolverNotUser(resolution.id));
+        }
+        let latest_intent_revision = self.projection()?.latest_intent_revision;
+        if resolution.action_fingerprint != approval.action_fingerprint
+            || resolution.intent_revision != approval.intent_revision
+            || latest_intent_revision != Some(approval.intent_revision)
+        {
+            approval.state = ApprovalState::Rejected;
+            self.record(EventPayload::Approval(ApprovalEvent::Resolved {
+                request: approval,
+            }))?;
+            return Err(RuntimeError::StaleApproval(resolution.id));
+        }
+        approval.state = if resolution.accepted {
             ApprovalState::Approved
         } else {
             ApprovalState::Rejected
@@ -240,6 +281,9 @@ mod tests {
             Arc::new(MemoryEventStore::default()),
             PolicyEngine::new(SandboxScope::local_workspace(".")),
         );
+        runtime
+            .submit_intent("update workspace")
+            .expect("record intent");
         let status = runtime
             .request_action(Action {
                 origin: ActionOrigin::Agent,
@@ -259,6 +303,24 @@ mod tests {
                     EventPayload::Approval(ApprovalEvent::Requested { .. })
                 ))
         );
+    }
+
+    #[test]
+    fn approval_request_without_a_user_intent_is_rejected() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+
+        assert!(matches!(
+            runtime.request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "update config".into(),
+                target: Some("Cargo.toml".into()),
+            }),
+            Err(RuntimeError::MissingIntentRevision)
+        ));
     }
 
     #[test]
@@ -318,7 +380,15 @@ mod tests {
             RuntimeStatus::AwaitingApproval
         );
         recovered
-            .resolve_approval(approval_id, true)
+            .resolve_approval(ApprovalResolution::user(
+                recovered
+                    .projection()
+                    .expect("projection")
+                    .pending_approvals
+                    .get(&approval_id)
+                    .expect("pending approval"),
+                true,
+            ))
             .expect("resolve recovered approval");
         let events = recovered.events().expect("recovered events");
         assert_eq!(
@@ -350,5 +420,166 @@ mod tests {
             recovered.status().expect("completed status"),
             RuntimeStatus::Completed
         );
+    }
+
+    #[test]
+    fn changed_intent_rejects_stale_approval_durably() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .submit_intent("change config")
+            .expect("first intent");
+        runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "update config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect("request approval");
+        let request = runtime
+            .projection()
+            .expect("projection")
+            .pending_approvals
+            .into_values()
+            .next()
+            .expect("pending approval");
+
+        runtime
+            .submit_intent("change readme instead")
+            .expect("new intent");
+        assert!(matches!(
+            runtime.resolve_approval(ApprovalResolution::user(&request, true)),
+            Err(RuntimeError::StaleApproval(id)) if id == request.id
+        ));
+        assert!(
+            runtime
+                .projection()
+                .expect("projection")
+                .pending_approvals
+                .is_empty()
+        );
+        assert!(matches!(
+            runtime.events().expect("events").last().map(|event| &event.payload),
+            Some(EventPayload::Approval(ApprovalEvent::Resolved { request }))
+                if request.state == ApprovalState::Rejected
+        ));
+    }
+
+    #[test]
+    fn agent_cannot_resolve_its_own_approval() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .submit_intent("change config")
+            .expect("record intent");
+        runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "update config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect("request approval");
+        let request = runtime
+            .projection()
+            .expect("projection")
+            .pending_approvals
+            .into_values()
+            .next()
+            .expect("pending approval");
+        let mut decision = ApprovalResolution::user(&request, true);
+        decision.resolver = ApprovalResolver::Agent;
+
+        assert!(matches!(
+            runtime.resolve_approval(decision),
+            Err(RuntimeError::ApprovalResolverNotUser(id)) if id == request.id
+        ));
+        assert!(
+            runtime
+                .projection()
+                .expect("projection")
+                .pending_approvals
+                .contains_key(&request.id)
+        );
+    }
+
+    #[test]
+    fn altered_fingerprint_cannot_resolve_pending_approval() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .submit_intent("change config")
+            .expect("record intent");
+        runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "update config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect("request approval");
+        let request = runtime
+            .projection()
+            .expect("projection")
+            .pending_approvals
+            .into_values()
+            .next()
+            .expect("pending approval");
+        let mut decision = ApprovalResolution::user(&request, true);
+        decision.action_fingerprint = Action {
+            target: Some("README.md".into()),
+            ..request.action.clone()
+        }
+        .fingerprint();
+
+        assert!(matches!(
+            runtime.resolve_approval(decision),
+            Err(RuntimeError::StaleApproval(id)) if id == request.id
+        ));
+        assert!(
+            runtime
+                .projection()
+                .expect("projection")
+                .pending_approvals
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn approval_fingerprint_and_intent_revision_replay_deterministically() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .submit_intent("change config")
+            .expect("record intent");
+        runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "update config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect("request approval");
+
+        let events = runtime.events().expect("events");
+        let first = reduce(&events).expect("first replay").expect("projection");
+        let second = reduce(&events).expect("second replay").expect("projection");
+        let request = first
+            .pending_approvals
+            .values()
+            .next()
+            .expect("pending approval");
+        assert_eq!(first, second);
+        assert_eq!(request.intent_revision, 2);
+        assert_eq!(request.action_fingerprint, request.action.fingerprint());
     }
 }

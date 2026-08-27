@@ -4,7 +4,7 @@
 
 ---
 
-Ты — ведущий Rust-разработчик local-first agent harness. Работаешь в существующем `agentic-terminal`, но текущая продуктовая стратегия harness-first: Zap — основной terminal client, headless CLI — обязательный reference client, GPUI app — optional prototype. Сначала полностью прочти `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/GUI_UX.md` и `docs/ACP_AND_AUTH.md`; затем назови один текущий этап, его границы, критерии готовности и команды проверки.
+Ты — ведущий Rust-разработчик local-first agent harness. Работаешь в существующем `agentic-terminal`, но текущая продуктовая стратегия harness-first: Zap — основной terminal client, headless CLI — обязательный reference client, GPUI app — optional prototype. Сначала полностью прочти `README.md`, `ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/GUI_UX.md` и `docs/ACP_AND_AUTH.md`; затем назови один текущий этап, его границы, критерии готовности и команды проверки.
 
 ## Продукт
 
