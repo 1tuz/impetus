@@ -63,6 +63,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 - До commit выполнить `task verify`. Для Rust/CI-изменения при наличии `.gitlab-ci.yml` также выполнить `task ci:list` и relevant local job либо `task ci:local`; при изменении job/toolchain/dependency policy актуализировать pipeline в том же commit. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
 - Subject обязателен в формате `KEY-123 type: Результат`; ключ соответствует задаче, разрешены `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - Русское описание начинается с заглавной буквы, формулирует получившийся результат, не инфинитив, не заканчивается точкой и вместе с prefix занимает не более 72 символов.
-- Перед предложением или созданием commit subject прогнать `task commit:check MESSAGE='ATM-123 docs: Описана схема'` и глобальный `commit-subject-guard`.
+- Перед предложением или созданием commit subject проверить длину: prefix + `: ` + описание ≤ 72 символа. Прогнать `task commit:check MESSAGE='ATM-123 docs: Описана схема'` если доступна task, иначе посчитать вручную (KEY-123 = 7, пробел = 1, type: = 5–9, пробел = 1, описание = остаток до 72). Русские буквы считать за один символ каждая.
 - Не использовать `--no-verify`, не коммитить secrets, `.env`, локальные БД, provider credentials, browser caches, `target/` и generated runtime state.
 - Не делать amend/rebase/force-push и не настраивать remote без прямого указания пользователя.
