@@ -27,8 +27,8 @@
 
 ### Затем, шаг 2 из 4 — Zap baseline smoke
 
-- [ ] Запуск headless harness CLI в обычной Zap tab.
-- [ ] Session lifecycle: create/stream/cancel через CLI без structured IPC.
+- [x] Запуск headless harness CLI в обычной Zap tab.
+- [x] Session lifecycle: create/stream/cancel через CLI без structured IPC.
 - [ ] Decision point: нужен ли structured Blocks/diff/approval UX, или достаточно
   plain output + manual approval CLI.
 
