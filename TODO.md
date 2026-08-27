@@ -27,19 +27,19 @@
 
 ### Затем, шаг 2 из 3 — закрыть путь выполнения
 
-- [ ] Normalized effect только через Policy → Approval → Sandbox → Capability
+- [x] Normalized effect только через Policy → Approval → Sandbox → Capability
   → Execution. Для mutating effect остаётся durable approval → execution path
   через versioned client IPC; не включать capability до отдельного этапа.
-- [ ] Exact action fingerprint/revision; stale approval reject; unavailable
+- [x] Exact action fingerprint/revision; stale approval reject; unavailable
   sandbox fail closed для durable approval → execution path следующего этапа.
 - [x] macOS sandbox spike: Seatbelt proof ограничивает child canonical
   workspace; write/process/network capabilities не включены.
 
 ### Затем, шаг 3 из 3 — зафиксировать пределы
 
-- [ ] RSS, queue, artifact/output bytes, restart/cancel latency и
+- [x] RSS, queue, artifact/output bytes, restart/cancel latency и
   context/token baseline.
-- [ ] Headless dependency graph без GPUI, Metal, PTY и ANSI renderer.
+- [x] Headless dependency graph без GPUI, Metal, PTY и ANSI renderer.
 
 ## Не сейчас
 

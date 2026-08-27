@@ -1,8 +1,12 @@
 # Правила для coding-агентов
 
-## Сначала прочитать
+Стиль (caveman), YAGNI/ponytail, **RTK** и снижение токенов — в Codewhale constitution / `~/.codewhale/RTK.md`:
 
-Перед изменением кода прочитай `README.md`, `ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/GUI_UX.md` и `docs/ACP_AND_AUTH.md`. Затем назови один текущий этап roadmap и его критерии готовности. Не расширяй одновременно несколько этапов.
+- глобально: `~/.codewhale/constitution.json` + `append_system_prompt` (RTK каждый shell)
+- репо: `.codewhale/constitution.json`
+- **каждый `bash`:** только через `rtk …` (`rtk cargo`, `rtk git`, `rtk rg`, …)
+
+Здесь только продуктовые границы и проверка этого репо.
 
 ## Неподвижные границы
 
