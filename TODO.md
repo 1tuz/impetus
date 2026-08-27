@@ -18,11 +18,11 @@
 
 ### Шаг 1 из 4 — IPC extension
 
-- [ ] Typed approval payload: diff preview, affected files, estimated scope.
-- [ ] Attachment references: artifact/output content по ID, не inline dump.
-- [ ] Backend/auth state events: provider health, keychain availability, token
+- [x] Typed approval payload: diff preview, affected files, estimated scope.
+- [x] Attachment references: artifact/output content по ID, не inline dump.
+- [x] Backend/auth state events: provider health, keychain availability, token
   expiry warning.
-- [ ] Negotiated `Incompatible`: client/harness version mismatch handling с
+- [x] Negotiated `Incompatible`: client/harness version mismatch handling с
   explicit fallback или upgrade prompt.
 
 ### Затем, шаг 2 из 4 — Zap baseline smoke
@@ -31,6 +31,8 @@
 - [ ] Session lifecycle: create/stream/cancel через CLI без structured IPC.
 - [ ] Decision point: нужен ли structured Blocks/diff/approval UX, или достаточно
   plain output + manual approval CLI.
+
+[in_progress]
 
 ### Затем, шаг 3 из 4 — ACP gateway
 
