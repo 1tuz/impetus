@@ -216,6 +216,8 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::Tool { .. } => "tool",
         IpcRequest::Subscribe { .. } => "subscribe",
         IpcRequest::ResolveApproval { .. } => "resolve_approval",
+        IpcRequest::GetAttachment { .. } => "get_attachment",
+        IpcRequest::GetApprovalDetail { .. } => "get_approval_detail",
     }
 }
 

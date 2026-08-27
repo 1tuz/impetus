@@ -309,6 +309,36 @@ fn handle_request(
             },
             Err(error) => runtime_error(error),
         },
+        IpcRequest::GetAttachment {
+            session_id: _,
+            attachment_id,
+        } => {
+            // Placeholder: attachment storage not yet implemented
+            IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: format!("attachment {attachment_id} not found"),
+            }
+        }
+        IpcRequest::GetApprovalDetail {
+            session_id,
+            approval_id,
+        } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
+            let request = runtime
+                .pending_approval(approval_id)?
+                .ok_or(RuntimeError::MissingApproval(approval_id))?;
+            // Placeholder: diff/scope computation not yet implemented
+            let detail = crate::ApprovalDetail {
+                request,
+                diff_preview: None,
+                affected_files: vec![],
+                estimated_scope: None,
+                attachment_refs: vec![],
+            };
+            Ok((session_id, detail))
+        }) {
+            Ok((session_id, detail)) => IpcResponse::ApprovalDetail { session_id, detail },
+            Err(error) => runtime_error(error),
+        },
     }
 }
 
@@ -741,5 +771,71 @@ mod tests {
             resolved_event.is_some(),
             "resolved event must be in the stream"
         );
+    }
+
+    #[tokio::test]
+    async fn ipc_get_approval_detail_returns_extended_payload() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let harness = Harness::new(store.clone(), policy.clone());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
+        else {
+            panic!("session creation response");
+        };
+
+        let runtime = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("attach to created session");
+
+        runtime
+            .submit_intent("write a test file")
+            .expect("submit intent");
+
+        let action = crate::Action {
+            origin: crate::ActionOrigin::Agent,
+            kind: crate::ActionKind::WriteFile,
+            summary: "write file".into(),
+            target: Some("test.txt".into()),
+        };
+        runtime
+            .request_action(action)
+            .expect("request action that needs approval");
+
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response");
+        };
+
+        let approval_id = events
+            .iter()
+            .find_map(|e| {
+                if let crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) =
+                    &e.payload
+                {
+                    Some(request.id)
+                } else {
+                    None
+                }
+            })
+            .expect("approval request in events");
+
+        let IpcResponse::ApprovalDetail { detail, .. } = harness.handle(
+            IpcRequest::GetApprovalDetail {
+                session_id,
+                approval_id,
+            },
+        ) else {
+            panic!("approval detail response");
+        };
+
+        assert_eq!(detail.request.id, approval_id);
+        assert_eq!(detail.request.action.kind, crate::ActionKind::WriteFile);
+        // Placeholders until diff/scope computation implemented
+        assert!(detail.diff_preview.is_none());
+        assert!(detail.affected_files.is_empty());
+        assert!(detail.estimated_scope.is_none());
+        assert!(detail.attachment_refs.is_empty());
     }
 }
