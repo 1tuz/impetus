@@ -25,14 +25,13 @@
 - [x] Negotiated `Incompatible`: client/harness version mismatch handling с
   explicit fallback или upgrade prompt.
 
-### Затем, шаг 2 из 4 — Zap baseline smoke
+### Затем, шаг 2 из 4 — Zap structured adapter
 
-- [x] Запуск headless harness CLI в обычной Zap tab.
-- [x] Session lifecycle: create/stream/cancel через CLI без structured IPC.
-- [ ] Decision point: нужен ли structured Blocks/diff/approval UX, или достаточно
-  plain output + manual approval CLI.
-
-[in_progress]
+- [x] CLI baseline (create/stream/cancel) работает.
+- [x] Zap adapter binary: подписывается на harness events через polling, рендерит typed blocks.
+- [ ] OSC escape sequences: harness → Zap notification hooks.
+- [ ] Structured blocks protocol: diff с syntax highlighting, approval buttons, live agent chunks, attachments.
+- [ ] Live session status bar: Running / Idle / NeedsApproval.
 
 ### Затем, шаг 3 из 4 — ACP gateway
 

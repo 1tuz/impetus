@@ -186,6 +186,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentic-terminal-zap-adapter"
+version = "0.1.0"
+dependencies = [
+ "agentic-terminal-client",
+ "agentic-terminal-core",
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

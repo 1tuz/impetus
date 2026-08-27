@@ -4,7 +4,7 @@ members = [
   "crates/agentic-terminal-app",
   "crates/agentic-terminal-harness",
   "crates/agentic-terminal-cli",
-  "crates/agentic-terminal-client",
+  "crates/agentic-terminal-client", "crates/agentic-terminal-zap-adapter",
 ]
 resolver = "2"
 
