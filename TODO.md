@@ -29,9 +29,9 @@
 
 - [x] CLI baseline (create/stream/cancel) работает.
 - [x] Zap adapter binary: подписывается на harness events через polling, рендерит typed blocks.
-- [ ] OSC escape sequences: harness → Zap notification hooks.
-- [ ] Structured blocks protocol: diff с syntax highlighting, approval buttons, live agent chunks, attachments.
-- [ ] Live session status bar: Running / Idle / NeedsApproval.
+- [x] OSC escape sequences: harness → Zap notification hooks.
+- [x] Structured blocks protocol: diff с syntax highlighting, approval buttons, live agent chunks, attachments.
+- [x] Live session status bar: Running / Idle / NeedsApproval.
 
 ### Затем, шаг 3 из 4 — ACP gateway
 
