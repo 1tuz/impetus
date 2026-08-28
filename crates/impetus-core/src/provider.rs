@@ -21,6 +21,16 @@ pub enum CredentialStrategy {
     None,
     /// Opaque macOS Keychain locator. This is an identifier, never a token.
     KeychainReference { service: String, account: String },
+    /// System-browser OAuth flow. URL is shown to user who explicitly opens it.
+    /// Callback is handled by local server; token stored in Keychain after exchange.
+    SystemBrowserOAuth {
+        authorization_url: String,
+        token_url: String,
+        client_id: String,
+        /// Opaque Keychain reference where token will be stored after successful flow.
+        keychain_service: String,
+        keychain_account: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +57,7 @@ impl CredentialResolver for NoCredentialResolver {
         match profile.credential_strategy {
             CredentialStrategy::None => Ok(None),
             CredentialStrategy::KeychainReference { .. } => Err(ProviderError::MissingCredential),
+            CredentialStrategy::SystemBrowserOAuth { .. } => Err(ProviderError::MissingCredential),
         }
     }
 }
@@ -71,12 +82,37 @@ impl ProviderProfile {
             {
                 Ok(())
             }
+            (
+                CredentialStrategy::SystemBrowserOAuth {
+                    authorization_url,
+                    token_url,
+                    client_id,
+                    keychain_service,
+                    keychain_account,
+                },
+                "https",
+                _,
+            ) if !authorization_url.is_empty()
+                && !token_url.is_empty()
+                && !client_id.is_empty()
+                && !keychain_service.is_empty()
+                && !keychain_account.is_empty()
+                && reqwest::Url::parse(authorization_url).is_ok()
+                && reqwest::Url::parse(token_url).is_ok() =>
+            {
+                Ok(())
+            }
             (CredentialStrategy::None, _, _) => Err(ProviderError::InvalidProfile(
                 "no-secret profiles are limited to loopback endpoints",
             )),
             (CredentialStrategy::KeychainReference { .. }, _, _) => {
                 Err(ProviderError::InvalidProfile(
                     "credential profiles require HTTPS and non-empty Keychain reference",
+                ))
+            }
+            (CredentialStrategy::SystemBrowserOAuth { .. }, _, _) => {
+                Err(ProviderError::InvalidProfile(
+                    "OAuth profiles require HTTPS endpoint and valid authorization/token URLs",
                 ))
             }
         }
@@ -520,5 +556,28 @@ mod tests {
         server.await.unwrap();
         assert_eq!(chunks.concat(), "hello world");
         assert_eq!(provider.health(), ProviderHealth::Healthy);
+    }
+
+    #[test]
+    fn oauth_profile_requires_https_endpoint() {
+        let profile = ProviderProfile {
+            id: "oauth-test".into(),
+            model: "gpt-4".into(),
+            endpoint: "http://api.example.com".into(),
+            credential_strategy: CredentialStrategy::SystemBrowserOAuth {
+                authorization_url: "https://auth.example.com/oauth/authorize".into(),
+                token_url: "https://auth.example.com/oauth/token".into(),
+                client_id: "test-client".into(),
+                keychain_service: "agentic-terminal".into(),
+                keychain_account: "oauth-test".into(),
+            },
+        };
+        assert!(profile.validate().is_err());
+
+        let valid_profile = ProviderProfile {
+            endpoint: "https://api.example.com".into(),
+            ..profile
+        };
+        assert!(valid_profile.validate().is_ok());
     }
 }
