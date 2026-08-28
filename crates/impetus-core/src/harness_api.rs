@@ -37,7 +37,6 @@ enum ProviderBackend {
 pub struct Harness {
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
-    request_lock: Mutex<()>,
     provider: ProviderBackend,
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
 }
@@ -47,7 +46,6 @@ impl Harness {
         Self {
             store,
             policy,
-            request_lock: Mutex::new(()),
             provider: ProviderBackend::Mock,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -79,7 +77,6 @@ impl Harness {
         Self {
             store,
             policy,
-            request_lock: Mutex::new(()),
             provider: ProviderBackend::OpenAi {
                 provider: Arc::new(provider),
                 credential_resolver,
@@ -93,13 +90,10 @@ impl Harness {
     }
 
     /// Resolve a single client request into a response.
+    ///
+    /// No global lock: EventStore and AgentRuntime use internal coordination.
+    /// Independent sessions can execute concurrently.
     pub fn handle(&self, request: IpcRequest) -> IpcResponse {
-        let Ok(_guard) = self.request_lock.lock() else {
-            return IpcResponse::Error {
-                code: IpcErrorCode::Internal,
-                message: "harness request lock poisoned".into(),
-            };
-        };
         handle_request(
             self.store.clone(),
             self.policy.clone(),

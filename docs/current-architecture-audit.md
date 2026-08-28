@@ -132,11 +132,11 @@ swarm/profiles/learning/repo intelligence, and reproducible product benchmarks.
 
 ## Top ten architectural problems
 
-1. Global Harness lock serializes unrelated sessions.
+1. **✅ A3 resolved:** Global Harness lock serializes unrelated sessions.
 2. **✅ A1 resolved:** ProcessExecution.execute bypasses admission and OS sandbox enforcement.
 3. ProcessSpawn is not workspace-scoped and user origin immediately permits it.
-4. Approval resolution does not resume a durable deferred effect.
-5. IPC tool origin is hardcoded User instead of being server-derived.
+4. **✅ A2 resolved:** Approval resolution does not resume a durable deferred effect.
+5. **✅ A2 resolved:** IPC tool origin is hardcoded User instead of being server-derived.
 6. ACP forwards raw credential strings and is outside Harness policy/events.
 7. Advertised attachment and approval-detail endpoints are placeholders.
 8. Daemon, in-memory transport and Zap all poll for events.
@@ -145,11 +145,14 @@ swarm/profiles/learning/repo intelligence, and reproducible product benchmarks.
 
 ## Highest-ROI changes
 
-1. **✅ A1/v0.6 done:** Correct readiness/status documentation.
+1. **✅ A1/A2/A3/v0.6 done:** Correct readiness/status documentation.
 2. **✅ A1 done:** Make unadmitted process execution impossible and provision a narrow per-session workspace scope before it reaches an OS sandbox.
-3. Separate user-direct and agent-generated action paths; test origin forgery.
-4. Store and resume deferred effects with exact approval, or return unavailable.
-5. Split Harness into dispatch, session/run, tools and provider services.
+3. **✅ A2 done:** Separate user-direct and agent-generated action paths; test origin forgery.
+4. **✅ A2 done:** Store and resume deferred effects with exact approval, or return unavailable.
+5. **✅ A3 done (minimal):** Remove global lock; per-session coordination via EventStore/Runtime internal locks.
+6. **Next: B1:** Push events with cursor reconnect; move Zap to it.
+7. **Next: B2:** Complete attachment/detail DTOs or mark capability absent.
+8. **Next: C1:** Extract provider trait/metadata before another provider or router.
 6. Replace global lock with per-session coordination and concurrency tests.
 7. Push events with cursor reconnect; move Zap to it.
 8. Add typed client methods for existing domain operations.

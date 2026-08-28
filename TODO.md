@@ -153,10 +153,12 @@
   - [x] Regression tests: origin derivation, deferred continuation
   - [x] Документация: docs/A2-IMPLEMENTATION.md
   - **Gate A2:** ✅ Agent cannot use user-direct route; stale approval cannot run changed work; approved work resumes exact durable effect (IPC integration pending)
-- [ ] **A3:** Per-session coordination
-  - [ ] Два независимых session делают прогресс concurrently
-  - [ ] Ordered durable events
-  - [ ] Убрать global Harness lock
+- [x] **A3:** Per-session coordination ✅
+  - [x] Убрать global Harness lock
+  - [x] Два независимых session делают прогресс concurrently
+  - [x] Ordered durable events (EventStore гарантирует)
+  - [x] Документация: docs/A3-IMPLEMENTATION.md
+  - **Gate A3:** ✅ Two independent sessions make progress concurrently with ordered durable events
 
 ### Фаза B — Typed client и subscription
 
