@@ -9,6 +9,8 @@
 __pycache__/
 *.pyc
 /.codewhale/state/
+/.codewhale/workflow-runs.jsonl
+/.codewhale/*.bak-*
 /.gitlab-ci-local/cache/
 /.gitlab-ci-local/builds/
 /.gitlab-ci-local/output/
