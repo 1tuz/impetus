@@ -58,7 +58,9 @@ pub use provider::{
 pub use remote::{
     HostKeyFingerprint, HostKeyVerificationError, SSHApproval, SSHApprovalStore,
     SSHApprovalStoreError, SSHConnectionError, SSHConnectionRequest, SSHKeyReference, SSHProfile,
-    SqliteSSHApprovalStore,
+    SqliteSSHApprovalStore, SqliteTmuxSessionStore, TmuxError, TmuxSession, TmuxSessionId,
+    TmuxSessionManager, TmuxSessionRecord, TmuxSessionRequest, TmuxSessionState, TmuxSessionStore,
+    TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};

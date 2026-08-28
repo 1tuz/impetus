@@ -113,7 +113,13 @@
   - [x] PtySessionManager координирует policy, spawn, storage
   - [x] Durable PTY session state в SQLite (SqlitePtySessionStore)
   - [x] Integration tests для process и PTY
-- [ ] tmux integration для persistent remote sessions
+- [x] tmux integration для persistent remote sessions
+  - [x] TmuxSession lifecycle: create, attach, detach, list, kill
+  - [x] TmuxSessionManager координирует SSH, policy, storage
+  - [x] SqliteTmuxSessionStore для durable session state
+  - [x] Remote command execution через SSH + tmux
+  - [x] Policy check для tmux session creation
+  - [x] Integration tests для tmux sessions (9 тестов)
 - [ ] SFTP для remote file access
 - [ ] Durable approval для remote targets (частично: SSH approval готов)
 

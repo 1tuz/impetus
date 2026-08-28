@@ -92,10 +92,17 @@ inspection и одним explicit provider profile.
   - SqlitePtySessionStore для durable session state
   - Integration tests для process execution и PTY sessions
   - Fail-closed: execution только после policy Allow или exact approval
+- [x] tmux integration для persistent remote sessions
+  - TmuxSession lifecycle: create, attach, detach, list, kill
+  - TmuxSessionManager координирует SSH, policy, durable storage
+  - SqliteTmuxSessionStore для durable tmux session state
+  - Remote command execution через SSH + tmux
+  - Policy check для tmux session creation (origin, target host)
+  - Integration tests для tmux sessions (9 тестов)
+  - Sessions survive harness restart
 
 ### Оставшиеся шаги
 
-- [ ] tmux integration для persistent remote sessions
 - [ ] SFTP для remote file access
 - [ ] Durable approval для remote targets (частично: SSH approval готов)
 
