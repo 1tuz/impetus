@@ -94,6 +94,45 @@ pub fn render_event_block(event: &Event) -> Option<Block> {
                 _ => None,
             }
         }
+        EventPayload::Budget(budget_event) => {
+            use impetus_core::BudgetEvent;
+            match budget_event {
+                BudgetEvent::Updated {
+                    turns_used,
+                    tokens_used,
+                    context_used_percent,
+                    ..
+                } => Some(Block::Status {
+                    state: "budget".to_string(),
+                    detail: Some(format!(
+                        "turns: {}, tokens: {}, context: {}%",
+                        turns_used, tokens_used, context_used_percent
+                    )),
+                }),
+                BudgetEvent::CompactionRequired { threshold, used } => Some(Block::Status {
+                    state: "compaction_required".to_string(),
+                    detail: Some(format!("used: {}/{}", used, threshold)),
+                }),
+                BudgetEvent::CompactionCompleted {
+                    compacted_to,
+                    compaction_count,
+                } => Some(Block::Status {
+                    state: "compaction_completed".to_string(),
+                    detail: Some(format!(
+                        "compacted to {} tokens (count: {})",
+                        compacted_to, compaction_count
+                    )),
+                }),
+                BudgetEvent::TurnLimitApproaching { limit, used } => Some(Block::Status {
+                    state: "turn_limit_approaching".to_string(),
+                    detail: Some(format!("used: {}/{}", used, limit)),
+                }),
+                BudgetEvent::TokenLimitApproaching { limit, used } => Some(Block::Status {
+                    state: "token_limit_approaching".to_string(),
+                    detail: Some(format!("used: {}/{}", used, limit)),
+                }),
+            }
+        }
         _ => None,
     }
 }

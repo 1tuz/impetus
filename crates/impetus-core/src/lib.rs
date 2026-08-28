@@ -33,8 +33,8 @@ pub use effects::{
     NormalizedEffect, ReadOnlySandbox,
 };
 pub use events::{
-    AgentEvent, ApprovalEvent, BackendEvent, EVENT_SCHEMA_VERSION, Event, EventPayload,
-    IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
+    AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
+    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};

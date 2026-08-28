@@ -28,6 +28,14 @@ pub struct BudgetConfig {
     /// Reasoning effort level.
     #[serde(default)]
     pub reasoning_effort: ReasoningEffort,
+
+    /// Compaction policy.
+    #[serde(default)]
+    pub compaction: CompactionPolicy,
+
+    /// Context window limit (для compaction threshold расчёта).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<u64>,
 }
 
 impl Default for BudgetConfig {
@@ -37,6 +45,8 @@ impl Default for BudgetConfig {
             max_tokens: None,
             max_wall_time: None,
             reasoning_effort: ReasoningEffort::Medium,
+            compaction: CompactionPolicy::default(),
+            context_limit: None,
         }
     }
 }
@@ -49,6 +59,41 @@ pub enum ReasoningEffort {
     #[default]
     Medium,
     High,
+}
+
+/// Compaction policy для session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionPolicy {
+    /// Auto-compaction threshold (процент от context limit).
+    #[serde(default = "default_compaction_threshold")]
+    pub threshold_percent: u8,
+
+    /// Separate compaction model profile (None = используется основная модель).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_model: Option<String>,
+
+    /// Минимальное количество turns перед первой compaction.
+    #[serde(default = "default_min_turns_before_compaction")]
+    pub min_turns_before_compaction: u32,
+}
+
+fn default_compaction_threshold() -> u8 {
+    80
+}
+
+fn default_min_turns_before_compaction() -> u32 {
+    5
+}
+
+impl Default for CompactionPolicy {
+    fn default() -> Self {
+        Self {
+            threshold_percent: default_compaction_threshold(),
+            compaction_model: None,
+            min_turns_before_compaction: default_min_turns_before_compaction(),
+        }
+    }
 }
 
 /// Runtime budget state для session.
@@ -103,9 +148,13 @@ pub enum BudgetError {
 
     #[error("Wall time exceeded: {elapsed:?}/{limit:?}")]
     WallTimeExceeded { limit: Duration, elapsed: Duration },
+
+    #[error("Compaction required: {used}/{threshold}")]
+    CompactionRequired { threshold: u64, used: u64 },
 }
 
 /// Budget checker для session.
+#[derive(Clone)]
 pub struct BudgetChecker {
     config: BudgetConfig,
     state: BudgetState,
@@ -166,6 +215,24 @@ impl BudgetChecker {
         Ok(())
     }
 
+    pub fn check_compaction(&self) -> Result<(), BudgetError> {
+        if let Some(context_limit) = self.config.context_limit {
+            let threshold = (context_limit as f64
+                * (self.config.compaction.threshold_percent as f64 / 100.0))
+                as u64;
+
+            if self.state.turns_used >= self.config.compaction.min_turns_before_compaction
+                && self.state.tokens_used >= threshold
+            {
+                return Err(BudgetError::CompactionRequired {
+                    threshold,
+                    used: self.state.tokens_used,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_all(&self, request_tokens: u64) -> Result<(), BudgetError> {
         self.check_turn()?;
         self.check_tokens(request_tokens)?;
@@ -176,6 +243,11 @@ impl BudgetChecker {
     pub fn record_turn(&mut self, tokens_used: u64) {
         self.state.turns_used += 1;
         self.state.tokens_used += tokens_used;
+    }
+
+    pub fn record_compaction(&mut self, compacted_tokens: u64) {
+        self.state.compaction_count += 1;
+        self.state.tokens_used = compacted_tokens;
     }
 }
 
@@ -270,6 +342,8 @@ mod tests {
             max_tokens: Some(100000),
             max_wall_time: Some(Duration::from_secs(300)),
             reasoning_effort: ReasoningEffort::High,
+            compaction: CompactionPolicy::default(),
+            context_limit: Some(120000),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -278,5 +352,58 @@ mod tests {
         assert_eq!(parsed.max_turns, config.max_turns);
         assert_eq!(parsed.max_tokens, config.max_tokens);
         assert_eq!(parsed.reasoning_effort, config.reasoning_effort);
+        assert_eq!(parsed.context_limit, config.context_limit);
+    }
+
+    #[test]
+    fn compaction_policy_defaults() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(policy.threshold_percent, 80);
+        assert_eq!(policy.min_turns_before_compaction, 5);
+        assert_eq!(policy.compaction_model, None);
+    }
+
+    #[test]
+    fn budget_checker_triggers_compaction_at_threshold() {
+        let config = BudgetConfig {
+            context_limit: Some(10000),
+            compaction: CompactionPolicy {
+                threshold_percent: 80,
+                min_turns_before_compaction: 3,
+                compaction_model: None,
+            },
+            ..Default::default()
+        };
+        let mut checker = BudgetChecker::new(config);
+
+        // Before min_turns: no compaction
+        checker.record_turn(4000);
+        checker.record_turn(4000);
+        assert!(checker.check_compaction().is_ok());
+
+        // After min_turns + threshold: compaction required
+        checker.record_turn(1000);
+        assert!(matches!(
+            checker.check_compaction(),
+            Err(BudgetError::CompactionRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn budget_checker_resets_tokens_after_compaction() {
+        let config = BudgetConfig {
+            context_limit: Some(10000),
+            ..Default::default()
+        };
+        let mut checker = BudgetChecker::new(config);
+
+        checker.record_turn(5000);
+        checker.record_turn(3000);
+        assert_eq!(checker.state().tokens_used, 8000);
+        assert_eq!(checker.state().compaction_count, 0);
+
+        checker.record_compaction(2000);
+        assert_eq!(checker.state().tokens_used, 2000);
+        assert_eq!(checker.state().compaction_count, 1);
     }
 }

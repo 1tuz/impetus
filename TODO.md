@@ -26,10 +26,10 @@
 
 ### Задачи v0.4
 
-- [ ] CompactionPolicy и separate compaction model.
-- [ ] Auto-compaction на token threshold.
-- [ ] Интеграция budget в SessionSupervisor.
-- [ ] Budget state events в IPC (для TUI/Zap live display).
+- [x] CompactionPolicy и separate compaction model.
+- [x] Auto-compaction на token threshold.
+- [x] Интеграция budget в SessionSupervisor.
+- [x] Budget state events в IPC (для TUI/Zap live display).
 - [ ] Immutable fork/checkpoint механизм.
 - [ ] Deterministic projection после restart/fork.
 - [ ] Bounded memory tests.

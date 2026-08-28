@@ -1,4 +1,4 @@
-use crate::{AgentRuntime, RunEvent, RuntimeError, RuntimeStatus};
+use crate::{AgentRuntime, BudgetChecker, BudgetConfig, RunEvent, RuntimeError, RuntimeStatus};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -44,6 +44,7 @@ pub struct SessionSupervisor {
     hard_cancel: Arc<AtomicBool>,
     max_restart_attempts: u8,
     restart_attempts: Arc<AtomicU8>,
+    budget_checker: Option<BudgetChecker>,
 }
 
 impl SessionSupervisor {
@@ -58,7 +59,13 @@ impl SessionSupervisor {
             hard_cancel: Arc::new(AtomicBool::new(false)),
             max_restart_attempts,
             restart_attempts: Arc::new(AtomicU8::new(0)),
+            budget_checker: None,
         }
+    }
+
+    pub fn with_budget(mut self, config: BudgetConfig) -> Self {
+        self.budget_checker = Some(BudgetChecker::new(config));
+        self
     }
 
     pub fn request_soft_interrupt(&self) {
@@ -67,6 +74,23 @@ impl SessionSupervisor {
 
     pub fn request_hard_cancel(&self) {
         self.hard_cancel.store(true, Ordering::Release);
+    }
+
+    pub fn budget_state(&self) -> Option<&crate::BudgetState> {
+        self.budget_checker.as_ref().map(|c| c.state())
+    }
+
+    pub fn check_budget_before_turn(&self, request_tokens: u64) -> Result<(), crate::BudgetError> {
+        if let Some(checker) = &self.budget_checker {
+            checker.check_all(request_tokens)?;
+        }
+        Ok(())
+    }
+
+    pub fn record_turn(&mut self, tokens_used: u64) {
+        if let Some(checker) = &mut self.budget_checker {
+            checker.record_turn(tokens_used);
+        }
     }
 
     pub async fn start_mock(
@@ -288,5 +312,48 @@ mod tests {
             runtime.status().expect("failed status"),
             RuntimeStatus::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn supervisor_enforces_budget_limits() {
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        ));
+        let budget = crate::BudgetConfig {
+            max_turns: Some(2),
+            max_tokens: Some(1000),
+            ..Default::default()
+        };
+        let mut supervisor = SessionSupervisor::new(runtime.clone()).with_budget(budget);
+
+        // First turn OK
+        assert!(supervisor.check_budget_before_turn(400).is_ok());
+        supervisor.record_turn(400);
+
+        // Second turn OK
+        assert!(supervisor.check_budget_before_turn(400).is_ok());
+        supervisor.record_turn(400);
+
+        // Third turn exceeds max_turns
+        assert!(supervisor.check_budget_before_turn(100).is_err());
+
+        let state = supervisor.budget_state().unwrap();
+        assert_eq!(state.turns_used, 2);
+        assert_eq!(state.tokens_used, 800);
+    }
+
+    #[test]
+    fn supervisor_without_budget_allows_unlimited() {
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        ));
+        let mut supervisor = SessionSupervisor::new(runtime);
+
+        assert!(supervisor.check_budget_before_turn(1_000_000).is_ok());
+        supervisor.record_turn(1_000_000);
+        assert!(supervisor.check_budget_before_turn(1_000_000).is_ok());
+        assert!(supervisor.budget_state().is_none());
     }
 }

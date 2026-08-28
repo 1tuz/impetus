@@ -25,6 +25,7 @@ pub enum EventPayload {
     Agent(AgentEvent),
     Approval(ApprovalEvent),
     Backend(BackendEvent),
+    Budget(BudgetEvent),
     Notice(NoticeEvent),
 }
 
@@ -105,6 +106,34 @@ pub enum BackendEvent {
     TokenExpiryWarning {
         profile: String,
         expires_in_seconds: u64,
+    },
+}
+
+/// Budget state events для live display в TUI/Zap.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BudgetEvent {
+    Updated {
+        turns_used: u32,
+        tokens_used: u64,
+        compaction_count: u32,
+        context_used_percent: u8,
+    },
+    CompactionRequired {
+        threshold: u64,
+        used: u64,
+    },
+    CompactionCompleted {
+        compacted_to: u64,
+        compaction_count: u32,
+    },
+    TurnLimitApproaching {
+        limit: u32,
+        used: u32,
+    },
+    TokenLimitApproaching {
+        limit: u64,
+        used: u64,
     },
 }
 

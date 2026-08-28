@@ -207,6 +207,46 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
         EventPayload::Notice(notice) => {
             render_block("Notice", &format!("{:?}", notice));
         }
+        EventPayload::Budget(budget) => {
+            use impetus_core::BudgetEvent;
+            match budget {
+                BudgetEvent::Updated {
+                    turns_used,
+                    tokens_used,
+                    context_used_percent,
+                    ..
+                } => {
+                    render_block(
+                        "Budget",
+                        &format!(
+                            "turns: {}, tokens: {}, context: {}%",
+                            turns_used, tokens_used, context_used_percent
+                        ),
+                    );
+                }
+                BudgetEvent::CompactionRequired { threshold, used } => {
+                    osc::send_warning(&format!("Compaction required: {}/{}", used, threshold));
+                }
+                BudgetEvent::CompactionCompleted {
+                    compacted_to,
+                    compaction_count,
+                } => {
+                    render_block(
+                        "Budget",
+                        &format!(
+                            "Compacted to {} tokens (count: {})",
+                            compacted_to, compaction_count
+                        ),
+                    );
+                }
+                BudgetEvent::TurnLimitApproaching { limit, used } => {
+                    osc::send_warning(&format!("Turn limit approaching: {}/{}", used, limit));
+                }
+                BudgetEvent::TokenLimitApproaching { limit, used } => {
+                    osc::send_warning(&format!("Token limit approaching: {}/{}", used, limit));
+                }
+            }
+        }
     }
 }
 
