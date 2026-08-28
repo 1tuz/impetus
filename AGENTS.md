@@ -54,10 +54,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## GitLab CI
 
-- `.gitlab-ci.yml`, когда он есть, — versioned contract проверки, а не UI-артефакт. При изменении Rust-пакетов, test/verify команд, toolchain, dependencies или CI-образа сверить затронутые jobs и актуализировать pipeline в том же изменении.
-- До handoff Rust/CI-изменения выполнить `task verify`. Если в репозитории есть `.gitlab-ci.yml`, дополнительно выполнить `gitlab-ci-local --list-csv-all` и relevant local job либо весь pipeline; отсутствие Docker, runner image или другой внешний blocker сообщить как blocker, а не считать pipeline проверенным.
-- Не помечать GitLab pipeline как проверенный, если `.gitlab-ci.yml` отсутствует. При создании pipeline включить обязательный `task verify`, закрепить CI image/tag и добавить job-specific smoke для изменяемого crate/contract.
+- `.gitlab-ci.yml` — versioned contract проверки. При изменении Rust-пакетов, test/verify команд, toolchain, dependencies или CI-образа сверить затронутые jobs и актуализировать pipeline в том же изменении.
+- До handoff Rust/CI-изменения выполнить `task verify` (локально). Для проверки CI: `gitlab-ci-local --stage verify` (займёт ~3-4 минуты с Docker overhead).
+- **CI test scope:** `cargo test --lib --bins` (unit tests только). Integration tests из `crates/*/tests/` исключены — они требуют macOS Seatbelt, нативного окружения и долго компилируются в Docker. Локально запускать полный `task verify` с integration tests.
 - При изменении `Cargo.toml` или `Cargo.lock` выполнить `task security`; RustSec/CVE, license/source/bans findings не игнорировать без versioned записи в `deny.toml` с конкретной причиной.
+- Если `gitlab-ci-local` зависает >5 минут — проверить `timeout` в job definition и scope тестов (возможно, добавлены новые долгие integration tests).
 
 ## Git и коммиты
 

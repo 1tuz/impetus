@@ -16,8 +16,9 @@ fmt:
 
 test:
   stage: verify
+  timeout: 10m
   script:
-    - cargo test --workspace --exclude agentic-terminal-app
+    - cargo test --workspace --exclude agentic-terminal-app --lib --bins
 
 check:
   stage: verify
