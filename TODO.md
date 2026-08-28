@@ -35,8 +35,8 @@
 
 ### Затем, шаг 3 из 4 — ACP gateway
 
-- [ ] Manual executable profile: user указывает путь к agent CLI.
-- [ ] Mock agent: initialize/session/stream/cancel/permission/exit smoke.
+- [x] Manual executable profile: user указывает путь к agent CLI.
+- [x] Mock agent: initialize/session/stream/cancel/permission/exit smoke.
 - [ ] Agent-owned login: ACP backend не хранит credentials, только forwards
   prompts.
 

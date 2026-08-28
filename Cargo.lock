@@ -120,6 +120,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentic-terminal-acp-gateway"
+version = "0.1.0"
+dependencies = [
+ "agentic-terminal-core",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agentic-terminal-app"
 version = "0.1.0"
 dependencies = [
