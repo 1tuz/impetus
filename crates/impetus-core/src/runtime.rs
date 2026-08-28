@@ -343,10 +343,8 @@ mod tests {
 
     #[test]
     fn attach_recovers_pending_approval_and_next_sequence() {
-        let test_root = std::env::temp_dir().join(format!(
-            "agentic-terminal-runtime-recovery-{}",
-            Uuid::new_v4()
-        ));
+        let test_root =
+            std::env::temp_dir().join(format!("impetus-runtime-recovery-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&test_root).expect("create isolated test directory");
         let database = test_root.join("events.sqlite3");
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));

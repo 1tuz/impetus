@@ -76,8 +76,7 @@ impl ActionFingerprint {
             payload.extend_from_slice(b"\0version:");
             payload.extend_from_slice(v.to_string().as_bytes());
         }
-        let digest =
-            Sha256::digest([b"agentic-terminal-action-v1\0".as_slice(), &payload].concat());
+        let digest = Sha256::digest([b"impetus-action-v1\0".as_slice(), &payload].concat());
         Self(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 }

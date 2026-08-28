@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn sqlite_events_survive_reopen() {
         let test_root =
-            std::env::temp_dir().join(format!("agentic-terminal-sqlite-reopen-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("impetus-sqlite-reopen-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&test_root).expect("create isolated test directory");
         let database = test_root.join("events.sqlite3");
         let session_id = Uuid::new_v4();
@@ -497,8 +497,7 @@ mod tests {
 
     #[test]
     fn legacy_rows_replay_after_schema_migration() {
-        let test_root =
-            std::env::temp_dir().join(format!("agentic-terminal-legacy-{}", Uuid::new_v4()));
+        let test_root = std::env::temp_dir().join(format!("impetus-legacy-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&test_root).expect("create isolated test directory");
         let database = test_root.join("events.sqlite3");
         let session_id = Uuid::new_v4();
@@ -527,8 +526,7 @@ mod tests {
 
     #[test]
     fn malformed_typed_payload_has_typed_error() {
-        let test_root =
-            std::env::temp_dir().join(format!("agentic-terminal-malformed-{}", Uuid::new_v4()));
+        let test_root = std::env::temp_dir().join(format!("impetus-malformed-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&test_root).expect("create isolated test directory");
         let database = test_root.join("events.sqlite3");
         let session_id = Uuid::new_v4();
@@ -602,8 +600,7 @@ mod tests {
 
     #[test]
     fn sqlite_store_fork_creates_independent_session() {
-        let test_root =
-            std::env::temp_dir().join(format!("agentic-terminal-fork-{}", Uuid::new_v4()));
+        let test_root = std::env::temp_dir().join(format!("impetus-fork-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&test_root).expect("create isolated test directory");
         let database = test_root.join("events.sqlite3");
         let store = SqliteEventStore::open(&database).expect("open sqlite event store");

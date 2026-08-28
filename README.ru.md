@@ -1,18 +1,20 @@
-# Orbit
+# Impetus
 
 [English version](README.md)
 
-Orbit — local-first harness для coding-агентов на macOS. Он сохраняет сессии и события аудита, проводит каждое действие через явную policy и не зависит от конкретного terminal-клиента или GUI.
+![Impetus](docs/impetus-banner.png)
+
+Impetus — local-first harness для coding-агентов на macOS. Он сохраняет сессии и события аудита, проводит каждое действие через явную policy и не зависит от конкретного terminal-клиента или GUI.
 
 > Ранняя стадия. Ядро уже подходит для локальной разработки, но публичные интерфейсы и интеграции будут меняться.
 
-![Архитектура Orbit](docs/orbit-architecture.svg)
+![Архитектура Impetus](docs/impetus-architecture.svg)
 
 Схема архитектуры создана с помощью [diagram-design](https://github.com/cathrynlavery/diagram-design).
 
-## Зачем Orbit
+## Зачем Impetus
 
-Модель не должна получать доступ только потому, что она его запросила. Orbit отделяет durable runtime от клиентов и применяет единый путь принятия решения к каждому типизированному действию:
+Модель не должна получать доступ только потому, что она его запросила. Impetus отделяет durable runtime от клиентов и применяет единый путь принятия решения к каждому типизированному действию:
 
 `Policy → Allow | Needs approval | Deny → Sandbox → Capability → Execution`
 
@@ -46,18 +48,18 @@ cargo run -p impetus
 В другом создай сессию:
 
 ```zsh
-cargo run -p agentic-terminal-cli -- create
+cargo run -p impetus-cli -- create
 ```
 
-Доступные команды сессий: `cargo run -p agentic-terminal-cli -- --help`.
+Доступные команды сессий: `cargo run -p impetus-cli -- --help`.
 
 ## Интеграция с Zap
 
-Zap не обязателен для Orbit и не владеет его policy, состоянием или секретами. Сейчас Orbit можно запускать в обычной вкладке Zap. Дальше мы хотим развить выделенный adapter: он будет показывать typed status, output, diffs и approval requests, не размывая границу runtime.
+Zap не обязателен для Impetus и не владеет его policy, состоянием или секретами. Сейчас Impetus можно запускать в обычной вкладке Zap. Дальше мы хотим развить выделенный adapter: он будет показывать typed status, output, diffs и approval requests, не размывая границу runtime.
 
 ## Источники идей
 
-Orbit развивается самостоятельно, используя отдельные идеи из нескольких проектов и протоколов:
+Impetus развивается самостоятельно, используя отдельные идеи из нескольких проектов и протоколов:
 
 - [Zap](https://github.com/zerx-lab/zap): local-first terminal UX и направление будущего structured client adapter.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): capability seams, manifests и append-only traces.
@@ -65,11 +67,11 @@ Orbit развивается самостоятельно, используя о
 - [Claude Code](https://code.claude.com/): явные permission modes и fail-closed подход к безопасности.
 - [GPUI-CE](https://github.com/gpui-ce/gpui-ce) и [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples): optional native macOS reference client.
 
-В [списке референсов](docs/REFERENCES.md) зафиксировано, что именно вдохновило Orbit и какие границы остаются принципиальными.
+В [списке референсов](docs/REFERENCES.md) зафиксировано, что именно вдохновило Impetus и какие границы остаются принципиальными.
 
 ## Материалы проекта
 
-- [Схема архитектуры](docs/orbit-architecture.html)
+- [Схема архитектуры](docs/impetus-architecture.html)
 - [Roadmap](docs/ROADMAP.md)
 - [Список референсов](docs/REFERENCES.md)
 - [Правила для coding-агентов](AGENTS.md)

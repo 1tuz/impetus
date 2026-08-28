@@ -1,5 +1,5 @@
 [package]
-name = "agentic-terminal-acp-gateway"
+name = "impetus-acp-gateway"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

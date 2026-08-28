@@ -3,7 +3,7 @@
 ## Способ 1: Unit-тесты (уже работают)
 
 ```bash
-cargo test -p agentic-terminal-acp-gateway
+cargo test -p impetus-acp-gateway
 ```
 
 10 тестов покрывают:
@@ -16,7 +16,7 @@ cargo test -p agentic-terminal-acp-gateway
 ### Сборка
 
 ```bash
-cargo build --example mock_agent_bin -p agentic-terminal-acp-gateway
+cargo build --example mock_agent_bin -p impetus-acp-gateway
 ```
 
 ### Ручной запуск
@@ -41,7 +41,7 @@ echo '{"jsonrpc":"2.0","id":3,"method":"exit","params":{}}' | ./target/debug/exa
 ### Через AcpGateway
 
 ```rust
-use agentic_terminal_acp_gateway::{AcpGateway, AcpProfile};
+use impetus_acp_gateway::{AcpGateway, AcpProfile};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -88,10 +88,10 @@ gateway.start().await?;
 
 ```bash
 # Сначала собрать binary
-cargo build --example mock_agent_bin -p agentic-terminal-acp-gateway
+cargo build --example mock_agent_bin -p impetus-acp-gateway
 
 # Запустить интеграционный тест
-cargo test -p agentic-terminal-acp-gateway --test integration_test -- --ignored
+cargo test -p impetus-acp-gateway --test integration_test -- --ignored
 ```
 
 ## Что НЕ делать

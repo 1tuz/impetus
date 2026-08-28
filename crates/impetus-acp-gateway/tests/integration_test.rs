@@ -1,6 +1,6 @@
 //! Интеграционный тест: запускает mock_agent_bin через AcpGateway.
 
-use agentic_terminal_acp_gateway::{AcpGateway, AcpProfile, AgentStatus};
+use impetus_acp_gateway::{AcpGateway, AcpProfile, AgentStatus};
 use std::path::PathBuf;
 
 #[tokio::test]

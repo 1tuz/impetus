@@ -7,13 +7,13 @@ runtime boundaries и ownership. Исполнимый порядок работ 
 ## Иерархия
 
 ```text
-agentic-terminal-macos-mvp/
+impetus/
 ├── crates/
-│   ├── agentic-terminal-core/       durable domain/runtime foundation
-│   ├── agentic-terminal-harness/    headless daemon + Unix socket server
-│   ├── agentic-terminal-client/     transport-neutral client contract
-│   ├── agentic-terminal-cli/        reference client for Zap/Terminal.app
-│   └── agentic-terminal-app/        optional GPUI reference client + CI pane
+│   ├── impetus-core/                durable domain/runtime foundation
+│   ├── impetus/                     headless daemon + Unix socket server
+│   ├── impetus-client/              transport-neutral client contract
+│   ├── impetus-cli/                 reference client for Zap/Terminal.app
+│   └── impetus-app/                 optional GPUI reference client + CI pane
 ├── config/
 │   └── capabilities.json            declarative capability catalog
 ├── docs/                            product contracts, roadmap, UX and audits
@@ -34,17 +34,17 @@ are generated state; they are not source architecture.
 Zap / Terminal.app
         │ ordinary shell tab
         ▼
-agentic-terminal-cli ───────► agentic-terminal-client
+impetus-cli ────────────────► impetus-client
                                       │
                                       │ typed local IPC
                                       ▼
-                           agentic-terminal-harness
+                           impetus
                                       │
                                       ▼
-                            agentic-terminal-core
+                            impetus-core
                      events · policy · SQLite · tools · artifacts
 
-agentic-terminal-app ───────────────► agentic-terminal-core
+impetus-app ────────────────────────► impetus-core
   optional GPUI reference client; outside headless runtime path
 ```
 
@@ -52,11 +52,11 @@ Confirmed by workspace manifests and imports:
 
 | Crate | Owns | Depends on |
 | --- | --- | --- |
-| `agentic-terminal-core` | events, projections, policy, approvals, SQLite, tools, artifacts and IPC DTOs | Rust libraries only; no GPUI/PTY/ANSI |
-| `agentic-terminal-harness` | daemon lifecycle, socket permissions and subscription delivery | `core` |
-| `agentic-terminal-client` | `HarnessClient`, in-memory and Unix transports | `core` |
-| `agentic-terminal-cli` | command parsing and JSON output | `client`, `core` DTOs |
-| `agentic-terminal-app` | optional GPUI diagnostics, themes and GitLab CI preview | `core` |
+| `impetus-core` | events, projections, policy, approvals, SQLite, tools, artifacts and IPC DTOs | Rust libraries only; no GPUI/PTY/ANSI |
+| `impetus` | daemon lifecycle, socket permissions and subscription delivery | `core` |
+| `impetus-client` | `HarnessClient`, in-memory and Unix transports | `core` |
+| `impetus-cli` | command parsing and JSON output | `client`, `core` DTOs |
+| `impetus-app` | optional GPUI diagnostics, themes and GitLab CI preview | `core` |
 
 ## Product boundary and ownership
 
@@ -92,7 +92,7 @@ history. No Zap fork is required for this path.
 `HarnessClient` contract as future TUI/IDE adapters. It receives no SQLite
 connection or secret.
 
-**Optional GPUI app.** `agentic-terminal-app` is a diagnostics/theme/CI-preview
+**Optional GPUI app.** `impetus-app` is a diagnostics/theme/CI-preview
 client. It is not headless runtime source of truth and must not pull GPUI,
 Metal, terminal renderer, PTY or ANSI parsing into headless crates.
 It owns no SQLite connection or policy engine. Its existing CI buttons are

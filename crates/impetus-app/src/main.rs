@@ -79,7 +79,7 @@ impl AgenticTerminalView {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         Self {
-            headline: "Agentic Terminal — local-first".into(),
+            headline: "Impetus — local-first".into(),
             status: format!(
                 "Client-only preview · no harness state ownership · {capability_count} planned capabilities"
             )

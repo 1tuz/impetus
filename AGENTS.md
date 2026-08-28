@@ -14,7 +14,7 @@
 
 - Harness-first: текущий этап — standalone Rust runtime и CLI. Не начинать собственный PTY/ANSI terminal до Zap integration spike и зафиксированного неудовлетворённого требования.
 - Zap — основной пользовательский terminal client; отдельный adapter или личный fork допустимы. Не копировать Zap/Warp client internals внутрь harness core.
-- `agentic-terminal-core` и headless runtime не зависят от GPUI, Metal, terminal renderer или конкретного клиента. Существующий GPUI-CE app — optional reference client.
+- `impetus-core` и headless runtime не зависят от GPUI, Metal, terminal renderer или конкретного клиента. Существующий GPUI-CE app — optional reference client.
 - Клиент не владеет SQLite connection, секретами, SSH transport или policy. Он отправляет typed request и отображает durable events/approvals harness-а.
 - Каждый typed action имеет `origin=user|agent` и проходит `Policy → Deny | Allow | NeedsApproval`; только `Allow` либо принятое человеком approval продолжаются через `Sandbox → Capability → Execution`. Модель не может выдать себе `origin=user` или approval.
 - Секреты хранятся только в macOS Keychain. В SQLite, JSONL, tracing, Blocks и тестах — лишь reference-метки, никогда token/private key/passphrase.

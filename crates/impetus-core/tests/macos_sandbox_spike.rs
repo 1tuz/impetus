@@ -18,10 +18,7 @@ mod macos {
             .duration_since(UNIX_EPOCH)
             .expect("system time after Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "agentic-terminal-seatbelt-{nonce}-{}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("impetus-seatbelt-{nonce}-{}", std::process::id()))
     }
 
     fn seatbelt_profile(workspace: &std::path::Path) -> String {

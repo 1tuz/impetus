@@ -49,17 +49,17 @@ tasks:
   run:
     desc: Запустить native GPUI приложение
     cmds:
-      - cargo run -p agentic-terminal-app
+      - cargo run -p impetus-app
 
   harness:
     desc: Запустить headless harness daemon в текущей terminal tab
     cmds:
-      - cargo run -p agentic-terminal-harness
+      - cargo run -p impetus
 
   cli:
     desc: 'Вызвать reference CLI; пример: task cli -- create'
     cmds:
-      - cargo run -p agentic-terminal-cli -- {{.CLI_ARGS}}
+      - cargo run -p impetus-cli -- {{.CLI_ARGS}}
 
   ci:list:
     desc: Показать GitLab CI jobs из .gitlab-ci.yml

@@ -441,7 +441,7 @@ mod tests {
             endpoint: "https://api.example.test".into(),
             model: "test".into(),
             credential_strategy: CredentialStrategy::KeychainReference {
-                service: "agentic-terminal".into(),
+                service: "impetus".into(),
                 account: "test".into(),
             },
         };
@@ -575,7 +575,7 @@ mod tests {
                 authorization_url: "https://auth.example.com/oauth/authorize".into(),
                 token_url: "https://auth.example.com/oauth/token".into(),
                 client_id: "test-client".into(),
-                keychain_service: "agentic-terminal".into(),
+                keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
         };
@@ -592,7 +592,7 @@ mod tests {
                 authorization_url: "not-a-url".into(),
                 token_url: "https://auth.example.com/oauth/token".into(),
                 client_id: "test-client".into(),
-                keychain_service: "agentic-terminal".into(),
+                keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
             ..valid.clone()
@@ -604,7 +604,7 @@ mod tests {
                 authorization_url: "https://auth.example.com/oauth/authorize".into(),
                 token_url: "https://auth.example.com/oauth/token".into(),
                 client_id: "".into(),
-                keychain_service: "agentic-terminal".into(),
+                keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
             ..valid
@@ -623,7 +623,7 @@ mod tests {
                 authorization_url: "https://auth.example.com/oauth/authorize".into(),
                 token_url: "https://auth.example.com/oauth/token".into(),
                 client_id: "test-client".into(),
-                keychain_service: "agentic-terminal".into(),
+                keychain_service: "impetus".into(),
                 keychain_account: "nonexistent-oauth-test".into(),
             },
         };

@@ -426,7 +426,7 @@ mod tests {
         let remote = ProviderProfile {
             endpoint: "https://api.example.test".into(),
             credential_strategy: CredentialStrategy::KeychainReference {
-                service: "agentic-terminal".into(),
+                service: "impetus".into(),
                 account: "test".into(),
             },
             ..local_profile()
@@ -456,7 +456,7 @@ mod tests {
             "model":"test",
             "credential_strategy":{
                 "kind":"keychain_reference",
-                "service":"agentic-terminal",
+            "service":"impetus",
                 "account":"test",
                 "token":"raw-secret"
             }
@@ -484,7 +484,7 @@ mod tests {
         let profile = ProviderProfile {
             endpoint: "https://api.example.test".into(),
             credential_strategy: CredentialStrategy::KeychainReference {
-                service: "agentic-terminal".into(),
+                service: "impetus".into(),
                 account: "test".into(),
             },
             ..local_profile()
@@ -568,7 +568,7 @@ mod tests {
                 authorization_url: "https://auth.example.com/oauth/authorize".into(),
                 token_url: "https://auth.example.com/oauth/token".into(),
                 client_id: "test-client".into(),
-                keychain_service: "agentic-terminal".into(),
+                keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
         };

@@ -131,24 +131,24 @@
 5. **Manual smoke test:**
    ```bash
    # Terminal 1: start harness
-   cargo run -p orbit -- \
+   cargo run -p impetus -- \
      --provider-profile /path/to/local-profile.json
    
    # Terminal 2: CLI interaction
-   cargo run -p agentic-terminal-cli -- create
+   cargo run -p impetus-cli -- create
    SESSION_ID=<from output>
    
    # Request effect needing approval
-   cargo run -p agentic-terminal-cli -- prompt $SESSION_ID "write to file.txt"
+   cargo run -p impetus-cli -- prompt $SESSION_ID "write to file.txt"
    
    # List pending approvals
-   cargo run -p agentic-terminal-cli -- approvals $SESSION_ID
+   cargo run -p impetus-cli -- approvals $SESSION_ID
    
    # Approve
-   cargo run -p agentic-terminal-cli -- approve $SESSION_ID <APPROVAL_ID>
+   cargo run -p impetus-cli -- approve $SESSION_ID <APPROVAL_ID>
    
    # Verify execution
-   cargo run -p agentic-terminal-cli -- stream $SESSION_ID
+   cargo run -p impetus-cli -- stream $SESSION_ID
    
    # Try stale approval (modify action, reuse approval_id)
    # Should fail with StaleApproval error
@@ -205,7 +205,7 @@
 - `crates/impetus-core/src/ipc.rs` — добавить approval IPC
 - `crates/impetus-core/src/storage.rs` — добавить approval storage
 - `crates/impetus-core/src/events.rs` — добавить ApprovalEvent
-- `crates/orbit/src/main.rs` — IPC handler integration
+- `crates/impetus/src/main.rs` — IPC handler integration
 
 ## Выводы
 

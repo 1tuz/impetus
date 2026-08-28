@@ -1,18 +1,20 @@
-# Orbit
+# Impetus
 
 [Русская версия](README.ru.md)
 
-Orbit is a local-first macOS harness for coding agents. It keeps sessions and audit events durable, routes every effect through explicit policy, and stays independent from any one terminal or GUI.
+![Impetus](docs/impetus-banner.png)
+
+Impetus is a local-first macOS harness for coding agents. It keeps sessions and audit events durable, routes every effect through explicit policy, and stays independent from any one terminal or GUI.
 
 > Early-stage software. The core is usable for local development; public interfaces and integrations will evolve.
 
-![Orbit architecture](docs/orbit-architecture.svg)
+![Impetus architecture](docs/impetus-architecture.svg)
 
 Architecture diagram created with [diagram-design](https://github.com/cathrynlavery/diagram-design).
 
-## Why Orbit
+## Why Impetus
 
-An agent runtime should not gain access merely because a model asked for it. Orbit separates the durable runtime from its clients and applies a clear decision path to every typed action:
+An agent runtime should not gain access merely because a model asked for it. Impetus separates the durable runtime from its clients and applies a clear decision path to every typed action:
 
 `Policy → Allow | Needs approval | Deny → Sandbox → Capability → Execution`
 
@@ -46,18 +48,18 @@ cargo run -p impetus
 Then create a session from another terminal:
 
 ```zsh
-cargo run -p agentic-terminal-cli -- create
+cargo run -p impetus-cli -- create
 ```
 
-Use `cargo run -p agentic-terminal-cli -- --help` for the available session commands.
+Use `cargo run -p impetus-cli -- --help` for the available session commands.
 
 ## Zap integration
 
-Zap is not required by Orbit and does not own its policy, state, or secrets. Today, Orbit can run from a normal Zap tab. We plan to improve the integration with a dedicated adapter that presents typed status, output, diffs, and approval requests while keeping the runtime boundary intact.
+Zap is not required by Impetus and does not own its policy, state, or secrets. Today, Impetus can run from a normal Zap tab. We plan to improve the integration with a dedicated adapter that presents typed status, output, diffs, and approval requests while keeping the runtime boundary intact.
 
 ## Influences and acknowledgements
 
-Orbit is built independently, drawing specific ideas from several projects and protocols:
+Impetus is built independently, drawing specific ideas from several projects and protocols:
 
 - [Zap](https://github.com/zerx-lab/zap): local-first terminal UX and the direction for a future structured client adapter.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): capability seams, manifests, and append-only traces.
@@ -65,11 +67,11 @@ Orbit is built independently, drawing specific ideas from several projects and p
 - [Claude Code](https://code.claude.com/): explicit permission modes and fail-closed safety thinking.
 - [GPUI-CE](https://github.com/gpui-ce/gpui-ce) and [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples): an optional native macOS reference client.
 
-The [reference notes](docs/REFERENCES.md) record what each source inspired and what deliberately remains outside Orbit.
+The [reference notes](docs/REFERENCES.md) record what each source inspired and what deliberately remains outside Impetus.
 
 ## Project notes
 
-- [Architecture diagram](docs/orbit-architecture.html)
+- [Architecture diagram](docs/impetus-architecture.html)
 - [Roadmap](docs/ROADMAP.md)
 - [Reference notes](docs/REFERENCES.md)
 - [Agent-facing repository rules](AGENTS.md)

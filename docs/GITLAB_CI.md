@@ -1,4 +1,4 @@
-# GitLab CI в Agentic Terminal
+# GitLab CI в Impetus
 
 ## Граница v0.2
 

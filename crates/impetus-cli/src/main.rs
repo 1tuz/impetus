@@ -1,11 +1,11 @@
-use agentic_terminal_client::HarnessClient;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use impetus_client::HarnessClient;
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(name = "agentic-terminal")]
-#[command(about = "Agentic Terminal CLI - interact with headless harness")]
+#[command(name = "impetus-cli")]
+#[command(about = "Impetus CLI - interact with headless harness")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -40,12 +40,12 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let socket_path = std::env::var("AGENTIC_TERMINAL_SOCKET").unwrap_or_else(|_| {
+    let socket_path = std::env::var("IMPETUS_SOCKET").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME not set");
-        format!("{home}/Library/Application Support/Agentic Terminal/harness.sock")
+        format!("{home}/Library/Application Support/Impetus/harness.sock")
     });
 
-    let client = agentic_terminal_client::UnixSocketTransport::connect(&socket_path)
+    let client = impetus_client::UnixSocketTransport::connect(&socket_path)
         .await
         .context("connect to harness socket")?;
 

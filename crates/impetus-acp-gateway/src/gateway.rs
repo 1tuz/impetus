@@ -191,7 +191,7 @@ impl AcpGateway {
     pub async fn initialize(&mut self) -> Result<serde_json::Value, GatewayError> {
         let params = serde_json::json!({
             "clientInfo": {
-                "name": "agentic-terminal",
+                "name": "impetus",
                 "version": env!("CARGO_PKG_VERSION")
             }
         });

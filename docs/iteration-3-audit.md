@@ -8,7 +8,7 @@
 
 ## Ключевые факты
 
-- **TUI в терминале отсутствует.** В графе зависимостей нет `ratatui`, `crossterm`, `tui`, `termion` или `ncurses`. GPUI app (`agentic-terminal-app`) — отдельный native reference client на Metal; он *владеет* `AgentRuntime` и SQLite напрямую (анти-паттерн, который Iteration 3 устраняет).
+- **TUI в терминале отсутствует.** В графе зависимостей нет `ratatui`, `crossterm`, `tui`, `termion` или `ncurses`. GPUI app (`impetus-app`) — отдельный native reference client на Metal; он *владеет* `AgentRuntime` и SQLite напрямую (анти-паттерн, который Iteration 3 устраняет).
 - **Client abstraction отсутствует.** Есть только низкоуровневый `IpcRequest`/`IpcResponse` (handshake + 7 команд) и простой CLI. Единого typed `HarnessClient` контракта (create/resume/subscribe/get_dag/get_checkpoints/get_usage/get_risk/get_profiles/set_profile/get_learning) нет.
 - **Event model богатый и готов к UI.** `EventPayload` покрывает Session/Run/Intent/Plan/Tool/Agent/Approval/Notice; `SessionProjection` считает `last_sequence`, `tool_summaries`, `agent_output`, `pending_approvals`, `active_run_id`, `outcome`. Это готовый фундамент для transcript/diff/risk-представления.
 - **jcode исходников в доступных путях нет.** На диске — только установленный бинарник, кэши и `.jcode` конфиги (`/opt/homebrew/Cellar/jcode`, `~/Library/...`, `/Users/antony/.jcode`). Прямое переиспользование Rust/Ratatui TUI-компонентов jcode невозможно без их исходников. Решение по п.2: использовать `ratatui`+`crossterm` напрямую и реализовать минимальный недостающий слой.

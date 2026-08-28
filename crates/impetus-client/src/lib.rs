@@ -1,4 +1,4 @@
-//! Client contract for the agentic-terminal harness.
+//! Client contract for the Impetus harness.
 //!
 //! The client never owns session history, agent state, policy or durable
 //! events: those live in the harness daemon. A client is a *view + command*

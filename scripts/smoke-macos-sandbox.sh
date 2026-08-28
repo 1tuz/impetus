@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != "Darwin" || ! -x /usr/bin/sandbox-exec ]]; then
   exit 1
 fi
 
-spike_root="$(mktemp -d /tmp/agentic-terminal-seatbelt.XXXXXX)"
+spike_root="$(mktemp -d /tmp/impetus-seatbelt.XXXXXX)"
 trap 'rm -rf "$spike_root"' EXIT
 workspace="$spike_root/workspace"
 mkdir "$workspace"

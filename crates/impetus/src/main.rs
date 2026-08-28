@@ -51,13 +51,13 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
         return Ok(Harness::new(store, impetus_core::harness_api::policy()));
     };
     if flag != "--provider-profile" {
-        bail!("usage: agentic-terminal-harness [--provider-profile PATH]");
+        bail!("usage: impetus [--provider-profile PATH]");
     }
     let profile_path = arguments
         .next()
         .context("--provider-profile requires PATH")?;
     if arguments.next().is_some() {
-        bail!("usage: agentic-terminal-harness [--provider-profile PATH]");
+        bail!("usage: impetus [--provider-profile PATH]");
     }
     let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
     let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
@@ -260,16 +260,16 @@ fn handle_request(store: Arc<dyn impetus_core::EventStore>, request: IpcRequest)
 }
 
 fn data_root() -> Result<PathBuf> {
-    Ok(std::env::var_os("AGENTIC_TERMINAL_DATA_DIR")
+    Ok(std::env::var_os("IMPETUS_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Agentic Terminal")
+                .join("Library/Application Support/Impetus")
         }))
 }
 
 fn socket_path() -> Result<PathBuf> {
-    Ok(std::env::var_os("AGENTIC_TERMINAL_SOCKET")
+    Ok(std::env::var_os("IMPETUS_SOCKET")
         .map(PathBuf::from)
         .unwrap_or(data_root()?.join("harness.sock")))
 }

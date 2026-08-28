@@ -80,12 +80,12 @@ Impetus — headless harness для безопасного исполнения 
 - Standalone headless CLI: create/stream/cancel sessions
 - Работает в обычной Zap tab без специального рендерера
 
-### App (`crates/agentic-terminal-app/`)
+### App (`crates/impetus-app/`)
 
 - Optional GPUI reference client
 - Не влияет на harness core dependency boundary
 
-### CLI Adapters (`crates/agentic-terminal-cli/`)
+### CLI Adapters (`crates/impetus-cli/`)
 
 - Zap adapter binary: structured blocks protocol
 - OSC escape sequences для harness → Zap notification hooks

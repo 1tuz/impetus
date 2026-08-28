@@ -21,9 +21,9 @@ mod blocks;
 mod osc;
 mod status_bar;
 
-use agentic_terminal_client::{HarnessClient, UnixSocketTransport};
 use anyhow::{Context, Result};
 use blocks::{render_block_text, render_event_block};
+use impetus_client::{HarnessClient, UnixSocketTransport};
 use impetus_core::{Event, EventPayload, IpcRequest, IpcResponse, RuntimeStatus};
 use status_bar::StatusBar;
 use std::io::{self, Write};
@@ -35,16 +35,16 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: agentic-terminal-zap-adapter <session-id>");
-        eprintln!("       agentic-terminal-zap-adapter create <prompt>");
+        eprintln!("Usage: impetus-zap-adapter <session-id>");
+        eprintln!("       impetus-zap-adapter create <prompt>");
         std::process::exit(1);
     }
 
-    let socket_path = std::env::var_os("AGENTIC_TERMINAL_SOCKET")
+    let socket_path = std::env::var_os("IMPETUS_SOCKET")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Agentic Terminal")
+                .join("Library/Application Support/Impetus")
                 .join("harness.sock")
         });
 

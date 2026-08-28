@@ -5,7 +5,7 @@
 ## Краткая карта текущей архитектуры
 
 ```text
-agentic-terminal-app (GPUI process)
+impetus-app (GPUI process)
   ├── создаёт AgentRuntime
   ├── открывает SQLite event store
   ├── вызывает PolicyEngine

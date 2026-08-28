@@ -1,10 +1,10 @@
 [workspace]
 members = [
   "crates/impetus-core",
-  "crates/agentic-terminal-app",
+  "crates/impetus-app",
   "crates/impetus",
-  "crates/agentic-terminal-cli",
-  "crates/agentic-terminal-client", "crates/agentic-terminal-zap-adapter", "crates/agentic-terminal-acp-gateway",
+  "crates/impetus-cli",
+  "crates/impetus-client", "crates/impetus-zap-adapter", "crates/impetus-acp-gateway",
 ]
 resolver = "2"
 
@@ -14,7 +14,7 @@ edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
 authors = ["Local developer"]
-repository = "https://github.com/1tuz/orbit"
+repository = "https://github.com/1tuz/impetus"
 
 [workspace.dependencies]
 agent-client-protocol = "2.0.0"

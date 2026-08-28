@@ -1,4 +1,4 @@
-//! Policy-centred local runtime for Agentic Terminal.
+//! Policy-centred local runtime for Impetus.
 //!
 //! The crate intentionally owns no GPUI or PTY state. It emits durable events,
 //! makes permission decisions, and exposes small capability seams for the app.

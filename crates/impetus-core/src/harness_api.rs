@@ -488,11 +488,11 @@ pub fn policy() -> PolicyEngine {
 }
 
 fn data_root() -> Result<PathBuf> {
-    Ok(std::env::var_os("AGENTIC_TERMINAL_DATA_DIR")
+    Ok(std::env::var_os("IMPETUS_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Agentic Terminal")
+                .join("Library/Application Support/Impetus")
         }))
 }
 

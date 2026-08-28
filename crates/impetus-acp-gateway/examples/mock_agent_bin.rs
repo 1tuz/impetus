@@ -2,7 +2,7 @@
 //!
 //! Запускается через AcpGateway, отвечает на JSON-RPC через stdin/stdout.
 
-use agentic_terminal_acp_gateway::mock::{JsonRpcMessage, JsonRpcRequest, MockAgent};
+use impetus_acp_gateway::mock::{JsonRpcMessage, JsonRpcRequest, MockAgent};
 use std::io::{self, BufRead, Write};
 
 fn main() -> anyhow::Result<()> {

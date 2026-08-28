@@ -1,5 +1,5 @@
 [package]
-name = "agentic-terminal-zap-adapter"
+name = "impetus-zap-adapter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-agentic-terminal-client = { path = "../agentic-terminal-client" }
+impetus-client = { path = "../impetus-client" }
 impetus-core = { path = "../impetus-core" }
 anyhow = "1.0"
 dirs = "5.0"

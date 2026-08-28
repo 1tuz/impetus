@@ -271,10 +271,10 @@ cargo test --package impetus-core sandbox
 # 2. Добавить недостающие тесты согласно EXECUTION_SEAM_DESIGN.md
 
 # 3. Integration smoke
-cargo run -p orbit &
+cargo run -p impetus &
 HARNESS_PID=$!
 
-cargo run -p agentic-terminal-cli -- create
+cargo run -p impetus-cli -- create
 # ... test approval flow
 
 kill $HARNESS_PID

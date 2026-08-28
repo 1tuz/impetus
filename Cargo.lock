@@ -170,70 +170,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentic-terminal-acp-gateway"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "anyhow",
- "impetus-core",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "agentic-terminal-app"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "gpui_platform",
- "impetus-core",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "agentic-terminal-cli"
-version = "0.1.0"
-dependencies = [
- "agentic-terminal-client",
- "anyhow",
- "clap",
- "impetus-core",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "agentic-terminal-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "impetus-core",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "agentic-terminal-zap-adapter"
-version = "0.1.0"
-dependencies = [
- "agentic-terminal-client",
- "anyhow",
- "dirs",
- "impetus-core",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,6 +3068,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "impetus-acp-gateway"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "impetus-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "impetus-app"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "impetus-core",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "impetus-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "impetus-client",
+ "impetus-core",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "impetus-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "impetus-core",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "impetus-core"
 version = "0.1.0"
 dependencies = [
@@ -3151,6 +3137,20 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "impetus-zap-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "impetus-client",
+ "impetus-core",
+ "serde",
+ "serde_json",
+ "tokio",
  "uuid",
 ]
 
