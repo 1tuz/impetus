@@ -14,7 +14,7 @@ edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
 authors = ["Local developer"]
-repository = "https://example.invalid/agentic-terminal"
+repository = "https://github.com/1tuz/orbit"
 
 [workspace.dependencies]
 agent-client-protocol = "2.0.0"
