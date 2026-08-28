@@ -1,10 +1,11 @@
 use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
-    Event, EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision, PolicyEngine,
-    ProjectionError, RunEvent, ToolEvent, reduce,
+    DeferredEffect, Event, EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision,
+    PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -50,6 +51,9 @@ pub struct AgentRuntime {
     session_id: Uuid,
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
+    // A2 Phase 2: Store deferred effects for approval continuation.
+    // Maps approval_id -> DeferredEffect so approved work can resume.
+    deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
 }
 
 impl AgentRuntime {
@@ -62,6 +66,7 @@ impl AgentRuntime {
             session_id: store.create_session()?,
             store,
             policy,
+            deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -79,6 +84,7 @@ impl AgentRuntime {
             session_id,
             store,
             policy,
+            deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -93,6 +99,7 @@ impl AgentRuntime {
             session_id: new_session_id,
             store,
             policy,
+            deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -235,6 +242,32 @@ impl AgentRuntime {
         self.record(EventPayload::Approval(ApprovalEvent::Resolved {
             request: approval,
         }))
+    }
+
+    /// A2 Phase 2: Store a deferred effect for later approval continuation.
+    /// The effect must match the approval request exactly.
+    pub fn store_deferred_effect(&self, deferred: DeferredEffect) -> Result<(), RuntimeError> {
+        let approval_id = deferred.approval().id;
+        if let Ok(mut effects) = self.deferred_effects.lock() {
+            effects.insert(approval_id, deferred);
+            Ok(())
+        } else {
+            Err(RuntimeError::Denied(
+                "deferred effect storage lock poisoned".into(),
+            ))
+        }
+    }
+
+    /// A2 Phase 2: Retrieve a deferred effect for approval continuation.
+    /// Returns None if no effect was stored for this approval.
+    pub fn take_deferred_effect(&self, approval_id: Uuid) -> Result<Option<DeferredEffect>, RuntimeError> {
+        if let Ok(mut effects) = self.deferred_effects.lock() {
+            Ok(effects.remove(&approval_id))
+        } else {
+            Err(RuntimeError::Denied(
+                "deferred effect storage lock poisoned".into(),
+            ))
+        }
     }
 
     pub fn events(&self) -> Result<Vec<Event>, RuntimeError> {

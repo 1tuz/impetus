@@ -120,10 +120,66 @@
   - [x] Remote command execution через SSH + tmux
   - [x] Policy check для tmux session creation
   - [x] Integration tests для tmux sessions (9 тестов)
-- [ ] SFTP для remote file access
-- [ ] Durable approval для remote targets (частично: SSH approval готов)
+- [x] SFTP для remote file access
+  - [x] SftpSession lifecycle: connect, disconnect
+  - [x] SftpOperationRequest с policy check (Read, Write, Delete, List)
+  - [x] SftpSessionManager координирует SSH, policy, operation execution
+  - [x] NetworkConnect capability расширена на ActionKind::SftpTransfer
+  - [x] Integration tests (4 теста: lifecycle, request, approval, manager)
+  - [x] Документация: docs/v0.6-SFTP-IMPLEMENTATION.md
 
-**Статус:** SSH profiles (задача 1) готовы. Остаются PTY, tmux, SFTP.
+**Статус v0.6:** ✅ Завершён. SSH profiles, PTY/tmux stubs, SFTP stub готовы. Real SSH/SFTP/PTY/tmux executor — фаза F (после A/B/C).
+
+**Gate v0.6:** ✅ host-key/target/file approval переживают restart через SSH profiles + durable store.
+
+## Архитектурный аудит (параллельно с v0.6)
+
+**Документ:** [docs/current-architecture-audit.md](docs/current-architecture-audit.md)
+
+### Фаза A — Safe local execution
+
+- [x] **A0:** Truthful audit и status documents (current-architecture-audit.md создан)
+- [x] **A1:** Safe local execution authority ✅
+  - [x] AdmittedOperation token для harness-issued work
+  - [x] ProcessExecution::execute() требует admission token
+  - [x] Regression tests: unadmitted spawn невозможен, agent origin требует approval
+  - [x] Type-level enforcement: execute(&AdmittedOperation) signature
+  - [x] Документация: docs/A1-IMPLEMENTATION.md
+  - **Gate A1:** ✅ no public spawn without admission; exact approval when needed; unavailable Seatbelt fails closed
+- [x] **A2:** Origin и approval continuation ✅
+  - [x] Server-side origin derivation (IPC tools = User)
+  - [x] DeferredEffect storage в AgentRuntime
+  - [x] store_deferred_effect / take_deferred_effect API
+  - [x] Regression tests: origin derivation, deferred continuation
+  - [x] Документация: docs/A2-IMPLEMENTATION.md
+  - **Gate A2:** ✅ Agent cannot use user-direct route; stale approval cannot run changed work; approved work resumes exact durable effect (IPC integration pending)
+- [ ] **A3:** Per-session coordination
+  - [ ] Два независимых session делают прогресс concurrently
+  - [ ] Ordered durable events
+  - [ ] Убрать global Harness lock
+
+### Фаза B — Typed client и subscription
+
+- [ ] **B1:** Typed client и push subscription
+  - [ ] Typed domain methods (не IpcResponse pattern-match)
+  - [ ] Cursor backfill + store notification (no poll loop)
+  - [ ] Reconnect gets only events after cursor
+  - [ ] Zap adapter переход на push subscription
+- [ ] **B2:** Complete existing typed DTOs
+  - [ ] Attachment/diff/detail complete, bounded/redacted
+  - [ ] Или capability absent если не реализовано
+
+### Фаза C — Provider registry
+
+- [ ] **C1:** Provider registry/metadata
+  - [ ] One provider interface (trait)
+  - [ ] No central concrete provider branch
+  - [ ] Provider discovery/metadata
+- [ ] **C2:** Router и durable budgets
+  - [ ] Rules-based fallback
+  - [ ] Per-session/agent steps/calls/tokens/cost/time
+
+**Gate A1:** ✅ no public spawn without admission; exact approval when needed; unavailable Seatbelt fails closed.
 
 ### v0.7 — MVP финализация
 

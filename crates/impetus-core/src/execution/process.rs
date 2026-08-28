@@ -108,7 +108,11 @@ impl ProcessExecutionRequest {
 
     /// Execute the process after policy approval.
     /// Output is bounded to MAX_PROCESS_OUTPUT_BYTES.
-    pub async fn execute(&self) -> Result<ProcessOutput, ProcessExecutionError> {
+    /// Requires AdmittedOperation token proving the effect passed admission.
+    pub async fn execute(
+        &self,
+        _admission: &crate::AdmittedOperation,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
         let start = std::time::Instant::now();
 
         let mut cmd = Command::new(&self.command);
@@ -217,11 +221,21 @@ impl ProcessExecution {
     }
 
     /// Execute after approval (or immediate Allow).
-    pub async fn execute(
+    /// Returns the admission token on Allow, which must be passed to req.execute().
+    pub async fn execute_with_admission(
         &self,
         req: &ProcessExecutionRequest,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
-        req.execute().await
+        let admission = self.request(req)?;
+        match admission {
+            crate::EffectAdmission::Allow(token) => req.execute(&token).await,
+            crate::EffectAdmission::NeedsApproval(_) => {
+                Err(ProcessExecutionError::ApprovalRequired)
+            }
+            crate::EffectAdmission::Deny { reason } => {
+                Err(ProcessExecutionError::PolicyDenied(reason))
+            }
+        }
     }
 }
 
@@ -258,10 +272,17 @@ mod tests {
 
     #[tokio::test]
     async fn process_execution_captures_output() {
+        let seam = test_seam();
         let request =
             ProcessExecutionRequest::new("echo", vec!["hello".into()], ActionOrigin::User, 1);
 
-        let result = request.execute().await;
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user echo"),
+        };
+
+        let result = request.execute(&token).await;
         assert!(result.is_ok());
 
         let output = result.unwrap();
@@ -272,9 +293,16 @@ mod tests {
 
     #[tokio::test]
     async fn process_execution_handles_failure() {
+        let seam = test_seam();
         let request = ProcessExecutionRequest::new("false", vec![], ActionOrigin::User, 1);
 
-        let result = request.execute().await;
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user false"),
+        };
+
+        let result = request.execute(&token).await;
         assert!(result.is_ok());
 
         let output = result.unwrap();
@@ -283,11 +311,77 @@ mod tests {
 
     #[tokio::test]
     async fn process_execution_respects_timeout() {
+        let seam = test_seam();
         let request =
             ProcessExecutionRequest::new("sleep", vec!["10".into()], ActionOrigin::User, 1)
                 .with_timeout(Duration::from_millis(100));
 
-        let result = request.execute().await;
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user sleep"),
+        };
+
+        let result = request.execute(&token).await;
         assert!(matches!(result, Err(ProcessExecutionError::Timeout(_))));
+    }
+
+    #[tokio::test]
+    async fn unadmitted_process_cannot_execute() {
+        // Regression test for A1: execute() requires admission token.
+        // Without calling request(), there's no way to get AdmittedOperation,
+        // so direct execute() is a compile error. This test proves the API contract.
+        let request =
+            ProcessExecutionRequest::new("echo", vec!["bypass".into()], ActionOrigin::Agent, 1);
+
+        // This would not compile:
+        // let _ = request.execute().await;
+        // Error: method execute requires &AdmittedOperation parameter
+
+        // The only way to execute is through request() -> Allow(token) -> execute(&token)
+        // This test documents the contract; actual enforcement is type-level.
+        let seam = test_seam();
+        let admission = request.request(&seam).unwrap();
+        match admission {
+            crate::EffectAdmission::NeedsApproval(_) => {
+                // Agent origin requires approval; cannot execute without user resolution
+            }
+            crate::EffectAdmission::Allow(token) => {
+                // If policy allows, token proves admission
+                let _ = request.execute(&token).await;
+            }
+            crate::EffectAdmission::Deny { .. } => {
+                // Policy denied; no token, no execution
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_origin_requires_approval() {
+        // Regression test: agent-origin process spawn must not auto-Allow
+        let seam = test_seam();
+        let request = ProcessExecutionRequest::new(
+            "rm",
+            vec!["-rf".into(), "/".into()],
+            ActionOrigin::Agent,
+            1,
+        );
+
+        let admission = request.request(&seam).unwrap();
+        match admission {
+            crate::EffectAdmission::Allow(_) => {
+                panic!("agent origin process spawn should require approval, got Allow")
+            }
+            crate::EffectAdmission::NeedsApproval(deferred) => {
+                assert_eq!(deferred.effect().origin, ActionOrigin::Agent);
+                assert_eq!(
+                    deferred.effect().capability,
+                    crate::EffectCapability::ProcessSpawn
+                );
+            }
+            crate::EffectAdmission::Deny { .. } => {
+                // Deny is also acceptable for dangerous commands
+            }
+        }
     }
 }

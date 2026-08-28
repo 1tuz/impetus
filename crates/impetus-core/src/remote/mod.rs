@@ -1,17 +1,23 @@
-//! Remote connection capabilities: SSH profiles, host-key verification, tmux sessions, and durable approvals.
+//! Remote connection capabilities: SSH profiles, host-key verification, tmux sessions, SFTP, and durable approvals.
 //!
 //! This module implements v0.6:
 //! - Task 1: SSH profiles with host-key verification and Keychain integration
 //! - Task 2: Controlled process/PTY execution (in execution module)
 //! - Task 3: tmux integration for persistent remote sessions
+//! - Task 4: SFTP for remote file access
 //! - Durable approval saves host-key acceptance and survives restart
 
 mod profile;
+mod sftp;
 mod storage;
 mod tmux;
 mod tmux_storage;
 
 pub use profile::{HostKeyFingerprint, HostKeyVerificationError, SSHKeyReference, SSHProfile};
+pub use sftp::{
+    SftpError, SftpFileInfo, SftpOperation, SftpOperationRequest, SftpResult, SftpSession,
+    SftpSessionManager,
+};
 pub use storage::{SSHApproval, SSHApprovalStore, SSHApprovalStoreError, SqliteSSHApprovalStore};
 pub use tmux::{
     TmuxError, TmuxSession, TmuxSessionId, TmuxSessionManager, TmuxSessionRequest, TmuxSessionState,

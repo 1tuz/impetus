@@ -155,11 +155,41 @@ impl DeferredEffect {
     pub fn approval(&self) -> &ApprovalRequest {
         &self.approval
     }
+
+    pub fn effect(&self) -> &NormalizedEffect {
+        &self.effect
+    }
+}
+
+/// Proof that an effect passed policy and sandbox admission.
+/// Only the harness may construct this token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedOperation {
+    effect: NormalizedEffect,
+    intent_revision: u64,
+}
+
+impl AdmittedOperation {
+    /// Create an admitted operation token. This is harness-internal only.
+    pub(crate) fn new(effect: NormalizedEffect, intent_revision: u64) -> Self {
+        Self {
+            effect,
+            intent_revision,
+        }
+    }
+
+    pub fn effect(&self) -> &NormalizedEffect {
+        &self.effect
+    }
+
+    pub fn intent_revision(&self) -> u64 {
+        self.intent_revision
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectAdmission {
-    Allow,
+    Allow(AdmittedOperation),
     NeedsApproval(DeferredEffect),
     Deny { reason: String },
 }
@@ -309,6 +339,7 @@ impl EffectSeam {
     /// Request admission without executing the capability. `NeedsApproval`
     /// returns the exact normalized action and durable approval data that must
     /// be presented to a human before any sandbox or capability code runs.
+    /// `Allow` returns an AdmittedOperation token proving the effect passed admission.
     pub fn request(&self, effect: NormalizedEffect, intent_revision: u64) -> EffectAdmission {
         // Sandbox check first: fail-closed
         if let Err(reason) = self.sandbox.admit(&effect) {
@@ -317,7 +348,9 @@ impl EffectSeam {
 
         match self.policy_decision(&effect.action) {
             PolicyDecision::Deny { reason } => EffectAdmission::Deny { reason },
-            PolicyDecision::Allow => EffectAdmission::Allow,
+            PolicyDecision::Allow => {
+                EffectAdmission::Allow(AdmittedOperation::new(effect, intent_revision))
+            }
             PolicyDecision::NeedsApproval { reason } => {
                 EffectAdmission::NeedsApproval(DeferredEffect {
                     approval: ApprovalRequest::pending_with_version(
@@ -582,5 +615,56 @@ mod tests {
             fingerprint_v1,
             ActionFingerprint::for_action_with_version(&action, Some(1))
         );
+    }
+
+    // A2 Phase 1: Origin derivation regression tests
+    #[test]
+    fn agent_origin_requires_approval_for_process_spawn() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root);
+        let effect =
+            NormalizedEffect::process_spawn(ActionOrigin::Agent, "run formatter", "cargo fmt");
+        let admission = seam.request(effect, 1);
+        assert!(
+            matches!(admission, EffectAdmission::NeedsApproval(_)),
+            "agent origin must require approval for process spawn"
+        );
+    }
+
+    #[test]
+    fn user_origin_may_allow_read_without_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_read(&root);
+        let effect = NormalizedEffect::workspace_read(ActionOrigin::User, "read note", "note.txt");
+        let admission = seam.request(effect, 1);
+        assert!(
+            matches!(admission, EffectAdmission::Allow(_)),
+            "user origin may allow read without approval"
+        );
+    }
+
+    // A2 Phase 2: Deferred continuation tests
+    #[test]
+    fn admitted_operation_proves_effect_passed_admission() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_read(&root);
+        let effect = NormalizedEffect::workspace_read(ActionOrigin::User, "read note", "note.txt");
+        let EffectAdmission::Allow(admission) = seam.request(effect.clone(), 1) else {
+            panic!("test effect must be allowed");
+        };
+        assert_eq!(admission.effect(), &effect);
+        assert_eq!(admission.intent_revision(), 1);
+    }
+
+    #[test]
+    fn deferred_effect_stores_normalized_effect_and_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_read_requiring_approval(&root);
+        let effect = NormalizedEffect::workspace_read(ActionOrigin::Agent, "read note", "note.txt");
+        let EffectAdmission::NeedsApproval(deferred) = seam.request(effect.clone(), 42) else {
+            panic!("test gate must defer effect");
+        };
+        assert_eq!(deferred.effect(), &effect);
+        assert_eq!(deferred.approval().intent_revision, 42);
     }
 }

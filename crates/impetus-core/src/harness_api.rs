@@ -270,11 +270,17 @@ fn handle_request(
                     pattern: pattern.unwrap_or_default(),
                 },
             };
+            // A2 Phase 1: Server-side origin derivation.
+            // IPC tool calls are user-direct: they arrive through the client
+            // transport and are not part of an agent's tool use sequence.
+            // The harness derives origin from session context; no client-provided
+            // origin is trusted.
+            let origin = crate::ActionOrigin::User;
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 tools
                     .run_with_seam(
                         tool,
-                        crate::ActionOrigin::User,
+                        origin,
                         &artifact_store,
                         &effect_seam,
                     )

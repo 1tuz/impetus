@@ -1,8 +1,30 @@
-# Roadmap — один активный путь
+# Roadmap — фактический активный путь
 
-Это единственный исполнимый roadmap. `TODO.md` — короткая очередь из него.
-`iteration-2-roadmap.md` и `iteration-3-roadmap.md` сохраняют аудит/идеи, но
-не могут объявлять второй текущий этап.
+Этот документ сохраняет старые этапы как историю, но их старые статусы не
+являются доказательством готовности. Актуальная карта фактического кода:
+[current architecture audit](current-architecture-audit.md).
+
+## Active sequence after audit
+
+1. **A1: safe local execution authority.** Запретить любой process spawn без
+   harness-issued admission, provisioned per-session workspace и fail-closed
+   Seatbelt; origin=user не обходит OS sandbox.
+2. **A2: trusted origin and approval continuation.** Origin определяет
+   trusted harness boundary; accepted approval запускает только matching
+   durable deferred effect. ACP не принимает raw credential strings.
+3. **A3: per-session coordination.** Удалить global request serialization
+   только после concurrency regressions.
+4. **B1: typed client plus event-driven subscription.** Typed SDK и cursor
+   backfill/push без polling в daemon, in-memory transport и Zap.
+5. **B2/C: complete current DTOs, then provider registry/router/budgets.**
+   Не добавлять provider/model feature в central dispatcher.
+
+Remote execution, checkpoints/DAG, TUI, swarm, profiles and learning остаются
+после этих gate. Planned DTO, simulated PTY/tmux, test-only seam и Seatbelt
+spike не считаются готовой product feature.
+
+Ниже — историческая запись предыдущих заявлений и идей. Для нового статуса
+использовать audit выше, а не статусные галочки ниже.
 
 ## Статус версий
 

@@ -31,8 +31,8 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use effects::{
-    CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability, EffectDecision,
-    EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
+    AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
+    EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
@@ -58,9 +58,10 @@ pub use provider::{
 pub use remote::{
     HostKeyFingerprint, HostKeyVerificationError, SSHApproval, SSHApprovalStore,
     SSHApprovalStoreError, SSHConnectionError, SSHConnectionRequest, SSHKeyReference, SSHProfile,
-    SqliteSSHApprovalStore, SqliteTmuxSessionStore, TmuxError, TmuxSession, TmuxSessionId,
-    TmuxSessionManager, TmuxSessionRecord, TmuxSessionRequest, TmuxSessionState, TmuxSessionStore,
-    TmuxSessionStoreError,
+    SftpError, SftpFileInfo, SftpOperation, SftpOperationRequest, SftpResult, SftpSession,
+    SftpSessionManager, SqliteSSHApprovalStore, SqliteTmuxSessionStore, TmuxError, TmuxSession,
+    TmuxSessionId, TmuxSessionManager, TmuxSessionRecord, TmuxSessionRequest, TmuxSessionState,
+    TmuxSessionStore, TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
