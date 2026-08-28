@@ -7,7 +7,7 @@
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | [Zap](https://github.com/zerx-lab/zap)                                                                                                                                | основной terminal client, local-first UX, Blocks, SSH/tmux и допустимый личный fork           | Zap-owned session/policy как source of truth harness-а                   |
 | [Zap roadmap](https://github.com/zerx-lab/zap/blob/main/docs/roadmap.md)                                                                                              | standalone harness service, versioned IPC, terminal как один из клиентов                      | roadmap-обещание как доказательство готового protocol API                |
-| [OpenClaude](https://github.com/example/openclaude)                                                                                                                   | per-agent step budget, separate compaction model, reasoning effort per agent, context/token TUI UX, persistent external worker via tmux/Channels | кодовую базу целиком, его session branching/multi-provider (уже есть у нас) |
+| [OpenClaude](https://github.com/Gitlawb/openclaude) v0.27.0 (2026-07-30)                                                                                              | per-agent step budget, separate compaction model, reasoning effort per agent, context/token TUI UX, persistent external worker via tmux/Channels | кодовую базу целиком, его session branching/multi-provider (уже есть у нас) |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)                                                                                                   | agent loop/capability seams, manifests, append-only trace, изолируемый runtime                | Node/Cordis/Web UI внутри нашего harness                                 |
 | [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) и [Rust SDK](https://github.com/agentclientprotocol/rust-sdk)                             | adapter к external coding-agents, sessions, updates, permission/auth interaction, negotiation | выдачу ACP за наш client IPC, universal provider API или перенос токенов |
 | [Qwen Code subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md)                                                                | immutable fork point и shared cache prefix как hint                                           | бесконтрольное создание subagents                                        |
@@ -26,3 +26,22 @@
 ## Граница личного Zap fork
 
 Личный fork разрешён и рассматривается как нормальный structured client path. Его dependencies, license и UI architecture не переносятся в harness автоматически. Если появится публичное распространение, packaging/license boundary оценивается отдельным решением, а не блокирует личную разработку сейчас.
+
+## Проверенные версии референсов
+
+Версии зафиксированы для отслеживания изменений и периодической синхронизации.
+
+| Референс | Последняя проверенная версия | Дата проверки | Commit/Tag | Что отслеживаем |
+| --- | --- | --- | --- | --- |
+| OpenClaude | v0.27.0 | 2026-07-30 | [Gitlawb/openclaude](https://github.com/Gitlawb/openclaude) | budget mechanism, compaction model, TUI UX patterns |
+| ACP Rust SDK | 2.0.0 | 2026-08-28 | [agentclientprotocol/rust-sdk](https://github.com/agentclientprotocol/rust-sdk) | protocol types, session/permission APIs |
+| DeepSeek Harness | v0.5.2 | 2026-06-15 | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | capability seams, trace format |
+| Zap | main | 2026-08-20 | [zerx-lab/zap](https://github.com/zerx-lab/zap) | structured blocks, OSC sequences, harness roadmap |
+| GPUI-CE | 0.7.0 | 2026-07-10 | [gpui-ce/gpui-ce](https://github.com/gpui-ce/gpui-ce) | pinned API для optional reference client |
+
+### Процедура обновления
+
+1. Каждые 2–4 недели проверять upstream changes в активных референсах.
+2. Для breaking changes или новых features создавать отдельный design doc перед интеграцией.
+3. Обновлять таблицу при каждой синхронизации: новый commit/tag, дата, что взяли.
+4. Для experimental features (unstable_ flags, draft RFCs) — не интегрировать без explicit RFC в нашем репо.
