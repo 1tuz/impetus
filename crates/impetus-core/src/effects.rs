@@ -10,15 +10,29 @@ use crate::{
 };
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EffectCapability {
-    WorkspaceRead,
+/// Capability version tracks breaking changes to action structure or semantics.
+/// Approval fingerprints include capability version so old approvals cannot be
+/// reused for incompatible new actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CapabilityVersion(pub u32);
+
+impl CapabilityVersion {
+    pub const V1: Self = Self(1);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EffectCapability {
+    WorkspaceRead,
+    WorkspaceWrite,
+    ProcessSpawn,
+    NetworkConnect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NormalizedEffect {
     pub origin: ActionOrigin,
     pub capability: EffectCapability,
+    pub version: CapabilityVersion,
     pub action: Action,
 }
 
@@ -31,9 +45,64 @@ impl NormalizedEffect {
         Self {
             origin,
             capability: EffectCapability::WorkspaceRead,
+            version: CapabilityVersion::V1,
             action: Action {
                 origin,
                 kind: ActionKind::ReadFile,
+                summary: summary.into(),
+                target: Some(target.into()),
+            },
+        }
+    }
+
+    pub fn workspace_write(
+        origin: ActionOrigin,
+        summary: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        Self {
+            origin,
+            capability: EffectCapability::WorkspaceWrite,
+            version: CapabilityVersion::V1,
+            action: Action {
+                origin,
+                kind: ActionKind::WriteFile,
+                summary: summary.into(),
+                target: Some(target.into()),
+            },
+        }
+    }
+
+    pub fn process_spawn(
+        origin: ActionOrigin,
+        summary: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        Self {
+            origin,
+            capability: EffectCapability::ProcessSpawn,
+            version: CapabilityVersion::V1,
+            action: Action {
+                origin,
+                kind: ActionKind::SpawnProcess,
+                summary: summary.into(),
+                target: Some(target.into()),
+            },
+        }
+    }
+
+    pub fn network_connect(
+        origin: ActionOrigin,
+        summary: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        Self {
+            origin,
+            capability: EffectCapability::NetworkConnect,
+            version: CapabilityVersion::V1,
+            action: Action {
+                origin,
+                kind: ActionKind::NetworkConnect,
                 summary: summary.into(),
                 target: Some(target.into()),
             },
@@ -77,15 +146,15 @@ pub enum EffectAdmission {
     Deny { reason: String },
 }
 
-/// A deliberately small sandbox gate.  `Unavailable` is a hard denial: no
-/// capability code or execution closure is reached.
+/// Sandbox gate with fail-closed admission. `Unavailable` is a hard denial:
+/// no capability code or execution closure is reached.
 #[derive(Debug, Clone)]
-pub enum ReadOnlySandbox {
+pub enum Sandbox {
     Provisioned { scope: SandboxScope },
     Unavailable { reason: String },
 }
 
-impl ReadOnlySandbox {
+impl Sandbox {
     pub fn workspace(root: impl Into<std::path::PathBuf>) -> Self {
         Self::Provisioned {
             scope: SandboxScope::local_workspace(root),
@@ -106,30 +175,66 @@ impl ReadOnlySandbox {
             return Err(format!("sandbox unavailable: {reason}"));
         };
 
-        if effect.capability != EffectCapability::WorkspaceRead
-            || effect.action.kind != ActionKind::ReadFile
-        {
-            return Err("capability is not available in the read-only sandbox".into());
+        // Version check: only V1 supported
+        if effect.version != CapabilityVersion::V1 {
+            return Err(format!(
+                "unsupported capability version: {:?}",
+                effect.version
+            ));
         }
+
         if effect.origin != effect.action.origin {
             return Err("effect origin does not match normalized action origin".into());
         }
+
         let Some(target) = effect.action.target.as_deref() else {
-            return Err("read effect has no target".into());
+            return Err("effect has no target".into());
         };
-        if !scope.contains(Path::new(target)) {
-            return Err("sandbox cannot prove target is inside workspace scope".into());
+
+        match effect.capability {
+            EffectCapability::WorkspaceRead => {
+                if effect.action.kind != ActionKind::ReadFile {
+                    return Err("WorkspaceRead capability requires ReadFile action".into());
+                }
+                if !scope.contains(Path::new(target)) {
+                    return Err("sandbox cannot prove read target is inside workspace scope".into());
+                }
+            }
+            EffectCapability::WorkspaceWrite => {
+                if effect.action.kind != ActionKind::WriteFile {
+                    return Err("WorkspaceWrite capability requires WriteFile action".into());
+                }
+                if !scope.contains_write_target(Path::new(target)) {
+                    return Err(
+                        "sandbox cannot prove write target is inside workspace scope".into(),
+                    );
+                }
+            }
+            EffectCapability::ProcessSpawn => {
+                if effect.action.kind != ActionKind::SpawnProcess {
+                    return Err("ProcessSpawn capability requires SpawnProcess action".into());
+                }
+                // Process spawn allowed within workspace scope
+            }
+            EffectCapability::NetworkConnect => {
+                if effect.action.kind != ActionKind::NetworkConnect {
+                    return Err("NetworkConnect capability requires NetworkConnect action".into());
+                }
+                if !scope.allow_network {
+                    return Err("network is disabled in this sandbox scope".into());
+                }
+            }
         }
         Ok(())
     }
 }
 
-/// Fixed order for the only currently executable capability:
+/// Fixed order for capability execution:
 /// normalized effect -> policy decision -> sandbox -> capability -> execution.
 #[derive(Debug, Clone)]
 pub struct EffectSeam {
     policy: PolicyEngine,
-    sandbox: ReadOnlySandbox,
+    sandbox: Sandbox,
     #[cfg(test)]
     require_test_approval: bool,
 }
@@ -139,13 +244,23 @@ impl EffectSeam {
         let root = root.into();
         Self {
             policy: PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
-            sandbox: ReadOnlySandbox::workspace(root),
+            sandbox: Sandbox::workspace(root),
             #[cfg(test)]
             require_test_approval: false,
         }
     }
 
-    pub fn with_sandbox(policy: PolicyEngine, sandbox: ReadOnlySandbox) -> Self {
+    pub fn workspace_full(root: impl Into<std::path::PathBuf>) -> Self {
+        let root = root.into();
+        Self {
+            policy: PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
+            sandbox: Sandbox::workspace(root),
+            #[cfg(test)]
+            require_test_approval: false,
+        }
+    }
+
+    pub fn with_sandbox(policy: PolicyEngine, sandbox: Sandbox) -> Self {
         Self {
             policy,
             sandbox,
@@ -155,13 +270,15 @@ impl EffectSeam {
     }
 
     pub fn decide(&self, effect: &NormalizedEffect) -> EffectDecision {
+        // Sandbox check first: fail-closed
+        if let Err(reason) = self.sandbox.admit(effect) {
+            return EffectDecision::Deny { reason };
+        }
+
         match self.policy_decision(&effect.action) {
             PolicyDecision::Deny { reason } => EffectDecision::Deny { reason },
             PolicyDecision::NeedsApproval { reason } => EffectDecision::NeedsApproval { reason },
-            PolicyDecision::Allow => match self.sandbox.admit(effect) {
-                Ok(()) => EffectDecision::Allow,
-                Err(reason) => EffectDecision::Deny { reason },
-            },
+            PolicyDecision::Allow => EffectDecision::Allow,
         }
     }
 
@@ -169,18 +286,21 @@ impl EffectSeam {
     /// returns the exact normalized action and durable approval data that must
     /// be presented to a human before any sandbox or capability code runs.
     pub fn request(&self, effect: NormalizedEffect, intent_revision: u64) -> EffectAdmission {
+        // Sandbox check first: fail-closed
+        if let Err(reason) = self.sandbox.admit(&effect) {
+            return EffectAdmission::Deny { reason };
+        }
+
         match self.policy_decision(&effect.action) {
             PolicyDecision::Deny { reason } => EffectAdmission::Deny { reason },
-            PolicyDecision::Allow => match self.sandbox.admit(&effect) {
-                Ok(()) => EffectAdmission::Allow,
-                Err(reason) => EffectAdmission::Deny { reason },
-            },
+            PolicyDecision::Allow => EffectAdmission::Allow,
             PolicyDecision::NeedsApproval { reason } => {
                 EffectAdmission::NeedsApproval(DeferredEffect {
-                    approval: ApprovalRequest::pending(
+                    approval: ApprovalRequest::pending_with_version(
                         effect.action.clone(),
                         reason,
                         intent_revision,
+                        Some(effect.version.0),
                     ),
                     effect,
                 })
@@ -200,15 +320,31 @@ impl EffectSeam {
         execution: impl FnOnce() -> Result<T, E>,
     ) -> Result<EffectExecution<T>, E> {
         let approval = deferred.approval;
+
+        // Verify capability version matches
+        let expected_version = approval.capability_version;
+        let actual_version = Some(deferred.effect.version.0);
+        if expected_version != actual_version {
+            return Ok(EffectExecution::Denied {
+                reason: "capability version mismatch".into(),
+            });
+        }
+
+        // Verify fingerprint includes version
+        let expected_fingerprint = crate::policy::ActionFingerprint::for_action_with_version(
+            &approval.action,
+            approval.capability_version,
+        );
+
         if approval.state != ApprovalState::Pending
             || resolution.resolver != ApprovalResolver::User
             || !resolution.accepted
             || resolution.id != approval.id
+            || resolution.action_fingerprint != expected_fingerprint
             || resolution.action_fingerprint != approval.action_fingerprint
             || resolution.intent_revision != approval.intent_revision
             || current_intent_revision != approval.intent_revision
             || deferred.effect.action != approval.action
-            || approval.action_fingerprint != approval.action.fingerprint()
         {
             return Ok(EffectExecution::Denied {
                 reason: "approval is missing, rejected, or stale".into(),
@@ -285,8 +421,7 @@ mod tests {
     fn unavailable_sandbox_fails_closed_before_execution() {
         let root = workspace();
         let policy = PolicyEngine::new(SandboxScope::local_workspace(&root));
-        let seam =
-            EffectSeam::with_sandbox(policy, ReadOnlySandbox::unavailable("not provisioned"));
+        let seam = EffectSeam::with_sandbox(policy, Sandbox::unavailable("not provisioned"));
         let effect = NormalizedEffect::workspace_read(ActionOrigin::User, "read note", "note.txt");
         let outcome = seam
             .execute(&effect, || -> Result<(), ()> { panic!("must not execute") })
@@ -337,5 +472,91 @@ mod tests {
             })
             .expect("stale approval is a denial");
         assert!(matches!(outcome, EffectExecution::Denied { reason } if reason.contains("stale")));
+    }
+
+    #[test]
+    fn workspace_write_capability_requires_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root);
+        let effect =
+            NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
+        let outcome = seam
+            .execute(&effect, || Ok::<_, ()>("executed"))
+            .expect("write effect");
+        assert!(matches!(outcome, EffectExecution::NeedsApproval { .. }));
+    }
+
+    #[test]
+    fn workspace_write_outside_scope_is_denied() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root);
+        let effect = NormalizedEffect::workspace_write(
+            ActionOrigin::Agent,
+            "write outside",
+            "/etc/forbidden",
+        );
+        let outcome = seam
+            .execute(&effect, || -> Result<(), ()> { panic!("must not execute") })
+            .expect("denial");
+        assert!(matches!(outcome, EffectExecution::Denied { .. }));
+    }
+
+    #[test]
+    fn process_spawn_capability_requires_approval_for_agent() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root);
+        let effect =
+            NormalizedEffect::process_spawn(ActionOrigin::Agent, "run formatter", "cargo fmt");
+        let outcome = seam
+            .execute(&effect, || Ok::<_, ()>("executed"))
+            .expect("spawn effect");
+        assert!(matches!(outcome, EffectExecution::NeedsApproval { .. }));
+    }
+
+    #[test]
+    fn capability_version_mismatch_denies_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_read_requiring_approval(&root);
+        let mut effect =
+            NormalizedEffect::workspace_read(ActionOrigin::Agent, "read note", "note.txt");
+        let EffectAdmission::NeedsApproval(mut deferred) = seam.request(effect.clone(), 41) else {
+            panic!("test gate must defer effect");
+        };
+
+        // Simulate version change
+        effect.version = CapabilityVersion(999);
+        deferred.effect = effect;
+
+        let resolution = ApprovalResolution::user(deferred.approval(), true);
+        let outcome = seam
+            .execute_after_approval(deferred, resolution, 41, || -> Result<(), ()> {
+                panic!("version mismatch must not execute")
+            })
+            .expect("version mismatch is a denial");
+        assert!(
+            matches!(outcome, EffectExecution::Denied { reason } if reason.contains("version"))
+        );
+    }
+
+    #[test]
+    fn action_fingerprint_includes_capability_version() {
+        use crate::policy::ActionFingerprint;
+        let action = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("file.txt".into()),
+        };
+
+        let fingerprint_v1 = ActionFingerprint::for_action_with_version(&action, Some(1));
+        let fingerprint_v2 = ActionFingerprint::for_action_with_version(&action, Some(2));
+        let fingerprint_none = ActionFingerprint::for_action(&action);
+
+        assert_ne!(fingerprint_v1, fingerprint_v2);
+        assert_ne!(fingerprint_v1, fingerprint_none);
+        assert_eq!(
+            fingerprint_v1,
+            ActionFingerprint::for_action_with_version(&action, Some(1))
+        );
     }
 }

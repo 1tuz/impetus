@@ -10,8 +10,8 @@
 use crate::{
     AgentRuntime, ArtifactStore, CredentialResolver, EventStore, IPC_CAPABILITIES, IPC_VERSION,
     IpcErrorCode, IpcRequest, IpcResponse, MockStreamItem, MockStreamingProvider,
-    NoCredentialResolver, OpenAiCompatibleProvider, PolicyEngine, ProviderError, ReadOnlySandbox,
-    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, RuntimeError, RuntimeStatus, SandboxScope,
+    NoCredentialResolver, OpenAiCompatibleProvider, PolicyEngine, ProviderError, ReadOnlyTool,
+    ReadOnlyToolKind, ReadOnlyTools, RuntimeError, RuntimeStatus, Sandbox, SandboxScope,
     SessionSupervisor, SupervisorError, ToolOutcome,
 };
 use anyhow::Result;
@@ -256,7 +256,7 @@ fn handle_request(
             let tools = ReadOnlyTools::new(&workspace_root);
             let effect_seam = crate::EffectSeam::with_sandbox(
                 policy.clone(),
-                ReadOnlySandbox::workspace(&workspace_root),
+                Sandbox::workspace(&workspace_root),
             );
             let tool = match kind {
                 ReadOnlyToolKind::List => ReadOnlyTool::List {

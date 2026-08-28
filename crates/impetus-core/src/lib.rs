@@ -29,8 +29,8 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use effects::{
-    DeferredEffect, EffectAdmission, EffectCapability, EffectDecision, EffectExecution, EffectSeam,
-    NormalizedEffect, ReadOnlySandbox,
+    CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability, EffectDecision,
+    EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
@@ -39,7 +39,10 @@ pub use events::{
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
 pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry};
-pub use policy::{Action, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine, SandboxScope};
+pub use policy::{
+    Action, ActionFingerprint, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine,
+    PolicySnapshot, PolicyVersion, SandboxScope,
+};
 pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use provider::{
     CredentialResolver, CredentialStrategy, NoCredentialResolver, OpenAiCompatibleProvider,

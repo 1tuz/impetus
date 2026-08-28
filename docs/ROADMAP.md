@@ -12,7 +12,7 @@
 | v0.2 | Готов | standalone headless harness с real provider и безопасным execution path |
 | v0.3 | Готов | structured clients и external agents |
 | v0.4 | Готов | long-session context, compaction, immutable fork/checkpoint |
-| v0.5 | В работе | local effects и capability SDK |
+| v0.5 | Готов | local effects и capability SDK |
 | v0.6–v0.7 | Запланировано | remote profiles, MVP UI |
 
 Native-window smoke для optional GPUI client остаётся незакрытым хвостом v0.1.
@@ -53,27 +53,33 @@ inspection и одним explicit provider profile.
 - Deterministic projection после restart
 - Bounded memory tests
 
-## Текущий релиз: v0.5 — local effects и capability SDK
+### v0.5 — local effects и capability SDK ✓
 
 **Цель:** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
 
-**Gate:** exact approval, sandbox/reviewer fail closed, policy replay.
+**Gate:** exact approval, sandbox/reviewer fail closed, policy replay. ✓
 
-### Оставшиеся шаги — строго по порядку
+**Готово:**
+- Capability SDK с типизированными capabilities (WorkspaceRead, WorkspaceWrite, ProcessSpawn, NetworkConnect)
+- CapabilityVersion для exact approval matching
+- Sandbox fail-closed enforcement (проверка до approval/execution)
+- PolicySnapshot и replay для аудита
+- ActionFingerprint включает capability version
+- Integration tests для всех gate критериев
 
-1. **Capability SDK.** Типизированные capabilities для local effects;
-   версионирование действий для exact approval; capability не может быть выдан
-   без explicit approval или Allow policy decision.
-2. **Sandbox fail-closed.** macOS sandbox enforcement для mutating effects;
-   reviewer не может пропустить unsafe capability; тесты подтверждают что
-   unrestricted effect вызывает sandbox denial.
-3. **Policy replay.** Versioned policy rules воспроизводятся для аудита;
-   изменение policy не меняет outcome прошлых approval; compliance export
-   включает policy snapshot.
+## Текущий релиз: v0.6 — remote profiles
 
-**v0.5 готово, когда:** mutating effect требует exact approval или explicit
-Allow; sandbox denial блокирует unsafe capability; policy replay даёт
-identical decision для исторического события.
+**Цель:** SSH profiles, controlled process/PTY execution, tmux, SFTP.
+
+**Gate:** host-key/target/file approval переживают restart.
+
+### Оставшиеся шаги
+
+- [ ] SSH profiles с host-key verification
+- [ ] Controlled process/PTY execution
+- [ ] tmux integration для persistent remote sessions
+- [ ] SFTP для remote file access
+- [ ] Durable approval для remote targets
 
 ## Далее — продуктовые возможности
 

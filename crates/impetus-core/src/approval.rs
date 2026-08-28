@@ -47,6 +47,8 @@ pub struct ApprovalRequest {
     pub id: ApprovalId,
     pub action: Action,
     pub action_fingerprint: ActionFingerprint,
+    /// Capability version for exact approval matching.
+    pub capability_version: Option<u32>,
     /// Durable sequence of the user intent that authorized this review.
     pub intent_revision: u64,
     pub reason: String,
@@ -78,10 +80,23 @@ pub enum ScopeEstimate {
 
 impl ApprovalRequest {
     pub fn pending(action: Action, reason: String, intent_revision: u64) -> Self {
+        Self::pending_with_version(action, reason, intent_revision, None)
+    }
+
+    pub fn pending_with_version(
+        action: Action,
+        reason: String,
+        intent_revision: u64,
+        capability_version: Option<u32>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
-            action_fingerprint: action.fingerprint(),
+            action_fingerprint: crate::policy::ActionFingerprint::for_action_with_version(
+                &action,
+                capability_version,
+            ),
             action,
+            capability_version,
             intent_revision,
             reason,
             state: ApprovalState::Pending,

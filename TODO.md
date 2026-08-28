@@ -75,23 +75,23 @@
 - [x] BudgetChecker enforcement (turn/token/wall time limits)
 - [x] Unit-тесты budget logic
 
-## Текущий релиз: v0.5 — Local effects и capability SDK
+## Текущий релиз: v0.5 — Local effects и capability SDK ✓
 
 **Цель (из ROADMAP):** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
 
-**Gate:** exact approval, sandbox/reviewer fail closed, policy replay.
+**Gate:** exact approval, sandbox/reviewer fail closed, policy replay. ✓
 
 ### Задачи v0.5
 
-- [ ] Capability SDK для безопасных local effects
-- [ ] Exact approval механизм с версионированием действий
-- [ ] Sandbox fail-closed enforcement
-- [ ] Policy replay для аудита и compliance
-- [ ] Effect execution tests с sandbox validation
+- [x] Capability SDK для безопасных local effects
+- [x] Exact approval механизм с версионированием действий
+- [x] Sandbox fail-closed enforcement
+- [x] Policy replay для аудита и compliance
+- [x] Effect execution tests с sandbox validation
 
-## Следующие релизы
+**v0.5 завершён:** mutating effect требует exact approval или explicit Allow; sandbox denial блокирует unsafe capability; policy replay даёт identical decision для исторического события.
 
-### v0.6 — Remote profiles
+## Следующий релиз: v0.6 — Remote profiles
 
 **Gate:** host-key/target/file approval переживают restart.
 
