@@ -16,3 +16,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[[example]]
+name = "mock_agent_bin"
+path = "examples/mock_agent_bin.rs"
