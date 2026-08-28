@@ -17,7 +17,7 @@ use crate::{
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -27,6 +27,23 @@ enum ProviderBackend {
         provider: Arc<OpenAiCompatibleProvider>,
         credential_resolver: Arc<dyn CredentialResolver>,
     },
+}
+
+#[derive(Clone, Default)]
+struct SessionCoordinator {
+    locks: Arc<Mutex<HashMap<uuid::Uuid, Weak<Mutex<()>>>>>,
+}
+
+impl SessionCoordinator {
+    fn lock_for(&self, session_id: uuid::Uuid) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(lock) = locks.get(&session_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(session_id, Arc::downgrade(&lock));
+        lock
+    }
 }
 
 /// A reusable harness request dispatcher.
@@ -39,6 +56,7 @@ pub struct Harness {
     policy: PolicyEngine,
     provider: ProviderBackend,
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
+    session_coordinator: SessionCoordinator,
 }
 
 impl Harness {
@@ -48,6 +66,7 @@ impl Harness {
             policy,
             provider: ProviderBackend::Mock,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
+            session_coordinator: SessionCoordinator::default(),
         }
     }
 
@@ -82,6 +101,7 @@ impl Harness {
                 credential_resolver,
             },
             cancellations: Arc::new(Mutex::new(HashMap::new())),
+            session_coordinator: SessionCoordinator::default(),
         }
     }
 
@@ -103,6 +123,7 @@ impl Harness {
             self.policy.clone(),
             self.provider.clone(),
             self.cancellations.clone(),
+            self.session_coordinator.clone(),
             request,
         )
     }
@@ -113,6 +134,7 @@ fn handle_request(
     policy: PolicyEngine,
     provider: ProviderBackend,
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
+    session_coordinator: SessionCoordinator,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -184,6 +206,8 @@ fn handle_request(
             Err(error) => runtime_error(error),
         },
         IpcRequest::Prompt { session_id, text } => {
+            let session_lock = session_coordinator.lock_for(session_id);
+            let _session_guard = session_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 let runtime = Arc::new(runtime);
                 let provider_message = text.clone();
@@ -224,6 +248,8 @@ fn handle_request(
             }
         }
         IpcRequest::Cancel { session_id } => {
+            let session_lock = session_coordinator.lock_for(session_id);
+            let _session_guard = session_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Ok(active) = cancellations.lock()
                 && let Some(cancellation) = active.get(&session_id)
             {
@@ -507,6 +533,25 @@ mod tests {
     use crate::{CredentialStrategy, EventPayload, MemoryEventStore, ProviderProfile, RetryBudget};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_prompts_same_session_admit_only_one_run() {
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Arc::new(Harness::new(store.clone(), policy()));
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession) else { panic!("session creation response"); };
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut tasks = Vec::new();
+        for index in 0..8 {
+            let harness = harness.clone(); let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move { barrier.wait().await; harness.handle(IpcRequest::Prompt { session_id, text: format!("prompt {index}") }) }));
+        }
+        let mut running = 0; let mut conflicts = 0;
+        for task in tasks { match task.await.expect("prompt task") { IpcResponse::Status { status: RuntimeStatus::Running, .. } => running += 1, IpcResponse::Error { code: IpcErrorCode::Conflict, .. } => conflicts += 1, other => panic!("unexpected response: {other:?}"), } }
+        assert_eq!(running, 1); assert_eq!(conflicts, 7);
+        let events = store.list(session_id).expect("session events");
+        assert_eq!(events.iter().filter(|event| matches!(event.payload, EventPayload::Run(crate::RunEvent::Started { .. }))).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.payload, EventPayload::Intent(_))).count(), 1);
+    }
 
     #[tokio::test]
     async fn explicit_local_profile_streams_durable_chunks_through_harness() {
