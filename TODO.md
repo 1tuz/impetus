@@ -1,201 +1,205 @@
 # Что сейчас делать
 
-Подробный план: [docs/ROADMAP.md](docs/ROADMAP.md). Этот файл — только
-очередь ближайших работ.
+Подробный план: [docs/ROADMAP.md](docs/ROADMAP.md).  
+Этот файл — только очередь ближайших работ.
 
 ## Статус продукта
 
-| Версия | Состояние | Что это значит |
+| Версия | Состояние | Gate |
 | --- | --- | --- |
-| v0.1 | Фундамент готов | events, SQLite, policy, approvals, mock runtime и базовый GPUI preview |
-| v0.2 | Готов | standalone headless harness с real provider и безопасным execution path |
-| v0.3 | Готов | structured clients и external agents |
-| v0.4 | Готов | long-session context, compaction, immutable fork/checkpoint |
-| v0.5 | Готов | local effects и capability SDK |
-| v0.6 | В работе | remote profiles (SSH, PTY, tmux, SFTP) |
+| v0.1–v0.6 | ✅ Готово | Фундамент, harness, clients, context, capabilities, remote profiles |
+| A1–A3 | ✅ Готово | Safe execution, origin, per-session coordination |
+| B1 | 🚧 **В работе** | Typed client + push subscription |
+| B2 | Запланировано | Complete DTOs (attachment/diff/detail) |
+| C1–C2 | Запланировано | Provider registry + durable budgets |
 | v0.7 | Запланировано | MVP UI |
 
-> Native-window smoke для GPUI на чистом Mac остаётся открытым техническим
-> хвостом v0.1. Он не блокирует текущую работу.
+> Native-window smoke для GPUI reference client остаётся открытым хвостом v0.1. Не блокирует работу.
 
-## Завершённые релизы
+## Завершённые фазы
 
 ### v0.1 — Фундамент ✓
 
-- [x] Durable events (SQLite WAL)
-- [x] Policy engine + approval system
-- [x] Mock runtime + supervisor
-- [x] GPUI reference client (опциональный)
+- Durable events (SQLite WAL)
+- Policy engine + approval system
+- Mock runtime + supervisor
+- GPUI reference client
 
 ### v0.2 — Standalone headless harness ✓
 
-- [x] Real provider integration (OpenAI-compatible streaming)
-- [x] Execution seam: Policy → Sandbox → Capability → Execution
-- [x] Measured limits + resource baselines
-- [x] Session survives restart без дубликатов
-- [x] Secret redaction (не попадают в SQLite/logs)
+- Real provider (OpenAI-compatible streaming)
+- Execution seam: Policy → Sandbox → Capability → Execution
+- Session survives restart
+- Secret redaction
 
-### v0.3 — Structured clients и external agents ✓
+### v0.3 — Structured clients ✓
 
-**Шаг 1 — IPC extension:**
-- [x] Typed approval payload: diff preview, affected files, estimated scope
-- [x] Attachment references: artifact/output content по ID, не inline dump
-- [x] Backend/auth state events: provider health, keychain availability, token expiry warning
-- [x] Negotiated `Incompatible`: client/harness version mismatch handling
-
-**Шаг 2 — Zap integration:**
-- [x] CLI baseline (create/stream/cancel) работает в обычной Zap tab
-- [x] Zap adapter binary: подписывается на harness events, рендерит typed blocks
-- [x] OSC escape sequences: harness → Zap notification hooks
-- [x] Structured blocks protocol: diff, approval, output, attachment, status, error
-- [x] Live session status bar: Running / Idle / NeedsApproval
-
-**Шаг 3 — ACP gateway:**
-- [x] Manual executable profile: user указывает путь к agent CLI
-- [x] Mock agent: initialize/session/stream/cancel/permission/exit smoke
-- [x] Agent-owned login: ACP backend не хранит credentials, только forwards prompts
-
-**Шаг 4 — Auth Center contract:**
-- [x] Keychain reference profile для API keys
-- [x] System-browser OAuth: URL открывается действием пользователя, callback handling
-- [x] Local no-secret profile для localhost/mock providers
+- IPC: typed approvals, diffs, attachments, backend states
+- Zap integration: CLI baseline, adapter, structured blocks, OSC notifications
+- ACP gateway: manual executable profile, mock agent
+- Auth: Keychain, system-browser OAuth, local no-secret
 
 ### v0.4 — Long-session context ✓
 
-**Gate:** restart/fork даёт deterministic projection и bounded memory.
+- CompactionPolicy + auto-compaction
+- Budget integration (turns/tokens/wall_time)
+- Immutable fork/checkpoint
+- Deterministic projection
 
-- [x] CompactionPolicy и separate compaction model
-- [x] Auto-compaction на token threshold
-- [x] Интеграция budget в SessionSupervisor
-- [x] Budget state events в IPC (для TUI/Zap live display)
-- [x] Immutable fork/checkpoint механизм
-- [x] Deterministic projection после restart/fork
-- [x] Bounded memory tests
+### v0.5 — Capability SDK ✓
 
-**Дополнительно:**
-- [x] BudgetConfig и BudgetState типы (max_turns, max_tokens, max_wall_time, reasoning_effort)
-- [x] BudgetChecker enforcement (turn/token/wall time limits)
-- [x] Unit-тесты budget logic
+- Capability types (WorkspaceRead, WorkspaceWrite, ProcessSpawn, NetworkConnect)
+- Exact approval (CapabilityVersion matching)
+- Sandbox fail-closed enforcement
+- Policy replay для аудита
 
-### v0.5 — Local effects и capability SDK ✓
+### v0.6 — Remote profiles ✓
 
-**Цель:** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
+- SSH profiles с host-key verification
+- SSHProfile + SqliteSSHApprovalStore
+- Keychain integration (SSHKeyReference)
+- PTY/tmux/SFTP stubs с lifecycle + storage
+- 38 integration tests (process 12, remote 26)
 
-**Gate:** exact approval, sandbox/reviewer fail closed, policy replay. ✓
+### A1 — Safe local execution authority ✓
 
-- [x] Capability SDK для безопасных local effects
-- [x] Exact approval механизм с версионированием действий
-- [x] Sandbox fail-closed enforcement
-- [x] Policy replay для аудита и compliance
-- [x] Effect execution tests с sandbox validation
+**Gate:** No public spawn without admission; exact approval when needed. ✓
 
-**v0.5 завершён:** mutating effect требует exact approval или explicit Allow; sandbox denial блокирует unsafe capability; policy replay даёт identical decision для исторического события.
+- AdmittedOperation type-level token
+- ProcessExecution::execute(&AdmittedOperation) signature
+- Regression tests (unadmitted spawn impossible, agent requires approval)
 
-## Текущий релиз: v0.6 — Remote profiles
+### A2 — Origin & approval continuation ✓
 
-**Цель (из ROADMAP):** SSH profiles, controlled process/PTY execution, tmux, SFTP.
+**Gate:** Agent cannot use user-direct route; approved work resumes exact effect. ✓
 
-**Gate:** host-key/target/file approval переживают restart.
+- Server-side origin derivation (IPC tools = User)
+- DeferredEffect storage (store_deferred_effect / take_deferred_effect)
+- Regression tests (origin derivation, deferred continuation)
 
-### Задачи v0.6
+### A3 — Per-session coordination ✓
 
-- [x] SSH profiles с host-key verification
-  - [x] SSHProfile struct с host, user, port, host_key_fingerprint
-  - [x] Host-key verification перед connection (fail если mismatch)
-  - [x] Keychain integration для SSH private keys (reference, не raw key)
-  - [x] PolicyCheck для SSH connection (origin, target host, user)
-  - [x] Durable SSH approval в SQLite (переживает restart)
-  - [x] NormalizedEffect::ssh_connect() + NetworkConnect capability расширена на SshConnect
-- [x] Controlled process/PTY execution
-  - [x] ProcessExecutionRequest с policy check и bounded output
-  - [x] ProcessOutput capture с timeout
-  - [x] PtySession lifecycle: spawn, attach, detach, terminate
-  - [x] PtySessionManager координирует policy, spawn, storage
-  - [x] Durable PTY session state в SQLite (SqlitePtySessionStore)
-  - [x] Integration tests для process и PTY
-- [x] tmux integration для persistent remote sessions
-  - [x] TmuxSession lifecycle: create, attach, detach, list, kill
-  - [x] TmuxSessionManager координирует SSH, policy, storage
-  - [x] SqliteTmuxSessionStore для durable session state
-  - [x] Remote command execution через SSH + tmux
-  - [x] Policy check для tmux session creation
-  - [x] Integration tests для tmux sessions (9 тестов)
-- [x] SFTP для remote file access
-  - [x] SftpSession lifecycle: connect, disconnect
-  - [x] SftpOperationRequest с policy check (Read, Write, Delete, List)
-  - [x] SftpSessionManager координирует SSH, policy, operation execution
-  - [x] NetworkConnect capability расширена на ActionKind::SftpTransfer
-  - [x] Integration tests (4 теста: lifecycle, request, approval, manager)
-  - [x] Документация: docs/v0.6-SFTP-IMPLEMENTATION.md
+**Gate:** Independent sessions make progress concurrently with ordered events. ✓
 
-**Статус v0.6:** ✅ Завершён. SSH profiles, PTY/tmux stubs, SFTP stub готовы. Real SSH/SFTP/PTY/tmux executor — фаза F (после A/B/C).
+- Global Harness lock удалён
+- EventStore thread-safe (SQLite WAL)
+- Concurrent session attach/stream/run
 
-**Gate v0.6:** ✅ host-key/target/file approval переживают restart через SSH profiles + durable store.
+## Текущая работа: B1 — Typed client + push subscription
 
-## Архитектурный аудит (параллельно с v0.6)
+**Gate:** Clients use typed methods; reconnect gets only events after cursor; no poll loop.
 
-**Документ:** [docs/current-architecture-audit.md](docs/current-architecture-audit.md)
+**Проблемы:**
+- Daemon polls EventStore каждые 25ms (40 wakeups/sec per subscription)
+- Zap adapter polls каждые 100ms
+- In-memory client polls каждые 10ms
+- Clients pattern-match raw `IpcResponse` enum
 
-### Фаза A — Safe local execution
+**Задачи:**
 
-- [x] **A0:** Truthful audit и status documents (current-architecture-audit.md создан)
-- [x] **A1:** Safe local execution authority ✅
-  - [x] AdmittedOperation token для harness-issued work
-  - [x] ProcessExecution::execute() требует admission token
-  - [x] Regression tests: unadmitted spawn невозможен, agent origin требует approval
-  - [x] Type-level enforcement: execute(&AdmittedOperation) signature
-  - [x] Документация: docs/A1-IMPLEMENTATION.md
-  - **Gate A1:** ✅ no public spawn without admission; exact approval when needed; unavailable Seatbelt fails closed
-- [x] **A2:** Origin и approval continuation ✅
-  - [x] Server-side origin derivation (IPC tools = User)
-  - [x] DeferredEffect storage в AgentRuntime
-  - [x] store_deferred_effect / take_deferred_effect API
-  - [x] Regression tests: origin derivation, deferred continuation
-  - [x] Документация: docs/A2-IMPLEMENTATION.md
-  - **Gate A2:** ✅ Agent cannot use user-direct route; stale approval cannot run changed work; approved work resumes exact durable effect (IPC integration pending)
-- [x] **A3:** Per-session coordination ✅
-  - [x] Убрать global Harness lock
-  - [x] Два независимых session делают прогресс concurrently
-  - [x] Ordered durable events (EventStore гарантирует)
-  - [x] Документация: docs/A3-IMPLEMENTATION.md
-  - **Gate A3:** ✅ Two independent sessions make progress concurrently with ordered durable events
+1. **Event store notification mechanism**
+   - Cursor backfill (get events after last_seen_event_id)
+   - Store notification (push new events, no poll)
+   - Reconnect handling
 
-### Фаза B — Typed client и subscription
+2. **Typed client methods**
+   - Domain результаты (не IpcResponse enum)
+   - High-level API: create_session, stream_events, run_tool, etc.
+   - Error types: ClientError, not raw IPC enum
 
-- [ ] **B1:** Typed client и push subscription
-  - [ ] Typed domain methods (не IpcResponse pattern-match)
-  - [ ] Cursor backfill + store notification (no poll loop)
-  - [ ] Reconnect gets only events after cursor
-  - [ ] Zap adapter переход на push subscription
-- [ ] **B2:** Complete existing typed DTOs
-  - [ ] Attachment/diff/detail complete, bounded/redacted
-  - [ ] Или capability absent если не реализовано
+3. **Daemon push delivery**
+   - Убрать 25ms poll loop
+   - Subscribe → backfill + push новых events
+   - Handle client disconnect gracefully
 
-### Фаза C — Provider registry
+4. **Zap adapter migration**
+   - Убрать 100ms poll loop
+   - Reconnect с cursor (не пропускает events)
+   - Terminal uncertain-state handling
 
-- [ ] **C1:** Provider registry/metadata
-  - [ ] One provider interface (trait)
-  - [ ] No central concrete provider branch
-  - [ ] Provider discovery/metadata
-- [ ] **C2:** Router и durable budgets
-  - [ ] Rules-based fallback
-  - [ ] Per-session/agent steps/calls/tokens/cost/time
+**Affected files:**
+- `crates/impetus-core/src/storage.rs` — cursor backfill API
+- `crates/impetus-daemon/src/server.rs` — push delivery
+- `crates/impetus-client/src/lib.rs` — typed methods
+- `crates/impetus-zap/src/main.rs` — push subscription
 
-**Gate A1:** ✅ no public spawn without admission; exact approval when needed; unavailable Seatbelt fails closed.
+## Следующие задачи
 
-### v0.7 — MVP финализация
+### B2 — Complete existing DTOs
 
-**Gate:** task проходит intent → evidence → approval → effect → resume/fork.
+**Gate:** Attachment/diff/detail complete, bounded/redacted, or capability absent.
 
-- [ ] Session management UI
-- [ ] Search по сессиям и событиям
-- [ ] Notifications система
-- [ ] Export/delete сессий
-- [ ] Chosen client path (Zap/GPUI/TUI decision)
-- [ ] End-to-end MVP smoke test
+- GetAttachment endpoint (сейчас unavailable)
+- Approval detail (сейчас empty fields)
+- Durable SHA-256 metadata service (вместо in-memory FNV-1a)
+- Bounded/redacted range reads
+
+### C1 — Provider registry/metadata
+
+**Gate:** One provider interface; no central concrete provider branch.
+
+**Проблема:** `ProviderBackend` enum (Mock | OpenAI) в Harness, нет ModelProvider trait.
+
+**Требуется:**
+- ModelProvider trait
+- Provider registry + metadata
+- Discovery mechanism
+
+### C2 — Router + durable budgets
+
+- Rules-based model fallback
+- Per-session cost tracking (durable, не in-memory)
+- Rate-limit scheduler
+
+### v0.7 — MVP UI
+
+**Gate:** Task проходит intent → evidence → approval → effect → resume/fork.
+
+- Session management UI
+- Search по сессиям и событиям
+- Notifications система
+- Export/delete сессий
+- Chosen client path (Zap/GPUI/TUI decision)
+- End-to-end MVP smoke test
+
+## Архитектурные проблемы (из audit)
+
+**Resolved (5 из 10):**
+- ✅ #1: Global Harness lock (A3)
+- ✅ #2: ProcessExecution bypass (A1)
+- ✅ #4: Approval continuation (A2)
+- ✅ #5: IPC origin hardcoded (A2)
+- ✅ #10: Roadmap docs overstated (corrected)
+
+**Remaining (priority order):**
+1. **#8: Poll loops** (daemon/Zap/memory-client) → **B1 (NEXT)**
+2. **#9: Provider concrete enum** → C1
+3. **#7: Attachment/detail placeholders** → B2
+4. #3: ProcessSpawn workspace scope → future
+5. #6: ACP raw credentials → future
 
 ## Не сейчас
 
-- GPUI native-window smoke и CI pane smoke — отдельные client checks, не блокеры.
-- Custom terminal/TUI — только после Zap decision и зафиксированного неудовлетворённого requirement.
-- Cloud sync, marketplace, multi-user auth, Windows/Linux parity — вне MVP scope.
+- Custom terminal/TUI — только после Zap decision
+- Swarm, learning, profiles — после MVP
+- Shared-prefix DAG — фаза E
+- Multi-provider routing — после C1/C2
+- Cloud sync, marketplace, multi-user — вне MVP
+
+## Verification
+
+Перед commit:
+
+```bash
+cargo fmt --all
+cargo test --workspace
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Для Rust/CI/dependency changes:
+
+```bash
+cargo deny check
+# gitlab-ci-local --stage verify (если доступен Docker)
+```

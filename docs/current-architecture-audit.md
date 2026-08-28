@@ -1,198 +1,187 @@
 # Current Architecture Audit — Impetus
 
-Date of snapshot: 2026-08-28.  
-**Progress update:** 2026-08-28 — A1 complete, v0.6 complete, A2 in progress.
+Date: 2026-08-28  
+Baseline: commit 509aab5, 247 tests passing, cargo verify clean
 
-## Recent completions
+## Scope
 
-**A1 (Safe local execution authority)** — ✅ Complete 2026-08-28
-- AdmittedOperation token enforces harness-issued admission at compile time
-- ProcessExecution::execute() requires &AdmittedOperation
-- Regression tests prove unadmitted spawn impossible, agent origin requires approval
-- Gate met: no public spawn without admission; exact approval when needed; unavailable Seatbelt fails closed
-- Documentation: docs/A1-IMPLEMENTATION.md
+Audit актуального checkout: workspace manifests, все crate sources, tests, docs. Не authorization для broad refactor — только state snapshot.
 
-**v0.6 (Remote profiles)** — ✅ Complete 2026-08-28
-- SSH profiles with host-key verification, keychain integration, durable approval
-- PTY/tmux DTOs, stores, and stub executors with policy integration
-- SFTP module: SftpSession, SftpOperationRequest, SftpSessionManager, 4 integration tests
-- Gate met: host-key/target/file approval survives restart via SSH profiles + durable store
-- Real SSH/SFTP/PTY/tmux executors deferred to phase F (after A/B/C foundations)
-- Documentation: docs/v0.6-SFTP-IMPLEMENTATION.md
+## Архитектура
 
-**Next:** A2 (origin forgery + deferred continuation), A3 (per-session concurrency).
+### CURRENT
 
-## Scope and evidence
+```
+CLI / Zap adapter / optional GPUI app / future clients
+  │
+  ├─ CLI and Zap use raw IpcRequest/IpcResponse
+  ├─ GPUI app imports impetus-core directly
+  ▼
+Unix socket daemon
+  │ JSON-lines IPC v2, socket mode 0600
+  │ Subscribe polls EventStore every 25 ms
+  ▼
+Harness (per-session coordination, A3 completed)
+  ├─ IPC dispatch, session attach, provider selection, run/cancel
+  ├─ tool dispatch, approval lookup и redaction
+  └─ Mock or concrete OpenAI provider
+  ▼
+AgentRuntime + EventStore
+  ├─ append-only typed events, deterministic projection
+  ├─ SQLite WAL / in-memory store
+  ├─ copied-event fork, no shared-prefix DAG
+  ├─ DeferredEffect storage (A2)
+  └─ AdmittedOperation enforcement (A1)
+```
 
-This audit uses the actual checkout: workspace manifests, all crate sources,
-ARCHITECTURE.md, ROADMAP.md, TODO.md, tests, and a fresh task verify. It is an
-audit and roadmap update, not authorization for a broad refactor.
+Separate, non-IPC-reachable: process execution (A1 protected), PTY stub, SSH profile/approval storage, tmux stub, SFTP stub, ACP gateway, GPUI CI preview.
 
-task verify completed: formatting, workspace tests, cargo check, and Clippy
-passed. Cargo reported a future-incompatibility warning for transitive
-block v0.1.6. It is not a test failure, but it is work for the next dependency
-maintenance update.
+### TARGET
 
-## CURRENT
+```
+Disposable clients: TUI | Zap adapter | CLI | GPUI | IDE | ACP
+  │ typed SDK; no direct store/core ownership
+  ▼
+impetusd
+  ├─ session manager: per-session coordination (✅ A3)
+  ├─ agent runtime: lifecycle, budgets, interrupt/cancel
+  ├─ provider registry + deterministic model router
+  ├─ tool/effect orchestrator
+  │ trusted origin (✅ A2) → normalized effect → policy
+  │ → sandbox → admitted operation (✅ A1) → capability
+  │ → execution → durable event
+  ├─ artifact/checkpoint/context services
+  └─ append-only EventStore: single durable truth
+       └─ cursor backfill then ordered push
+```
 
-    CLI / Zap adapter / optional GPUI app / future clients
-      │
-      ├─ CLI and Zap use raw IpcRequest/IpcResponse
-      ├─ GPUI app imports impetus-core directly
-      ▼
-    Unix socket daemon
-      │ JSON-lines IPC v2, socket mode 0600
-      │ Subscribe polls EventStore every 25 ms
-      ▼
-    Harness
-      │ one global std::sync::Mutex<()> for every request
-      ├─ IPC dispatch, session attach, provider selection, run/cancel
-      ├─ tool dispatch, approval lookup and redaction
-      └─ Mock or one concrete OpenAI-compatible provider
-      ▼
-    AgentRuntime + EventStore
-      ├─ append-only typed events and deterministic projection
-      ├─ SQLite WAL / in-memory store
-      ├─ copied-event fork, no shared-prefix DAG
-      └─ policy/effect seam and bounded read-only artifacts
+## Component Status
 
-Separate, non-IPC-reachable modules: process execution, simulated PTY, SSH
-profile/approval storage, simulated tmux, ACP gateway, and GPUI CI preview.
+| Component | Current | Target | Confirmed problem | Priority |
+| --- | --- | --- | --- | --- |
+| Daemon | Unix socket, 25ms poll | Push subscription | Subscribe polls EventStore | **P1 (B1)** |
+| Harness | ✅ Per-session (A3) | Thin facade | Attachment/detail placeholders | P1 (B2) |
+| Runtime | ✅ DeferredEffect (A2) | Session runtime | No IPC integration yet | P1 (B1) |
+| EventStore | SQLite WAL, thread-safe | Event store | Fork copies events (no shared DAG) | P2 (E) |
+| Provider | Mock or concrete OpenAI | Registry/router | **No ModelProvider trait** | **P1 (C1)** |
+| Budget | In-memory BudgetChecker | Durable budgets | Not persisted | P2 (C2) |
+| Client | Raw IpcResponse match | Typed SDK | **Clients pattern-match wire enum** | **P1 (B1)** |
+| CLI | Reference client | Disposable | No typed SDK | P2 (after B1) |
+| Zap adapter | 100ms poll | Push subscription | **Repeated wakeups** | **P1 (B1)** |
+| GPUI | Direct core import | Via impetus-client | Bypasses client seam | P2 (after B1) |
+| Approval/effect | ✅ DeferredEffect (A2) | Autonomy guard | IPC integration pending | P1 (B1) |
+| Origin | ✅ Server-side (A2) | Trusted boundary | ✅ IPC tools = User | Done |
+| Process/sandbox | ✅ AdmittedOperation (A1) | Sandbox broker | ✅ Type-level enforcement | Done |
+| Remote | DTOs + stores | Real executor | Stubs only | P3 (F) |
+| Artifacts | FNV-1a in-memory | Durable SHA-256 | **Metadata disappears on restart** | **P1 (B2)** |
+| ACP | External JSON-RPC | ACP adapter | No Harness integration | P2 |
 
-## TARGET
+## Top Architectural Problems
 
-    Disposable clients: TUI | Zap adapter | CLI | GPUI | IDE | ACP
-      │ typed SDK; no direct store/core ownership
-      ▼
-    impetusd
-      ├─ session manager: per-session coordination and event cursor
-      ├─ agent runtime: lifecycle, budgets, interrupt/cancel
-      ├─ provider registry plus deterministic model router
-      ├─ tool/effect orchestrator
-      │ trusted origin → normalized effect → policy → sandbox
-      │ → capability → execution → durable event
-      ├─ artifact/checkpoint/context services
-      └─ append-only EventStore: single durable truth
-           └─ cursor backfill then ordered push
+**Resolved (5 из 10):**
+- ✅ #1: Global Harness lock (A3)
+- ✅ #2: ProcessExecution bypass (A1)
+- ✅ #4: Approval continuation (A2)
+- ✅ #5: IPC origin hardcoded (A2)
+- ✅ #10: Roadmap docs overstated (v0.6 gate met, docs corrected)
 
-Only bounded shared registries/caches use global coordination. Independent
-sessions do not wait on an unrelated request or provider stream.
+**Remaining (priority order):**
+1. **#8: Daemon/Zap/memory-client poll events** (25ms/100ms/10ms) → **B1**
+2. **#9: Provider selection concrete in Harness** (no trait) → **C1**
+3. **#7: Attachment/detail endpoints placeholders** → **B2**
+4. #3: ProcessSpawn workspace scope → future
+5. #6: ACP raw credentials → future (isolated, low priority)
 
-## Component inventory
+## Highest-ROI Changes
 
-| Component | Current implementation and owner | Target owner | Confirmed problem | Cost / concern | Priority / change |
-| --- | --- | --- | --- | --- | --- |
-| Daemon | Unix socket, handshake, SQLite startup; 25 ms subscription poll. | Transport/subscription delivery only. | Subscribe acknowledges then polls Stream. | 40 wakeups/sec per subscription. | P1: cursor backfill then store notification. |
-| Harness | Dispatch, global request lock, provider branch, cancellation map, tools, DTOs, redaction. | Thin facade composed from services. | Every request serializes; attachment/detail endpoints are placeholders. | Slow storage blocks all sessions; sync mutex in daemon path. | P0: split session/run coordination before removing lock. |
-| Runtime/projection | Durable session/intent/run/approval lifecycle and deterministic reduce. | Session runtime. | One active run per session; no durable deferred-effect continuation. | Full projection rebuilds complete history. | Keep; add per-session coordinator later. |
-| EventStore | SQLite WAL/memory, version migration, copied-prefix fork. | Event store. | Fork copies and renumbers events; no parent/checkpoint model. | Mutex/one SQLite connection; replay is O(history). | P2: shared-prefix DAG only after core safety. |
-| Provider | One OpenAI-compatible adapter, profile validation, transient credential resolver, bounded SSE retry/health. | Registry/router. | Harness chooses Mock or concrete OpenAI; no ModelProvider trait or metadata. | Narrow health mutex; no rate-limit scheduler. | P1: provider trait plus registry first. |
-| Budget | BudgetConfig/checker and compaction events in SessionSupervisor. | Runtime/router. | No cost/model-call/subagent scope; not wired to real Harness provider run; compaction only signals. | Low idle cost, in-memory state. | P2: one durable budget after registry. |
-| Client | Trait with Unix/in-memory transports; high-level calls return IpcResponse. | Typed SDK. | Every client pattern-matches wire enum; in-memory subscription polls 10 ms. | Socket mutex is correct per connection only. | P1: typed domain results, raw request low-level. |
-| CLI | Reference client, raw enum matching. | Disposable client. | No typed SDK consumption. | No state ownership. | P2 after client types. |
-| Zap adapter | Raw Stream loop, sleeps 100 ms, OSC/block renderer. | Typed SDK subscriber. | Confirmed polling; approvals/attachments TODO; InterruptedUnknown is not terminal. | Repeated wakeups, duplicate stream logic and potential endless poll after uncertain outcome. | P1: one subscription, reconnect cursor and terminal uncertain-state handling. |
-| GPUI | Optional diagnostics/theme/CI, direct core import. | Disposable client via impetus-client. | Bypasses universal client seam if expanded. | Could regain store/runtime ownership. | P2 after SDK query surface. |
-| Approval/effect seam | Fingerprint/version/intent checks, logical sandbox, policy replay. | Autonomy guard/sandbox broker. | ResolveApproval writes event only; it cannot resume a deferred effect. | Test seam is not an end-to-end executor. | P0: durable deferred work or typed unavailable. |
-| Action origin | User and Agent only; IPC Tool always uses User. | Trusted execution boundary. | Raw socket caller can use user-direct route; no system/subagent/remote origins. | Current tools read-only, but mutable extension would be unsafe. | P0: server derives origin; add forgery tests. |
-| Process/sandbox | Logical EffectSeam; Seatbelt proof is a spike. | Sandbox broker. | **A1 resolved:** AdmittedOperation enforces admission. Remaining: ProcessSpawn not workspace-scoped; user origin immediately permits it; no production Seatbelt broker. | Dormant but serious: workspace scope and OS sandbox enforcement absent. | P0: provision narrow per-session workspace scope; wire Seatbelt broker. |
-| Remote/PTY/tmux | DTOs and stores; PTY fake pid/kill, tmux TODO, no live SSH/SFTP executor. **v0.6 complete:** SSH profiles, PTY/tmux/SFTP stubs with policy integration, 4 SFTP tests. | Remote executor behind same seam. | Stub executors simulate behavior; no live SSH/SFTP/PTY/tmux connection. Real executors deferred to phase F. | Simulation is not product behavior. | P0 docs correction ✅; P3 real executor (phase F after safety foundations). |
-| Artifacts/DTOs | FNV-1a-addressed files plus bounded read-only preview; in-memory metadata index. | Durable artifact service. | GetAttachment unavailable; approval detail empty; metadata disappears on reopen and range read loads full artifact. | Full content is not durably indexed and declared API cannot retrieve it. | P1: durable SHA-256 metadata plus redacted/bounded range DTO, or unadvertise. |
-| ACP | External JSON-RPC process gateway and mock. | ACP adapter. | No durable Harness session/event/policy integration; respond_credential accepts a raw String. | Isolated process, but current memory secret path contradicts the intended boundary. | P0: remove raw credential forwarding before any integration. |
+1. **B1: Event-driven subscription** (убрать 40+ wakeups/sec per subscription)
+2. **B1: Typed client SDK** (domain results, не IpcResponse enum)
+3. **C1: Provider trait + registry** (убрать concrete enum)
+4. **B2: Durable artifact metadata** (SHA-256, survives restart)
+5. C2: Durable budgets (persist cost tracking)
+6. F: Real remote executor (SSH/SFTP/PTY/tmux через proven seam)
 
-## Hypotheses: verdict
+## Implementation Status
 
-| Hypothesis | Verdict | Evidence |
-| --- | --- | --- |
-| Global Harness lock remains. | Confirmed. | Harness.handle locks request_lock for every request. |
-| harness_api is a god-object risk. | Confirmed. | It dispatches IPC, session, provider, cancellation, tools, DTOs and redaction. |
-| Provider selection is central/concrete. | Confirmed. | ProviderBackend is Mock or OpenAI inside Harness. |
-| Client leaks wire protocol. | Confirmed. | Methods return IpcResponse; CLI/Zap match it. |
-| Zap and subscriptions poll. | Confirmed. | Zap waits 100 ms; daemon 25 ms; memory client 10 ms. |
-| Event log is durable/versioned. | Confirmed. | SQLite WAL, typed schema/legacy migration, deterministic projection. |
-| Fork reuses shared history/checkpoints. | Refuted. | fork_session copies events; no checkpoint domain type. |
-| Attachment/diff DTOs are complete. | Refuted. | Attachment is unavailable; detail returns empty fields. |
-| Agent can impersonate user. | Partially confirmed. | IPC tool is hardcoded User; no agent tool path is reachable now. Unsafe extension point exists. |
-| macOS sandbox/remote execution is done. | Refuted. | **A1 ✅:** AdmittedOperation enforces admission. **v0.6 ✅:** SSH/SFTP/PTY/tmux stubs + policy. Real executors = phase F. |
+**Implemented and reusable:**
+- ✅ Durable events (SQLite WAL, migration, versioned schema)
+- ✅ Deterministic projection
+- ✅ IPC capability negotiation
+- ✅ State survives client disconnect
+- ✅ OpenAI-compatible streaming с secret redaction
+- ✅ Bounded read-only artifacts
+- ✅ Logical policy/exact approval
+- ✅ AdmittedOperation type-level enforcement (A1)
+- ✅ Server-side origin derivation (A2)
+- ✅ DeferredEffect storage (A2)
+- ✅ Per-session coordination (A3)
 
-## Implemented, partial, absent
+**Partial:**
+- Subscription transport (polls, needs push)
+- Typed client (raw enum matching)
+- Provider health/budget (in-memory)
+- Compaction (signals only, no real cache telemetry)
+- Fork (copies events, no shared DAG)
+- Approval DTOs (detail empty)
+- ACP integration (isolated, no Harness events)
+- Zap display (structured blocks, но polls)
 
-Implemented and reusable: durable events, SQLite WAL/migration, deterministic
-projection, IPC version/capability handshake, state surviving client disconnect,
-OpenAI-compatible streaming with transient credentials, bounded read-only
-artifacts, logical policy/exact approval, and a Seatbelt proof.
+**Absent:**
+- Provider registry/router (concrete enum)
+- Durable cost budgets (in-memory only)
+- Real compaction/cache metrics
+- Shared DAG/checkpoints
+- Resume-after-approval via IPC
+- Production Seatbelt broker
+- Real SSH/SFTP/PTY/tmux executor
+- Swarm/profiles/learning
+- Reproducible benchmarks
 
-Partial: subscription transport, typed client, provider health/budget,
-compaction, fork, approval DTOs, execution seam, remote DTOs, ACP integration,
-Zap display and GPUI isolation.
+## Updated Phased Roadmap
 
-Absent: per-session concurrency, provider registry/router, durable cost
-budgets, real compaction/cache telemetry, shared DAG/checkpoints,
-resume-after-approval, production Seatbelt broker, real SSH/SFTP/PTY/tmux,
-swarm/profiles/learning/repo intelligence, and reproducible product benchmarks.
+| Phase | Narrow outcome | Gate | Status |
+| --- | --- | --- | --- |
+| A0 | Truthful audit and status docs | Audit + verify baseline | ✅ Done |
+| A1 | Safe local execution authority | No public spawn without admission | ✅ Done |
+| A2 | Origin and approval continuation | Server-side origin, deferred storage | ✅ Done |
+| A3 | Per-session coordination | Independent sessions concurrent | ✅ Done |
+| **B1** | **Typed client + push subscription** | **No poll loop, reconnect cursor** | **🚧 Next** |
+| B2 | Complete existing DTOs | Attachment/diff/detail or absent | Planned |
+| C1 | Provider registry/metadata | One interface, no concrete branch | Planned |
+| C2 | Router + durable budgets | Rules fallback, persisted cost | Planned |
+| D | Context efficiency | Deterministic reducers, cache metrics | Planned |
+| E | Advanced sessions | Shared-prefix DAG, checkpoints | Planned |
+| F | Remote executor | Real SSH/SFTP/PTY/tmux through seam | Planned |
+| v0.7 | MVP UI | End-to-end smoke | Planned |
 
-## Top ten architectural problems
+## Do Not Build Now
 
-1. **✅ A3 resolved:** Global Harness lock serializes unrelated sessions.
-2. **✅ A1 resolved:** ProcessExecution.execute bypasses admission and OS sandbox enforcement.
-3. ProcessSpawn is not workspace-scoped and user origin immediately permits it.
-4. **✅ A2 resolved:** Approval resolution does not resume a durable deferred effect.
-5. **✅ A2 resolved:** IPC tool origin is hardcoded User instead of being server-derived.
-6. ACP forwards raw credential strings and is outside Harness policy/events.
-7. Advertised attachment and approval-detail endpoints are placeholders.
-8. Daemon, in-memory transport and Zap all poll for events.
-9. Provider selection is concrete inside Harness.
-10. **✅ v0.6 docs corrected:** Roadmap marks simulated/unreachable remote features as ready.
+- Custom terminal renderer, Electron/WebView
+- Swarm, learning, SOUL/profile hierarchy
+- Remote/mobile control
+- LSP/MCP eager indexing
+- Shared-prefix DAG (до фазы E)
+- Multi-provider routing (до C1/C2)
 
-## Highest-ROI changes
+Eager polling, full-history projection, copied forks, unbounded output/context создают noticeable cost. Event-driven subscriptions, per-session coordination (✅ done), bounded artifact reads, deterministic reduction, lazy services снижают его.
 
-1. **✅ A1/A2/A3/v0.6 done:** Correct readiness/status documentation.
-2. **✅ A1 done:** Make unadmitted process execution impossible and provision a narrow per-session workspace scope before it reaches an OS sandbox.
-3. **✅ A2 done:** Separate user-direct and agent-generated action paths; test origin forgery.
-4. **✅ A2 done:** Store and resume deferred effects with exact approval, or return unavailable.
-5. **✅ A3 done (minimal):** Remove global lock; per-session coordination via EventStore/Runtime internal locks.
-6. **Next: B1:** Push events with cursor reconnect; move Zap to it.
-7. **Next: B2:** Complete attachment/detail DTOs or mark capability absent.
-8. **Next: C1:** Extract provider trait/metadata before another provider or router.
-6. Replace global lock with per-session coordination and concurrency tests.
-7. Push events with cursor reconnect; move Zap to it.
-8. Add typed client methods for existing domain operations.
-9. Replace the non-durable FNV artifact index with a durable SHA-256 metadata service before exposing attachments/range reads.
-10. Extract provider trait/metadata before another provider or router.
+## Test Coverage
 
-## Do not build now
+- **247 workspace tests** (baseline commit 509aab5)
+- Unit tests: policy, approval, budget, effects, capabilities
+- Integration tests: process (12), remote (26), SSH, PTY, tmux, SFTP
+- Regression tests: A1 admission, A2 origin/deferred, A3 concurrency
+- Policy replay tests
+- Fail-closed sandbox tests
 
-Do not add a custom terminal renderer, Electron/WebView, swarm, learning,
-SOUL/profile hierarchy, remote/mobile control, LSP/MCP indexing, shared-prefix
-DAG, or multi-provider routing. Each has complexity or overhead that cannot
-compensate for the current safety and ownership gaps.
+## Next Step: B1
 
-Eager polling, full-history projection, copied forks, unbounded output/context,
-and eager LSP/MCP/local-model services create noticeable cost. Event-driven
-subscriptions, per-session coordination, bounded artifact range reads,
-deterministic output reduction, stable prompt serialization, lazy services,
-and later shared immutable prefixes reduce it.
+**Target:** Event-driven subscription + typed client SDK.
 
-## Updated phased roadmap
+**Impact:** Убирает 40+ wakeups/sec per subscription, даёт typed domain methods клиентам.
 
-| Phase | Narrow outcome | Gate |
-| --- | --- | --- |
-| A0 | Truthful audit and status documents. | This audit and factual roadmap; baseline verify recorded. |
-| A1 | Safe local execution authority. | No public spawn without harness-issued admission, exact approval when needed, and unavailable Seatbelt fails closed. |
-| A2 | Origin and approval continuation. | Agent cannot use user-direct route; stale approval cannot run changed work; denial continues task; approved work resumes exact durable effect. |
-| A3 | Per-session coordination. | Two independent sessions make progress concurrently with ordered durable events. |
-| B1 | Typed client and push subscription. | Clients use typed methods; reconnect gets only events after cursor; no poll loop. |
-| B2 | Complete existing typed DTOs. | Attachment/diff/detail are complete, bounded/redacted, or capability is absent. |
-| C1 | Provider registry/metadata. | One provider interface; no central concrete provider branch. |
-| C2 | Router and durable budgets. | Bounded rules-based fallback and per-session/agent steps/calls/tokens/cost/time. |
-| D | Context efficiency. | Deterministic reducers/artifacts first; cache metrics only with measured provider benefit. |
-| E | Advanced sessions. | Shared-prefix fork/checkpoints with restore and concurrency tests. |
-| F | Remote executor. | Real SSH/SFTP/PTY/tmux goes through proven local effect path and durable scoped approval. |
-| G | Optional TUI/swarm/profiles/learning. | Disposable/bounded components with measured benefit. |
-
-## First proposed implementation slice — pending approval
-
-A1 is deliberately narrow. It changes no client feature: represent an admitted
-operation as an internal harness value, require it for ProcessExecution, and
-add regressions proving that unadmitted requests, unavailable sandbox and
-changed approval cannot spawn a child. Keep it outside IPC until A2 provides
-durable continuation.
+**Scope:**
+- Event store cursor backfill + notification
+- Typed client methods (не IpcResponse enum)
+- Daemon push delivery (не poll)
+- Zap adapter reconnect с cursor
