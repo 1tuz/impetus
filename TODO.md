@@ -47,6 +47,16 @@
   handling.
 - [ ] Local no-secret profile для localhost/mock providers.
 
+### Дополнительно: Per-agent budget и compaction (OpenClaude референс)
+
+- [x] BudgetConfig и BudgetState типы (max_turns, max_tokens, max_wall_time, reasoning_effort).
+- [x] BudgetChecker enforcement (turn/token/wall time limits).
+- [x] Unit-тесты budget logic.
+- [ ] Интеграция budget в SessionSupervisor.
+- [ ] Budget state events в IPC (для TUI/Zap live display).
+- [ ] CompactionPolicy и separate compaction model.
+- [ ] Auto-compaction на token threshold.
+
 ## Не сейчас
 
 - GPUI native-window smoke и CI pane smoke — отдельные client checks.

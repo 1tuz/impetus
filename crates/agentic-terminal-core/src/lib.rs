@@ -4,6 +4,7 @@
 //! makes permission decisions, and exposes small capability seams for the app.
 
 pub mod approval;
+pub mod budget;
 pub mod ci;
 pub mod effects;
 pub mod events;
@@ -22,6 +23,7 @@ pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
     ApprovalState, ScopeEstimate,
 };
+pub use budget::{BudgetChecker, BudgetConfig, BudgetError, BudgetState, ReasoningEffort};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
