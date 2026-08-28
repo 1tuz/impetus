@@ -8,6 +8,7 @@ pub mod budget;
 pub mod ci;
 pub mod effects;
 pub mod events;
+pub mod execution;
 pub mod harness_api;
 pub mod ipc;
 pub mod plugins;
@@ -36,6 +37,11 @@ pub use effects::{
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
     EventPayload, IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
+};
+pub use execution::{
+    ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
+    PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
+    PtySessionStore, PtySessionStoreError, SqlitePtySessionStore,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};

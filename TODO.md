@@ -106,7 +106,13 @@
   - [x] PolicyCheck для SSH connection (origin, target host, user)
   - [x] Durable SSH approval в SQLite (переживает restart)
   - [x] NormalizedEffect::ssh_connect() + NetworkConnect capability расширена на SshConnect
-- [ ] Controlled process/PTY execution
+- [x] Controlled process/PTY execution
+  - [x] ProcessExecutionRequest с policy check и bounded output
+  - [x] ProcessOutput capture с timeout
+  - [x] PtySession lifecycle: spawn, attach, detach, terminate
+  - [x] PtySessionManager координирует policy, spawn, storage
+  - [x] Durable PTY session state в SQLite (SqlitePtySessionStore)
+  - [x] Integration tests для process и PTY
 - [ ] tmux integration для persistent remote sessions
 - [ ] SFTP для remote file access
 - [ ] Durable approval для remote targets (частично: SSH approval готов)

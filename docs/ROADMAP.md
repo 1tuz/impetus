@@ -84,10 +84,17 @@ inspection и одним explicit provider profile.
   - Host-key approval переживает restart (gate выполнен)
   - NormalizedEffect::ssh_connect() + NetworkConnect capability расширена на SshConnect/SftpTransfer
   - async-trait, base64 dependencies добавлены
+- [x] Controlled process/PTY execution
+  - ProcessExecutionRequest с policy check и sandbox admission
+  - ProcessOutput capture с timeout и bounded output (2MB limit)
+  - PtySession lifecycle: spawn, attach, detach, terminate
+  - PtySessionManager координирует policy, spawn, durable storage
+  - SqlitePtySessionStore для durable session state
+  - Integration tests для process execution и PTY sessions
+  - Fail-closed: execution только после policy Allow или exact approval
 
 ### Оставшиеся шаги
 
-- [ ] Controlled process/PTY execution
 - [ ] tmux integration для persistent remote sessions
 - [ ] SFTP для remote file access
 - [ ] Durable approval для remote targets (частично: SSH approval готов)
