@@ -8,3 +8,4 @@
 /.firecrawl/
 __pycache__/
 *.pyc
+/.codewhale/state/

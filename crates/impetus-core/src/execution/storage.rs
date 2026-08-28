@@ -514,4 +514,282 @@ mod tests {
         let retrieved = store.get_session(PtySessionId(200)).await.unwrap();
         assert!(retrieved.is_none());
     }
+
+    #[tokio::test]
+    async fn get_nonexistent_session_returns_none() {
+        let store = temp_db();
+        let result = store.get_session(PtySessionId(999999)).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_nonexistent_session_returns_error() {
+        let store = temp_db();
+        let result = store
+            .update_state(PtySessionId(888888), &PtySessionState::Starting)
+            .await;
+        assert!(matches!(result, Err(PtySessionStoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_session_returns_error() {
+        let store = temp_db();
+        let result = store.delete_session(PtySessionId(777777)).await;
+        assert!(matches!(result, Err(PtySessionStoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn save_session_upserts_existing() {
+        let store = temp_db();
+        let session = PtySessionRecord {
+            id: PtySessionId(300),
+            command: "echo".into(),
+            args: vec!["first".into()],
+            working_dir: PathBuf::from("/tmp"),
+            env: vec![],
+            state: PtySessionState::Starting,
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1000,
+            updated_at_unix_ms: 1000,
+        };
+        store.save_session(&session).await.unwrap();
+
+        let updated = PtySessionRecord {
+            id: PtySessionId(300),
+            command: "echo".into(),
+            args: vec!["second".into()],
+            working_dir: PathBuf::from("/tmp"),
+            env: vec![],
+            state: PtySessionState::Running { pid: 123 },
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1000,
+            updated_at_unix_ms: 2000,
+        };
+        store.save_session(&updated).await.unwrap();
+
+        let retrieved = store.get_session(PtySessionId(300)).await.unwrap().unwrap();
+        assert!(matches!(
+            retrieved.state,
+            PtySessionState::Running { pid: 123 }
+        ));
+        assert_eq!(retrieved.updated_at_unix_ms, 2000);
+    }
+
+    #[tokio::test]
+    async fn all_state_variants_round_trip() {
+        let store = temp_db();
+        let states = [
+            PtySessionState::Starting,
+            PtySessionState::Running { pid: 111 },
+            PtySessionState::Detached { pid: 222 },
+            PtySessionState::Exited { exit_code: Some(0) },
+            PtySessionState::Exited { exit_code: None },
+            PtySessionState::Failed {
+                reason: "crash".into(),
+            },
+        ];
+
+        for (i, state) in states.iter().enumerate() {
+            let session = PtySessionRecord {
+                id: PtySessionId(400 + i as u64),
+                command: "test".into(),
+                args: vec![],
+                working_dir: PathBuf::from("/tmp"),
+                env: vec![],
+                state: state.clone(),
+                origin: ActionOrigin::Agent,
+                created_at_unix_ms: 1000,
+                updated_at_unix_ms: 1000,
+            };
+            store.save_session(&session).await.unwrap();
+
+            let retrieved = store
+                .get_session(PtySessionId(400 + i as u64))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retrieved.state, *state);
+        }
+    }
+
+    #[tokio::test]
+    async fn both_origins_round_trip() {
+        let store = temp_db();
+        for (i, origin) in [ActionOrigin::User, ActionOrigin::Agent].iter().enumerate() {
+            let session = PtySessionRecord {
+                id: PtySessionId(500 + i as u64),
+                command: "test".into(),
+                args: vec![],
+                working_dir: PathBuf::from("/tmp"),
+                env: vec![],
+                state: PtySessionState::Starting,
+                origin: *origin,
+                created_at_unix_ms: 1000,
+                updated_at_unix_ms: 1000,
+            };
+            store.save_session(&session).await.unwrap();
+
+            let retrieved = store
+                .get_session(PtySessionId(500 + i as u64))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retrieved.origin, *origin);
+        }
+    }
+
+    #[test]
+    fn decode_invalid_state_type_returns_error() {
+        let result = SqlitePtySessionStore::decode_state("invalid_state", None);
+        assert!(matches!(result, Err(PtySessionStoreError::InvalidState(_))));
+    }
+
+    #[test]
+    fn decode_running_without_pid_returns_error() {
+        let result = SqlitePtySessionStore::decode_state("running", None);
+        assert!(matches!(result, Err(PtySessionStoreError::InvalidState(_))));
+    }
+
+    #[test]
+    fn decode_detached_without_pid_returns_error() {
+        let result = SqlitePtySessionStore::decode_state("detached", None);
+        assert!(matches!(result, Err(PtySessionStoreError::InvalidState(_))));
+    }
+
+    #[test]
+    fn decode_failed_without_reason_returns_error() {
+        let result = SqlitePtySessionStore::decode_state("failed", None);
+        assert!(matches!(result, Err(PtySessionStoreError::InvalidState(_))));
+    }
+
+    #[test]
+    fn decode_invalid_origin_returns_error() {
+        let result = SqlitePtySessionStore::decode_origin("unknown_origin");
+        assert!(matches!(
+            result,
+            Err(PtySessionStoreError::InvalidOrigin(_))
+        ));
+    }
+
+    #[test]
+    fn encode_decode_state_starting() {
+        let state = PtySessionState::Starting;
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_state_running() {
+        let state = PtySessionState::Running { pid: 123 };
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_state_detached() {
+        let state = PtySessionState::Detached { pid: 456 };
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_state_exited_with_code() {
+        let state = PtySessionState::Exited { exit_code: Some(1) };
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_state_exited_without_code() {
+        let state = PtySessionState::Exited { exit_code: None };
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_state_failed() {
+        let state = PtySessionState::Failed {
+            reason: "out of memory".into(),
+        };
+        let (state_type, state_data) = SqlitePtySessionStore::encode_state(&state);
+        let decoded =
+            SqlitePtySessionStore::decode_state(&state_type, state_data.as_deref()).unwrap();
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn encode_decode_origin_user() {
+        let origin = ActionOrigin::User;
+        let encoded = SqlitePtySessionStore::encode_origin(&origin);
+        let decoded = SqlitePtySessionStore::decode_origin(encoded).unwrap();
+        assert_eq!(decoded, origin);
+    }
+
+    #[test]
+    fn encode_decode_origin_agent() {
+        let origin = ActionOrigin::Agent;
+        let encoded = SqlitePtySessionStore::encode_origin(&origin);
+        let decoded = SqlitePtySessionStore::decode_origin(encoded).unwrap();
+        assert_eq!(decoded, origin);
+    }
+
+    #[test]
+    fn pty_session_record_from_pty_session() {
+        let session = PtySession {
+            id: PtySessionId(1),
+            command: "ls".into(),
+            args: vec!["-la".into()],
+            working_dir: PathBuf::from("/home"),
+            env: vec![("PATH".into(), "/bin".into())],
+            state: PtySessionState::Running { pid: 789 },
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1234567890,
+        };
+
+        let record: PtySessionRecord = session.clone().into();
+        assert_eq!(record.id, session.id);
+        assert_eq!(record.command, session.command);
+        assert_eq!(record.args, session.args);
+        assert_eq!(record.working_dir, session.working_dir);
+        assert_eq!(record.env, session.env);
+        assert_eq!(record.state, session.state);
+        assert_eq!(record.origin, session.origin);
+        assert_eq!(record.created_at_unix_ms, session.created_at_unix_ms);
+        assert!(record.updated_at_unix_ms >= session.created_at_unix_ms);
+    }
+
+    #[test]
+    fn pty_session_from_pty_session_record() {
+        let record = PtySessionRecord {
+            id: PtySessionId(2),
+            command: "cat".into(),
+            args: vec!["file.txt".into()],
+            working_dir: PathBuf::from("/var"),
+            env: vec![("USER".into(), "test".into())],
+            state: PtySessionState::Exited { exit_code: Some(0) },
+            origin: ActionOrigin::Agent,
+            created_at_unix_ms: 9876543210,
+            updated_at_unix_ms: 9876543220,
+        };
+
+        let session: PtySession = record.clone().into();
+        assert_eq!(session.id, record.id);
+        assert_eq!(session.command, record.command);
+        assert_eq!(session.args, record.args);
+        assert_eq!(session.working_dir, record.working_dir);
+        assert_eq!(session.env, record.env);
+        assert_eq!(session.state, record.state);
+        assert_eq!(session.origin, record.origin);
+        assert_eq!(session.created_at_unix_ms, record.created_at_unix_ms);
+    }
 }

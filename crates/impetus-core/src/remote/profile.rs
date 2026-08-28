@@ -64,6 +64,11 @@ impl HostKeyFingerprint {
         Self(format!("SHA256:{}", encoded))
     }
 
+    /// Create fingerprint from a stored string representation.
+    pub(crate) fn from_string(s: String) -> Self {
+        Self(s)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

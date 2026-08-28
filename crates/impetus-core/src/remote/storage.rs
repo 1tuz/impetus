@@ -134,9 +134,7 @@ impl SSHApprovalStore for SqliteSSHApprovalStore {
                     host: row.get(0)?,
                     port: row.get(1)?,
                     user: row.get(2)?,
-                    host_key_fingerprint: HostKeyFingerprint::from_public_key(
-                        row.get::<_, String>(3)?.as_bytes(),
-                    ),
+                    host_key_fingerprint: HostKeyFingerprint::from_string(row.get(3)?),
                     approved_at_unix_ms: row.get(4)?,
                 })
             },
@@ -167,9 +165,7 @@ impl SSHApprovalStore for SqliteSSHApprovalStore {
                     host: row.get(0)?,
                     port: row.get(1)?,
                     user: row.get(2)?,
-                    host_key_fingerprint: HostKeyFingerprint::from_public_key(
-                        row.get::<_, String>(3)?.as_bytes(),
-                    ),
+                    host_key_fingerprint: HostKeyFingerprint::from_string(row.get(3)?),
                     approved_at_unix_ms: row.get(4)?,
                 })
             })?

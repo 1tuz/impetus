@@ -245,4 +245,179 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn save_host_key_approval_stores_fingerprint() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("ssh_approvals.db");
+        let store = SqliteSSHApprovalStore::open(&db_path).unwrap();
+
+        let profile = test_profile();
+        let request = SSHConnectionRequest::new(profile.clone(), ActionOrigin::Agent, 1);
+        let key_bytes = b"test_public_key";
+        let fingerprint = HostKeyFingerprint::from_public_key(key_bytes);
+
+        request
+            .save_host_key_approval(&fingerprint, store.as_ref())
+            .await
+            .unwrap();
+
+        let retrieved = store
+            .get_approval(&profile.host, profile.port, &profile.user)
+            .await
+            .unwrap();
+
+        assert!(retrieved.is_some());
+        let approval = retrieved.unwrap();
+        assert_eq!(approval.host, profile.host);
+        assert_eq!(approval.port, profile.port);
+        assert_eq!(approval.user, profile.user);
+        assert_eq!(approval.host_key_fingerprint, fingerprint);
+    }
+
+    #[tokio::test]
+    async fn check_existing_approval_returns_none_when_not_found() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("ssh_approvals.db");
+        let store = SqliteSSHApprovalStore::open(&db_path).unwrap();
+
+        let profile = test_profile();
+        let request = SSHConnectionRequest::new(profile, ActionOrigin::User, 1);
+
+        let result = request
+            .check_existing_approval(store.as_ref())
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_existing_approval_returns_fingerprint_when_found() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("ssh_approvals.db");
+        let store = SqliteSSHApprovalStore::open(&db_path).unwrap();
+
+        let profile = test_profile();
+        let request = SSHConnectionRequest::new(profile.clone(), ActionOrigin::Agent, 1);
+        let key_bytes = b"stored_key";
+        let fingerprint = HostKeyFingerprint::from_public_key(key_bytes);
+
+        request
+            .save_host_key_approval(&fingerprint, store.as_ref())
+            .await
+            .unwrap();
+
+        let result = request
+            .check_existing_approval(store.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(fingerprint));
+    }
+
+    #[test]
+    fn ssh_request_with_user_origin() {
+        let workspace = std::env::temp_dir();
+        let mut scope = SandboxScope::local_workspace(workspace);
+        scope.allow_network = true;
+
+        let policy = PolicyEngine::new(scope.clone());
+        let seam = EffectSeam::with_sandbox(policy, Sandbox::Provisioned { scope });
+
+        let profile = test_profile();
+        let request = SSHConnectionRequest::new(profile, ActionOrigin::User, 1);
+
+        let result = request.request(&seam);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ssh_request_includes_target_info() {
+        let workspace = std::env::temp_dir();
+        let mut scope = SandboxScope::local_workspace(workspace);
+        scope.allow_network = true;
+
+        let policy = PolicyEngine::new(scope.clone());
+        let seam = EffectSeam::with_sandbox(policy, Sandbox::Provisioned { scope });
+
+        let profile = SSHProfile {
+            host: "remote.server.com".into(),
+            user: "admin".into(),
+            port: 2222,
+            host_key_fingerprint: None,
+            key_reference: SSHKeyReference::KeychainItem {
+                service: "ssh".into(),
+                account: "admin".into(),
+            },
+        };
+
+        let request = SSHConnectionRequest::new(profile, ActionOrigin::Agent, 5);
+        let result = request.request(&seam).unwrap();
+
+        match result {
+            EffectAdmission::NeedsApproval(deferred) => {
+                let action = &deferred.approval().action;
+                assert!(action.summary.contains("admin@remote.server.com:2222"));
+                assert_eq!(action.target, Some("admin@remote.server.com:2222".into()));
+            }
+            _ => panic!("expected needs approval"),
+        }
+    }
+
+    #[test]
+    fn host_key_verification_different_keys_produce_different_fingerprints() {
+        let key1 = b"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ";
+        let key2 = b"ssh-rsa BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+        let fp1 = HostKeyFingerprint::from_public_key(key1);
+        let fp2 = HostKeyFingerprint::from_public_key(key2);
+
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn host_key_verification_same_key_produces_same_fingerprint() {
+        let key = b"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ";
+
+        let fp1 = HostKeyFingerprint::from_public_key(key);
+        let fp2 = HostKeyFingerprint::from_public_key(key);
+
+        assert_eq!(fp1, fp2);
+    }
+
+    #[tokio::test]
+    async fn save_host_key_approval_updates_timestamp() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("ssh_approvals.db");
+        let store = SqliteSSHApprovalStore::open(&db_path).unwrap();
+
+        let profile = test_profile();
+        let request = SSHConnectionRequest::new(profile.clone(), ActionOrigin::Agent, 1);
+        let key_bytes = b"test_key";
+        let fingerprint = HostKeyFingerprint::from_public_key(key_bytes);
+
+        request
+            .save_host_key_approval(&fingerprint, store.as_ref())
+            .await
+            .unwrap();
+
+        let approval = store
+            .get_approval(&profile.host, profile.port, &profile.user)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(approval.approved_at_unix_ms > 0);
+    }
 }

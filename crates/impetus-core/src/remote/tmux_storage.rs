@@ -536,4 +536,202 @@ mod tests {
         let retrieved = store.get_session(TmuxSessionId(200)).await.unwrap();
         assert!(retrieved.is_none());
     }
+
+    #[tokio::test]
+    async fn get_nonexistent_session_returns_none() {
+        let store = temp_db();
+        let result = store.get_session(TmuxSessionId(999999)).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_nonexistent_session_returns_error() {
+        let store = temp_db();
+        let result = store
+            .update_state(TmuxSessionId(888888), &TmuxSessionState::Creating)
+            .await;
+        assert!(matches!(result, Err(TmuxSessionStoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_session_returns_error() {
+        let store = temp_db();
+        let result = store.delete_session(TmuxSessionId(777777)).await;
+        assert!(matches!(result, Err(TmuxSessionStoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn save_session_upserts_existing() {
+        let store = temp_db();
+        let session = TmuxSessionRecord {
+            id: TmuxSessionId(300),
+            name: "upsert-test".into(),
+            ssh_profile: test_profile(),
+            working_dir: None,
+            initial_command: None,
+            state: TmuxSessionState::Creating,
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1000,
+            updated_at_unix_ms: 1000,
+        };
+        store.save_session(&session).await.unwrap();
+
+        let updated = TmuxSessionRecord {
+            id: TmuxSessionId(300),
+            name: "upsert-test".into(),
+            ssh_profile: test_profile(),
+            working_dir: Some(PathBuf::from("/new/dir")),
+            initial_command: None,
+            state: TmuxSessionState::Active { windows: 5 },
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1000,
+            updated_at_unix_ms: 2000,
+        };
+        store.save_session(&updated).await.unwrap();
+
+        let retrieved = store
+            .get_session(TmuxSessionId(300))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            retrieved.state,
+            TmuxSessionState::Active { windows: 5 }
+        ));
+        assert_eq!(retrieved.updated_at_unix_ms, 2000);
+    }
+
+    #[tokio::test]
+    async fn all_state_variants_round_trip() {
+        let store = temp_db();
+        let states = [
+            TmuxSessionState::Creating,
+            TmuxSessionState::Active { windows: 1 },
+            TmuxSessionState::Detached { windows: 2 },
+            TmuxSessionState::Dead,
+        ];
+
+        for (i, state) in states.iter().enumerate() {
+            let session = TmuxSessionRecord {
+                id: TmuxSessionId(400 + i as u64),
+                name: format!("state-{}", i),
+                ssh_profile: test_profile(),
+                working_dir: None,
+                initial_command: None,
+                state: state.clone(),
+                origin: ActionOrigin::Agent,
+                created_at_unix_ms: 1000,
+                updated_at_unix_ms: 1000,
+            };
+            store.save_session(&session).await.unwrap();
+
+            let retrieved = store
+                .get_session(TmuxSessionId(400 + i as u64))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retrieved.state, *state);
+        }
+    }
+
+    #[tokio::test]
+    async fn both_origins_round_trip() {
+        let store = temp_db();
+        for (i, origin) in [ActionOrigin::User, ActionOrigin::Agent].iter().enumerate() {
+            let session = TmuxSessionRecord {
+                id: TmuxSessionId(500 + i as u64),
+                name: "origin-test".into(),
+                ssh_profile: test_profile(),
+                working_dir: None,
+                initial_command: None,
+                state: TmuxSessionState::Creating,
+                origin: *origin,
+                created_at_unix_ms: 1000,
+                updated_at_unix_ms: 1000,
+            };
+            store.save_session(&session).await.unwrap();
+
+            let retrieved = store
+                .get_session(TmuxSessionId(500 + i as u64))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retrieved.origin, *origin);
+        }
+    }
+
+    #[tokio::test]
+    async fn working_dir_and_initial_command_persist() {
+        let store = temp_db();
+        let session = TmuxSessionRecord {
+            id: TmuxSessionId(600),
+            name: "full-session".into(),
+            ssh_profile: test_profile(),
+            working_dir: Some(PathBuf::from("/opt/project")),
+            initial_command: Some("htop".into()),
+            state: TmuxSessionState::Active { windows: 1 },
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1000,
+            updated_at_unix_ms: 1000,
+        };
+        store.save_session(&session).await.unwrap();
+
+        let retrieved = store
+            .get_session(TmuxSessionId(600))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved.working_dir, Some(PathBuf::from("/opt/project")));
+        assert_eq!(retrieved.initial_command, Some("htop".into()));
+    }
+
+    #[test]
+    fn tmux_session_record_from_tmux_session() {
+        let session = TmuxSession {
+            id: TmuxSessionId(1),
+            name: "test".into(),
+            ssh_profile: test_profile(),
+            working_dir: Some(PathBuf::from("/home")),
+            initial_command: Some("bash".into()),
+            state: TmuxSessionState::Active { windows: 3 },
+            origin: ActionOrigin::User,
+            created_at_unix_ms: 1234567890,
+        };
+
+        let record: TmuxSessionRecord = session.clone().into();
+        assert_eq!(record.id, session.id);
+        assert_eq!(record.name, session.name);
+        assert_eq!(record.ssh_profile.host, session.ssh_profile.host);
+        assert_eq!(record.working_dir, session.working_dir);
+        assert_eq!(record.initial_command, session.initial_command);
+        assert_eq!(record.state, session.state);
+        assert_eq!(record.origin, session.origin);
+        assert_eq!(record.created_at_unix_ms, session.created_at_unix_ms);
+        assert!(record.updated_at_unix_ms >= session.created_at_unix_ms);
+    }
+
+    #[test]
+    fn tmux_session_from_tmux_session_record() {
+        let record = TmuxSessionRecord {
+            id: TmuxSessionId(2),
+            name: "record-test".into(),
+            ssh_profile: test_profile(),
+            working_dir: Some(PathBuf::from("/var")),
+            initial_command: Some("vim".into()),
+            state: TmuxSessionState::Detached { windows: 2 },
+            origin: ActionOrigin::Agent,
+            created_at_unix_ms: 9876543210,
+            updated_at_unix_ms: 9876543220,
+        };
+
+        let session: TmuxSession = record.clone().into();
+        assert_eq!(session.id, record.id);
+        assert_eq!(session.name, record.name);
+        assert_eq!(session.ssh_profile.host, record.ssh_profile.host);
+        assert_eq!(session.working_dir, record.working_dir);
+        assert_eq!(session.initial_command, record.initial_command);
+        assert_eq!(session.state, record.state);
+        assert_eq!(session.origin, record.origin);
+        assert_eq!(session.created_at_unix_ms, record.created_at_unix_ms);
+    }
 }
