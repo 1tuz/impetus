@@ -1,0 +1,70 @@
+stages:
+  - .pre
+  - verify
+  - security
+  - .post
+fmt:
+  stage: verify
+  script:
+    - cargo fmt --all -- --check
+  cache:
+    - key: rust-1.98
+      paths: &ref_0
+        - target/
+      policy: pull-push
+      when: on_success
+  image:
+    name: rust:1.98.0-bookworm
+test:
+  stage: verify
+  timeout: 10m
+  script:
+    - cargo test --workspace --exclude agentic-terminal-app --lib --bins
+  cache:
+    - key: rust-1.98
+      paths: *ref_0
+      policy: pull-push
+      when: on_success
+  image:
+    name: rust:1.98.0-bookworm
+check:
+  stage: verify
+  script:
+    - cargo check --workspace
+  cache:
+    - key: rust-1.98
+      paths: *ref_0
+      policy: pull-push
+      when: on_success
+  image:
+    name: rust:1.98.0-bookworm
+clippy:
+  stage: verify
+  script:
+    - cargo clippy --workspace --all-targets -- -D warnings
+  cache:
+    - key: rust-1.98
+      paths: *ref_0
+      policy: pull-push
+      when: on_success
+  image:
+    name: rust:1.98.0-bookworm
+dependency-security:
+  stage: security
+  script:
+    - cargo install --locked cargo-audit --version 0.22.2
+    - cargo audit
+    - cargo install --locked cargo-deny --version 0.20.2
+    - cargo deny check advisories bans sources licenses
+  cache:
+    - key: rust-1.98
+      paths: *ref_0
+      policy: pull-push
+      when: on_success
+  image:
+    name: rust:1.98.0-bookworm
+default:
+  image: rust:1.98.0-bookworm
+  cache:
+    key: rust-1.98
+    paths: *ref_0
