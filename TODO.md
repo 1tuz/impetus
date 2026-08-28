@@ -16,7 +16,7 @@
 
 ## Текущий релиз: v0.3 — structured clients и external agents ✓
 
-Все обязательные steps завершены. Budget integration и Zap coordination — дополнительные задачи.
+Все обязательные steps завершены. Budget integration — дополнительная задача.
 
 ## Следующий релиз: v0.4 — long-session context
 
@@ -50,8 +50,7 @@
 - [x] OSC escape sequences: harness → Zap notification hooks.
 - [x] Structured blocks protocol: diff, approval, output, attachment, status, error.
 - [x] Live session status bar: Running / Idle / NeedsApproval.
-- [x] **Zap native integration decision:** продолжить через CLI adapter. Zap Phase 1 roadmap совпадает с нашим v0.2+v0.3 — они строят то что у нас готово. Предложить наш harness как Phase 1 backend после v0.3 завершения.
-- [ ] Связаться с Zap maintainers для coordination (после v0.3 step 4 завершения).
+- [x] **Zap native integration decision:** продолжить через CLI adapter. Zap Phase 1 roadmap совпадает с нашим v0.2+v0.3 — они строят то что у нас готово.
 
 ### Затем, шаг 3 из 4 — ACP gateway
 
@@ -88,12 +87,11 @@
 - [x] BudgetConfig и BudgetState типы (max_turns, max_tokens, max_wall_time, reasoning_effort).
 - [x] BudgetChecker enforcement (turn/token/wall time limits).
 - [x] Unit-тесты budget logic.
-- [ ] Связаться с Zap maintainers для coordination (после budget integration).
 
 ## Не сейчас
 
 - GPUI native-window smoke и CI pane smoke — отдельные client checks.
 - Custom terminal/TUI — только после Zap decision и зафиксированного
   неудовлетворённого requirement.
-- Zap native integration (IPC Blocks rendering) — после v0.3 завершения и coordination с Zap maintainers.
+- Zap native integration (IPC Blocks rendering) — после v0.3 завершения.
 - v0.2 завершён: provider, execution seam, resource baselines, headless graph.

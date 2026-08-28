@@ -58,8 +58,7 @@ supervisor с mock restart/cancel, Unix socket, CLI, read-only tools/artifacts,
    no-secret profiles. OAuth URL открывается только действием пользователя.
 
 **Zap roadmap Phase 1 = наш harness.** Они планируют построить standalone agent
-service с JSON-RPC protocol — мы уже это строим. После v0.3 — связаться с Zap
-maintainers для coordination.
+service с JSON-RPC protocol — мы уже это строим.
 
 **Не строить TUI или terminal emulator в этом этапе.** Они возможны лишь после
 Zap decision и зафиксированного неудовлетворённого requirement.
