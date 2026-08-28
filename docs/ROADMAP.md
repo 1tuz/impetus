@@ -15,7 +15,7 @@
 | A1 | ✅ Готов | safe local execution authority (admission token, type-level enforcement) |
 | A2 | ✅ Готов | origin derivation, deferred effect storage |
 | A3 | ✅ Готов | per-session coordination (global lock удалён) |
-| B1 | 🚧 В работе | typed client + push subscription |
+| B1 | 🚧 Частично | push subscription ✅, typed methods TODO |
 | B2 | Запланировано | complete DTOs (attachment/diff/detail) |
 | C1 | Запланировано | provider registry/metadata |
 | C2 | Запланировано | router + durable budgets |
@@ -131,17 +131,28 @@
 
 **Gate:** Clients use typed methods; reconnect gets only events after cursor; no poll loop.
 
-**Проблемы сейчас:**
-- Daemon polls EventStore каждые 25ms
-- Zap adapter polls каждые 100ms
-- In-memory client polls каждые 10ms
-- Clients pattern-match raw `IpcResponse` enum
+**Статус:** Частично выполнено (commit fc94819)
 
-**Требуется:**
-- Event store notification (cursor backfill + push)
-- Typed client methods (domain results, не wire enum)
-- Zap adapter reconnect с cursor
-- Убрать poll loops (40+ wakeups/sec per subscription)
+✅ **Выполнено:**
+- Event store notification mechanism (tokio broadcast channel)
+- Daemon push delivery (убран 25ms poll loop)
+- InMemory client push (убран 10ms poll loop)
+- Zap adapter cleanup (убран 100ms sleep)
+- Reconnect с cursor (after_sequence в Subscribe/Stream)
+
+❌ **Осталось:**
+- Typed client methods (domain results вместо IpcResponse enum)
+- High-level API: create_session, stream_events, run_tool
+- Error types: ClientError вместо raw IPC enum
+
+**Изменённые файлы (commit fc94819):**
+- `crates/impetus-core/src/storage.rs` — broadcast notification в EventStore trait
+- `crates/impetus/src/main.rs` — daemon notification_receiver вместо interval
+- `crates/impetus-client/src/lib.rs` — InMemory notification_receiver
+- `crates/impetus-zap-adapter/src/main.rs` — убран sleep(100ms)
+- `crates/impetus-core/src/harness_api.rs` — store() accessor
+
+**Tests:** 224 passed, cargo check clean
 
 ## Запланировано
 
