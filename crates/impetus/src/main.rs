@@ -105,7 +105,8 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
     let mut reader = BufReader::new(reader);
     let mut negotiated = None::<BTreeSet<String>>;
     let mut subscription = None;
-    let mut notification_receiver: Option<tokio::sync::broadcast::Receiver<(uuid::Uuid, u64)>> = None;
+    let mut notification_receiver: Option<tokio::sync::broadcast::Receiver<(uuid::Uuid, u64)>> =
+        None;
     loop {
         tokio::select! {
             result = async {
