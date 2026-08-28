@@ -9,4 +9,6 @@
 __pycache__/
 *.pyc
 /.codewhale/state/
-/.gitlab-ci-local/
+/.gitlab-ci-local/cache/
+/.gitlab-ci-local/builds/
+/.gitlab-ci-local/output/
