@@ -14,3 +14,4 @@ __pycache__/
 /.gitlab-ci-local/cache/
 /.gitlab-ci-local/builds/
 /.gitlab-ci-local/output/
+.codewhale/
