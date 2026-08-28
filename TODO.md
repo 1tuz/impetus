@@ -25,13 +25,15 @@
 - [x] Negotiated `Incompatible`: client/harness version mismatch handling с
   explicit fallback или upgrade prompt.
 
-### Затем, шаг 2 из 4 — Zap structured adapter
+### Затем, шаг 2 из 4 — Zap integration
 
-- [x] CLI baseline (create/stream/cancel) работает.
-- [x] Zap adapter binary: подписывается на harness events через polling, рендерит typed blocks.
+- [x] CLI baseline (create/stream/cancel) работает в обычной Zap tab.
+- [x] Zap adapter binary: подписывается на harness events, рендерит typed blocks (ASCII boxes, OSC sequences).
 - [x] OSC escape sequences: harness → Zap notification hooks.
-- [x] Structured blocks protocol: diff с syntax highlighting, approval buttons, live agent chunks, attachments.
+- [x] Structured blocks protocol: diff, approval, output, attachment, status, error.
 - [x] Live session status bar: Running / Idle / NeedsApproval.
+- [ ] **Zap native integration decision:** либо PR в Zap для подключения к нашему IPC (они планируют то же самое в roadmap Phase 1), либо продолжить через CLI adapter.
+- [ ] Связаться с Zap maintainers для coordination.
 
 ### Затем, шаг 3 из 4 — ACP gateway
 
@@ -62,4 +64,5 @@
 - GPUI native-window smoke и CI pane smoke — отдельные client checks.
 - Custom terminal/TUI — только после Zap decision и зафиксированного
   неудовлетворённого requirement.
+- Zap native integration (IPC Blocks rendering) — после v0.3 завершения и coordination с Zap maintainers.
 - v0.2 завершён: provider, execution seam, resource baselines, headless graph.

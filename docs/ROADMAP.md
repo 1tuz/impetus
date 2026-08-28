@@ -48,15 +48,21 @@ supervisor с mock restart/cancel, Unix socket, CLI, read-only tools/artifacts,
 
 1. IPC extension: typed approvals, diffs, attachment refs, backend/auth states
    и negotiated `Incompatible`.
-2. Zap baseline smoke в обычной tab, затем decision: adapter или private fork
-   только если нужен structured Blocks/diff/approval UX.
+2. Zap integration path: headless CLI baseline работает в обычной Zap tab;
+   structured native integration через IPC — либо PR в Zap для подключения
+   к нашему harness daemon, либо Zap использует наш harness как Phase 1 backend
+   (их roadmap = то что мы строим).
 3. ACP gateway: manual executable profile, mock agent
    initialize/session/stream/cancel/permission/exit, agent-owned login.
 4. Auth Center contract: Keychain reference, system-browser OAuth and local
    no-secret profiles. OAuth URL открывается только действием пользователя.
 
+**Zap roadmap Phase 1 = наш harness.** Они планируют построить standalone agent
+service с JSON-RPC protocol — мы уже это строим. После v0.3 — связаться с Zap
+maintainers для coordination.
+
 **Не строить TUI или terminal emulator в этом этапе.** Они возможны лишь после
-Zap spike и зафиксированного неудовлетворённого requirement.
+Zap decision и зафиксированного неудовлетворённого requirement.
 
 ## Далее — продуктовые возможности
 
