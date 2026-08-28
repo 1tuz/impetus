@@ -31,12 +31,48 @@ async fn integration_mock_agent_lifecycle() {
     gateway.start().await.expect("start agent");
     assert_eq!(gateway.status(), AgentStatus::Initializing);
 
-    // Дать агенту время на startup
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // TODO: отправить JSON-RPC initialize через stdin
+    // Initialize
+    let init_result = gateway.initialize().await.expect("initialize");
+    assert_eq!(gateway.status(), AgentStatus::Connected);
+    assert!(init_result.get("protocolVersion").is_some());
 
     // Stop
     gateway.stop().await.expect("stop agent");
     assert_eq!(gateway.status(), AgentStatus::NotStarted);
+}
+
+#[tokio::test]
+#[ignore]
+async fn integration_agent_owned_credential_flow() {
+    let bin_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/debug/examples/mock_agent_bin");
+
+    if !bin_path.exists() {
+        eprintln!("Skipping: binary not found");
+        return;
+    }
+
+    let profile = AcpProfile::manual_executable(
+        "test-auth",
+        "Test Auth Agent",
+        bin_path.canonicalize().unwrap(),
+    );
+
+    let mut gateway = AcpGateway::new(profile).unwrap();
+    gateway.start().await.unwrap();
+    gateway.initialize().await.unwrap();
+
+    // Симуляция: agent запрашивает credential через notification
+    // (в реальном сценарии это происходит асинхронно)
+
+    // Harness forwards prompt и получает ответ от пользователя
+    let credential = Some("test-api-key-12345".to_string());
+
+    // Harness отправляет credential обратно agent
+    gateway
+        .respond_credential("mock-request-id", credential)
+        .await
+        .expect("respond credential");
+
+    gateway.stop().await.unwrap();
 }

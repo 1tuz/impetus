@@ -1,8 +1,8 @@
+use anyhow::{Context, Result, bail};
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
 };
-use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,10 +48,7 @@ async fn main() -> Result<()> {
 fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harness> {
     let mut arguments = std::env::args_os().skip(1);
     let Some(flag) = arguments.next() else {
-        return Ok(Harness::new(
-            store,
-            impetus_core::harness_api::policy(),
-        ));
+        return Ok(Harness::new(store, impetus_core::harness_api::policy()));
     };
     if flag != "--provider-profile" {
         bail!("usage: agentic-terminal-harness [--provider-profile PATH]");
@@ -258,10 +255,7 @@ where
 }
 
 #[cfg(test)]
-fn handle_request(
-    store: Arc<dyn impetus_core::EventStore>,
-    request: IpcRequest,
-) -> IpcResponse {
+fn handle_request(store: Arc<dyn impetus_core::EventStore>, request: IpcRequest) -> IpcResponse {
     Harness::new(store, impetus_core::harness_api::policy()).handle(request)
 }
 
@@ -374,9 +368,7 @@ mod tests {
             .filter(|event| {
                 matches!(
                     event.payload,
-                    impetus_core::EventPayload::Agent(
-                        impetus_core::AgentEvent::Chunk { .. }
-                    )
+                    impetus_core::EventPayload::Agent(impetus_core::AgentEvent::Chunk { .. })
                 )
             })
             .count();

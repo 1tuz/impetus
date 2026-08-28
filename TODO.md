@@ -37,7 +37,7 @@
 
 - [x] Manual executable profile: user указывает путь к agent CLI.
 - [x] Mock agent: initialize/session/stream/cancel/permission/exit smoke.
-- [ ] Agent-owned login: ACP backend не хранит credentials, только forwards
+- [x] Agent-owned login: ACP backend не хранит credentials, только forwards
   prompts.
 
 ### Затем, шаг 4 из 4 — Auth Center contract

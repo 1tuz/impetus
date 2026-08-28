@@ -22,9 +22,9 @@ mod osc;
 mod status_bar;
 
 use agentic_terminal_client::{HarnessClient, UnixSocketTransport};
-use impetus_core::{Event, EventPayload, IpcRequest, IpcResponse, RuntimeStatus};
 use anyhow::{Context, Result};
 use blocks::{render_block_text, render_event_block};
+use impetus_core::{Event, EventPayload, IpcRequest, IpcResponse, RuntimeStatus};
 use status_bar::StatusBar;
 use std::io::{self, Write};
 use std::path::PathBuf;

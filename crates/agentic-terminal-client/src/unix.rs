@@ -6,8 +6,8 @@
 //! `Incompatible` response as a hard failure.
 
 use crate::{EventSubscription, HarnessClient, IPC_VERSION, IpcRequest, IpcResponse};
-use impetus_core::{IPC_CAPABILITIES, IpcErrorCode};
 use anyhow::{Context, Result, anyhow, bail};
+use impetus_core::{IPC_CAPABILITIES, IpcErrorCode};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

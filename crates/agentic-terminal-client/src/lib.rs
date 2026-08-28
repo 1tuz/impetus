@@ -10,11 +10,11 @@
 //! - [`UnixSocketTransport`] speaks the versioned line-JSON IPC over a Unix
 //!   socket (the real daemon).
 
+use anyhow::{Result, bail};
 use impetus_core::{
     Event, EventStore, Harness, IPC_CAPABILITIES, IPC_VERSION, IpcRequest, IpcResponse,
     PolicyEngine,
 };
-use anyhow::{Result, bail};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

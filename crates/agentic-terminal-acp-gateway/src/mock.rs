@@ -54,6 +54,7 @@ pub struct JsonRpcError {
 pub struct MockAgent {
     initialized: bool,
     sessions: HashMap<String, MockSession>,
+    pending_auth: Option<String>,
 }
 
 #[derive(Debug)]
@@ -68,6 +69,7 @@ impl MockAgent {
         Self {
             initialized: false,
             sessions: HashMap::new(),
+            pending_auth: None,
         }
     }
 
@@ -92,6 +94,40 @@ impl MockAgent {
                 }),
             }),
         }
+    }
+
+    /// Генерирует auth/requestCredential notification для agent-owned login.
+    pub fn request_credential(&mut self, prompt: &str) -> JsonRpcNotification {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        self.pending_auth = Some(request_id.clone());
+
+        JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "auth/requestCredential".into(),
+            params: Some(serde_json::json!({
+                "requestId": request_id,
+                "prompt": prompt,
+            })),
+        }
+    }
+
+    /// Обрабатывает response на auth/requestCredential.
+    pub fn handle_credential_response(
+        &mut self,
+        response: JsonRpcResponse,
+    ) -> Result<Option<String>, MockAgentError> {
+        if response.error.is_some() {
+            self.pending_auth = None;
+            return Ok(None);
+        }
+
+        let credential = response.result.and_then(|v| {
+            v.get("credential")
+                .and_then(|c| c.as_str().map(String::from))
+        });
+
+        self.pending_auth = None;
+        Ok(credential)
     }
 
     fn handle_initialize(
@@ -335,5 +371,58 @@ mod tests {
 
         assert!(!agent.is_initialized());
         assert_eq!(agent.session_count(), 0);
+    }
+
+    #[test]
+    fn mock_agent_credential_flow() {
+        let mut agent = MockAgent::new();
+
+        // Request credential
+        let notification = agent.request_credential("Enter API key:");
+        assert_eq!(notification.method, "auth/requestCredential");
+
+        let request_id = notification.params.unwrap()["requestId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // User provides credential
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(request_id),
+            result: Some(serde_json::json!({"credential": "test-key-123"})),
+            error: None,
+        };
+
+        let credential = agent.handle_credential_response(response).unwrap();
+        assert_eq!(credential, Some("test-key-123".to_string()));
+        assert!(agent.pending_auth.is_none());
+    }
+
+    #[test]
+    fn mock_agent_credential_cancellation() {
+        let mut agent = MockAgent::new();
+
+        let notification = agent.request_credential("Enter token:");
+        let request_id = notification.params.unwrap()["requestId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // User cancels
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(request_id),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: "User cancelled".into(),
+                data: None,
+            }),
+        };
+
+        let credential = agent.handle_credential_response(response).unwrap();
+        assert_eq!(credential, None);
+        assert!(agent.pending_auth.is_none());
     }
 }

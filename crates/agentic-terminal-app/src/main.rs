@@ -1,12 +1,12 @@
-use impetus_core::{
-    CapabilityRegistry, CiBackend, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend,
-    Pipeline, RemoteGitlabBackend,
-};
 use gpui::{
     AnyElement, App, Bounds, Context, FocusHandle, IntoElement, KeyBinding, Render, SharedString,
     Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
+use impetus_core::{
+    CapabilityRegistry, CiBackend, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend,
+    Pipeline, RemoteGitlabBackend,
+};
 use std::{collections::VecDeque, time::Duration};
 use tracing_subscriber::EnvFilter;
 
@@ -236,9 +236,7 @@ impl AgenticTerminalView {
                 let log = self.full_ci_log();
                 if let Some(pipeline) = &mut self.ci_pipeline {
                     pipeline.duration = Some(duration);
-                    impetus_core::ci::finalize_local_run(
-                        pipeline, succeeded, exit_code, &log,
-                    );
+                    impetus_core::ci::finalize_local_run(pipeline, succeeded, exit_code, &log);
                     self.ci_status = if succeeded {
                         "Local pipeline completed".into()
                     } else {
