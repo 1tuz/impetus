@@ -1,19 +1,38 @@
-name: check
+name: Rust CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:
+    name: macOS verification
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-rust-1.98-
       - run: cargo fmt --all -- --check
-      - run: cargo test -p agentic-terminal-core
+      - run: cargo test --workspace
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
