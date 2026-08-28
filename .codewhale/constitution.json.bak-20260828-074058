@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "authority": [
+    "current user request",
+    "live code and tests",
+    "TODO.md and docs/ROADMAP.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "memory",
+    "old handoffs"
+  ],
+  "protected_invariants": [
+    "RTK mandatory: EVERY bash/shell command MUST be prefixed with rtk (rtk git, rtk cargo, rtk ls, rtk rg, rtk task …). Bare shell without rtk is a protocol violation.",
+    "Token hygiene: ban find, tree, ls -R, walking all of crates/, and reading every src file in bulk.",
+    "Token hygiene: known layout — go straight to crates/agentic-terminal-core/src/{policy,effects,approval,lib}.rs (and siblings named by TODO/ROADMAP). No repo tourism.",
+    "Token hygiene: one turn = at most one read OR one narrow bash/rg, then decide. No 10+ tool packs.",
+    "Token hygiene: never re-read a file already in this session (including compacted snippets) unless it could have changed.",
+    "Token hygiene: subagents off unless the user explicitly asked.",
+    "Token hygiene: cargo test/logs — rg, one test name, or head only; never dump full output into history.",
+    "Token hygiene: if context is bloated or tool says not executed — propose /compact or a new session; do not invent code blind.",
+    "Orient first: before code, read only TODO.md then the single active slice of docs/ROADMAP.md. Then the target .rs. Skip README/ARCHITECTURE/GUI_UX/ACP_AND_AUTH/root Cargo.toml unless the current step truly needs them. One ROADMAP stage only.",
+    "YAGNI: do not add stages, crates, or product surface beyond the single current ROADMAP step.",
+    "Do not invent PTY/ANSI terminal client work before Zap integration spike is the active step.",
+    "Secrets only as Keychain references — never raw tokens in SQLite, JSONL, tracing, or tests.",
+    "Do not use image/dependency tag latest or unpinned git deps.",
+    {
+      "text": "CI contract changes need human review.",
+      "paths": [
+        ".gitlab-ci.yml"
+      ],
+      "action": "ask"
+    },
+    {
+      "text": "Dependency policy is guarded; do not loosen deny.toml casually.",
+      "paths": [
+        "deny.toml"
+      ],
+      "action": "ask"
+    }
+  ],
+  "verification_policy": {
+    "before_claiming_done": [
+      "run task verify (or the four cargo fmt/test/check/clippy commands)",
+      "read changed files back",
+      "confirm only one ROADMAP step was advanced",
+      "confirm no exploratory find/tree/ls -R was used after orientation"
+    ]
+  },
+  "escalate_when": [
+    "user did not authorize destructive git (amend, rebase, force-push, remote config)",
+    "change would span multiple ROADMAP stages at once",
+    "new dependency or abstraction was not explicitly requested (YAGNI)",
+    "agent is about to explore the tree with find/tree/ls -R instead of opening a known path",
+    "context is swollen and /compact or a fresh session is the honest next step",
+    "agent ran shell without rtk prefix"
+  ]
+}

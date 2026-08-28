@@ -174,8 +174,8 @@ name = "agentic-terminal-acp-gateway"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
- "agentic-terminal-core",
  "anyhow",
+ "orbit-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -188,9 +188,9 @@ dependencies = [
 name = "agentic-terminal-app"
 version = "0.1.0"
 dependencies = [
- "agentic-terminal-core",
  "gpui",
  "gpui_platform",
+ "orbit-core",
  "tracing",
  "tracing-subscriber",
 ]
@@ -200,9 +200,9 @@ name = "agentic-terminal-cli"
 version = "0.1.0"
 dependencies = [
  "agentic-terminal-client",
- "agentic-terminal-core",
  "anyhow",
  "clap",
+ "orbit-core",
  "serde_json",
  "tokio",
  "uuid",
@@ -212,40 +212,8 @@ dependencies = [
 name = "agentic-terminal-client"
 version = "0.1.0"
 dependencies = [
- "agentic-terminal-core",
  "anyhow",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "agentic-terminal-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures-util",
- "humantime-serde",
- "reqwest",
- "rusqlite",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "agentic-terminal-harness"
-version = "0.1.0"
-dependencies = [
- "agentic-terminal-core",
- "anyhow",
- "security-framework",
+ "orbit-core",
  "serde_json",
  "tokio",
  "uuid",
@@ -256,9 +224,9 @@ name = "agentic-terminal-zap-adapter"
 version = "0.1.0"
 dependencies = [
  "agentic-terminal-client",
- "agentic-terminal-core",
  "anyhow",
  "dirs",
+ "orbit-core",
  "serde",
  "serde_json",
  "tokio",
@@ -4339,6 +4307,38 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "orbit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "orbit-core",
+ "security-framework",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "orbit-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "humantime-serde",
+ "reqwest",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "ordered-float"

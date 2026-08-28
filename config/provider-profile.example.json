@@ -1,0 +1,8 @@
+{
+  "id": "local.mock",
+  "endpoint": "http://127.0.0.1:11434",
+  "model": "mock-model",
+  "credential_strategy": {
+    "kind": "none"
+  }
+}

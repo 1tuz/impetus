@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-agentic-terminal-core = { path = "../agentic-terminal-core" }
+orbit-core = { path = "../orbit-core" }
 agent-client-protocol.workspace = true
 anyhow.workspace = true
 serde.workspace = true

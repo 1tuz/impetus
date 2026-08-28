@@ -6,7 +6,7 @@
 //! `Incompatible` response as a hard failure.
 
 use crate::{EventSubscription, HarnessClient, IPC_VERSION, IpcRequest, IpcResponse};
-use agentic_terminal_core::{IPC_CAPABILITIES, IpcErrorCode};
+use orbit_core::{IPC_CAPABILITIES, IpcErrorCode};
 use anyhow::{Context, Result, anyhow, bail};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ struct UnixEventSubscription {
 impl EventSubscription for UnixEventSubscription {
     fn next_events(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<agentic_terminal_core::Event>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<orbit_core::Event>>> + Send + '_>> {
         Box::pin(async move {
             loop {
                 let line = read_bounded_line(&mut self.reader, "harness event").await?;

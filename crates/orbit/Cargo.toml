@@ -1,12 +1,12 @@
 [package]
-name = "agentic-terminal-harness"
+name = "orbit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-agentic-terminal-core = { path = "../agentic-terminal-core" }
+orbit-core = { path = "../orbit-core" }
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

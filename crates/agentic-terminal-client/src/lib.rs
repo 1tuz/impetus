@@ -10,7 +10,7 @@
 //! - [`UnixSocketTransport`] speaks the versioned line-JSON IPC over a Unix
 //!   socket (the real daemon).
 
-use agentic_terminal_core::{
+use orbit_core::{
     Event, EventStore, Harness, IPC_CAPABILITIES, IPC_VERSION, IpcRequest, IpcResponse,
     PolicyEngine,
 };
@@ -159,7 +159,7 @@ impl EventSubscription for InMemoryEventSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentic_terminal_core::{MemoryEventStore, PolicyEngine, ReadOnlyToolKind, SandboxScope};
+    use orbit_core::{MemoryEventStore, PolicyEngine, ReadOnlyToolKind, SandboxScope};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
@@ -198,7 +198,7 @@ mod tests {
         assert!(matches!(
             response,
             IpcResponse::ToolResult {
-                outcome: agentic_terminal_core::ToolOutcome::Denied { .. },
+                outcome: orbit_core::ToolOutcome::Denied { .. },
                 ..
             }
         ));

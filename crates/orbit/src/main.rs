@@ -1,4 +1,4 @@
-use agentic_terminal_core::{
+use orbit_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
 };
@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 #[cfg(test)]
-use agentic_terminal_core::RunEvent;
+use orbit_core::RunEvent;
 
 const MAX_IPC_LINE_BYTES: usize = 64 * 1024;
 
@@ -45,12 +45,12 @@ async fn main() -> Result<()> {
 /// Direct providers are enabled only by an explicit daemon-start profile file.
 /// The file is deserialized into a deny-unknown-fields DTO, so a raw token
 /// cannot be silently accepted as configuration.
-fn configured_harness(store: Arc<dyn agentic_terminal_core::EventStore>) -> Result<Harness> {
+fn configured_harness(store: Arc<dyn orbit_core::EventStore>) -> Result<Harness> {
     let mut arguments = std::env::args_os().skip(1);
     let Some(flag) = arguments.next() else {
         return Ok(Harness::new(
             store,
-            agentic_terminal_core::harness_api::policy(),
+            orbit_core::harness_api::policy(),
         ));
     };
     if flag != "--provider-profile" {
@@ -69,7 +69,7 @@ fn configured_harness(store: Arc<dyn agentic_terminal_core::EventStore>) -> Resu
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(Harness::with_openai_provider_and_resolver(
         store,
-        agentic_terminal_core::harness_api::policy(),
+        orbit_core::harness_api::policy(),
         provider,
         Arc::new(MacosKeychainResolver),
     ))
@@ -259,10 +259,10 @@ where
 
 #[cfg(test)]
 fn handle_request(
-    store: Arc<dyn agentic_terminal_core::EventStore>,
+    store: Arc<dyn orbit_core::EventStore>,
     request: IpcRequest,
 ) -> IpcResponse {
-    Harness::new(store, agentic_terminal_core::harness_api::policy()).handle(request)
+    Harness::new(store, orbit_core::harness_api::policy()).handle(request)
 }
 
 fn data_root() -> Result<PathBuf> {
@@ -291,7 +291,7 @@ fn set_socket_permissions(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentic_terminal_core::{
+    use orbit_core::{
         EventPayload, EventStore, IPC_VERSION, MemoryEventStore, NoticeEvent, ReadOnlyToolKind,
         RuntimeStatus, ToolOutcome,
     };
@@ -374,8 +374,8 @@ mod tests {
             .filter(|event| {
                 matches!(
                     event.payload,
-                    agentic_terminal_core::EventPayload::Agent(
-                        agentic_terminal_core::AgentEvent::Chunk { .. }
+                    orbit_core::EventPayload::Agent(
+                        orbit_core::AgentEvent::Chunk { .. }
                     )
                 )
             })
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(chunks, 2);
         assert!(events.iter().any(|event| matches!(
             event.payload,
-            agentic_terminal_core::EventPayload::Run(RunEvent::Completed { .. })
+            orbit_core::EventPayload::Run(RunEvent::Completed { .. })
         )));
     }
 
@@ -456,18 +456,18 @@ mod tests {
         };
         assert!(events.iter().any(|event| matches!(
             event.payload,
-            agentic_terminal_core::EventPayload::Run(RunEvent::Cancelled { .. })
+            orbit_core::EventPayload::Run(RunEvent::Cancelled { .. })
         )));
         assert!(!events.iter().any(|event| matches!(
             event.payload,
-            agentic_terminal_core::EventPayload::Run(RunEvent::Completed { .. })
+            orbit_core::EventPayload::Run(RunEvent::Completed { .. })
         )));
     }
 
     #[tokio::test]
     async fn second_prompt_is_rejected_while_run_is_active() {
         let store = Arc::new(MemoryEventStore::default());
-        let harness = Harness::new(store.clone(), agentic_terminal_core::harness_api::policy());
+        let harness = Harness::new(store.clone(), orbit_core::harness_api::policy());
         let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
         else {
             panic!("create session response")
@@ -508,7 +508,7 @@ mod tests {
     async fn wire_requires_hello_and_negotiated_capability() {
         let harness = Arc::new(Harness::new(
             Arc::new(MemoryEventStore::default()),
-            agentic_terminal_core::harness_api::policy(),
+            orbit_core::harness_api::policy(),
         ));
         let (server, client) = UnixStream::pair().expect("create Unix pair");
         let server_task = tokio::spawn(async move { serve_client(server, harness).await });
@@ -581,7 +581,7 @@ mod tests {
         let (server, client) = UnixStream::pair().expect("create Unix pair");
         let server_harness = Arc::new(Harness::new(
             store.clone(),
-            agentic_terminal_core::harness_api::policy(),
+            orbit_core::harness_api::policy(),
         ));
         let server_task = tokio::spawn(async move { serve_client(server, server_harness).await });
 

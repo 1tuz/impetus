@@ -1,4 +1,4 @@
-# Agentic Harness для macOS
+# Orbit — Agentic Harness для macOS
 
 Local-first Rust harness для coding-agents: долговечные сессии, typed events, provider/ACP adapters и контролируемые эффекты. Harness не зависит от конкретного terminal emulator или GUI. Основной пользовательский путь — запуск из [Zap](https://github.com/zerx-lab/zap); CLI, IDE adapter и существующий GPUI preview остаются сменными клиентами одной session model.
 
@@ -24,7 +24,7 @@ Local-first Rust harness для coding-agents: долговечные сесси
 
 | Слой | Текущее состояние |
 | --- | --- |
-| `agentic-terminal-core` | базовые events/runtime types, policy/approval, SQLite WAL, manifest validation и CI projection |
+| `orbit-core` | базовые events/runtime types, policy/approval, SQLite WAL, manifest validation и CI projection |
 | GPUI reference client | native Metal window, темы preview и экспериментальный CI pane; durable session state не хранит |
 | GitLab CI slice | общий local/remote `PipelineModel`; native smoke требует установленные `gitlab-ci-local` и `glab` |
 | Standalone harness | v0.2: typed projections, supervisor, daemon/IPC, CLI, mock provider, bounded/redacted read-only tools и один OpenAI-compatible direct-provider adapter |
@@ -54,7 +54,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p agentic-terminal-harness
+cargo run -p orbit
 cargo run -p agentic-terminal-cli -- create
 cargo run -p agentic-terminal-app
 ```
@@ -68,7 +68,7 @@ profile JSON без token-полей и только из local loopback scope:
 {"id":"local","endpoint":"http://127.0.0.1:11434","model":"model-name","credential_strategy":{"kind":"none"}}
 ```
 
-Запуск: `cargo run -p agentic-terminal-harness -- --provider-profile /absolute/path/profile.json`.
+Запуск: `cargo run -p orbit -- --provider-profile /absolute/path/profile.json`.
 Profile с неизвестными полями (включая raw token) отклоняется. HTTPS profile
 может содержать только opaque Keychain `service`/`account` reference; daemon
 читает generic-password item через macOS Security Framework только перед
@@ -110,9 +110,9 @@ GitLab pipeline в `.gitlab-ci.yml` содержит stage `verify` (`fmt`, `tes
 ## Структура
 
 ```text
-crates/agentic-terminal-core/  события, policy, approvals, SQLite, manifests
+crates/orbit-core/  события, policy, approvals, SQLite, manifests
 crates/agentic-terminal-app/   optional GPUI reference client и CI preview
-crates/agentic-terminal-harness/ headless daemon и Unix socket IPC
+crates/orbit/ headless daemon и Unix socket IPC
 crates/agentic-terminal-client/ transport-neutral client contract
 crates/agentic-terminal-cli/   reference CLI для обычной terminal/Zap tab
 config/capabilities.json       декларативный каталог capabilities

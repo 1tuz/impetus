@@ -4,7 +4,7 @@
 //! and fail-closed sandbox verification for v0.2 Step 2/3.
 //!
 //! Integration instructions:
-//! 1. Read crates/agentic-terminal-core/src/effects.rs
+//! 1. Read crates/orbit-core/src/effects.rs
 //! 2. Identify what parts are already implemented
 //! 3. Merge missing parts from this reference into effects.rs
 //! 4. Add missing error variants to EffectError

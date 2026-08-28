@@ -2,7 +2,7 @@
 //!
 //! Tracks harness state and renders status bar updates via OSC sequences.
 
-use agentic_terminal_core::{BackendEvent, Event, EventPayload, RuntimeStatus};
+use orbit_core::{BackendEvent, Event, EventPayload, RuntimeStatus};
 use std::sync::{Arc, Mutex};
 
 /// Session status aggregator
@@ -37,7 +37,7 @@ impl StatusBar {
 
         match &event.payload {
             EventPayload::Run(run_event) => {
-                use agentic_terminal_core::RunEvent;
+                use orbit_core::RunEvent;
                 match run_event {
                     RunEvent::Started { .. } => {
                         state.runtime_status = RuntimeStatus::Running;
@@ -62,7 +62,7 @@ impl StatusBar {
                 }
             }
             EventPayload::Tool(tool_event) => {
-                use agentic_terminal_core::ToolEvent;
+                use orbit_core::ToolEvent;
                 match tool_event {
                     ToolEvent::Started { name } => {
                         state.current_action = Some(format!("Tool: {}", name));
@@ -73,7 +73,7 @@ impl StatusBar {
                 }
             }
             EventPayload::Approval(approval_event) => {
-                use agentic_terminal_core::ApprovalEvent;
+                use orbit_core::ApprovalEvent;
                 match approval_event {
                     ApprovalEvent::Requested { .. } => {
                         state.pending_approvals += 1;
@@ -141,7 +141,7 @@ impl Default for StatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentic_terminal_core::{ApprovalEvent, ApprovalRequest, RunEvent};
+    use orbit_core::{ApprovalEvent, ApprovalRequest, RunEvent};
     use uuid::Uuid;
 
     fn make_event(payload: EventPayload) -> Event {
@@ -169,9 +169,9 @@ mod tests {
         let bar = StatusBar::new();
 
         let approval = ApprovalRequest::pending(
-            agentic_terminal_core::Action {
-                origin: agentic_terminal_core::ActionOrigin::Agent,
-                kind: agentic_terminal_core::ActionKind::ReadFile,
+            orbit_core::Action {
+                origin: orbit_core::ActionOrigin::Agent,
+                kind: orbit_core::ActionKind::ReadFile,
                 summary: "Read config file".to_string(),
                 target: Some("config.toml".to_string()),
             },
@@ -200,7 +200,7 @@ mod tests {
         let bar = StatusBar::new();
 
         bar.update_from_event(&make_event(EventPayload::Tool(
-            agentic_terminal_core::ToolEvent::Started {
+            orbit_core::ToolEvent::Started {
                 name: "read_file".to_string(),
             },
         )));

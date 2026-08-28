@@ -11,9 +11,9 @@
 - `README.md` — определён текущий этап v0.2, шаг 1/3 завершён
 - `docs/ROADMAP.md` — подтверждён порядок шагов v0.2
 - `TODO.md` — шаг 2/3 в работе, шаг 1/3 отмечен выполненным
-- `crates/agentic-terminal-core/src/lib.rs` — все типы exports
-- `crates/agentic-terminal-core/src/policy.rs` — `ActionFingerprint`, тесты
-- `crates/agentic-terminal-core/src/approval.rs` — полная структура с fingerprint
+- `crates/orbit-core/src/lib.rs` — все типы exports
+- `crates/orbit-core/src/policy.rs` — `ActionFingerprint`, тесты
+- `crates/orbit-core/src/approval.rs` — полная структура с fingerprint
 
 ✅ **Подтверждено что уже реализовано:**
 - `ActionFingerprint` с SHA256 + domain separation prefix
@@ -63,7 +63,7 @@
 - Fail-closed sandbox check
 - `ApprovalStore` trait
 - Complete unit tests: stale approval, sandbox unavailable, valid flow
-- Готово для интеграции в `crates/agentic-terminal-core/src/effects.rs`
+- Готово для интеграции в `crates/orbit-core/src/effects.rs`
 
 ## Блокеры
 
@@ -81,7 +81,7 @@
 1. **Полный audit текущего кода:**
    ```bash
    # Прочитать effects.rs целиком
-   cat crates/agentic-terminal-core/src/effects.rs
+   cat crates/orbit-core/src/effects.rs
    
    # Найти все impl EffectSeam
    rg "impl EffectSeam" crates/ -A 10
@@ -99,7 +99,7 @@
    rg "approval_requests|store.*approval" crates/
    
    # Список тестов
-   rg "#\[test\]|#\[tokio::test\]" crates/agentic-terminal-core/src/ -A 2
+   rg "#\[test\]|#\[tokio::test\]" crates/orbit-core/src/ -A 2
    ```
 
 2. **Gap analysis:**
@@ -116,11 +116,11 @@
 4. **Testing:**
    ```bash
    # Запустить существующие тесты
-   cargo test --package agentic-terminal-core
+   cargo test --package orbit-core
    
    # Добавить недостающие тесты из reference
    # Запустить снова
-   cargo test --package agentic-terminal-core
+   cargo test --package orbit-core
    
    # Verification
    task verify
@@ -131,7 +131,7 @@
 5. **Manual smoke test:**
    ```bash
    # Terminal 1: start harness
-   cargo run -p agentic-terminal-harness -- \
+   cargo run -p orbit -- \
      --provider-profile /path/to/local-profile.json
    
    # Terminal 2: CLI interaction
@@ -201,11 +201,11 @@
 - `reference_execution_seam.rs` — готовая реализация
 
 Ключевые файлы для integration:
-- `crates/agentic-terminal-core/src/effects.rs` — основной файл
-- `crates/agentic-terminal-core/src/ipc.rs` — добавить approval IPC
-- `crates/agentic-terminal-core/src/storage.rs` — добавить approval storage
-- `crates/agentic-terminal-core/src/events.rs` — добавить ApprovalEvent
-- `crates/agentic-terminal-harness/src/main.rs` — IPC handler integration
+- `crates/orbit-core/src/effects.rs` — основной файл
+- `crates/orbit-core/src/ipc.rs` — добавить approval IPC
+- `crates/orbit-core/src/storage.rs` — добавить approval storage
+- `crates/orbit-core/src/events.rs` — добавить ApprovalEvent
+- `crates/orbit/src/main.rs` — IPC handler integration
 
 ## Выводы
 

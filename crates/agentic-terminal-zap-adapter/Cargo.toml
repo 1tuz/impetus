@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 agentic-terminal-client = { path = "../agentic-terminal-client" }
-agentic-terminal-core = { path = "../agentic-terminal-core" }
+orbit-core = { path = "../orbit-core" }
 anyhow = "1.0"
 dirs = "5.0"
 serde = { version = "1.0", features = ["derive"] }
