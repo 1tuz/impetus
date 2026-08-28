@@ -126,6 +126,7 @@ impl HarnessClient for InMemoryTransport {
             store: self.store.clone(),
             session_id,
             after_sequence,
+            notification_receiver: self.store.subscribe_notifications(),
         }))
     }
 }
@@ -134,6 +135,7 @@ struct InMemoryEventSubscription {
     store: Arc<dyn EventStore>,
     session_id: uuid::Uuid,
     after_sequence: u64,
+    notification_receiver: tokio::sync::broadcast::Receiver<(uuid::Uuid, u64)>,
 }
 
 impl EventSubscription for InMemoryEventSubscription {
@@ -150,7 +152,22 @@ impl EventSubscription for InMemoryEventSubscription {
                     self.after_sequence = last.sequence;
                     return Ok(events);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                // Wait for notification for our session
+                loop {
+                    match self.notification_receiver.recv().await {
+                        Ok((notified_session_id, _sequence)) if notified_session_id == self.session_id => {
+                            break;
+                        }
+                        Ok(_) => continue, // Different session
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            // Missed some notifications, check store immediately
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            bail!("notification channel closed");
+                        }
+                    }
+                }
             }
         })
     }

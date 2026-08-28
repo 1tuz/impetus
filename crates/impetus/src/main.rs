@@ -105,11 +105,22 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
     let mut reader = BufReader::new(reader);
     let mut negotiated = None::<BTreeSet<String>>;
     let mut subscription = None;
-    let mut event_poll = tokio::time::interval(std::time::Duration::from_millis(25));
+    let mut notification_receiver: Option<tokio::sync::broadcast::Receiver<(uuid::Uuid, u64)>> = None;
     loop {
         tokio::select! {
-            _ = event_poll.tick(), if subscription.is_some() => {
+            result = async {
+                match notification_receiver.as_mut() {
+                    Some(receiver) => receiver.recv().await.ok(),
+                    None => std::future::pending().await,
+                }
+            }, if subscription.is_some() => {
+                let Some((notified_session_id, _notified_sequence)) = result else {
+                    continue;
+                };
                 let (session_id, after_sequence) = subscription.expect("checked above");
+                if notified_session_id != session_id {
+                    continue;
+                }
                 match harness.handle(IpcRequest::Stream { session_id, after_sequence }) {
                     IpcResponse::Events { events, .. } if !events.is_empty() => {
                         subscription = events.last().map(|last| (session_id, last.sequence));
@@ -174,6 +185,10 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                             let response = harness.handle(request);
                             if matches!(response, IpcResponse::Subscribed { .. }) {
                                 subscription = requested_subscription;
+                                // Initialize notification receiver on first subscription
+                                if notification_receiver.is_none() {
+                                    notification_receiver = Some(harness.store().subscribe_notifications());
+                                }
                             }
                             response
                         }

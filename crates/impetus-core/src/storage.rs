@@ -3,6 +3,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -47,11 +48,26 @@ pub trait EventStore: Send + Sync {
         source_session_id: Uuid,
         up_to_sequence: u64,
     ) -> Result<Uuid, StoreError>;
+
+    /// Subscribe to event notifications.
+    /// Returns a receiver that gets (session_id, sequence) on every append.
+    /// Channel size is 100; old notifications may be dropped but cursors handle gaps.
+    fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)>;
 }
 
-#[derive(Default)]
 pub struct MemoryEventStore {
     events: Mutex<Vec<Event>>,
+    notifier: broadcast::Sender<(Uuid, u64)>,
+}
+
+impl Default for MemoryEventStore {
+    fn default() -> Self {
+        let (notifier, _) = broadcast::channel(100);
+        Self {
+            events: Mutex::default(),
+            notifier,
+        }
+    }
 }
 
 impl EventStore for MemoryEventStore {
@@ -70,6 +86,7 @@ impl EventStore for MemoryEventStore {
             .lock()
             .map_err(|_| StoreError::Poisoned)?
             .push(event.clone());
+        let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(())
     }
 
@@ -88,6 +105,7 @@ impl EventStore for MemoryEventStore {
         let sequence = last_sequence + 1;
         let event = Event::new(session_id, sequence, payload);
         events.push(event.clone());
+        let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(event)
     }
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError> {
@@ -155,15 +173,21 @@ impl EventStore for MemoryEventStore {
                 source_event.at_unix_ms,
                 source_event.payload.clone(),
             );
-            events.push(new_event);
+            events.push(new_event.clone());
+            let _ = self.notifier.send((new_event.session_id, new_event.sequence));
         }
 
         Ok(new_session_id)
+    }
+
+    fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
+        self.notifier.subscribe()
     }
 }
 
 pub struct SqliteEventStore {
     connection: Mutex<Connection>,
+    notifier: broadcast::Sender<(Uuid, u64)>,
 }
 
 impl SqliteEventStore {
@@ -188,8 +212,10 @@ impl SqliteEventStore {
             "INSERT OR IGNORE INTO sessions (id, created_at_unix_ms, updated_at_unix_ms)
              SELECT session_id, MIN(at_unix_ms), MAX(at_unix_ms) FROM events GROUP BY session_id;",
         )?;
+        let (notifier, _) = broadcast::channel(100);
         Ok(Arc::new(Self {
             connection: Mutex::new(connection),
+            notifier,
         }))
     }
 }
@@ -206,6 +232,7 @@ impl EventStore for SqliteEventStore {
         )?;
         insert_event(&transaction, &event)?;
         transaction.commit()?;
+        let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(session_id)
     }
 
@@ -222,6 +249,7 @@ impl EventStore for SqliteEventStore {
             params![event.session_id.to_string(), event.at_unix_ms],
         )?;
         transaction.commit()?;
+        let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(())
     }
 
@@ -243,6 +271,7 @@ impl EventStore for SqliteEventStore {
             return Err(StoreError::MissingSession(session_id));
         }
         transaction.commit()?;
+        let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(event)
     }
 
@@ -349,10 +378,15 @@ impl EventStore for SqliteEventStore {
                 source_event.payload.clone(),
             );
             insert_event(&transaction, &new_event)?;
+            let _ = self.notifier.send((new_event.session_id, new_event.sequence));
         }
 
         transaction.commit()?;
         Ok(new_session_id)
+    }
+
+    fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
+        self.notifier.subscribe()
     }
 }
 

@@ -96,9 +96,7 @@ async fn stream_session(
                     }
                 }
 
-                if events.is_empty() {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
+                // No polling sleep - Unix transport blocks on read_line
             }
             IpcResponse::Error { message, .. } => {
                 anyhow::bail!("Stream error: {}", message);

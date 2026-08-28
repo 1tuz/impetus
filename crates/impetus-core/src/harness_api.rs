@@ -89,6 +89,10 @@ impl Harness {
         self.policy.clone()
     }
 
+    pub fn store(&self) -> Arc<dyn EventStore> {
+        self.store.clone()
+    }
+
     /// Resolve a single client request into a response.
     ///
     /// No global lock: EventStore and AgentRuntime use internal coordination.
