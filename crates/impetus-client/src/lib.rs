@@ -155,7 +155,9 @@ impl EventSubscription for InMemoryEventSubscription {
                 // Wait for notification for our session
                 loop {
                     match self.notification_receiver.recv().await {
-                        Ok((notified_session_id, _sequence)) if notified_session_id == self.session_id => {
+                        Ok((notified_session_id, _sequence))
+                            if notified_session_id == self.session_id =>
+                        {
                             break;
                         }
                         Ok(_) => continue, // Different session

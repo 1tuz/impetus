@@ -174,7 +174,9 @@ impl EventStore for MemoryEventStore {
                 source_event.payload.clone(),
             );
             events.push(new_event.clone());
-            let _ = self.notifier.send((new_event.session_id, new_event.sequence));
+            let _ = self
+                .notifier
+                .send((new_event.session_id, new_event.sequence));
         }
 
         Ok(new_session_id)
@@ -378,7 +380,9 @@ impl EventStore for SqliteEventStore {
                 source_event.payload.clone(),
             );
             insert_event(&transaction, &new_event)?;
-            let _ = self.notifier.send((new_event.session_id, new_event.sequence));
+            let _ = self
+                .notifier
+                .send((new_event.session_id, new_event.sequence));
         }
 
         transaction.commit()?;
