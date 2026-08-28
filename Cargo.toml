@@ -1,8 +1,8 @@
 [workspace]
 members = [
-  "crates/orbit-core",
+  "crates/impetus-core",
   "crates/agentic-terminal-app",
-  "crates/orbit",
+  "crates/impetus",
   "crates/agentic-terminal-cli",
   "crates/agentic-terminal-client", "crates/agentic-terminal-zap-adapter", "crates/agentic-terminal-acp-gateway",
 ]

@@ -2,7 +2,7 @@
 //!
 //! Tracks harness state and renders status bar updates via OSC sequences.
 
-use orbit_core::{BackendEvent, Event, EventPayload, RuntimeStatus};
+use impetus_core::{BackendEvent, Event, EventPayload, RuntimeStatus};
 use std::sync::{Arc, Mutex};
 
 /// Session status aggregator
@@ -37,7 +37,7 @@ impl StatusBar {
 
         match &event.payload {
             EventPayload::Run(run_event) => {
-                use orbit_core::RunEvent;
+                use impetus_core::RunEvent;
                 match run_event {
                     RunEvent::Started { .. } => {
                         state.runtime_status = RuntimeStatus::Running;
@@ -62,7 +62,7 @@ impl StatusBar {
                 }
             }
             EventPayload::Tool(tool_event) => {
-                use orbit_core::ToolEvent;
+                use impetus_core::ToolEvent;
                 match tool_event {
                     ToolEvent::Started { name } => {
                         state.current_action = Some(format!("Tool: {}", name));
@@ -73,7 +73,7 @@ impl StatusBar {
                 }
             }
             EventPayload::Approval(approval_event) => {
-                use orbit_core::ApprovalEvent;
+                use impetus_core::ApprovalEvent;
                 match approval_event {
                     ApprovalEvent::Requested { .. } => {
                         state.pending_approvals += 1;
@@ -141,7 +141,7 @@ impl Default for StatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orbit_core::{ApprovalEvent, ApprovalRequest, RunEvent};
+    use impetus_core::{ApprovalEvent, ApprovalRequest, RunEvent};
     use uuid::Uuid;
 
     fn make_event(payload: EventPayload) -> Event {
@@ -169,9 +169,9 @@ mod tests {
         let bar = StatusBar::new();
 
         let approval = ApprovalRequest::pending(
-            orbit_core::Action {
-                origin: orbit_core::ActionOrigin::Agent,
-                kind: orbit_core::ActionKind::ReadFile,
+            impetus_core::Action {
+                origin: impetus_core::ActionOrigin::Agent,
+                kind: impetus_core::ActionKind::ReadFile,
                 summary: "Read config file".to_string(),
                 target: Some("config.toml".to_string()),
             },
@@ -200,7 +200,7 @@ mod tests {
         let bar = StatusBar::new();
 
         bar.update_from_event(&make_event(EventPayload::Tool(
-            orbit_core::ToolEvent::Started {
+            impetus_core::ToolEvent::Started {
                 name: "read_file".to_string(),
             },
         )));

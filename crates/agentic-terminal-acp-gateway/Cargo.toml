@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-orbit-core = { path = "../orbit-core" }
+impetus-core = { path = "../impetus-core" }
 agent-client-protocol.workspace = true
 anyhow.workspace = true
 serde.workspace = true

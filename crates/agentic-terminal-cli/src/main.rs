@@ -52,14 +52,14 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Create => {
             let response = client
-                .request(orbit_core::IpcRequest::CreateSession)
+                .request(impetus_core::IpcRequest::CreateSession)
                 .await?;
             match response {
-                orbit_core::IpcResponse::Session { session_id, status } => {
+                impetus_core::IpcResponse::Session { session_id, status } => {
                     println!("Created session: {session_id}");
                     println!("Status: {status:?}");
                 }
-                orbit_core::IpcResponse::Error { message, .. } => {
+                impetus_core::IpcResponse::Error { message, .. } => {
                     bail!("Error creating session: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),
@@ -67,19 +67,19 @@ async fn main() -> Result<()> {
         }
         Commands::Stream { session_id } => {
             let response = client
-                .request(orbit_core::IpcRequest::Stream {
+                .request(impetus_core::IpcRequest::Stream {
                     session_id,
                     after_sequence: 0,
                 })
                 .await?;
             match response {
-                orbit_core::IpcResponse::Events { events, .. } => {
+                impetus_core::IpcResponse::Events { events, .. } => {
                     println!("Events from session {session_id}:");
                     for event in events {
                         println!("  [{}] {:?}", event.sequence, event.payload);
                     }
                 }
-                orbit_core::IpcResponse::Error { message, .. } => {
+                impetus_core::IpcResponse::Error { message, .. } => {
                     bail!("Error streaming: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),
@@ -87,13 +87,13 @@ async fn main() -> Result<()> {
         }
         Commands::Cancel { session_id } => {
             let response = client
-                .request(orbit_core::IpcRequest::Cancel { session_id })
+                .request(impetus_core::IpcRequest::Cancel { session_id })
                 .await?;
             match response {
-                orbit_core::IpcResponse::Status { status, .. } => {
+                impetus_core::IpcResponse::Status { status, .. } => {
                     println!("Session {session_id} cancelled, status: {status:?}");
                 }
-                orbit_core::IpcResponse::Error { message, .. } => {
+                impetus_core::IpcResponse::Error { message, .. } => {
                     bail!("Error cancelling: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),
@@ -101,13 +101,13 @@ async fn main() -> Result<()> {
         }
         Commands::Prompt { session_id, text } => {
             let response = client
-                .request(orbit_core::IpcRequest::Prompt { session_id, text })
+                .request(impetus_core::IpcRequest::Prompt { session_id, text })
                 .await?;
             match response {
-                orbit_core::IpcResponse::Status { status, .. } => {
+                impetus_core::IpcResponse::Status { status, .. } => {
                     println!("Prompt sent to {session_id}, status: {status:?}");
                 }
-                orbit_core::IpcResponse::Error { message, .. } => {
+                impetus_core::IpcResponse::Error { message, .. } => {
                     bail!("Error sending prompt: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),
@@ -115,10 +115,10 @@ async fn main() -> Result<()> {
         }
         Commands::List => {
             let response = client
-                .request(orbit_core::IpcRequest::ListSessions)
+                .request(impetus_core::IpcRequest::ListSessions)
                 .await?;
             match response {
-                orbit_core::IpcResponse::Sessions { sessions } => {
+                impetus_core::IpcResponse::Sessions { sessions } => {
                     if sessions.is_empty() {
                         println!("No sessions found.");
                     } else {
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                orbit_core::IpcResponse::Error { message, .. } => {
+                impetus_core::IpcResponse::Error { message, .. } => {
                     bail!("Error listing sessions: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),

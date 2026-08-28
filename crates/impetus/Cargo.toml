@@ -1,12 +1,12 @@
 [package]
-name = "orbit"
+name = "impetus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-orbit-core = { path = "../orbit-core" }
+impetus-core = { path = "../impetus-core" }
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

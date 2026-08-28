@@ -7,9 +7,9 @@ use std::process::Command;
 
 #[test]
 fn headless_no_gpui_dependency() {
-    // cargo tree для orbit-core не должен содержать gpui
+    // cargo tree для impetus-core не должен содержать gpui
     let output = Command::new("cargo")
-        .args(["tree", "-p", "orbit-core", "--no-dedupe"])
+        .args(["tree", "-p", "impetus-core", "--no-dedupe"])
         .output()
         .expect("cargo tree");
 
@@ -21,13 +21,13 @@ fn headless_no_gpui_dependency() {
         stdout
     );
 
-    println!("✓ No gpui dependency in orbit-core");
+    println!("✓ No gpui dependency in impetus-core");
 }
 
 #[test]
 fn headless_no_metal_dependency() {
     let output = Command::new("cargo")
-        .args(["tree", "-p", "orbit-core", "--no-dedupe"])
+        .args(["tree", "-p", "impetus-core", "--no-dedupe"])
         .output()
         .expect("cargo tree");
 
@@ -39,13 +39,13 @@ fn headless_no_metal_dependency() {
         stdout
     );
 
-    println!("✓ No metal dependency in orbit-core");
+    println!("✓ No metal dependency in impetus-core");
 }
 
 #[test]
 fn headless_no_pty_dependency() {
     let output = Command::new("cargo")
-        .args(["tree", "-p", "orbit-core", "--no-dedupe"])
+        .args(["tree", "-p", "impetus-core", "--no-dedupe"])
         .output()
         .expect("cargo tree");
 
@@ -58,13 +58,13 @@ fn headless_no_pty_dependency() {
         stdout
     );
 
-    println!("✓ No PTY dependency in orbit-core");
+    println!("✓ No PTY dependency in impetus-core");
 }
 
 #[test]
 fn headless_no_ansi_renderer() {
     let output = Command::new("cargo")
-        .args(["tree", "-p", "orbit-core", "--no-dedupe"])
+        .args(["tree", "-p", "impetus-core", "--no-dedupe"])
         .output()
         .expect("cargo tree");
 
@@ -77,14 +77,14 @@ fn headless_no_ansi_renderer() {
         stdout
     );
 
-    println!("✓ No ANSI renderer dependency in orbit-core");
+    println!("✓ No ANSI renderer dependency in impetus-core");
 }
 
 #[test]
 fn headless_allowed_dependencies() {
     // Проверка позитивная: headless может зависеть от SQLite, serde, tokio, UUID и т.п.
     let output = Command::new("cargo")
-        .args(["tree", "-p", "orbit-core", "--depth", "1"])
+        .args(["tree", "-p", "impetus-core", "--depth", "1"])
         .output()
         .expect("cargo tree");
 

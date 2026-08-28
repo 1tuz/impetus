@@ -3,7 +3,7 @@
 //! This module renders typed events as structured blocks with metadata for
 //! syntax highlighting, approval buttons, and attachment references.
 
-use orbit_core::{ApprovalRequest, Event, EventPayload};
+use impetus_core::{ApprovalRequest, Event, EventPayload};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -49,23 +49,23 @@ pub enum Block {
 pub fn render_event_block(event: &Event) -> Option<Block> {
     match &event.payload {
         EventPayload::Approval(approval_event) => match approval_event {
-            orbit_core::ApprovalEvent::Requested { request } => {
+            impetus_core::ApprovalEvent::Requested { request } => {
                 Some(render_approval_block(request))
             }
-            orbit_core::ApprovalEvent::Resolved { .. } => None,
+            impetus_core::ApprovalEvent::Resolved { .. } => None,
         },
         EventPayload::Agent(agent_event) => match agent_event {
-            orbit_core::AgentEvent::Chunk { text, .. } => Some(Block::Output {
+            impetus_core::AgentEvent::Chunk { text, .. } => Some(Block::Output {
                 text: text.clone(),
                 is_final: false,
             }),
-            orbit_core::AgentEvent::Final { text, .. } => Some(Block::Output {
+            impetus_core::AgentEvent::Final { text, .. } => Some(Block::Output {
                 text: text.clone(),
                 is_final: true,
             }),
         },
         EventPayload::Backend(backend_event) => {
-            use orbit_core::BackendEvent;
+            use impetus_core::BackendEvent;
             match backend_event {
                 BackendEvent::ProviderHealthy { profile } => Some(Block::Status {
                     state: "healthy".to_string(),

@@ -1,5 +1,5 @@
 [package]
-name = "orbit-core"
+name = "impetus-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

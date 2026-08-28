@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-orbit-core = { path = "../orbit-core" }
+impetus-core = { path = "../impetus-core" }
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "9949f8b2d27bb1d6dbc1efe90be039634cf1fb6b", default-features = false, features = ["font-kit"] }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "9949f8b2d27bb1d6dbc1efe90be039634cf1fb6b", features = ["font-kit", "runtime_shaders"] }
 tracing.workspace = true

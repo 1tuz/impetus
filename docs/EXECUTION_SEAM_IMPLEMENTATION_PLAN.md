@@ -62,7 +62,7 @@
 
 ```bash
 # 1. Прочитать полностью effects.rs
-cat crates/orbit-core/src/effects.rs
+cat crates/impetus-core/src/effects.rs
 
 # 2. Найти текущую реализацию EffectSeam
 rg "impl EffectSeam" crates/
@@ -80,7 +80,7 @@ rg "ResolveApproval|resolve_approval" crates/
 rg "approval_requests|store.*approval" crates/
 
 # 7. Список всех тестов
-rg "#\[test\]|#\[tokio::test\]" crates/orbit-core/src/ -A 2
+rg "#\[test\]|#\[tokio::test\]" crates/impetus-core/src/ -A 2
 ```
 
 ### Phase 2: Gap Analysis
@@ -264,9 +264,9 @@ impl SqliteEventStore {
 
 ```bash
 # 1. Запустить существующие тесты
-cargo test --package orbit-core approval
-cargo test --package orbit-core stale
-cargo test --package orbit-core sandbox
+cargo test --package impetus-core approval
+cargo test --package impetus-core stale
+cargo test --package impetus-core sandbox
 
 # 2. Добавить недостающие тесты согласно EXECUTION_SEAM_DESIGN.md
 

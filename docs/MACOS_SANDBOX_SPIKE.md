@@ -26,7 +26,7 @@ agent command.
 
 ```zsh
 ./scripts/smoke-macos-sandbox.sh
-cargo test -p orbit-core --test macos_sandbox_spike
+cargo test -p impetus-core --test macos_sandbox_spike
 ```
 
 Rust test выполняется только на macOS; на другой платформе он пустой. На

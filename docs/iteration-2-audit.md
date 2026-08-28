@@ -11,7 +11,7 @@ agentic-terminal-app (GPUI process)
   ├── вызывает PolicyEngine
   └── напрямую запускает GitLab CI backends
 
-orbit-core
+impetus-core
   ├── Event { kind, свободный JSON body }
   ├── AgentRuntime с in-memory approvals и sequence
   ├── PolicyEngine с file/network checks
@@ -36,7 +36,7 @@ Zap / CLI / optional GPUI client
 
 | Feature | Current implementation | Target architecture | Gap | Priority | Risk | Complexity |
 | --- | --- | --- | --- | --- | --- | --- |
-| Разделение `core` / client | `orbit-core` не зависит от GPUI; GPUI app зависит от core | Harness и clients — отдельные процессы/crates | GPUI app всё ещё владеет runtime и SQLite | P0 | высокий | M |
+| Разделение `core` / client | `impetus-core` не зависит от GPUI; GPUI app зависит от core | Harness и clients — отдельные процессы/crates | GPUI app всё ещё владеет runtime и SQLite | P0 | высокий | M |
 | Append-only event log | SQLite WAL, уникальный `(session_id, sequence)`, reopen test | Versioned typed events, replay и schema migration | `body` — свободный JSON; нет event schema version | P0 | высокий | M |
 | Typed lifecycle events | Есть `EventKind` для части lifecycle | Exhaustive payloads для intent/plan/run/tool/approval/agent/notice | `kind` и `body` могут расходиться; нет terminal outcomes | P0 | высокий | M |
 | Projection | Отсутствует | Pure reducer `events -> SessionProjection` | Client читает runtime state напрямую | P0 | высокий | M |
@@ -64,7 +64,7 @@ Zap / CLI / optional GPUI client
 
 ## Уже реализовано и сохраняется
 
-- независимый от GPUI crate `orbit-core`;
+- независимый от GPUI crate `impetus-core`;
 - append-only SQLite WAL store с уникальным sequence и reopen test;
 - явные `origin`, policy decision и базовый approval event;
 - file-scope deny и local-only network deny;

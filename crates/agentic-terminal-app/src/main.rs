@@ -1,4 +1,4 @@
-use orbit_core::{
+use impetus_core::{
     CapabilityRegistry, CiBackend, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend,
     Pipeline, RemoteGitlabBackend,
 };
@@ -189,7 +189,7 @@ impl AgenticTerminalView {
                     let backend = RemoteGitlabBackend;
                     let project = backend.detect(&workspace)?;
                     let pipeline = backend.status(&project)?;
-                    Ok::<_, orbit_core::CiError>((project, pipeline))
+                    Ok::<_, impetus_core::CiError>((project, pipeline))
                 })
                 .await;
             let _ = this.update(cx, |view, cx| match result {
@@ -225,7 +225,7 @@ impl AgenticTerminalView {
             LocalCiEvent::Output(line) => {
                 self.append_ci_log(line.clone());
                 if let Some(pipeline) = &mut self.ci_pipeline {
-                    orbit_core::ci::apply_local_output(pipeline, &line);
+                    impetus_core::ci::apply_local_output(pipeline, &line);
                 }
             }
             LocalCiEvent::Completed {
@@ -236,7 +236,7 @@ impl AgenticTerminalView {
                 let log = self.full_ci_log();
                 if let Some(pipeline) = &mut self.ci_pipeline {
                     pipeline.duration = Some(duration);
-                    orbit_core::ci::finalize_local_run(
+                    impetus_core::ci::finalize_local_run(
                         pipeline, succeeded, exit_code, &log,
                     );
                     self.ci_status = if succeeded {
@@ -336,7 +336,7 @@ impl AgenticTerminalView {
             let _ = this.update(cx, |view, cx| match result {
                 Ok(log) => {
                     if let Some(job) = view.selected_ci_job_mut_at(selected) {
-                        job.error_summary = orbit_core::ci::extract_error_summary(&log);
+                        job.error_summary = impetus_core::ci::extract_error_summary(&log);
                         job.log = Some(log);
                     }
                     view.ci_status = "Selected job log loaded".into();

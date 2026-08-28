@@ -22,7 +22,7 @@ mod osc;
 mod status_bar;
 
 use agentic_terminal_client::{HarnessClient, UnixSocketTransport};
-use orbit_core::{Event, EventPayload, IpcRequest, IpcResponse, RuntimeStatus};
+use impetus_core::{Event, EventPayload, IpcRequest, IpcResponse, RuntimeStatus};
 use anyhow::{Context, Result};
 use blocks::{render_block_text, render_event_block};
 use status_bar::StatusBar;
@@ -87,9 +87,9 @@ async fn stream_session(
                     last_sequence = event.sequence;
 
                     if let EventPayload::Run(
-                        orbit_core::RunEvent::Completed { .. }
-                        | orbit_core::RunEvent::Failed { .. }
-                        | orbit_core::RunEvent::Cancelled { .. },
+                        impetus_core::RunEvent::Completed { .. }
+                        | impetus_core::RunEvent::Failed { .. }
+                        | impetus_core::RunEvent::Cancelled { .. },
                     ) = &event.payload
                     {
                         return Ok(());
@@ -158,7 +158,7 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
         }
         EventPayload::Run(run_event) => {
             render_block("Run", &format!("{:?}", run_event));
-            use orbit_core::RunEvent;
+            use impetus_core::RunEvent;
             match run_event {
                 RunEvent::Started { .. } => osc::send_state("Running", None),
                 RunEvent::Completed { .. } => osc::send_state("Completed", None),
@@ -177,24 +177,24 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
             render_block("Tool", &format!("{:?}", tool));
         }
         EventPayload::Agent(agent) => match agent {
-            orbit_core::AgentEvent::Chunk { text, .. } => {
+            impetus_core::AgentEvent::Chunk { text, .. } => {
                 print!("{}", text);
                 io::stdout().flush().unwrap();
                 osc::send_output_chunk(text);
             }
-            orbit_core::AgentEvent::Final { text, .. } => {
+            impetus_core::AgentEvent::Final { text, .. } => {
                 render_block("Agent [Final]", text);
             }
         },
         EventPayload::Approval(approval) => {
             render_block("Approval", &format!("{:?}", approval));
-            if let orbit_core::ApprovalEvent::Requested { request } = approval {
+            if let impetus_core::ApprovalEvent::Requested { request } = approval {
                 osc::send_approval_request(&request.id.to_string(), &request.action.summary, &[]);
             }
         }
         EventPayload::Backend(backend) => {
             render_block("Backend", &format!("{:?}", backend));
-            use orbit_core::BackendEvent;
+            use impetus_core::BackendEvent;
             match backend {
                 BackendEvent::ProviderUnavailable { reason, .. } => osc::send_error(reason),
                 BackendEvent::KeychainUnavailable { reason } => osc::send_error(reason),

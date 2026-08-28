@@ -11,9 +11,9 @@
 - `README.md` — определён текущий этап v0.2, шаг 1/3 завершён
 - `docs/ROADMAP.md` — подтверждён порядок шагов v0.2
 - `TODO.md` — шаг 2/3 в работе, шаг 1/3 отмечен выполненным
-- `crates/orbit-core/src/lib.rs` — все типы exports
-- `crates/orbit-core/src/policy.rs` — `ActionFingerprint`, тесты
-- `crates/orbit-core/src/approval.rs` — полная структура с fingerprint
+- `crates/impetus-core/src/lib.rs` — все типы exports
+- `crates/impetus-core/src/policy.rs` — `ActionFingerprint`, тесты
+- `crates/impetus-core/src/approval.rs` — полная структура с fingerprint
 
 ✅ **Подтверждено что уже реализовано:**
 - `ActionFingerprint` с SHA256 + domain separation prefix
@@ -63,7 +63,7 @@
 - Fail-closed sandbox check
 - `ApprovalStore` trait
 - Complete unit tests: stale approval, sandbox unavailable, valid flow
-- Готово для интеграции в `crates/orbit-core/src/effects.rs`
+- Готово для интеграции в `crates/impetus-core/src/effects.rs`
 
 ## Блокеры
 
@@ -81,7 +81,7 @@
 1. **Полный audit текущего кода:**
    ```bash
    # Прочитать effects.rs целиком
-   cat crates/orbit-core/src/effects.rs
+   cat crates/impetus-core/src/effects.rs
    
    # Найти все impl EffectSeam
    rg "impl EffectSeam" crates/ -A 10
@@ -99,7 +99,7 @@
    rg "approval_requests|store.*approval" crates/
    
    # Список тестов
-   rg "#\[test\]|#\[tokio::test\]" crates/orbit-core/src/ -A 2
+   rg "#\[test\]|#\[tokio::test\]" crates/impetus-core/src/ -A 2
    ```
 
 2. **Gap analysis:**
@@ -116,11 +116,11 @@
 4. **Testing:**
    ```bash
    # Запустить существующие тесты
-   cargo test --package orbit-core
+   cargo test --package impetus-core
    
    # Добавить недостающие тесты из reference
    # Запустить снова
-   cargo test --package orbit-core
+   cargo test --package impetus-core
    
    # Verification
    task verify
@@ -201,10 +201,10 @@
 - `reference_execution_seam.rs` — готовая реализация
 
 Ключевые файлы для integration:
-- `crates/orbit-core/src/effects.rs` — основной файл
-- `crates/orbit-core/src/ipc.rs` — добавить approval IPC
-- `crates/orbit-core/src/storage.rs` — добавить approval storage
-- `crates/orbit-core/src/events.rs` — добавить ApprovalEvent
+- `crates/impetus-core/src/effects.rs` — основной файл
+- `crates/impetus-core/src/ipc.rs` — добавить approval IPC
+- `crates/impetus-core/src/storage.rs` — добавить approval storage
+- `crates/impetus-core/src/events.rs` — добавить ApprovalEvent
 - `crates/orbit/src/main.rs` — IPC handler integration
 
 ## Выводы

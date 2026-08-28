@@ -33,7 +33,7 @@ Typed request + explicit origin
 ## Неподвижные решения
 
 - Rust `edition = 2024`, pinned toolchain.
-- `orbit-core` и будущий headless runtime не зависят от GPUI, Metal, PTY renderer или Zap internals.
+- `impetus-core` и будущий headless runtime не зависят от GPUI, Metal, PTY renderer или Zap internals.
 - SQLite WAL — durable event source; Keychain — secret store. В событиях/log/export/tests только opaque references.
 - Один управляемый async runtime; bounded channels и documented overflow behavior.
 - Provider adapter отвечает за inference/stream/cancel, но не получает fs/process/network permissions.
@@ -129,7 +129,7 @@ SSH profiles/known-host, controlled process/PTY, tmux и SFTP. Presentation мо
 
 ```zsh
 cargo fmt --all -- --check
-cargo test -p orbit-core
+cargo test -p impetus-core
 cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```

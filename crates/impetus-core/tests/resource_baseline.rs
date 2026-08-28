@@ -3,7 +3,7 @@
 //! Измеряет RSS, queue size, artifact bytes, restart/cancel latency,
 //! context/token accounting для headless harness без нагрузки.
 
-use orbit_core::{
+use impetus_core::{
     Action, ActionKind, ActionOrigin, AgentRuntime, EventStore, PolicyEngine, SandboxScope,
     storage::MemoryEventStore,
 };
@@ -67,7 +67,7 @@ fn baseline_queue_size() {
 
 #[test]
 fn baseline_artifact_bytes() {
-    use orbit_core::ArtifactStore;
+    use impetus_core::ArtifactStore;
 
     let artifacts = ArtifactStore::open("target/test-artifacts").expect("open");
 
