@@ -260,7 +260,10 @@ impl AgentRuntime {
 
     /// A2 Phase 2: Retrieve a deferred effect for approval continuation.
     /// Returns None if no effect was stored for this approval.
-    pub fn take_deferred_effect(&self, approval_id: Uuid) -> Result<Option<DeferredEffect>, RuntimeError> {
+    pub fn take_deferred_effect(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<Option<DeferredEffect>, RuntimeError> {
         if let Ok(mut effects) = self.deferred_effects.lock() {
             Ok(effects.remove(&approval_id))
         } else {

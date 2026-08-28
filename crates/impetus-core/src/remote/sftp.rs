@@ -253,7 +253,7 @@ impl SftpSessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PolicyEngine, Sandbox, SandboxScope, SSHKeyReference};
+    use crate::{PolicyEngine, SSHKeyReference, Sandbox, SandboxScope};
 
     fn test_profile() -> SSHProfile {
         SSHProfile {

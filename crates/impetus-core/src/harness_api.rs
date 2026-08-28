@@ -278,12 +278,7 @@ fn handle_request(
             let origin = crate::ActionOrigin::User;
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 tools
-                    .run_with_seam(
-                        tool,
-                        origin,
-                        &artifact_store,
-                        &effect_seam,
-                    )
+                    .run_with_seam(tool, origin, &artifact_store, &effect_seam)
                     .map_err(|e| RuntimeError::Denied(e.to_string()))
                     .and_then(|outcome| {
                         crate::tools::record_tool_outcome(&runtime, &outcome)?;
