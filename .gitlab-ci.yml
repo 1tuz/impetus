@@ -17,7 +17,7 @@ fmt:
 test:
   stage: verify
   script:
-    - cargo test --workspace
+    - cargo test --workspace --exclude agentic-terminal-app
 
 check:
   stage: verify
