@@ -11,7 +11,9 @@
 | v0.2 | Готов | standalone headless harness с real provider и безопасным execution path |
 | v0.3 | Готов | structured clients и external agents |
 | v0.4 | Готов | long-session context, compaction, immutable fork/checkpoint |
-| v0.5–v0.7 | Запланировано | capabilities, remote profiles, MVP UI |
+| v0.5 | Готов | local effects и capability SDK |
+| v0.6 | В работе | remote profiles (SSH, PTY, tmux, SFTP) |
+| v0.7 | Запланировано | MVP UI |
 
 > Native-window smoke для GPUI на чистом Mac остаётся открытым техническим
 > хвостом v0.1. Он не блокирует текущую работу.
@@ -75,13 +77,11 @@
 - [x] BudgetChecker enforcement (turn/token/wall time limits)
 - [x] Unit-тесты budget logic
 
-## Текущий релиз: v0.5 — Local effects и capability SDK ✓
+### v0.5 — Local effects и capability SDK ✓
 
-**Цель (из ROADMAP):** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
+**Цель:** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
 
 **Gate:** exact approval, sandbox/reviewer fail closed, policy replay. ✓
-
-### Задачи v0.5
 
 - [x] Capability SDK для безопасных local effects
 - [x] Exact approval механизм с версионированием действий
@@ -91,15 +91,27 @@
 
 **v0.5 завершён:** mutating effect требует exact approval или explicit Allow; sandbox denial блокирует unsafe capability; policy replay даёт identical decision для исторического события.
 
-## Следующий релиз: v0.6 — Remote profiles
+## Текущий релиз: v0.6 — Remote profiles
+
+**Цель (из ROADMAP):** SSH profiles, controlled process/PTY execution, tmux, SFTP.
 
 **Gate:** host-key/target/file approval переживают restart.
 
-- [ ] SSH profiles с host-key verification
+### Задачи v0.6
+
+- [x] SSH profiles с host-key verification
+  - [x] SSHProfile struct с host, user, port, host_key_fingerprint
+  - [x] Host-key verification перед connection (fail если mismatch)
+  - [x] Keychain integration для SSH private keys (reference, не raw key)
+  - [x] PolicyCheck для SSH connection (origin, target host, user)
+  - [x] Durable SSH approval в SQLite (переживает restart)
+  - [x] NormalizedEffect::ssh_connect() + NetworkConnect capability расширена на SshConnect
 - [ ] Controlled process/PTY execution
 - [ ] tmux integration для persistent remote sessions
 - [ ] SFTP для remote file access
-- [ ] Durable approval для remote targets
+- [ ] Durable approval для remote targets (частично: SSH approval готов)
+
+**Статус:** SSH profiles (задача 1) готовы. Остаются PTY, tmux, SFTP.
 
 ### v0.7 — MVP финализация
 

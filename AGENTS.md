@@ -6,7 +6,7 @@
 - репо: `.codewhale/constitution.json`
 - **каждый `bash`:** только через `rtk …` (`rtk cargo`, `rtk git`, `rtk rg`, …)
 
-**Субагенты (CodeWhale):** только по явному запросу или при явной выгоде по токенам/времени; cap ≤5. Если пишешь параллельно — `worktree: true` + узкий `write_roots`, не `roots: ["."]`.
+**Субагенты (CodeWhale):** только по явному запросу или явной выгоде; cap ≤5, **не более 2 builder одновременно**. На spawn сразу: `worktree: true`, полный `write_roots` (если трогаешь `Cargo.toml`/tests — включи корень crate, не только `src/…`), один узкий slice на child. **`task verify` — один раз parent'ом**, не в каждом child. При `wall_time_budget` / API error — checkpoint + re-dispatch одного worker, не пачка из 5.
 
 Здесь только продуктовые границы и проверка этого репо.
 

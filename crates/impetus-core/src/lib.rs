@@ -14,6 +14,7 @@ pub mod plugins;
 pub mod policy;
 pub mod projection;
 pub mod provider;
+pub mod remote;
 pub mod runtime;
 pub mod storage;
 pub mod supervisor;
@@ -47,6 +48,11 @@ pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use provider::{
     CredentialResolver, CredentialStrategy, NoCredentialResolver, OpenAiCompatibleProvider,
     ProviderError, ProviderHealth, ProviderProfile, RetryBudget,
+};
+pub use remote::{
+    HostKeyFingerprint, HostKeyVerificationError, SSHApproval, SSHApprovalStore,
+    SSHApprovalStoreError, SSHConnectionError, SSHConnectionRequest, SSHKeyReference, SSHProfile,
+    SqliteSSHApprovalStore,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};

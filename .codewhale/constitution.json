@@ -15,7 +15,7 @@
     "Token hygiene: known layout — go straight to crates/agentic-terminal-core/src/{policy,effects,approval,lib}.rs (and siblings named by TODO/ROADMAP). No repo tourism.",
     "Token hygiene: stay within max_tool_calls; orient via TODO/roadmap + target file, then only reads needed for the step. No find/tree/ls -R tourism.",
     "Token hygiene: never re-read a file already in this session (including compacted snippets) unless it could have changed.",
-    "Token hygiene: subagents off unless the user explicitly asked, or clear token+time win — cap ≤5. Parallel writers: worktree:true + narrow write_roots; never multiple builders on roots: [\".\"].",
+    "Token hygiene: subagents off unless the user explicitly asked, or clear token+time win — cap ≤5, max 2 concurrent builders. Spawn: worktree:true; write_roots upfront (include crate root if Cargo.toml/tests change); one bounded slice per child; parent runs task verify once — not each child.",
     "Token hygiene: cargo test/logs — rg, one test name, or head only; never dump full output into history.",
     "Token hygiene: if context is bloated or tool says not executed — propose /compact or a new session; do not invent code blind.",
     "Orient first: before code, read only TODO.md then the single active slice of docs/ROADMAP.md. Then the target .rs. Skip README/ARCHITECTURE/GUI_UX/ACP_AND_AUTH/root Cargo.toml unless the current step truly needs them. One ROADMAP stage only.",
@@ -52,6 +52,7 @@
     "new dependency or abstraction was not explicitly requested (YAGNI)",
     "agent is about to explore the tree with find/tree/ls -R instead of opening a known path",
     "context is swollen and /compact or a fresh session is the honest next step",
-    "agent ran shell without rtk prefix"
+    "agent is about to spawn more than 2 concurrent builder subagents",
+    "subagent write_roots omit crate root but task may touch Cargo.toml or tests",
   ]
 }

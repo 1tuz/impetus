@@ -108,6 +108,24 @@ impl NormalizedEffect {
             },
         }
     }
+
+    pub fn ssh_connect(
+        origin: ActionOrigin,
+        summary: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        Self {
+            origin,
+            capability: EffectCapability::NetworkConnect,
+            version: CapabilityVersion::V1,
+            action: Action {
+                origin,
+                kind: ActionKind::SshConnect,
+                summary: summary.into(),
+                target: Some(target.into()),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,8 +235,14 @@ impl Sandbox {
                 // Process spawn allowed within workspace scope
             }
             EffectCapability::NetworkConnect => {
-                if effect.action.kind != ActionKind::NetworkConnect {
-                    return Err("NetworkConnect capability requires NetworkConnect action".into());
+                if effect.action.kind != ActionKind::NetworkConnect
+                    && effect.action.kind != ActionKind::SshConnect
+                    && effect.action.kind != ActionKind::SftpTransfer
+                {
+                    return Err(
+                        "NetworkConnect capability requires NetworkConnect, SshConnect, or SftpTransfer action"
+                            .into(),
+                    );
                 }
                 if !scope.allow_network {
                     return Err("network is disabled in this sandbox scope".into());

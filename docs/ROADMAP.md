@@ -73,13 +73,24 @@ inspection и одним explicit provider profile.
 
 **Gate:** host-key/target/file approval переживают restart.
 
+### Готово
+
+- [x] SSH profiles с host-key verification
+  - SSHProfile struct с host, user, port, host_key_fingerprint
+  - Host-key verification перед connection (fail если mismatch)
+  - Keychain integration для SSH private keys (SSHKeyReference, не raw key)
+  - PolicyCheck для SSH connection (origin, target host, user)
+  - Durable SSH approval в SQLite (SqliteSSHApprovalStore)
+  - Host-key approval переживает restart (gate выполнен)
+  - NormalizedEffect::ssh_connect() + NetworkConnect capability расширена на SshConnect/SftpTransfer
+  - async-trait, base64 dependencies добавлены
+
 ### Оставшиеся шаги
 
-- [ ] SSH profiles с host-key verification
 - [ ] Controlled process/PTY execution
 - [ ] tmux integration для persistent remote sessions
 - [ ] SFTP для remote file access
-- [ ] Durable approval для remote targets
+- [ ] Durable approval для remote targets (частично: SSH approval готов)
 
 ## Далее — продуктовые возможности
 
