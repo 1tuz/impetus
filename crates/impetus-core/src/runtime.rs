@@ -82,6 +82,20 @@ impl AgentRuntime {
         })
     }
 
+    pub fn fork(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        source_session_id: Uuid,
+        up_to_sequence: u64,
+    ) -> Result<Self, RuntimeError> {
+        let new_session_id = store.fork_session(source_session_id, up_to_sequence)?;
+        Ok(Self {
+            session_id: new_session_id,
+            store,
+            policy,
+        })
+    }
+
     pub fn session_id(&self) -> Uuid {
         self.session_id
     }
@@ -585,5 +599,45 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(request.intent_revision, 2);
         assert_eq!(request.action_fingerprint, request.action.fingerprint());
+    }
+
+    #[test]
+    fn runtime_fork_creates_independent_session() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+
+        let source_runtime = AgentRuntime::new(store.clone(), policy.clone());
+        let source_id = source_runtime.session_id();
+
+        source_runtime
+            .submit_intent("first intent")
+            .expect("submit intent 1");
+        source_runtime
+            .submit_intent("second intent")
+            .expect("submit intent 2");
+        source_runtime
+            .submit_intent("third intent")
+            .expect("submit intent 3");
+
+        // Fork up to sequence 2 (Created + first intent)
+        let forked_runtime =
+            AgentRuntime::fork(store.clone(), policy.clone(), source_id, 2).expect("fork runtime");
+        let forked_id = forked_runtime.session_id();
+
+        assert_ne!(source_id, forked_id);
+
+        let forked_events = forked_runtime.events().expect("forked events");
+        assert_eq!(forked_events.len(), 2);
+
+        // Forked session can continue independently
+        forked_runtime
+            .submit_intent("forked intent")
+            .expect("submit to fork");
+        let forked_events_after = forked_runtime.events().expect("forked events after");
+        assert_eq!(forked_events_after.len(), 3);
+
+        // Source session unchanged
+        let source_events = source_runtime.events().expect("source events");
+        assert_eq!(source_events.len(), 4);
     }
 }

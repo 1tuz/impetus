@@ -39,6 +39,14 @@ pub trait EventStore: Send + Sync {
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError>;
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError>;
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError>;
+
+    /// Fork session up to given sequence number (inclusive).
+    /// Creates new session with events copied from source up to checkpoint.
+    fn fork_session(
+        &self,
+        source_session_id: Uuid,
+        up_to_sequence: u64,
+    ) -> Result<Uuid, StoreError>;
 }
 
 #[derive(Default)]
@@ -112,6 +120,45 @@ impl EventStore for MemoryEventStore {
                 },
             )
             .collect())
+    }
+
+    fn fork_session(
+        &self,
+        source_session_id: Uuid,
+        up_to_sequence: u64,
+    ) -> Result<Uuid, StoreError> {
+        let mut events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+
+        // Get source events up to checkpoint
+        let source_events: Vec<Event> = events
+            .iter()
+            .filter(|e| e.session_id == source_session_id && e.sequence <= up_to_sequence)
+            .cloned()
+            .collect();
+
+        if source_events.is_empty() {
+            return Err(StoreError::MissingSession(source_session_id));
+        }
+
+        // Create new session
+        let new_session_id = Uuid::new_v4();
+        let mut new_sequence = 0u64;
+
+        // Copy events with new session_id and renumbered sequences
+        for source_event in source_events {
+            new_sequence += 1;
+            let new_event = Event::with_metadata(
+                source_event.schema_version,
+                Uuid::new_v4(),
+                new_session_id,
+                new_sequence,
+                source_event.at_unix_ms,
+                source_event.payload.clone(),
+            );
+            events.push(new_event);
+        }
+
+        Ok(new_session_id)
     }
 }
 
@@ -239,6 +286,74 @@ impl EventStore for SqliteEventStore {
             })
             .collect()
     }
+
+    fn fork_session(
+        &self,
+        source_session_id: Uuid,
+        up_to_sequence: u64,
+    ) -> Result<Uuid, StoreError> {
+        let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Get source events up to checkpoint
+        let source_events: Result<Vec<Event>, StoreError> = {
+            let mut statement = transaction.prepare(
+                "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
+                 FROM events WHERE session_id = ?1 AND sequence <= ?2 ORDER BY sequence"
+            )?;
+            statement
+                .query_map(
+                    params![source_session_id.to_string(), up_to_sequence],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, Option<u16>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                        ))
+                    },
+                )?
+                .map(|row| row.map_err(StoreError::from).and_then(decode_event))
+                .collect()
+        };
+        let source_events = source_events?;
+
+        if source_events.is_empty() {
+            return Err(StoreError::MissingSession(source_session_id));
+        }
+
+        // Create new session
+        let new_session_id = Uuid::new_v4();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_millis() as u64;
+
+        transaction.execute(
+            "INSERT INTO sessions (id, created_at_unix_ms, updated_at_unix_ms) VALUES (?1, ?2, ?2)",
+            params![new_session_id.to_string(), now],
+        )?;
+
+        // Copy events with new session_id and renumbered sequences
+        for (new_sequence, source_event) in source_events.iter().enumerate() {
+            let new_event = Event::with_metadata(
+                source_event.schema_version,
+                Uuid::new_v4(),
+                new_session_id,
+                (new_sequence as u64) + 1,
+                source_event.at_unix_ms,
+                source_event.payload.clone(),
+            );
+            insert_event(&transaction, &new_event)?;
+        }
+
+        transaction.commit()?;
+        Ok(new_session_id)
+    }
 }
 
 fn insert_event(transaction: &rusqlite::Transaction<'_>, event: &Event) -> Result<(), StoreError> {
@@ -340,7 +455,7 @@ fn decode_event(row: StoredRow) -> Result<Event, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventPayload, NoticeEvent};
+    use crate::{EventPayload, IntentEvent, NoticeEvent, SessionEvent};
 
     #[test]
     fn sqlite_events_survive_reopen() {
@@ -433,5 +548,155 @@ mod tests {
             Err(StoreError::MalformedPayload { event_id: actual, .. }) if actual == event_id
         ));
         std::fs::remove_dir_all(test_root).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn memory_store_fork_creates_independent_session() {
+        let store = MemoryEventStore::default();
+        let source_id = store.create_session().expect("create source session");
+
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step1".into(),
+                }),
+            )
+            .expect("append event 1");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step2".into(),
+                }),
+            )
+            .expect("append event 2");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step3".into(),
+                }),
+            )
+            .expect("append event 3");
+
+        let forked_id = store
+            .fork_session(source_id, 2)
+            .expect("fork up to sequence 2");
+        assert_ne!(source_id, forked_id);
+
+        let forked_events = store.list(forked_id).expect("list forked events");
+        assert_eq!(forked_events.len(), 2);
+        assert!(matches!(
+            &forked_events[0].payload,
+            EventPayload::Session(SessionEvent::Created)
+        ));
+        assert!(
+            matches!(&forked_events[1].payload, EventPayload::Intent(intent) if intent.text == "step1")
+        );
+
+        // Source session unchanged
+        let source_events = store.list(source_id).expect("list source events");
+        assert_eq!(source_events.len(), 4);
+    }
+
+    #[test]
+    fn sqlite_store_fork_creates_independent_session() {
+        let test_root =
+            std::env::temp_dir().join(format!("agentic-terminal-fork-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&test_root).expect("create isolated test directory");
+        let database = test_root.join("events.sqlite3");
+        let store = SqliteEventStore::open(&database).expect("open sqlite event store");
+
+        let source_id = store.create_session().expect("create source session");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step1".into(),
+                }),
+            )
+            .expect("append event 1");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step2".into(),
+                }),
+            )
+            .expect("append event 2");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step3".into(),
+                }),
+            )
+            .expect("append event 3");
+
+        let forked_id = store
+            .fork_session(source_id, 2)
+            .expect("fork up to sequence 2");
+        assert_ne!(source_id, forked_id);
+
+        let forked_events = store.list(forked_id).expect("list forked events");
+        assert_eq!(forked_events.len(), 2);
+        assert!(matches!(
+            &forked_events[0].payload,
+            EventPayload::Session(SessionEvent::Created)
+        ));
+        assert!(
+            matches!(&forked_events[1].payload, EventPayload::Intent(intent) if intent.text == "step1")
+        );
+
+        // Forked session appears in session list
+        let sessions = store.list_sessions().expect("list sessions");
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().any(|s| s.id == forked_id));
+
+        std::fs::remove_dir_all(test_root).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn fork_nonexistent_session_returns_error() {
+        let store = MemoryEventStore::default();
+        let nonexistent = Uuid::new_v4();
+        assert!(matches!(
+            store.fork_session(nonexistent, 1),
+            Err(StoreError::MissingSession(id)) if id == nonexistent
+        ));
+    }
+
+    #[test]
+    fn fork_bounded_memory_does_not_copy_full_history() {
+        let store = MemoryEventStore::default();
+        let source_id = store.create_session().expect("create source session");
+
+        // Simulate large history
+        for i in 1..=100 {
+            store
+                .append_next(
+                    source_id,
+                    EventPayload::Intent(IntentEvent {
+                        text: format!("event{}", i),
+                    }),
+                )
+                .expect("append event");
+        }
+
+        let source_events = store.list(source_id).expect("list source");
+        assert_eq!(source_events.len(), 101); // Created + 100 intents
+
+        // Fork only first 10 events
+        let forked_id = store
+            .fork_session(source_id, 10)
+            .expect("fork with bounded history");
+        let forked_events = store.list(forked_id).expect("list forked");
+
+        // Forked session has only 10 events, not 101
+        assert_eq!(forked_events.len(), 10);
+        assert!(
+            matches!(&forked_events[9].payload, EventPayload::Intent(intent) if intent.text == "event9")
+        );
     }
 }

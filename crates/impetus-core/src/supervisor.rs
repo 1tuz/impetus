@@ -1,4 +1,7 @@
-use crate::{AgentRuntime, BudgetChecker, BudgetConfig, RunEvent, RuntimeError, RuntimeStatus};
+use crate::{
+    AgentRuntime, BudgetChecker, BudgetConfig, BudgetEvent, EventPayload, RunEvent, RuntimeError,
+    RuntimeStatus,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -83,6 +86,44 @@ impl SessionSupervisor {
     pub fn check_budget_before_turn(&self, request_tokens: u64) -> Result<(), crate::BudgetError> {
         if let Some(checker) = &self.budget_checker {
             checker.check_all(request_tokens)?;
+
+            let state = checker.state();
+            let config = checker.config();
+
+            // Check if compaction is needed and emit event
+            if let Err(crate::BudgetError::CompactionRequired { threshold, used }) =
+                checker.check_compaction()
+            {
+                let _ = self.runtime.record_event(EventPayload::Budget(
+                    BudgetEvent::CompactionRequired { threshold, used },
+                ));
+            }
+
+            // Warn when approaching turn limit (90% threshold)
+            if let Some(max_turns) = config.max_turns {
+                let threshold = (max_turns as f64 * 0.9) as u32;
+                if state.turns_used >= threshold && state.turns_used < max_turns {
+                    let _ = self.runtime.record_event(EventPayload::Budget(
+                        BudgetEvent::TurnLimitApproaching {
+                            limit: max_turns,
+                            used: state.turns_used,
+                        },
+                    ));
+                }
+            }
+
+            // Warn when approaching token limit (90% threshold)
+            if let Some(max_tokens) = config.max_tokens {
+                let threshold = (max_tokens as f64 * 0.9) as u64;
+                if state.tokens_used >= threshold && state.tokens_used < max_tokens {
+                    let _ = self.runtime.record_event(EventPayload::Budget(
+                        BudgetEvent::TokenLimitApproaching {
+                            limit: max_tokens,
+                            used: state.tokens_used,
+                        },
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -90,6 +131,36 @@ impl SessionSupervisor {
     pub fn record_turn(&mut self, tokens_used: u64) {
         if let Some(checker) = &mut self.budget_checker {
             checker.record_turn(tokens_used);
+
+            let state = checker.state();
+            let context_used_percent = if let Some(limit) = checker.config().context_limit {
+                state.context_used_percent(limit)
+            } else {
+                0
+            };
+
+            let _ = self
+                .runtime
+                .record_event(EventPayload::Budget(BudgetEvent::Updated {
+                    turns_used: state.turns_used,
+                    tokens_used: state.tokens_used,
+                    compaction_count: state.compaction_count,
+                    context_used_percent,
+                }));
+        }
+    }
+
+    pub fn record_compaction(&mut self, compacted_to: u64) {
+        if let Some(checker) = &mut self.budget_checker {
+            checker.record_compaction(compacted_to);
+
+            let state = checker.state();
+            let _ =
+                self.runtime
+                    .record_event(EventPayload::Budget(BudgetEvent::CompactionCompleted {
+                        compacted_to,
+                        compaction_count: state.compaction_count,
+                    }));
         }
     }
 

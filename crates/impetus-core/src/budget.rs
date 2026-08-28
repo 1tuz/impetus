@@ -172,6 +172,10 @@ impl BudgetChecker {
         &self.state
     }
 
+    pub fn config(&self) -> &BudgetConfig {
+        &self.config
+    }
+
     pub fn state_mut(&mut self) -> &mut BudgetState {
         &mut self.state
     }

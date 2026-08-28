@@ -9,59 +9,71 @@
 | Версия | Состояние | Смысл |
 | --- | --- | --- |
 | v0.1 | Фундамент реализован | core, durable events/SQLite, policy/approvals, mock runtime и GPUI reference preview |
-| v0.2 | В работе | standalone headless harness с real provider и безопасным execution path |
-| v0.3–v0.7 | Запланировано | следующие продуктовые версии; к ним не переходить раньше v0.2 gates |
+| v0.2 | Готов | standalone headless harness с real provider и безопасным execution path |
+| v0.3 | Готов | structured clients и external agents |
+| v0.4 | Готов | long-session context, compaction, immutable fork/checkpoint |
+| v0.5 | В работе | local effects и capability SDK |
+| v0.6–v0.7 | Запланировано | remote profiles, MVP UI |
 
 Native-window smoke для optional GPUI client остаётся незакрытым хвостом v0.1.
-Это не причина приостанавливать v0.2.
+Это не причина приостанавливать дальнейшую работу.
 
-## Текущий релиз: v0.2 — standalone harness
+## Завершённые релизы
+
+### v0.2 — standalone harness ✓
 
 **Цель:** headless local-first harness с durable sessions, read-only repo
-inspection и одним explicit provider profile. Zap/Terminal.app запускают CLI в
-обычной tab; GPUI остаётся optional reference client.
+inspection и одним explicit provider profile.
 
-**Уже подтверждено:** typed event log/replay, SQLite WAL, policy/approval,
-supervisor с mock restart/cancel, Unix socket, CLI, read-only tools/artifacts,
-`HarnessClient` с in-memory/Unix transports и sequence-based event subscription.
+**Готово:**
+- Real provider integration (OpenAI-compatible streaming)
+- Execution seam: Policy → Sandbox → Capability → Execution
+- Measured limits + resource baselines
+- Session survives restart без дубликатов
+- Secret redaction (не попадают в SQLite/logs)
+
+### v0.3 — structured clients и external agents ✓
+
+**Готово:**
+- IPC extension: typed approvals, diffs, attachments, backend states
+- Zap integration baseline (CLI в обычной Zap tab)
+- ACP gateway: manual executable profile, mock agent
+- Auth Center: Keychain reference, system-browser OAuth, local no-secret
+
+### v0.4 — long-session context ✓
+
+**Цель:** long-session context, compaction, immutable fork/checkpoint.
+
+**Gate:** restart/fork даёт deterministic projection и bounded memory. ✓
+
+**Готово:**
+- CompactionPolicy + auto-compaction на token threshold
+- Budget integration (SessionSupervisor + IPC events)
+- Immutable fork/checkpoint механизм
+- Deterministic projection после restart
+- Bounded memory tests
+
+## Текущий релиз: v0.5 — local effects и capability SDK
+
+**Цель:** безопасные local effects с exact approval, fail-closed sandbox и policy replay.
+
+**Gate:** exact approval, sandbox/reviewer fail closed, policy replay.
 
 ### Оставшиеся шаги — строго по порядку
 
-1. **Provider boundary.** Один OpenAI-compatible streaming adapter;
-   explicit local/no-secret и Keychain-reference profiles; cancellation, retry
-   budget, health state и redaction tests. Поддерживаемые endpoints выбираются
-   profile, а не догадкой.
-2. **Execution seam.** `NormalizedEffect → Policy → Allow | NeedsApproval |
-   Deny → Sandbox → Capability → Execution`; никаких unrestricted effects без
-   macOS sandbox proof. [Seatbelt spike](MACOS_SANDBOX_SPIKE.md) подтверждает
-   механизм, но не включает mutating capabilities.
-3. **Measured limits.** Baselines для RSS, queue, artifact/output bytes,
-   restart/cancel latency и context/token accounting. Отдельно доказать, что
-   headless graph не содержит GPUI, Metal, PTY и ANSI renderer.
+1. **Capability SDK.** Типизированные capabilities для local effects;
+   версионирование действий для exact approval; capability не может быть выдан
+   без explicit approval или Allow policy decision.
+2. **Sandbox fail-closed.** macOS sandbox enforcement для mutating effects;
+   reviewer не может пропустить unsafe capability; тесты подтверждают что
+   unrestricted effect вызывает sandbox denial.
+3. **Policy replay.** Versioned policy rules воспроизводятся для аудита;
+   изменение policy не меняет outcome прошлых approval; compliance export
+   включает policy snapshot.
 
-**v0.2 готово, когда:** session переживает client/provider restart без
-дубликатов; repo question имеет evidence-backed read-only answer; cancel
-ограничен по времени; secret отсутствует в SQLite/export/log; headless runtime
-не зависит от GPUI/terminal renderer.
-
-## Потом — v0.3: structured clients и external agents
-
-1. IPC extension: typed approvals, diffs, attachment refs, backend/auth states
-   и negotiated `Incompatible`.
-2. Zap integration path: headless CLI baseline работает в обычной Zap tab;
-   structured native integration через IPC — либо PR в Zap для подключения
-   к нашему harness daemon, либо Zap использует наш harness как Phase 1 backend
-   (их roadmap = то что мы строим).
-3. ACP gateway: manual executable profile, mock agent
-   initialize/session/stream/cancel/permission/exit, agent-owned login.
-4. Auth Center contract: Keychain reference, system-browser OAuth and local
-   no-secret profiles. OAuth URL открывается только действием пользователя.
-
-**Zap roadmap Phase 1 = наш harness.** Они планируют построить standalone agent
-service с JSON-RPC protocol — мы уже это строим.
-
-**Не строить TUI или terminal emulator в этом этапе.** Они возможны лишь после
-Zap decision и зафиксированного неудовлетворённого requirement.
+**v0.5 готово, когда:** mutating effect требует exact approval или explicit
+Allow; sandbox denial блокирует unsafe capability; policy replay даёт
+identical decision для исторического события.
 
 ## Далее — продуктовые возможности
 
