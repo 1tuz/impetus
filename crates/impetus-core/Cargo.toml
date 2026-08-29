@@ -22,6 +22,7 @@ uuid.workspace = true
 rusqlite = { version = "0.37.0", features = ["bundled", "uuid", "serde_json"] }
 async-trait = "0.1.92"
 base64 = "0.23.1"
+regex = "1.11.1"
 
 [dev-dependencies]
 tempfile = "3.15"

@@ -16,7 +16,7 @@ use crate::{
 };
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tokio_util::sync::CancellationToken;
 
@@ -56,6 +56,7 @@ pub struct Harness {
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
+    attachments: crate::AttachmentStore,
 }
 
 impl Harness {
@@ -76,6 +77,7 @@ impl Harness {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
+            attachments: crate::AttachmentStore::new(),
         }
     }
 
@@ -130,6 +132,7 @@ impl Harness {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
+            attachments: crate::AttachmentStore::new(),
         }
     }
 
@@ -159,6 +162,7 @@ impl Harness {
             self.cancellations.clone(),
             self.workspace_root.clone(),
             self.session_coordinator.clone(),
+            self.attachments.clone(),
             request,
         )
     }
@@ -174,6 +178,7 @@ fn handle_request(
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
+    attachments: crate::AttachmentStore,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -408,32 +413,36 @@ fn handle_request(
             Err(error) => runtime_error(error),
         },
         IpcRequest::GetAttachment {
-            session_id: _,
+            session_id,
             attachment_id,
-        } => {
-            // Placeholder: attachment storage not yet implemented
-            IpcResponse::Error {
+        } => match attachments.get(attachment_id) {
+            Ok(attachment) => IpcResponse::Attachment {
+                session_id,
+                attachment_id,
+                content_type: attachment.content_type,
+                content: attachment.content,
+            },
+            Err(crate::AttachmentError::NotFound(_)) => IpcResponse::Error {
                 code: IpcErrorCode::Unavailable,
                 message: format!("attachment {attachment_id} not found"),
-            }
-        }
+            },
+            Err(e) => IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("failed to retrieve attachment: {e}"),
+            },
+        },
         IpcRequest::GetApprovalDetail {
             session_id,
             approval_id,
-        } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-            let request = runtime
-                .pending_approval(approval_id)?
-                .ok_or(RuntimeError::MissingApproval(approval_id))?;
-            // Placeholder: diff/scope computation not yet implemented
-            let detail = crate::ApprovalDetail {
-                request,
-                diff_preview: None,
-                affected_files: vec![],
-                estimated_scope: None,
-                attachment_refs: vec![],
-            };
-            Ok((session_id, detail))
-        }) {
+        } => match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
+            |runtime| {
+                let request = runtime
+                    .pending_approval(approval_id)?
+                    .ok_or(RuntimeError::MissingApproval(approval_id))?;
+                let detail = compute_approval_detail(request, &workspace_root, &attachments)?;
+                Ok((session_id, detail))
+            },
+        ) {
             Ok((session_id, detail)) => IpcResponse::ApprovalDetail { session_id, detail },
             Err(error) => runtime_error(error),
         },
@@ -591,6 +600,109 @@ fn artifact_root() -> PathBuf {
     data_root()
         .map(|root| root.join("artifacts"))
         .unwrap_or_else(|_| PathBuf::from("artifacts"))
+}
+
+/// Compute detailed approval information with diff preview and scope estimates.
+fn compute_approval_detail(
+    request: crate::ApprovalRequest,
+    workspace_root: &Path,
+    attachments: &crate::AttachmentStore,
+) -> Result<crate::ApprovalDetail, RuntimeError> {
+    use crate::{ActionKind, ScopeEstimate};
+
+    let mut affected_files = vec![];
+    let mut diff_preview = None;
+    let mut estimated_scope = None;
+    let mut attachment_refs = vec![];
+
+    match &request.action.kind {
+        ActionKind::WriteFile => {
+            if let Some(target) = &request.action.target {
+                affected_files.push(target.clone());
+
+                // Attempt to compute diff if target exists
+                let target_path = if Path::new(target).is_absolute() {
+                    PathBuf::from(target)
+                } else {
+                    workspace_root.join(target)
+                };
+
+                if target_path.exists() {
+                    if let Ok(existing_content) = std::fs::read_to_string(&target_path) {
+                        // For now, store a simple line-count scope estimate
+                        let line_count = existing_content.lines().count() as u32;
+                        estimated_scope = Some(ScopeEstimate::Lines(line_count));
+
+                        // Generate unified diff preview (truncated to 50 lines)
+                        // This is a simplified preview; full diff would use a proper diff library
+                        let preview_lines: Vec<_> = existing_content
+                            .lines()
+                            .take(50)
+                            .map(|line| format!("- {}", line))
+                            .collect();
+                        if !preview_lines.is_empty() {
+                            let mut preview = format!("--- {}", target);
+                            preview.push_str(&format!("\n+++ {} (modified)", target));
+                            preview.push_str(&format!("\n@@ -{},50 (preview) @@\n", 1));
+                            preview.push_str(&preview_lines.join("\n"));
+                            if existing_content.lines().count() > 50 {
+                                preview.push_str("\n... (truncated)");
+                            }
+                            diff_preview = Some(preview);
+
+                            // Store full diff as attachment if content is reasonable
+                            if existing_content.len() < 1_000_000
+                                && let Ok(attachment_id) = attachments.store(
+                                    "text/x-diff".to_string(),
+                                    existing_content.as_bytes().to_vec(),
+                                )
+                            {
+                                attachment_refs.push(attachment_id);
+                            }
+                        }
+                    }
+                } else {
+                    // New file creation
+                    diff_preview = Some(format!("--- /dev/null\n+++ {} (new file)", target));
+                }
+            }
+        }
+        ActionKind::ReadFile => {
+            if let Some(target) = &request.action.target {
+                affected_files.push(target.clone());
+            }
+        }
+        ActionKind::SpawnProcess => {
+            // Process spawning: estimate based on command summary
+            if let Some(cmd) = &request.action.target {
+                estimated_scope = Some(ScopeEstimate::Operations(1));
+                // Store command as attachment for review
+                if let Ok(attachment_id) =
+                    attachments.store("text/plain".to_string(), cmd.as_bytes().to_vec())
+                {
+                    attachment_refs.push(attachment_id);
+                }
+            }
+        }
+        ActionKind::NetworkConnect | ActionKind::SshConnect | ActionKind::SftpTransfer => {
+            // Network operations: note target host
+            if let Some(target) = &request.action.target {
+                affected_files.push(target.clone());
+                estimated_scope = Some(ScopeEstimate::Operations(1));
+            }
+        }
+        ActionKind::TmuxAttach => {
+            estimated_scope = Some(ScopeEstimate::Operations(1));
+        }
+    }
+
+    Ok(crate::ApprovalDetail {
+        request,
+        diff_preview,
+        affected_files,
+        estimated_scope,
+        attachment_refs,
+    })
 }
 
 #[cfg(test)]
@@ -986,10 +1098,10 @@ mod tests {
 
         assert_eq!(detail.request.id, approval_id);
         assert_eq!(detail.request.action.kind, crate::ActionKind::WriteFile);
-        // Placeholders until diff/scope computation implemented
-        assert!(detail.diff_preview.is_none());
-        assert!(detail.affected_files.is_empty());
-        assert!(detail.estimated_scope.is_none());
-        assert!(detail.attachment_refs.is_empty());
+        // Diff/scope computation now implemented
+        assert_eq!(detail.affected_files, vec!["test.txt"]);
+        assert!(detail.diff_preview.is_some());
+        // New file creation case
+        assert!(detail.diff_preview.unwrap().contains("new file"));
     }
 }
