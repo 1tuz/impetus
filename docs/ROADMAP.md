@@ -9,10 +9,13 @@ executable tasks are in [TODO.md](../TODO.md).
 - Crate split `impetus` (client) / `impetusd` (daemon) / `impetus-core`.
 - Versioned local IPC, `HarnessClient`.
 - Safety, capability, sandbox, approval, secret-reference base.
-- `ModelProvider` и `ProviderRegistry` foundations.
-- Basic copied-event fork и compaction/budget primitives.
+- `ModelProvider` and `ProviderRegistry` foundations.
+- Basic copied-event fork and compaction/budget primitives.
 - Attachment/diff/detail DTOs with bounded **ephemeral/in-memory** backing (not durable `ArtifactStore`).
-- Agent Loop / Tool Orchestrator vertical slice: read tools execute through policy and sandbox; writes and shell commands require exact user approval, then resume with durable observations.
+- Agent Loop / Tool Orchestrator vertical slice: read tools execute through
+  policy and sandbox; writes and shell commands require exact user approval,
+  then resume with durable observations. Large read outputs are stored in the
+  durable content-addressed artifact store and referenced from the event log.
 
 ## MODULE RUNTIME / EXTENSIBILITY FOUNDATION
 
@@ -53,8 +56,9 @@ executable tasks are in [TODO.md](../TODO.md).
 
 **Current:** a working single-session vertical slice parses model tool calls,
 executes read-only tools, defers mutating tools for exact approval, and resumes
-the model from durable observations. Native provider tool-call protocols, web
-research, durable artifact backing, and model routing remain future work.
+the model from durable observations. Tool artifacts persist in the stable data
+root. Native provider tool-call protocols, web research, and model routing
+remain future work.
 
 **Target:**
 
@@ -71,8 +75,8 @@ Model → Tool Orchestrator → Tool request → Effect normalization
 and explicit safety admission for `list_files`, `read_file`, `search`,
 `write_file`, `edit_file`, and `bash`/`shell`/`exec`.
 
-**Target:** provider-native structured tool calls, durable artifact backing,
-bounded execution, and the remaining tool families.
+**Target:** provider-native structured tool calls, bounded execution, and the
+remaining tool families.
 
 ### Model Router
 

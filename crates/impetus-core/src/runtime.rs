@@ -590,6 +590,70 @@ mod tests {
     }
 
     #[test]
+    fn reattach_recovers_the_exact_deferred_tool_arguments() {
+        let root = tempfile::tempdir().expect("runtime root");
+        let database = root.path().join("events.sqlite3");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(&workspace));
+        let (session_id, approval_id);
+        {
+            let runtime = AgentRuntime::create_with_workspace(
+                SqliteEventStore::open(&database).expect("store"),
+                policy.clone(),
+                workspace.clone(),
+            )
+            .expect("runtime");
+            session_id = runtime.session_id();
+            runtime
+                .submit_intent("write an exact file")
+                .expect("intent");
+            runtime
+                .request_action(crate::Action {
+                    origin: ActionOrigin::Agent,
+                    kind: ActionKind::WriteFile,
+                    summary: "write_file via agent".into(),
+                    target: Some("result.txt".into()),
+                })
+                .expect("approval");
+            approval_id = runtime
+                .events()
+                .expect("events")
+                .into_iter()
+                .find_map(|event| match event.payload {
+                    EventPayload::Approval(ApprovalEvent::Requested { request }) => {
+                        Some(request.id)
+                    }
+                    _ => None,
+                })
+                .expect("approval id");
+            runtime
+                .record_deferred_tool(
+                    approval_id,
+                    "call-7".into(),
+                    "write_file".into(),
+                    serde_json::json!({"path": "result.txt", "content": "exact value"}),
+                )
+                .expect("deferred tool");
+        }
+
+        let recovered = AgentRuntime::attach(
+            SqliteEventStore::open(&database).expect("reopened store"),
+            policy,
+            session_id,
+        )
+        .expect("reattach");
+        assert_eq!(
+            recovered.deferred_tool(approval_id).expect("deferred tool"),
+            Some((
+                "call-7".into(),
+                "write_file".into(),
+                serde_json::json!({"path": "result.txt", "content": "exact value"}),
+            ))
+        );
+    }
+
+    #[test]
     fn attached_runtime_recovers_run_status() {
         let store = Arc::new(MemoryEventStore::default());
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));

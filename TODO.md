@@ -207,6 +207,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing
 - [x] Wire Tool Orchestrator to real tool execution through policy/sandbox path
 - [x] Durable observations from executed tools (not stub responses)
+- [x] Large read output uses durable content-addressed artifacts and bounded event previews
 - [x] End-to-end slice: model → tool request → execution → observation → model
 - [ ] Wire web research tools through `WebResearchService` (when WEB slice lands)
 
