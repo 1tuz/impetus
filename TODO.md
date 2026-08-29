@@ -18,8 +18,8 @@ placeholder responses не считаются done.
 - [x] Policy engine with `Deny | Allow | NeedsApproval`
 - [x] Typed `Action` with `origin=user|agent` and request ID tracking
 - [x] Sandbox integration for shell/process capabilities
-- [x] Attachment/diff/detail DTO backing services with bounded storage
-- [x] First autonomous Agent Loop and Tool Orchestrator slice
+- [x] Attachment/diff/detail DTO contracts with bounded ephemeral/in-memory backing (not durable `ArtifactStore`)
+- [x] Agent Loop / Tool Orchestrator **skeleton only** — types and wiring; `extract_tool_calls()` and real tool execution are placeholders (see Phase 5)
 - [x] `ModelProvider` trait and `ProviderRegistry` foundation
 - [x] Crate split: `impetus-core`, `impetusd`, `impetus` (initial)
 
@@ -48,14 +48,15 @@ placeholder responses не считаются done.
 - [ ] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
 - [ ] Probe: daemon readiness
 - [ ] Probe: Event Store, SQLite WAL, schema/migrations
-- [ ] Probe: Artifact Store
+- [ ] Probe: Artifact Store (durable target; flag ephemeral/in-memory attachment backing)
 - [ ] Probe: sandbox availability (Seatbelt fail-closed)
 - [ ] Probe: policy and approval subsystem
-- [ ] Probe: Keychain accessibility (redacted)
+- [ ] Probe: platform credential store accessibility (Keychain on macOS; redacted)
 - [ ] Probe: ProviderRegistry, providers, model capabilities
 - [ ] Probe: tools/capabilities registration
 - [ ] Probe: external agents / ACP adapters
 - [ ] Probe: optional modules, compatibility adapters, remote capabilities
+- [ ] Probe: web research (internet access, WebFetch, per-`SearchBackend` health, BrowserProvider, network policy)
 - [ ] Probe: disk/runtime health
 - [ ] Partial extension compatibility matrix in doctor output
 
@@ -72,7 +73,8 @@ placeholder responses не считаются done.
 
 Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
-- [ ] Typed service contracts (decouple AgentLoop from concrete backends)
+- [ ] Typed service contracts (decouple loop/scheduling from concrete backends)
+- [ ] Replaceable `AgentLoopStrategy` and `AgentScheduler` behind contracts (Kernel pipeline unchanged)
 - [ ] `ServiceRegistry` / `ModuleRegistry`
 - [ ] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
 - [ ] Capability negotiation and probing API (not version-only checks)
@@ -116,6 +118,75 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ---
 
+## WEB / INTERNET RESEARCH
+
+Core Agent Runtime capability (not optional marketplace plugin). Base: native Rust
+HTTP — no mandatory cloud search API, Python, Docker, or SearXNG daemon.
+Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
+
+### Contracts & services
+
+- [ ] `WebResearchService` facade contract
+- [ ] `WebSearchService` + `SearchBackend` trait (Module Runtime)
+- [ ] `WebFetchService` (separate from search)
+- [ ] `BrowserService` + `BrowserProvider` contract (optional module)
+- [ ] Agent Loop integration via contracts only (no direct DuckDuckGo/Bing deps)
+- [ ] Research loop: search → select → fetch → follow links → compare → cite
+
+### WebSearch backends
+
+- [ ] Native `DuckDuckGoHtml` backend (default)
+- [ ] Native `BingHtml` fallback backend
+- [ ] Optional `SearXNG` `SearchBackend`
+- [ ] Optional future API backends (Tavily, Exa, …) as replaceable modules only
+- [ ] Fallback chain + degraded health (one backend down ≠ harness unhealthy)
+- [ ] Capability probing per backend (not version-only)
+
+### WebFetch
+
+- [ ] Bounded HTTP fetch (timeout, max response size, redirects)
+- [ ] MIME detection
+- [ ] HTML → clean text / Markdown extraction (links, title)
+- [ ] Source URL, timestamp, content hash, truncation
+- [ ] Large/full body → `ArtifactStore` → `ArtifactRef`; bounded preview to model
+
+### Observations & context
+
+- [ ] Typed `WebObservation` (search result list + fetch document shapes)
+- [ ] Provenance / citation metadata for research loop answers
+- [ ] Raw HTML / large content → artifact, not unbounded context
+
+### Safety & policy
+
+- [ ] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
+- [ ] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
+- [ ] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
+- [ ] Validate initial URL, DNS resolution, redirect chain, final destination
+- [ ] LAN/internal targets — separate capability, not default `web.read`
+- [ ] All web ops through Kernel pipeline (policy → sandbox → capability → execution → durable event)
+
+### JCode source audit (web)
+
+Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
+
+- [ ] Audit `websearch`, `webfetch`, browser tool, Browser Provider Protocol
+- [ ] Audit fallback handling, anti-bot detection, output bounding, HTML cleanup
+- [ ] Per-area `ADAPT | REIMPLEMENT | SKIP`; attribution if code adapted
+
+### Browser (optional)
+
+- [ ] JCode Browser Provider Protocol as reference (negotiation, health, session ops)
+- [ ] Optional Firefox/Chrome/WebDriver/Safari providers (not in mandatory core)
+- [ ] No Chromium/Playwright/Node in required harness dependency set
+
+### Doctor
+
+- [ ] Internet access enabled/disabled
+- [ ] WebFetch / per-SearchBackend / BrowserProvider health in `impetus doctor`
+- [ ] `DEGRADED — web search fallback available` when fallback path works
+
+---
+
 ## Phase 5 — Agent runtime (continued)
 
 ### Durable budgets & Model Router
@@ -126,6 +197,16 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [ ] Router policies: local-first, free-first, balanced, quality-first
 - [ ] Escalation: local → sanitised cloud request → result back to local agent
 - [ ] Cost estimation and budget warnings
+
+### Agent loop (real implementation)
+
+Skeleton/foundation exists; not a working autonomous loop yet.
+
+- [ ] Replace `extract_tool_calls()` placeholder with provider-aware parsing
+- [ ] Wire Tool Orchestrator to real tool execution through policy/sandbox path
+- [ ] Durable observations from executed tools (not stub responses)
+- [ ] End-to-end slice: model → tool request → execution → observation → model
+- [ ] Wire web research tools through `WebResearchService` (when WEB slice lands)
 
 ### Agent loop hardening
 
@@ -147,16 +228,17 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
-- [ ] Large paste: chunked upload to `impetusd` → ArtifactStore → `ArtifactRef`
+- [ ] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
+- [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget
 
 ---
 
 ## Phase 7 — TUI (standalone `impetus`)
 
-Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md). JCode = UX reference only.
+Reference audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (audit not started). JCode = UX reference only.
 
-- [ ] JCode source audit (presentation components)
+- [ ] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
 - [ ] Ratatui + Crossterm spike / evaluation
 - [ ] TUI shell: `HarnessClient` only, no core imports
 - [ ] Composer (single-line + multiline mode)

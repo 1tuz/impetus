@@ -47,14 +47,14 @@ tasks:
       - task: lint
 
   harness:
-    desc: Запустить headless harness daemon в текущей terminal tab
+    desc: Запустить headless harness daemon (impetusd) в текущей terminal tab
     cmds:
-      - cargo run -p impetus
+      - cargo run -p impetusd
 
   cli:
-    desc: 'Вызвать reference CLI; пример: task cli -- create'
+    desc: 'Вызвать impetus client CLI; пример: task cli -- create'
     cmds:
-      - cargo run -p impetus-cli -- {{.CLI_ARGS}}
+      - cargo run -p impetus -- {{.CLI_ARGS}}
 
   ci:list:
     desc: Показать GitLab CI jobs из .gitlab-ci.yml

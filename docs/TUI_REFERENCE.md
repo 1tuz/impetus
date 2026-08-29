@@ -1,12 +1,15 @@
-# TUI Reference Audit
+# TUI Reference Audit (planned)
 
-Source audit для standalone Impetus TUI. JCode — primary UX reference;
+> **Status: audit not started.** This document is a plan and draft hypothesis
+> table only. Decisions are **not locked** until a real source audit of
+> [1jehuang/jcode](https://github.com/1jehuang/jcode) is completed.
+
 Impetus не fork JCode и не импортирует его application/runtime layer.
 
-**Принцип:**
+**Принцип (target):**
 
 ```text
-JCode   → reference implementation / UX patterns
+JCode   → reference implementation / UX patterns (after audit)
 Impetus → собственный thin TUI client (Ratatui + Crossterm baseline)
 ```
 
@@ -14,6 +17,22 @@ Impetus → собственный thin TUI client (Ratatui + Crossterm baseline
 approval UX, errors/remediation.
 
 **Baseline stack (planned evaluation):** Ratatui, Crossterm.
+
+---
+
+## TODO — source audit (blocking)
+
+Before treating any row below as final:
+
+- [ ] Clone/check out актуальный `https://github.com/1jehuang/jcode`
+- [ ] Зафиксировать audited **commit SHA** в этом файле
+- [ ] Перечислить конкретные **файлы/модули** presentation layer (paths in repo)
+- [ ] Для каждого component — решение `ADAPT | REIMPLEMENT | SKIP` с reason по коду, не по памяти
+- [ ] Отметить gaps: что в JCode отсутствует и берётся только из Codex/terminal spec
+
+**Audited commit:** _TBD_
+
+**Audited paths:** _TBD_
 
 ---
 
@@ -27,36 +46,33 @@ approval UX, errors/remediation.
 
 ---
 
-## Component audit
+## Component audit (draft — pre-audit hypotheses)
+
+_Replace with audited decisions after TODO above is complete._
 
 | Component | Reference | Decision | Reason |
 | --- | --- | --- | --- |
-| Composer (single-line) | JCode, Codex | REIMPLEMENT | Core UX; must use `HarnessClient`, bracketed paste |
-| Composer (multiline) | JCode, Codex | REIMPLEMENT | Enter vs Shift+Enter; no accidental submit on paste |
-| Bracketed paste | Terminal spec | ADAPT | Required for correct multiline paste semantics |
-| Large paste detection | Codex | REIMPLEMENT | Threshold → compact label, not full inline text |
-| Large paste upload | Codex (flow), Impetus arch | REIMPLEMENT | Chunked → `impetusd` ArtifactStore → `ArtifactRef`; not giant IPC JSON |
-| Keyboard handling | JCode | ADAPT | Modal shortcuts, focus model; no JCode runtime deps |
-| Streaming output | JCode | ADAPT | Incremental render from harness events |
-| Markdown render | JCode | ADAPT | Bounded rendering; full doc as artifact if huge |
-| Diff view | JCode | ADAPT | Presentation only; diff content from harness/artifacts |
-| Approval UI | JCode, Codex | REIMPLEMENT | Typed approvals/diffs from IPC; human origin only |
-| Session picker | JCode | ADAPT | List/search sessions via `HarnessClient` |
-| Fuzzy search | JCode | ADAPT | Sessions, commands, palette entries |
-| Command palette | JCode, Codex | ADAPT | Client-local commands + forwarded harness actions |
-| Scrolling / scrollback | JCode | REIMPLEMENT | Client-side buffer; harness owns durable events |
-| Terminal resize | Crossterm | ADAPT | Standard Ratatui layout reflow |
-| Status / usage UI | JCode, Codex | REIMPLEMENT | Model, tokens, connection; from typed status APIs |
-| Redraw / event coalescing | JCode | ADAPT | Performance; coalesce stream chunks before full redraw |
-| Error + remediation display | Codex | ADAPT | Align with `impetus doctor` remediation style |
-| Doctor integration | Codex | REIMPLEMENT | `impetus doctor` in CLI first; TUI may surface summary |
-| Agent Runtime | JCode | SKIP | Lives in `impetusd` only |
-| Provider implementation | JCode | SKIP | `ProviderRegistry` in daemon |
-| Session authority | JCode | SKIP | `impetusd` owns durable sessions |
-| Tool authority / execution | JCode | SKIP | Policy → sandbox → execution in harness |
-| Auth / credential state | JCode | SKIP | Keychain + daemon; client shows references only |
-| PTY / terminal emulator | Zap | SKIP | Impetus TUI is not a terminal emulator |
-| Plugin runtime in-process | Cordis/DeepSeek | SKIP | Extension adapter in daemon, not TUI |
+| Composer (single-line) | JCode?, Codex | TBD | Audit pending |
+| Composer (multiline) | JCode?, Codex | TBD | Audit pending |
+| Bracketed paste | Terminal spec | TBD | Required for multiline paste |
+| Large paste detection | Codex | TBD | Threshold → compact label |
+| Large paste upload | Codex flow, Impetus arch | TBD | Chunked → `ArtifactStore` → `ArtifactRef` |
+| Keyboard handling | JCode? | TBD | Audit pending |
+| Streaming output | JCode? | TBD | Audit pending |
+| Markdown render | JCode? | TBD | Audit pending |
+| Diff view | JCode? | TBD | Audit pending |
+| Approval UI | JCode?, Codex | TBD | Typed harness approvals |
+| Session picker | JCode? | TBD | `HarnessClient` |
+| Fuzzy search | JCode? | TBD | Audit pending |
+| Command palette | JCode?, Codex | TBD | Audit pending |
+| Scrolling / scrollback | JCode? | TBD | Client buffer vs durable events |
+| Terminal resize | Crossterm | TBD | Standard Ratatui layout |
+| Status / usage UI | JCode?, Codex | TBD | Typed status APIs |
+| Redraw / event coalescing | JCode? | TBD | Performance |
+| Error + remediation | Codex | TBD | Align with `impetus doctor` |
+| Agent Runtime | — | SKIP | `impetusd` only |
+| Provider / session / tool authority | — | SKIP | Harness owns authority |
+| PTY / terminal emulator | Zap | SKIP | Not a terminal emulator |
 
 ---
 
@@ -69,10 +85,9 @@ approval UX, errors/remediation.
 
 ---
 
-## Next steps
+## After audit
 
-1. Clone/read JCode presentation layer; note file paths and patterns.
+1. Update table with SHA, file paths, and locked decisions.
 2. Ratatui spike: composer + stream + one approval mock.
 3. Bracketed paste test matrix (iTerm, Terminal.app, SSH).
-4. Large paste flow with ArtifactStore integration (depends on harness API).
-5. Update this table as decisions lock during implementation.
+4. Large paste flow with durable `ArtifactStore` (depends on harness API).

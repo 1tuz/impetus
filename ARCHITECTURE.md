@@ -96,6 +96,7 @@ runtime, ни секретами, ни session authority.
        ├── Context / Repo Intelligence          │
        ├── CI / SCM                             │
        ├── Remote                               │
+       ├── Web / Internet Research              │
        ├── Output Optimization                  │
        ├── Memory                               │
        └── Extension Compatibility              │
@@ -129,10 +130,13 @@ Zap adapter ──HarnessClient──┘
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol,
 `HarnessClient`, provider registry foundation, copied-event forks, command/JSON
-client, первый Agent Loop slice. Zap adapter — experimental baseline, не target
+client, attachment/diff/detail DTOs with **bounded ephemeral/in-memory** backing.
+Agent Loop / Tool Orchestrator — **skeleton only** (`extract_tool_calls()` and
+tool execution still placeholder). Zap adapter — experimental baseline, не target
 integration architecture.
 
-**Не реализовано:** standalone TUI, `impetus doctor`, Module Runtime,
+**Не реализовано:** durable `ArtifactStore`, working autonomous agent loop,
+Web / Internet Research subsystem, standalone TUI, `impetus doctor`, Module Runtime,
 полный Session DAG, model router, remote agent flow end-to-end, extension
 compatibility layer, `impetus components`.
 
@@ -159,15 +163,26 @@ Durable Observation / Event
 - durable session authority в `impetusd`;
 - durable Event Log semantics;
 - approval integrity и `ActionFingerprint` / exact effect;
-- secret isolation (Keychain only; references elsewhere);
+- secret isolation (platform credential store + opaque references elsewhere; see Credentials);
 - unknown-outcome semantics (disconnect/crash ≠ `Completed`);
 - capability admission.
 
 Никакой plugin/module не выполняет privileged action в обход этого pipeline.
 Модель не может выдать себе `origin=user` или approval.
 
-Секреты — только macOS Keychain. SQLite, JSONL, tracing, events, tests —
-opaque references, never raw tokens/keys/passphrases.
+Секреты — только platform credential store (см. Credentials). SQLite, JSONL,
+tracing, events, tests — opaque references, never raw tokens/keys/passphrases.
+
+### Credentials (by platform)
+
+| Platform | Secret store | In profiles / SQLite / events |
+| --- | --- | --- |
+| macOS | Keychain | opaque `service` / `account` references only |
+| Linux (target) | system credential store (e.g. libsecret / portal — TBD per distro) | same: references only |
+| local / no-secret | none | loopback endpoints only |
+
+Raw tokens, private keys, and passphrases never belong in SQLite, config, JSONL,
+tracing, or event payloads on any OS.
 
 ## Заменяемые реализации
 
@@ -190,7 +205,9 @@ opaque references, never raw tokens/keys/passphrases.
 - sandbox implementations;
 - SSH/tmux/SFTP implementations;
 - storage backend;
-- artifact storage;
+- artifact storage (durable `ArtifactStore`; current attachment backing is ephemeral/in-memory);
+- `AgentLoopStrategy` / `AgentScheduler` (orchestration policy only — not safety pipeline);
+- `SearchBackend` / `BrowserProvider` (web research; see Web / Internet Research);
 - TUI/client surfaces;
 - Zap adapter;
 - router strategies;
@@ -216,7 +233,7 @@ Capability Registry
 ```text
 НЕ:  AgentLoop → RTK | OpenAI | GitLab | rust-analyzer
 
-ДА:  AgentLoop
+ДА:  AgentLoopStrategy / AgentScheduler
          ↓
      Service / Capability contract
          ↓
@@ -224,6 +241,11 @@ Capability Registry
          ↓
      selected implementation
 ```
+
+`AgentLoopStrategy` and `AgentScheduler` are replaceable orchestration choices
+(which tools to run, when to escalate, retry policy). They still emit typed
+effects that **must** pass the Kernel pipeline unchanged; they cannot bypass
+Policy, Sandbox, Capability, or durable event recording.
 
 ### ModuleDescriptor (архитектурный контракт)
 
@@ -385,6 +407,7 @@ Output Optimization
 cargo test → TestObservation
 git diff   → DiffObservation
 search     → SearchObservation
+web        → WebObservation
 CI         → PipelineObservation
 ```
 
@@ -441,8 +464,10 @@ concern.
 
 ### TUI strategy
 
-JCode — primary **reference** для standalone TUI (UX patterns), не runtime
-dependency и не fork source:
+JCode ([1jehuang/jcode](https://github.com/1jehuang/jcode)) — primary **UX
+reference** для standalone TUI после source audit; не runtime dependency и не
+fork source. Audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
+(**not started**).
 
 ```text
 JCode  → reference / UX patterns
@@ -477,6 +502,144 @@ paste → composer → large-paste detection → bounded/chunked upload
 
 Context Builder читает большой paste частями, сокращает с учётом token budget.
 
+## Web / Internet Research
+
+First-class Agent Runtime capability: autonomous internet research **без**
+обязательных cloud search APIs, Python/Docker sidecar, или paid keys. Base path:
+**native Rust + HTTP** (search HTML scraping + bounded fetch). JCode
+([1jehuang/jcode](https://github.com/1jehuang/jcode)) — primary **implementation
+reference** для websearch/webfetch/browser; upstream audit before locking details
+(см. [TODO.md](TODO.md) § WEB / INTERNET RESEARCH). Не копировать JCode
+architecture целиком; `ADAPT | REIMPLEMENT | SKIP` + attribution при переносе кода.
+
+**Приоритет:** core harness capability, не marketplace plugin. После install —
+рабочий search + page read **in perspective**, без доп. инфраструктуры.
+
+```text
+Agent Loop
+   ↓
+WebResearchService
+   │
+   ├── WebSearch
+   │     └── SearchBackend contract
+   │          ├── DuckDuckGoHtml   ← default/native
+   │          ├── BingHtml         ← native fallback
+   │          ├── SearXNG          ← optional
+   │          └── future / API backends (Tavily, Exa, … — optional only)
+   │
+   ├── WebFetch                    ← native Rust
+   │
+   └── BrowserService
+          └── BrowserProvider      ← optional / heavier
+```
+
+Agent Loop **не** зависит от DuckDuckGo/Bing/SearXNG напрямую — только от
+contracts + Module Runtime selection. Capability probing важнее version compare.
+
+### WebSearch
+
+Base Impetus **не требует:** Tavily, Exa, Perplexity, Brave/Bing API keys,
+Python, SearXNG daemon, Docker.
+
+```text
+DuckDuckGo HTML → failure/block → Bing HTML → failure → optional SearchBackend
+```
+
+Native Rust HTTP client. API providers — сменные optional `SearchBackend` only.
+
+### WebFetch
+
+Отдельный service/tool; **не смешивать** с `WebSearch`:
+
+```text
+URL → HTTP fetch → bounded response → HTML extraction → clean text/markdown
+  → ArtifactStore → compact WebObservation (+ ArtifactRef if large)
+```
+
+Planned: redirects, timeout, max size, MIME, HTML→markdown, links, title,
+source URL, timestamp, content hash, truncation; model gets bounded preview/chunks.
+
+### Browser
+
+JS-heavy sites — optional `BrowserService` → `BrowserProvider`. Reference:
+JCode Browser Provider Protocol (normalized contract, capability negotiation,
+replaceable Firefox/Chrome/WebDriver/Safari, health, session, snapshot, click,
+type, wait, screenshot, optional eval/scroll/tabs/downloads). **Не обязателен**
+для ordinary search/fetch. **Не тащить** Chromium/Playwright/Node в mandatory core.
+
+### Module Runtime wiring
+
+```text
+WebSearchService → SearchBackend contract → selected implementation
+BrowserService   → BrowserProvider contract → selected implementation
+```
+
+Search backend degradation не делает весь harness unhealthy (`degraded` + fallback).
+
+### Network capabilities (semantic)
+
+`NetworkConnect` alone недостаточен. Planned fine-grained capabilities:
+
+```text
+web.read | web.search | web.download | web.browser | web.submit | web.upload
+```
+
+`web.search` / `web.read` — may allow session-level policy. Outbound data
+(POST, form submit, upload, authenticated action) — stricter Policy/Approval.
+
+Всё равно через Kernel:
+
+```text
+origin → Policy → Approval? → Network/Sandbox admission → Capability → Execution → Observation
+```
+
+### SSRF / network safety
+
+Web tools must not reach by default: localhost, `127.0.0.0/8`, `::1`, private LAN,
+link-local, cloud metadata, Unix/local services. Validate initial URL, DNS,
+redirect chain, final destination. LAN/internal access — **отдельная**
+capability/policy, not default `web.read`.
+
+### WebObservation
+
+```text
+WebObservation
+  query | source_url
+  url, title, snippet | content
+  status, content_type, retrieved_at, provenance
+  truncated, artifact_ref
+```
+
+Search → structured result list. Fetch → cleaned document. Raw HTML/large body →
+Artifact; не бездумно в model context.
+
+### Research loop (target)
+
+Harness-owned flow, not model/provider magic:
+
+```text
+search → select results → fetch → extract links → follow → fetch
+  → compare sources → answer with provenance/citations
+```
+
+Integrated with Agent Loop / Context Optimizer (structured obs + artifact refs).
+
+### `impetus doctor` (web)
+
+```text
+Internet access     enabled/disabled
+WebFetch            healthy | degraded | unavailable
+WebSearch
+  DuckDuckGo HTML   healthy | degraded
+  Bing HTML         healthy | degraded
+  SearXNG           unavailable | healthy
+BrowserProvider     unavailable | healthy
+Network policy      …
+```
+
+One search backend failing → `DEGRADED — web search fallback available`, not
+global unhealthy.
+
 ## External agents и ACP
 
 ACP — protocol для внешних coding agents, не universal provider API и не auth
@@ -499,8 +662,9 @@ impetus doctor --json
 Диагностика через typed APIs (не shell parsing): versions, daemon discovery,
 socket, IPC handshake, protocol compatibility, daemon readiness, Event Store,
 SQLite/WAL/schema/migrations, Artifact Store, sandbox, policy, approvals,
-Keychain, ProviderRegistry, providers, model capabilities, tools, external
-agents, optional modules, compatibility adapters, remote capabilities, disk/runtime
+platform credential store, ProviderRegistry, providers, model capabilities, tools, external
+agents, optional modules, compatibility adapters, remote capabilities, **web
+research** (WebFetch, SearchBackend health, BrowserProvider), disk/runtime
 health.
 
 `doctor --json`: versioned schema, redacted, bug-report ready, no raw secrets.
@@ -522,7 +686,9 @@ update, disable. Optional component update без полного релиза Im
 | Safety pipeline | policy, approval, sandbox, admission | unchanged invariants |
 | Provider | `ModelProvider`, registry foundation | router + escalation |
 | Context | copied forks, compaction primitives | Session DAG, lazy modules |
-| Agent loop | first slice | full orchestrator |
+| Attachments | bounded ephemeral/in-memory DTO backing | durable `ArtifactStore` |
+| Agent loop | skeleton; placeholder tool path | full orchestrator + research loop |
+| Web research | not implemented | native search/fetch; optional browser |
 | TUI | none | thin Ratatui client |
 | Module Runtime | not implemented | registry, contracts, probing |
 | Extensions | not implemented | adapters + canonical model |

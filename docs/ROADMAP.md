@@ -12,7 +12,8 @@ Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTU
 - Safety, capability, sandbox, approval, secret-reference base.
 - `ModelProvider` и `ProviderRegistry` foundations.
 - Basic copied-event fork и compaction/budget primitives.
-- First Agent Loop / Tool Orchestrator slice.
+- Attachment/diff/detail DTOs with bounded **ephemeral/in-memory** backing (not durable `ArtifactStore`).
+- Agent Loop / Tool Orchestrator **skeleton** — `extract_tool_calls()` and tool execution still placeholder.
 
 ## MODULE RUNTIME / EXTENSIBILITY FOUNDATION
 
@@ -20,7 +21,8 @@ Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTU
 
 **Gate:**
 
-- typed service contracts (не hard deps AgentLoop → concrete backends);
+- typed service contracts (не hard deps loop/scheduling → concrete backends);
+- replaceable `AgentLoopStrategy` / `AgentScheduler` behind contracts (Kernel safety/durability pipeline unchanged);
 - `ServiceRegistry` / `ModuleRegistry`;
 - `ModuleDescriptor` shape;
 - capability negotiation и probing (не только version compare);
@@ -50,6 +52,8 @@ Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTU
 
 ### Agent Loop
 
+**Current:** skeleton types and wiring; `extract_tool_calls()` and real tool execution are placeholders.
+
 **Target:**
 
 ```text
@@ -78,6 +82,37 @@ minimal sanitised request; sensitive repo context не уходит в обла�
 **Target:** per-session steps, calls, tokens, cost, time; rate limits; router
 feedback.
 
+## WEB / INTERNET RESEARCH
+
+**Target:** first-class Agent Runtime capability — native Rust HTTP search/fetch
+without mandatory cloud APIs, Python, or Docker. JCode
+([1jehuang/jcode](https://github.com/1jehuang/jcode)) implementation reference;
+upstream source audit before implementation lock.
+
+**Base (required path):**
+
+```text
+DuckDuckGo HTML → Bing HTML fallback → optional SearchBackend (e.g. SearXNG)
+WebFetch: bounded HTTP → extract → WebObservation → ArtifactRef if large
+```
+
+**Optional:** `BrowserProvider` for JS-heavy sites; external search API backends.
+
+**Gate:**
+
+- `WebResearchService` + `WebSearchService` / `WebFetchService` contracts;
+- `SearchBackend` + `BrowserProvider` via Module Runtime (loop agnostic of vendor);
+- typed `WebObservation`, provenance/citations, ArtifactStore integration;
+- fine-grained web capabilities (`web.read`, `web.search`, `web.submit`, …);
+- SSRF protection (URL, DNS, redirects, final destination);
+- research loop in harness (search → fetch → follow → cite);
+- `doctor` web section with per-backend health and degraded fallback semantics;
+- JCode audit: websearch, webfetch, browser tool, Browser Provider Protocol.
+
+**Не в base gate:** Chromium/Playwright/Node in core; mandatory Tavily/Exa/etc.
+
+Исполнимые пункты — [TODO.md](../TODO.md) § WEB / INTERNET RESEARCH.
+
 ## OUTPUT OPTIMIZATION
 
 **Target:**
@@ -97,8 +132,9 @@ RTK не обязателен; removable без изменения Agent Loop.
 ### Token / Context Optimizer
 
 **Target:** stable prefix, prompt cache, shared fork/subagent prefix, delta
-context, deterministic reducers, artifact store, HOT/WARM/COLD, lazy
-tools/MCP/instructions, telemetry. Large paste → ArtifactRef, не giant IPC JSON.
+context, deterministic reducers, **durable** artifact store (current attachment
+backing is ephemeral/in-memory only), HOT/WARM/COLD, lazy
+tools/MCP/instructions, telemetry. Large paste → `ArtifactRef`, не giant IPC JSON.
 
 ### Instruction model
 
@@ -145,9 +181,10 @@ Cannot change safety, sandbox, credentials, or core code automatically.
 
 ### Standalone Harness TUI
 
-**Target:** `cd project && impetus` — first-class CLI/TUI. JCode = UX reference
-only; Ratatui/Crossterm baseline. Bracketed paste + large-paste artifact flow.
-Audit: [TUI_REFERENCE.md](TUI_REFERENCE.md).
+**Target:** `cd project && impetus` — first-class CLI/TUI. JCode
+([1jehuang/jcode](https://github.com/1jehuang/jcode)) = UX reference only;
+Ratatui/Crossterm baseline. TUI audit plan: [TUI_REFERENCE.md](TUI_REFERENCE.md)
+(audit not started). Bracketed paste + large-paste artifact flow.
 
 ### Zap backend integration
 
@@ -167,10 +204,13 @@ Current models/stubs ≠ completed flow.
 
 ## PLATFORM / DISTRIBUTION
 
-**Current focus:** macOS Apple Silicon.
+**Current focus:** macOS Apple Silicon (Keychain for credential references).
 
 **Target:** Ubuntu 24.04 x86_64, later Linux ARM64 / Intel macOS; checksums, curl
-installer, clean-machine smoke, update/uninstall docs.
+installer, clean-machine smoke, update/uninstall docs. **Credentials:** macOS =
+Keychain; other OS = corresponding system credential store (e.g. libsecret /
+portal — per-platform TBD). Profiles, SQLite, and events hold opaque references
+only — never raw secrets on any OS.
 
 ## Not now
 

@@ -53,7 +53,7 @@ All clients (including future remote): `HarnessClient` only — no core bypass.
 origin=user|agent → Policy → Sandbox → Capability → Execution → Durable Event
 ```
 
-Credentials transient; profiles hold Keychain references only.
+Credentials transient; profiles hold opaque platform-store references only (Keychain on macOS).
 
 ## Related docs
 

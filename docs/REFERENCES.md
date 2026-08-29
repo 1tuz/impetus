@@ -10,7 +10,7 @@ claim of implementation automatically.
 | [Codex](https://openai.com/codex/) | Tool orchestration, capability/policy boundaries, sandbox execution, structured tool lifecycle. |
 | [Claude Code](https://code.claude.com/docs/) | Long-session compaction/recovery, autonomy/risk concepts, fewer unnecessary approvals. |
 | [OpenClaude](https://github.com/Gitlawb/openclaude) | Per-agent budgets, reasoning effort, separate compaction model, context/token UX, useful multi-model concepts. Reuse always requires separate license/provenance review. |
-| [jcode](https://github.com/andrewlwn77/jcode) | Persistent daemon, lightweight sessions, multi-model, swarm, memory, soft interrupt, low overhead, and Rust TUI ideas. |
+| [jcode](https://github.com/1jehuang/jcode) | Persistent daemon, lightweight sessions, multi-model, swarm, memory, soft interrupt, low overhead, and Rust TUI ideas (UX reference for planned TUI audit). |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Modular capability architecture and stable subsystem interfaces. |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | Fork-context subagents, inherited prefix/cache, background delegation. |
 | [Pi](https://github.com/badlogic/pi-mono) | Session tree/DAG, shared history, non-destructive context projection. |

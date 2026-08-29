@@ -56,18 +56,18 @@ task setup
 task verify
 ```
 
-В первом terminal:
+В первом terminal — daemon:
 
 ```zsh
-cargo run -p impetus
+cargo run -p impetusd
 ```
 
-Во втором — текущий reference CLI:
+Во втором — client CLI:
 
 ```zsh
-cargo run -p impetus-cli -- create
-cargo run -p impetus-cli -- prompt <session-id> "Опиши этот репозиторий"
-cargo run -p impetus-cli -- stream <session-id>
+cargo run -p impetus -- create
+cargo run -p impetus -- prompt <session-id> "Опиши этот репозиторий"
+cargo run -p impetus -- stream <session-id>
 ```
 
 ## Planned distribution
