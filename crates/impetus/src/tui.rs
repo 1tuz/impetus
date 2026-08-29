@@ -127,7 +127,13 @@ fn print_help() {
 }
 
 async fn create_session(client: &impetus_client::UnixSocketTransport) -> Result<Uuid> {
-    let response = client.request(IpcRequest::CreateSession).await?;
+    let workspace_root = std::env::current_dir()
+        .context("resolve current workspace")?
+        .canonicalize()
+        .context("canonicalize current workspace")?;
+    let response = client
+        .request(IpcRequest::CreateSession { workspace_root })
+        .await?;
 
     match response {
         IpcResponse::Session { session_id, .. } => Ok(session_id),
