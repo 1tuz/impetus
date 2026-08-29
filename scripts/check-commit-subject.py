@@ -10,13 +10,12 @@ import re
 import sys
 
 
+# New format: type: summary (closes #N) or type(scope): summary (refs #N)
 SUBJECT_RE = re.compile(
-    r"^[A-Z][A-Z0-9]+-[0-9]+ "
-    r"(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)(!)?: (.+)$"
-)
-INFINITIVE_RE = re.compile(
-    r"^(Добавить|Изменить|Исправить|Обновить|Удалить|Реализовать|Создать|"
-    r"Перенести|Настроить|Подключить|Проверить|Описать|Сделать)\b"
+    r"^(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)"
+    r"(\([a-z0-9_-]+\))?: "
+    r"[a-z0-9].+"
+    r"( \((closes|fixes|refs|references) #[0-9]+\))?$"
 )
 
 
@@ -39,23 +38,24 @@ def load_subject(args: argparse.Namespace) -> str:
 
 def validation_error(subject: str) -> str | None:
     if not subject:
-        return "subject пуст"
+        return "subject is empty"
     if len(subject) > 72:
-        return f"subject длиннее 72 символов: {len(subject)}"
+        return f"subject exceeds 72 characters: {len(subject)}"
     if subject.startswith(("WIP", "fixup!", "squash!")):
-        return "WIP/fixup/squash commit запрещён"
+        return "WIP/fixup/squash commits are not allowed"
 
     match = SUBJECT_RE.fullmatch(subject)
     if match is None:
-        return "нужен формат KEY-123 type: Результат"
+        return (
+            "format must be: type: summary or type(scope): summary\n"
+            "  - start with lowercase after colon\n"
+            "  - optionally end with (closes #N) or (refs #N)"
+        )
 
-    summary = match.group(3)
-    if not (summary[0].isupper() or summary[0].isdigit()):
-        return "описание после двоеточия начинается с заглавной буквы или цифры"
-    if summary.endswith((".", "!", "?", ";", ":")):
-        return "в конце subject не нужна пунктуация"
-    if INFINITIVE_RE.match(summary):
-        return "опиши результат, а не действие в инфинитиве"
+    # Check for ending punctuation (except closing paren from issue ref)
+    if subject.rstrip(")").endswith((".", "!", "?", ";", ":")):
+        return "subject must not end with punctuation"
+    
     return None
 
 
@@ -63,9 +63,9 @@ def main() -> int:
     subject = load_subject(parse_args())
     error = validation_error(subject)
     if error is not None:
-        print(f"Некорректный commit subject: {error}", file=sys.stderr)
+        print(f"Invalid commit subject: {error}", file=sys.stderr)
         return 1
-    print(f"Commit subject принят: {subject}")
+    print(f"Commit subject accepted: {subject}")
     return 0
 
 
