@@ -1,5 +1,6 @@
 /target
 /.agentic-terminal/
+/.worktrees/
 *.db
 *.db-shm
 *.db-wal
