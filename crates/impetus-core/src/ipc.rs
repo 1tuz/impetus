@@ -2,7 +2,7 @@ use crate::RuntimeStatus;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 2;
+pub const IPC_VERSION: u16 = 3;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
@@ -26,7 +26,9 @@ pub enum IpcRequest {
         version: u16,
         capabilities: Vec<String>,
     },
-    CreateSession,
+    CreateSession {
+        workspace_root: std::path::PathBuf,
+    },
     Attach {
         session_id: Uuid,
     },

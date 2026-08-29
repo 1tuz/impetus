@@ -56,8 +56,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Create => {
+            let workspace_root = std::env::current_dir()?.canonicalize()?;
             let response = client
-                .request(impetus_core::IpcRequest::CreateSession)
+                .request(impetus_core::IpcRequest::CreateSession { workspace_root })
                 .await?;
             match response {
                 impetus_core::IpcResponse::Session { session_id, status } => {

@@ -5,6 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
@@ -45,15 +46,24 @@ pub enum RuntimeError {
     InactiveRun(Uuid),
     #[error("run `{0}` is already active")]
     ActiveRun(Uuid),
+    #[error("workspace root `{0}` is not a directory")]
+    InvalidWorkspace(PathBuf),
 }
 
 pub struct AgentRuntime {
     session_id: Uuid,
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
+    workspace_root: PathBuf,
     // A2 Phase 2: Store deferred effects for approval continuation.
     // Maps approval_id -> DeferredEffect so approved work can resume.
     deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
+}
+
+fn policy_for_workspace(policy: &PolicyEngine, workspace_root: PathBuf) -> PolicyEngine {
+    let mut scope = policy.scope().clone();
+    scope.workspace_root = workspace_root;
+    PolicyEngine::new(scope)
 }
 
 impl AgentRuntime {
@@ -65,7 +75,36 @@ impl AgentRuntime {
         Ok(Self {
             session_id: store.create_session()?,
             store,
+            workspace_root: policy.scope().workspace_root.clone(),
             policy,
+            deferred_effects: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    pub fn create_with_workspace(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        workspace_root: PathBuf,
+    ) -> Result<Self, RuntimeError> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|_| RuntimeError::InvalidWorkspace(workspace_root.clone()))?;
+        if !workspace_root.is_dir() {
+            return Err(RuntimeError::InvalidWorkspace(workspace_root));
+        }
+        let session_id = store.create_session()?;
+        let scoped_policy = policy_for_workspace(&policy, workspace_root.clone());
+        store.append_next(
+            session_id,
+            EventPayload::Session(crate::SessionEvent::WorkspaceRoot {
+                workspace_root: workspace_root.clone(),
+            }),
+        )?;
+        Ok(Self {
+            session_id,
+            store,
+            policy: scoped_policy,
+            workspace_root,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -79,11 +118,15 @@ impl AgentRuntime {
         if events.is_empty() {
             return Err(RuntimeError::MissingSession(session_id));
         }
-        reduce(&events)?;
+        let projection = reduce(&events)?.ok_or(RuntimeError::MissingSession(session_id))?;
+        let workspace_root = projection
+            .workspace_root
+            .unwrap_or_else(|| policy.scope().workspace_root.clone());
         Ok(Self {
             session_id,
             store,
-            policy,
+            policy: policy_for_workspace(&policy, workspace_root.clone()),
+            workspace_root,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -98,6 +141,7 @@ impl AgentRuntime {
         Ok(Self {
             session_id: new_session_id,
             store,
+            workspace_root: policy.scope().workspace_root.clone(),
             policy,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -105,6 +149,14 @@ impl AgentRuntime {
 
     pub fn session_id(&self) -> Uuid {
         self.session_id
+    }
+
+    pub fn workspace_root(&self) -> Result<PathBuf, RuntimeError> {
+        Ok(self.workspace_root.clone())
+    }
+
+    pub fn policy(&self) -> PolicyEngine {
+        self.policy.clone()
     }
 
     pub fn submit_intent(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
@@ -172,7 +224,29 @@ impl AgentRuntime {
         Ok(true)
     }
 
+    pub fn record_agent_final(
+        &self,
+        run_id: Uuid,
+        text: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        if self.projection()?.active_run_id != Some(run_id) {
+            return Err(RuntimeError::InactiveRun(run_id));
+        }
+        self.record(EventPayload::Agent(crate::AgentEvent::Final {
+            run_id,
+            text: text.into(),
+        }))
+    }
+
     pub fn request_action(&self, action: Action) -> Result<RuntimeStatus, RuntimeError> {
+        self.request_action_with_capability_version(action, None)
+    }
+
+    pub fn request_action_with_capability_version(
+        &self,
+        action: Action,
+        capability_version: Option<u32>,
+    ) -> Result<RuntimeStatus, RuntimeError> {
         match self.policy.evaluate(&action) {
             PolicyDecision::Allow => {
                 self.record(EventPayload::Notice(NoticeEvent::PolicyAllowed))?;
@@ -189,7 +263,12 @@ impl AgentRuntime {
                     .projection()?
                     .latest_intent_revision
                     .ok_or(RuntimeError::MissingIntentRevision)?;
-                let approval = crate::ApprovalRequest::pending(action, reason, intent_revision);
+                let approval = crate::ApprovalRequest::pending_with_version(
+                    action,
+                    reason,
+                    intent_revision,
+                    capability_version,
+                );
                 self.record(EventPayload::Approval(ApprovalEvent::Requested {
                     request: approval,
                 }))?;
@@ -299,6 +378,32 @@ impl AgentRuntime {
         Ok(self.projection()?.pending_approvals.get(&id).cloned())
     }
 
+    pub fn active_run_id(&self) -> Result<Option<Uuid>, RuntimeError> {
+        Ok(self.projection()?.active_run_id)
+    }
+
+    pub fn record_deferred_tool(
+        &self,
+        approval_id: Uuid,
+        tool_call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Tool(ToolEvent::Deferred {
+            approval_id,
+            tool_call_id,
+            tool_name,
+            arguments,
+        }))
+    }
+
+    pub fn deferred_tool(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<Option<(String, String, serde_json::Value)>, RuntimeError> {
+        Ok(self.projection()?.deferred_tools.get(&approval_id).cloned())
+    }
+
     pub fn cancel(&self) -> Result<RuntimeStatus, RuntimeError> {
         let projection = self.projection()?;
         let Some(run_id) = projection.active_run_id else {
@@ -356,6 +461,37 @@ mod tests {
                     event.payload,
                     EventPayload::Approval(ApprovalEvent::Requested { .. })
                 ))
+        );
+    }
+
+    #[test]
+    fn session_workspace_is_canonical_and_survives_attach() {
+        let root = tempfile::tempdir().expect("temp root");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let runtime = AgentRuntime::create_with_workspace(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(root.path())),
+            workspace.clone(),
+        )
+        .expect("create runtime");
+        let session_id = runtime.session_id();
+        let canonical_workspace = workspace.canonicalize().expect("canonical workspace");
+        assert_eq!(
+            runtime.workspace_root().expect("workspace root"),
+            canonical_workspace
+        );
+
+        let attached = AgentRuntime::attach(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(root.path())),
+            session_id,
+        )
+        .expect("attach runtime");
+        assert_eq!(
+            attached.workspace_root().expect("attached workspace root"),
+            canonical_workspace
         );
     }
 

@@ -63,6 +63,20 @@ impl ProviderMessage {
             content: content.into(),
         }
     }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant",
+            content: content.into(),
+        }
+    }
+
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self {
+            role: "tool",
+            content: content.into(),
+        }
+    }
 }
 
 /// Resolves an explicit profile's credential only when a provider request is

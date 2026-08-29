@@ -51,6 +51,32 @@ impl ReadOnlyTool {
     }
 }
 
+pub(crate) fn write_file_in_scope(
+    workspace_root: &Path,
+    target: &Path,
+    content: &str,
+) -> Result<(), ToolError> {
+    let root = workspace_root
+        .canonicalize()
+        .map_err(|error| ToolError::Io(error.to_string()))?;
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    };
+    let parent = target
+        .parent()
+        .ok_or_else(|| ToolError::Io("write target has no parent".into()))?
+        .canonicalize()
+        .map_err(|error| ToolError::Io(error.to_string()))?;
+    if !parent.starts_with(&root) {
+        return Err(ToolError::Io(
+            "write target is outside workspace scope".into(),
+        ));
+    }
+    std::fs::write(target, content).map_err(|error| ToolError::Io(error.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolProvenance {
     pub workspace_root: PathBuf,

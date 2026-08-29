@@ -111,8 +111,9 @@ async fn create_and_attach(
     prompt: &str,
     status_bar: StatusBar,
 ) -> Result<()> {
+    let workspace_root = std::env::current_dir()?.canonicalize()?;
     let response = transport
-        .request(IpcRequest::CreateSession)
+        .request(IpcRequest::CreateSession { workspace_root })
         .await
         .context("Failed to create session")?;
 

@@ -8,11 +8,11 @@
 //! the client.
 
 use crate::{
-    AgentRuntime, CredentialResolver, DurableArtifactStore, EventStore, IPC_CAPABILITIES,
-    IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse, MockProvider,
-    NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider, PolicyEngine,
-    ProviderError, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
+    AgentLoop, AgentRuntime, CredentialResolver, DurableArtifactStore, EventStore,
+    IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
+    MockProvider, NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider,
+    PolicyEngine, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
+    ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -212,13 +212,15 @@ fn handle_request(
                 .map(|capability| (*capability).to_owned())
                 .collect(),
         },
-        IpcRequest::CreateSession => match AgentRuntime::create(store, policy) {
-            Ok(runtime) => IpcResponse::Session {
-                session_id: runtime.session_id(),
-                status: RuntimeStatus::Idle,
-            },
-            Err(error) => runtime_error(error),
-        },
+        IpcRequest::CreateSession { workspace_root } => {
+            match AgentRuntime::create_with_workspace(store, policy, workspace_root) {
+                Ok(runtime) => IpcResponse::Session {
+                    session_id: runtime.session_id(),
+                    status: RuntimeStatus::Idle,
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
         IpcRequest::Attach { session_id } => {
             match AgentRuntime::attach(store, policy, session_id)
                 .and_then(|runtime| Ok((runtime.session_id(), runtime.status()?)))
@@ -257,7 +259,8 @@ fn handle_request(
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 let runtime = Arc::new(runtime);
                 let run_id = runtime.submit_intent_and_start_run(text)?;
-                let provider_messages = resolve_provider_messages(&workspace_root, &runtime)
+                let session_workspace = runtime.workspace_root()?;
+                let provider_messages = resolve_provider_messages(&session_workspace, &runtime)
                     .unwrap_or_else(|_| {
                         vec![ProviderMessage::user(
                             runtime_intent(&runtime).unwrap_or_default(),
@@ -274,7 +277,7 @@ fn handle_request(
                 let task_default_provider_id = default_provider_id.clone();
                 let task_credential_resolver = credential_resolver.clone();
                 tokio::spawn(async move {
-                    run_with_provider(
+                    run_agent_loop(
                         task_runtime,
                         run_id,
                         task_provider_registry,
@@ -296,7 +299,10 @@ fn handle_request(
         }
         IpcRequest::Context { session_id } => match AgentRuntime::attach(store, policy, session_id)
         {
-            Ok(_) => match resolve_context(&workspace_root) {
+            Ok(runtime) => match runtime.workspace_root().and_then(|workspace_root| {
+                resolve_context(&workspace_root)
+                    .map_err(|error| RuntimeError::Denied(error.to_string()))
+            }) {
                 Ok(context) => IpcResponse::Context {
                     session_id,
                     context,
@@ -335,16 +341,6 @@ fn handle_request(
         } => {
             let artifact_store = DurableArtifactStore::open(artifact_root().join("artifacts"))
                 .expect("open artifact store");
-            // The IPC effect scope is owned by the harness policy, not by the
-            // daemon's current directory or an independently constructed tool
-            // policy.  This keeps the fixed effect path coherent all the way
-            // to capability execution.
-            let workspace_root = policy.scope().workspace_root.clone();
-            let tools = ReadOnlyTools::new(&workspace_root);
-            let effect_seam = crate::EffectSeam::with_sandbox(
-                policy.clone(),
-                Sandbox::workspace(&workspace_root),
-            );
             let tool = match kind {
                 ReadOnlyToolKind::List => ReadOnlyTool::List {
                     target: target.into(),
@@ -364,6 +360,12 @@ fn handle_request(
             // origin is trusted.
             let origin = crate::ActionOrigin::User;
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
+                let workspace_root = runtime.workspace_root()?;
+                let tools = ReadOnlyTools::new(&workspace_root);
+                let effect_seam = crate::EffectSeam::with_sandbox(
+                    runtime.policy(),
+                    Sandbox::workspace(&workspace_root),
+                );
                 tools
                     .run_with_seam(tool, origin, &artifact_store, &effect_seam)
                     .map_err(|e| RuntimeError::Denied(e.to_string()))
@@ -393,9 +395,11 @@ fn handle_request(
             approval_id,
             accepted,
         } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
+            let runtime = Arc::new(runtime);
             let request = runtime
                 .pending_approval(approval_id)?
                 .ok_or(RuntimeError::MissingApproval(approval_id))?;
+            let deferred = runtime.deferred_tool(approval_id)?;
             let resolution = crate::ApprovalResolution {
                 id: approval_id,
                 resolver: crate::ApprovalResolver::User,
@@ -403,7 +407,48 @@ fn handle_request(
                 intent_revision: request.intent_revision,
                 accepted,
             };
-            runtime.resolve_approval(resolution)?;
+            runtime.resolve_approval(resolution.clone())?;
+            if accepted && let Some(deferred) = deferred {
+                match deferred.1.as_str() {
+                    "write_file" | "edit_file" => crate::ToolOrchestrator::execute_approved_write(
+                        &runtime, request, resolution, deferred,
+                    ),
+                    "bash" | "shell" | "exec" => crate::ToolOrchestrator::execute_approved_bash(
+                        &runtime, request, resolution, deferred,
+                    ),
+                    name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
+                }
+                .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                if let Some(run_id) = runtime.active_run_id()? {
+                    let workspace_root = runtime.workspace_root()?;
+                    let messages = resolve_provider_messages(&workspace_root, &runtime)
+                        .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                    let cancellation = CancellationToken::new();
+                    if let Ok(mut active) = cancellations.lock() {
+                        active.insert(session_id, cancellation.clone());
+                    }
+                    let task_runtime = runtime.clone();
+                    let task_registry = provider_registry.clone();
+                    let task_provider_id = default_provider_id.clone();
+                    let task_resolver = credential_resolver.clone();
+                    let task_cancellations = cancellations.clone();
+                    tokio::spawn(async move {
+                        run_agent_loop(
+                            task_runtime,
+                            run_id,
+                            task_registry,
+                            task_provider_id,
+                            task_resolver,
+                            messages,
+                            cancellation,
+                        )
+                        .await;
+                        if let Ok(mut active) = task_cancellations.lock() {
+                            active.remove(&session_id);
+                        }
+                    });
+                }
+            }
             Ok(session_id)
         }) {
             Ok(session_id) => IpcResponse::ApprovalResolved {
@@ -459,7 +504,7 @@ fn handle_request(
     }
 }
 
-async fn run_with_provider(
+async fn run_agent_loop(
     runtime: Arc<AgentRuntime>,
     run_id: uuid::Uuid,
     provider_registry: ProviderRegistry,
@@ -480,55 +525,15 @@ async fn run_with_provider(
         Err(_) => return,
     };
 
-    let next_chunk_id = Arc::new(Mutex::new(
-        runtime
-            .events()
-            .ok()
-            .and_then(|events| {
-                events.iter().rev().find_map(|event| match &event.payload {
-                    crate::EventPayload::Agent(crate::AgentEvent::Chunk {
-                        run_id: event_run,
-                        chunk_id,
-                        ..
-                    }) if *event_run == run_id => Some(*chunk_id + 1),
-                    _ => None,
-                })
-            })
-            .unwrap_or(1),
-    ));
-
-    // TODO: credential resolution for OpenAI providers will be integrated
-    // when we add provider metadata and profile lookup to the registry.
-    // For now, credentials are resolved at provider registration time.
-    let credential = None;
-
-    let chunk_counter = next_chunk_id.clone();
-    let runtime_clone = runtime.clone();
-    let result = provider
-        .stream_messages(
-            &messages,
-            credential,
-            cancellation.clone(),
-            Box::new(move |chunk| {
-                let chunk_id = {
-                    let mut counter = chunk_counter.lock().unwrap();
-                    let id = *counter;
-                    *counter += 1;
-                    id
-                };
-                runtime_clone
-                    .record_agent_chunk(run_id, chunk_id, chunk)
-                    .map(|_| ())
-                    .map_err(|error| ProviderError::RequestFailed(error.to_string()))
-            }),
-        )
+    let result = AgentLoop::new(runtime.clone())
+        .execute(run_id, provider, messages, cancellation.clone())
         .await;
 
     match result {
         Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
         }
-        Err(ProviderError::Cancelled) => {}
+        Err(_) if cancellation.is_cancelled() => {}
         Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Failed {
                 run_id,
@@ -556,7 +561,57 @@ fn resolve_provider_messages(
         .into_iter()
         .map(|reference| ProviderMessage::system(reference.text))
         .collect::<Vec<_>>();
-    messages.push(ProviderMessage::user(runtime_intent(runtime)?));
+    let mut pending_assistant = String::new();
+    let mut has_user_intent = false;
+    for event in runtime.events()? {
+        match event.payload {
+            crate::EventPayload::Intent(intent) => {
+                if !pending_assistant.is_empty() {
+                    messages.push(ProviderMessage::assistant(std::mem::take(
+                        &mut pending_assistant,
+                    )));
+                }
+                messages.push(ProviderMessage::user(intent.text));
+                has_user_intent = true;
+            }
+            crate::EventPayload::Agent(crate::AgentEvent::Chunk { text, .. }) => {
+                pending_assistant.push_str(&text);
+            }
+            crate::EventPayload::Tool(crate::ToolEvent::Observed {
+                tool_call_id,
+                tool_name,
+                arguments_summary,
+                outcome,
+                preview,
+                artifact,
+                error,
+            }) => {
+                if !pending_assistant.is_empty() {
+                    messages.push(ProviderMessage::assistant(std::mem::take(
+                        &mut pending_assistant,
+                    )));
+                }
+                messages.push(ProviderMessage::tool(serde_json::to_string(
+                    &serde_json::json!({
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "arguments_summary": arguments_summary,
+                        "outcome": outcome,
+                        "preview": preview,
+                        "artifact": artifact,
+                        "error": error,
+                    }),
+                )?));
+            }
+            _ => {}
+        }
+    }
+    if !pending_assistant.is_empty() {
+        messages.push(ProviderMessage::assistant(pending_assistant));
+    }
+    if !has_user_intent {
+        messages.push(ProviderMessage::user(runtime_intent(runtime)?));
+    }
     Ok(messages)
 }
 
@@ -781,9 +836,68 @@ fn compute_approval_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CredentialStrategy, EventPayload, MemoryEventStore, ProviderProfile, RetryBudget};
+    use crate::{
+        CredentialStrategy, EventPayload, MemoryEventStore, ProviderError, ProviderProfile,
+        RetryBudget,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn sessions_keep_distinct_workspaces_after_attach() {
+        let root = tempfile::tempdir().expect("temp root");
+        let workspace_a = root.path().join("a");
+        let workspace_b = root.path().join("b");
+        std::fs::create_dir(&workspace_a).expect("create workspace a");
+        std::fs::create_dir(&workspace_b).expect("create workspace b");
+        std::fs::write(workspace_b.join("only-b.txt"), "b").expect("write fixture");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(root.path())),
+        );
+        let IpcResponse::Session {
+            session_id: session_a,
+            ..
+        } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace_a,
+        })
+        else {
+            panic!("create session a")
+        };
+        let IpcResponse::Session {
+            session_id: session_b,
+            ..
+        } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace_b,
+        })
+        else {
+            panic!("create session b")
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::Tool {
+                session_id: session_a,
+                kind: ReadOnlyToolKind::Read,
+                target: "only-b.txt".into(),
+                pattern: None,
+            }),
+            IpcResponse::ToolResult {
+                outcome: ToolOutcome::Denied { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness.handle(IpcRequest::Tool {
+                session_id: session_b,
+                kind: ReadOnlyToolKind::Read,
+                target: "only-b.txt".into(),
+                pattern: None,
+            }),
+            IpcResponse::ToolResult {
+                outcome: ToolOutcome::Allowed { .. },
+                ..
+            }
+        ));
+    }
 
     #[tokio::test]
     async fn explicit_local_profile_streams_durable_chunks_through_harness() {
@@ -816,8 +930,12 @@ mod tests {
             policy(),
             provider,
         );
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir()
+                .expect("workspace")
+                .canonicalize()
+                .expect("canonical workspace"),
+        }) else {
             panic!("session creation response")
         };
         assert!(matches!(
@@ -863,6 +981,12 @@ mod tests {
                 .collect::<String>(),
             "evidence answer"
         );
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Agent(crate::AgentEvent::Final { text, .. }) if text == "evidence answer"
+            )
+        }));
         server.await.unwrap();
     }
 
@@ -876,8 +1000,9 @@ mod tests {
             Arc::new(MemoryEventStore::default()),
             PolicyEngine::new(SandboxScope::local_workspace(&root)),
         );
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: root.clone(),
+        }) else {
             panic!("session creation response");
         };
 
@@ -916,8 +1041,9 @@ mod tests {
         let expected_decision = policy.evaluate(&denied_ssh);
         let store = Arc::new(MemoryEventStore::default());
         let harness = Harness::new(store.clone(), policy.clone());
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: root.clone(),
+        }) else {
             panic!("session creation response");
         };
 
@@ -984,8 +1110,12 @@ mod tests {
             Arc::new(resolver),
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir()
+                .expect("workspace")
+                .canonicalize()
+                .expect("canonical workspace"),
+        }) else {
             panic!("session creation response")
         };
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -1031,8 +1161,12 @@ mod tests {
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
         let harness = Harness::new(store.clone(), policy.clone());
 
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir()
+                .expect("workspace")
+                .canonicalize()
+                .expect("canonical workspace"),
+        }) else {
             panic!("session creation response");
         };
 
@@ -1118,8 +1252,12 @@ mod tests {
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
         let harness = Harness::new(store.clone(), policy.clone());
 
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir()
+                .expect("workspace")
+                .canonicalize()
+                .expect("canonical workspace"),
+        }) else {
             panic!("session creation response");
         };
 

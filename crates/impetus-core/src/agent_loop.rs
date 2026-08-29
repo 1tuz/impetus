@@ -47,11 +47,11 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    pub fn new(
-        runtime: Arc<AgentRuntime>,
-        policy: PolicyEngine,
-        workspace_root: std::path::PathBuf,
-    ) -> Self {
+    pub fn new(runtime: Arc<AgentRuntime>) -> Self {
+        let policy = runtime.policy();
+        let workspace_root = runtime
+            .workspace_root()
+            .expect("runtime always has a workspace root");
         Self {
             runtime,
             policy: policy.clone(),
@@ -97,6 +97,7 @@ impl AgentLoop {
 
             if tool_calls.is_empty() {
                 // No more tool calls — agent loop complete
+                self.runtime.record_agent_final(run_id, model_response)?;
                 return Ok(());
             }
 
@@ -109,15 +110,12 @@ impl AgentLoop {
             // Phase 4: Add observations to message history for next turn
             // Note: Using 'user' role for observations as assistant/tool_result
             // roles are not yet implemented in ProviderMessage
-            messages.push(ProviderMessage::user(format!(
-                "[Agent response]: {}",
-                model_response
-            )));
+            messages.push(ProviderMessage::assistant(model_response));
             for observation in observations {
-                messages.push(ProviderMessage::user(format!(
-                    "[Tool result]: {}",
-                    observation
-                )));
+                messages.push(ProviderMessage::tool(
+                    serde_json::to_string(&observation)
+                        .map_err(|error| ProviderError::RequestFailed(error.to_string()))?,
+                ));
             }
         }
     }
@@ -136,7 +134,21 @@ impl AgentLoop {
 
         let accumulated = Arc::new(std::sync::Mutex::new(String::new()));
         let runtime = self.runtime.clone();
-        let chunk_id = Arc::new(std::sync::Mutex::new(1u64));
+        let chunk_id = Arc::new(std::sync::Mutex::new(
+            self.runtime
+                .events()?
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    crate::EventPayload::Agent(crate::AgentEvent::Chunk {
+                        run_id: event_run,
+                        chunk_id,
+                        ..
+                    }) if *event_run == run_id => Some(*chunk_id + 1),
+                    _ => None,
+                })
+                .unwrap_or(1),
+        ));
         let accumulated_clone = accumulated.clone();
 
         provider
@@ -242,6 +254,8 @@ pub struct ToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mock_provider::MockStreamItem;
+    use crate::{MemoryEventStore, MockProvider, SandboxScope};
 
     #[test]
     fn max_iterations_constant_is_reasonable() {
@@ -270,7 +284,7 @@ More text after.
         };
         let policy = PolicyEngine::new(scope);
         let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+        let agent_loop = AgentLoop::new(runtime);
 
         let calls = agent_loop.extract_tool_calls(response);
         assert_eq!(calls.len(), 1);
@@ -301,7 +315,7 @@ More text after.
         };
         let policy = PolicyEngine::new(scope);
         let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+        let agent_loop = AgentLoop::new(runtime);
 
         let calls = agent_loop.extract_tool_calls(response);
         assert_eq!(calls.len(), 2);
@@ -322,7 +336,7 @@ More text after.
         };
         let policy = PolicyEngine::new(scope);
         let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+        let agent_loop = AgentLoop::new(runtime);
 
         let calls = agent_loop.extract_tool_calls(response);
         assert_eq!(calls.len(), 0);
@@ -350,7 +364,7 @@ More text after.
         };
         let policy = PolicyEngine::new(scope);
         let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+        let agent_loop = AgentLoop::new(runtime);
 
         let calls = agent_loop.extract_tool_calls(response);
         assert_eq!(calls.len(), 1);
@@ -374,11 +388,66 @@ More text after.
         };
         let policy = PolicyEngine::new(scope);
         let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+        let agent_loop = AgentLoop::new(runtime);
 
         let calls = agent_loop.extract_tool_calls(response);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "no_params_tool");
         assert_eq!(calls[0].arguments, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn read_observation_is_returned_to_the_next_model_turn() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        std::fs::write(workspace.path().join("evidence.txt"), "verified evidence")
+            .expect("write fixture");
+        let runtime = Arc::new(
+            AgentRuntime::create_with_workspace(
+                Arc::new(MemoryEventStore::default()),
+                PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("runtime"),
+        );
+        let run_id = runtime
+            .submit_intent_and_start_run("read evidence")
+            .expect("start run");
+        let provider = Arc::new(MockProvider::scripted(
+            "scripted",
+            "test",
+            [
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "<tool_use><tool_name>read_file</tool_name><parameters>{\"path\":\"evidence.txt\"}</parameters></tool_use>".into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 2,
+                    text: "final answer".into(),
+                }],
+            ],
+        ));
+        AgentLoop::new(runtime.clone())
+            .execute(
+                run_id,
+                provider.clone(),
+                vec![ProviderMessage::user("read evidence")],
+                CancellationToken::new(),
+            )
+            .await
+            .expect("agent loop");
+        let messages = provider.received_messages();
+        assert_eq!(messages.len(), 2);
+        let second_turn = serde_json::to_value(&messages[1]).expect("serialize messages");
+        assert!(second_turn.as_array().unwrap().iter().any(|message| {
+            message["role"] == "tool"
+                && message["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("verified evidence")
+        }));
+        assert!(runtime.events().unwrap().iter().any(|event| matches!(
+            &event.payload,
+            crate::EventPayload::Agent(crate::AgentEvent::Final { text, .. }) if text == "final answer"
+        )));
     }
 }
