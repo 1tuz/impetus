@@ -17,3 +17,4 @@ __pycache__/
 /.gitlab-ci-local/output/
 .codewhale/
 /.agents/
+/.openclaude/

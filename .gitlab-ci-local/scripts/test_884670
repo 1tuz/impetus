@@ -1,6 +1,0 @@
-set -eo pipefail
-exec 0< /dev/null
-cd /builds/fallback.group/fallback.project 
-echo "<gclShellPromptPlaceholder> cargo test --workspace --exclude agentic-terminal-app -- --test-threads=2"
-cargo test --workspace --exclude agentic-terminal-app -- --test-threads=2
-exit 0
