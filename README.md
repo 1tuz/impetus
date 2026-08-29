@@ -60,7 +60,9 @@ paths: [Architecture](ARCHITECTURE.md).
 
 ## Installation
 
-### Quick install (macOS Apple Silicon)
+### Quick install
+
+Supported platforms: macOS Apple Silicon, Linux x86_64
 
 ```zsh
 curl -fsSL https://raw.githubusercontent.com/1tuz/impetus/main/scripts/install.sh | zsh
