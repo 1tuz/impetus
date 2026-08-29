@@ -158,4 +158,52 @@ pub struct DeferredEffect {
 
 - B1 — typed client, push subscription, убрать poll loops
 - B2 — attachment/diff/detail endpoints
+
+---
+
+## Phase 1 (Binary Topology & Doctor baseline) ✅
+
+**Commit:** (pending)  
+**Gate:** `impetus doctor` reports daemon health, protocol compatibility, basic subsystem status.
+
+### Изменения
+
+**Binary topology consolidation:**
+- Все docs обновлены: `impetus` = client CLI, `impetusd` = daemon
+- `Taskfile.yml`: `task daemon` → `cargo run -p impetusd`, `task client` → `cargo run -p impetus`
+- Deprecated: `task harness`, `task cli` (forwarding с warnings)
+- Install/release docs зафиксированы на финальные binary roles
+
+**Doctor command (baseline):**
+- `crates/impetus/src/doctor.rs` — diagnostic framework
+- `impetus doctor` — human-readable report с remediation hints
+- `impetus doctor --json` — versioned schema (v1) для bug reports
+
+**Implemented probes:**
+- `impetus_version` — client version из CARGO_PKG_VERSION
+- `socket_path` — socket discovery, existence, permissions, Unix socket type validation
+- `daemon_connection` — connection attempt через UnixSocketTransport
+- `ipc_protocol` — Hello handshake, version/capabilities negotiation, Incompatible detection
+- `daemon_readiness` — health check via list_sessions
+
+**Output format:**
+- Human: `✓ ✗ ⚠ ○` status icons, remediation hints
+- JSON: versioned schema с `ProbeStatus` enum, optional `details` fields
+- Overall status: OK | WARN | ERROR | UNAVAILABLE
+
+**Tests:**
+- Existing unit tests pass (`cargo test -p impetus`)
+- Manual verification: daemon running/stopped scenarios
+
+**Outcome:** Phase 1 Doctor baseline готов. Расширенные probes (Event Store, Sandbox, Policy, ProviderRegistry, etc.) — следующие итерации.
+
+---
+
+## Исторический backlog (pre-2026-09, superseded)
+
+Следующие пункты были next steps на момент ранних фаз; часть уже поставлена
+после commits выше. Не использовать как текущий план:
+
+- B1 — typed client, push subscription, убрать poll loops
+- B2 — attachment/diff/detail endpoints
 - C1 — `ModelProvider` / registry (foundation есть; router — target)

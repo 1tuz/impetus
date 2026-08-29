@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use impetus_client::HarnessClient;
 use uuid::Uuid;
 
+mod doctor;
+
 #[derive(Parser)]
 #[command(name = "impetus")]
 #[command(version)]
@@ -14,6 +16,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run diagnostics and health checks
+    Doctor {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a new session
     Create,
     /// Stream events from a session
@@ -51,11 +59,17 @@ async fn main() -> Result<()> {
         format!("{home}/Library/Application Support/Impetus/harness.sock")
     });
 
+    if let Commands::Doctor { json } = cli.command {
+        doctor::run_diagnostics(&socket_path, json).await?;
+        return Ok(());
+    }
+
     let client = impetus_client::UnixSocketTransport::connect(&socket_path)
         .await
         .context("Failed to connect to impetusd. Make sure the daemon is running with: impetusd")?;
 
     match cli.command {
+        Commands::Doctor { .. } => unreachable!("handled above"),
         Commands::Create => {
             let response = client
                 .request(impetus_core::IpcRequest::CreateSession)

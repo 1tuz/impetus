@@ -42,12 +42,12 @@ placeholder responses не считаются done.
 
 ### Doctor
 
-- [ ] `impetus doctor` — human-readable diagnostics + remediation
-- [ ] `impetus doctor --json` — versioned redacted schema for bug reports
-- [ ] Probe: `impetus`/`impetusd` versions
-- [ ] Probe: daemon discovery, socket path, permissions
-- [ ] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
-- [ ] Probe: daemon readiness
+- [x] `impetus doctor` — human-readable diagnostics + remediation
+- [x] `impetus doctor --json` — versioned redacted schema for bug reports
+- [x] Probe: `impetus`/`impetusd` versions
+- [x] Probe: daemon discovery, socket path, permissions
+- [x] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
+- [x] Probe: daemon readiness
 - [ ] Probe: Event Store, SQLite WAL, schema/migrations
 - [ ] Probe: Artifact Store (durable target; flag ephemeral/in-memory attachment backing)
 - [ ] Probe: sandbox availability (Seatbelt fail-closed)
