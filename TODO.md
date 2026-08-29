@@ -108,10 +108,10 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ## Phase 4 — Output optimization
 
-- [ ] `TestObservation` from `cargo test` (native structured path)
-- [ ] `DiffObservation` from `git diff`
-- [ ] `SearchObservation` from repo search
-- [ ] `PipelineObservation` from CI backends
+- [x] `TestObservation` from `cargo test` (native structured path)
+- [x] `DiffObservation` from `git diff`
+- [x] `SearchObservation` from repo search
+- [x] `PipelineObservation` from CI backends
 - [ ] Builtin output reducer (token-bounded)
 - [ ] RTK optional adapter: probe capabilities, not hard dependency
 - [ ] Bounded raw fallback → `ArtifactRef`

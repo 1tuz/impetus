@@ -18,6 +18,7 @@ pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
+pub mod observations;
 pub mod mock_provider;
 pub mod module;
 pub mod module_fallback;
@@ -83,6 +84,10 @@ pub use instructions::{
 };
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
 pub use mock_provider::{MockProvider, MockStreamItem as MockProviderItem};
+pub use observations::{
+    DiffHunk, DiffObservation, DiffSource, PipelineJob, PipelineObservation, SearchMatch,
+    SearchObservation, TestFailure, TestObservation,
+};
 pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_provider::{OpenAiProvider, RetryBudget as OpenAiRetryBudget};
 pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry};
