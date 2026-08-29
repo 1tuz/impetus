@@ -74,15 +74,15 @@ placeholder responses не считаются done.
 
 Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
-- [ ] Typed service contracts (decouple loop/scheduling from concrete backends)
-- [ ] Replaceable `AgentLoopStrategy` and `AgentScheduler` behind contracts (Kernel pipeline unchanged)
-- [ ] `ServiceRegistry` / `ModuleRegistry`
-- [ ] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
-- [ ] Capability negotiation and probing API (not version-only checks)
+- [x] Typed service contracts (decouple loop/scheduling from concrete backends)
+- [x] Replaceable `AgentLoopStrategy` and `AgentScheduler` behind contracts (Kernel pipeline unchanged)
+- [x] `ServiceRegistry` / `ModuleRegistry`
+- [x] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
+- [x] Capability negotiation and probing API (not version-only checks)
 - [ ] Module lifecycle: discover, probe, start, health, stop
-- [ ] Compatibility: harness protocol, service contracts, platforms, external versions
-- [ ] Permissions: filesystem, process, network, secrets, remote
-- [ ] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
+- [x] Compatibility: harness protocol, service contracts, platforms, external versions
+- [x] Permissions: filesystem, process, network, secrets, remote
+- [x] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
 - [ ] Safe fallback policies per module kind
 - [ ] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
 - [ ] External module isolation: separate process + versioned IPC + sandbox where applicable
