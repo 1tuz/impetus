@@ -364,7 +364,7 @@ fn handle_request(
             target,
             pattern,
         } => {
-            let artifact_store = DurableArtifactStore::open(artifact_root().join("artifacts"))
+            let artifact_store = DurableArtifactStore::open(crate::default_artifact_root())
                 .expect("open artifact store");
             let tool = match kind {
                 ReadOnlyToolKind::List => ReadOnlyTool::List {
@@ -517,7 +517,8 @@ fn handle_request(
                 let request = runtime
                     .pending_approval(approval_id)?
                     .ok_or(RuntimeError::MissingApproval(approval_id))?;
-                let detail = compute_approval_detail(request, &workspace_root, &attachments)?;
+                let session_workspace = runtime.workspace_root()?;
+                let detail = compute_approval_detail(request, &session_workspace, &attachments)?;
                 Ok((session_id, detail))
             },
         ) {
@@ -746,21 +747,6 @@ fn gather_subsystem_health(
 
 pub fn policy() -> PolicyEngine {
     PolicyEngine::new(SandboxScope::local_workspace("."))
-}
-
-fn data_root() -> Result<PathBuf> {
-    Ok(std::env::var_os("IMPETUS_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Impetus")
-        }))
-}
-
-fn artifact_root() -> PathBuf {
-    data_root()
-        .map(|root| root.join("artifacts"))
-        .unwrap_or_else(|_| PathBuf::from("artifacts"))
 }
 
 /// Compute detailed approval information with diff preview and scope estimates.
@@ -1349,6 +1335,60 @@ mod tests {
         assert!(detail.diff_preview.unwrap().contains("new file"));
     }
 
+    #[test]
+    fn approval_detail_uses_the_session_workspace() {
+        let root = tempfile::tempdir().expect("root");
+        let daemon_workspace = root.path().join("daemon");
+        let session_workspace = root.path().join("session");
+        std::fs::create_dir(&daemon_workspace).expect("daemon workspace");
+        std::fs::create_dir(&session_workspace).expect("session workspace");
+        std::fs::write(session_workspace.join("existing.txt"), "session content")
+            .expect("session fixture");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(&daemon_workspace));
+        let harness = Harness::new(Arc::new(MemoryEventStore::default()), policy.clone());
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: session_workspace,
+        }) else {
+            panic!("session creation")
+        };
+        let runtime = AgentRuntime::attach(harness.store(), policy, session_id).expect("attach");
+        runtime.submit_intent("edit session file").expect("intent");
+        runtime
+            .request_action(crate::Action {
+                origin: crate::ActionOrigin::Agent,
+                kind: crate::ActionKind::WriteFile,
+                summary: "edit existing file".into(),
+                target: Some("existing.txt".into()),
+            })
+            .expect("approval request");
+        let approval_id = runtime
+            .events()
+            .expect("events")
+            .into_iter()
+            .find_map(|event| match event.payload {
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.id)
+                }
+                _ => None,
+            })
+            .expect("approval id");
+
+        let IpcResponse::ApprovalDetail { detail, .. } =
+            harness.handle(IpcRequest::GetApprovalDetail {
+                session_id,
+                approval_id,
+            })
+        else {
+            panic!("approval detail")
+        };
+        assert!(
+            detail
+                .diff_preview
+                .expect("existing file diff")
+                .contains("session content")
+        );
+    }
+
     #[tokio::test]
     async fn approval_resume_returns_durable_tool_observations_to_the_model() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1538,6 +1578,63 @@ mod tests {
                     error: Some(error),
                     ..
                 }) if error == "user rejected approval"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_an_active_agent_run_without_a_final_answer() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let provider = Arc::new(MockProvider::scripted(
+            "slow-scripted",
+            "test-model",
+            [vec![MockStreamItem::Chunk {
+                chunk_id: 1,
+                text: "still running ".repeat(200),
+            }]],
+        ));
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider,
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("session creation")
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "start a long task".into(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness.handle(IpcRequest::Cancel { session_id }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Cancelled,
+                ..
+            }
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("event stream")
+        };
+        assert!(matches!(
+            events.last().map(|event| &event.payload),
+            Some(EventPayload::Run(crate::RunEvent::Cancelled { .. }))
+        ));
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.payload,
+                EventPayload::Agent(crate::AgentEvent::Final { .. })
             )
         }));
     }

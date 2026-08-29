@@ -57,6 +57,7 @@ pub use ci::{
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
 pub use durable_artifacts::{
     ArtifactMeta as DurableArtifactMeta, ArtifactRef as DurableArtifactRef, DurableArtifactStore,
+    default_artifact_root,
 };
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,

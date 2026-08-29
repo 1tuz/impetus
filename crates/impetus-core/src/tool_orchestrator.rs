@@ -58,13 +58,23 @@ pub type ToolOutcomeStatus = ToolEventOutcome;
 pub struct ToolOrchestrator {
     policy: PolicyEngine,
     workspace_root: PathBuf,
+    artifact_root: PathBuf,
 }
 
 impl ToolOrchestrator {
     pub fn new(policy: PolicyEngine, workspace_root: PathBuf) -> Self {
+        Self::with_artifact_root(policy, workspace_root, crate::default_artifact_root())
+    }
+
+    pub fn with_artifact_root(
+        policy: PolicyEngine,
+        workspace_root: PathBuf,
+        artifact_root: PathBuf,
+    ) -> Self {
         Self {
             policy,
             workspace_root,
+            artifact_root,
         }
     }
 
@@ -255,12 +265,12 @@ impl ToolOrchestrator {
             },
             name => return Err(OrchestratorError::ToolNotFound(name.into())),
         };
-        let artifacts =
-            DurableArtifactStore::open(std::env::temp_dir().join("impetus-agent-artifacts"))
-                .map_err(|error| OrchestratorError::ToolFailed {
-                    tool: tool_call.name.clone(),
-                    reason: error.to_string(),
-                })?;
+        let artifacts = DurableArtifactStore::open(&self.artifact_root).map_err(|error| {
+            OrchestratorError::ToolFailed {
+                tool: tool_call.name.clone(),
+                reason: error.to_string(),
+            }
+        })?;
         let seam = EffectSeam::with_sandbox(
             self.policy.clone(),
             Sandbox::workspace(&self.workspace_root),
@@ -696,5 +706,43 @@ mod tests {
                 .expect("approved shell execution");
         assert_eq!(observation.outcome, ToolOutcomeStatus::Success);
         assert!(observation.preview.contains("verified"));
+    }
+
+    #[tokio::test]
+    async fn large_read_artifact_survives_store_reopen() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let artifact_root = tempfile::tempdir().expect("artifact root");
+        let content = "durable evidence\n".repeat(2_000);
+        std::fs::write(workspace.path().join("large.txt"), &content).expect("fixture");
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        ));
+        let orchestrator = ToolOrchestrator::with_artifact_root(
+            runtime.policy(),
+            workspace.path().to_path_buf(),
+            artifact_root.path().to_path_buf(),
+        );
+
+        let observation = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "read-large".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "large.txt"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("read tool")
+            .pop()
+            .expect("observation");
+        let artifact = observation.artifact.expect("large output artifact");
+        let reopened = DurableArtifactStore::open(artifact_root.path()).expect("reopen store");
+        assert_eq!(
+            reopened.read(&artifact.id).expect("artifact bytes"),
+            content.as_bytes()
+        );
     }
 }

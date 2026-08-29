@@ -16,6 +16,19 @@ pub struct DurableArtifactStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// Stable local storage for tool artifacts. The location can be overridden for
+/// tests and portable installations without moving event data into a workspace.
+pub fn default_artifact_root() -> PathBuf {
+    std::env::var_os("IMPETUS_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join("Library/Application Support/Impetus"))
+        })
+        .unwrap_or_else(|| PathBuf::from("artifacts"))
+        .join("artifacts")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: String,

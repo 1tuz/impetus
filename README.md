@@ -56,6 +56,8 @@ Zap keeps its own UI as another `HarnessClient` consumer. See
   experimental Zap integration baseline.
 - Agent-loop vertical for filesystem reads plus approval-gated writes and shell
   commands; each result is persisted before it is returned to the model.
+- Large read results use content-addressed durable artifacts; events retain a
+  bounded, redacted preview and an artifact reference.
 
 ## Request control flow
 
