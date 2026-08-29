@@ -8,6 +8,7 @@ pub mod approval;
 pub mod attachments;
 pub mod budget;
 pub mod ci;
+pub mod diagnostics;
 pub mod effects;
 pub mod events;
 pub mod execution;
@@ -42,6 +43,7 @@ pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
+pub use diagnostics::{SubsystemHealth, SubsystemStatus};
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,

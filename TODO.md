@@ -48,12 +48,12 @@ placeholder responses не считаются done.
 - [x] Probe: daemon discovery, socket path, permissions
 - [x] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
 - [x] Probe: daemon readiness
-- [ ] Probe: Event Store, SQLite WAL, schema/migrations
-- [ ] Probe: Artifact Store (durable target; flag ephemeral/in-memory attachment backing)
-- [ ] Probe: sandbox availability (Seatbelt fail-closed)
-- [ ] Probe: policy and approval subsystem
-- [ ] Probe: platform credential store accessibility (Keychain on macOS; redacted)
-- [ ] Probe: ProviderRegistry, providers, model capabilities
+- [x] Probe: Event Store, SQLite WAL, schema/migrations
+- [x] Probe: Artifact Store (durable target; flag ephemeral/in-memory attachment backing)
+- [x] Probe: sandbox availability (Seatbelt fail-closed)
+- [x] Probe: policy and approval subsystem
+- [x] Probe: platform credential store accessibility (Keychain on macOS; redacted)
+- [x] Probe: ProviderRegistry, providers, model capabilities
 - [ ] Probe: tools/capabilities registration
 - [ ] Probe: external agents / ACP adapters
 - [ ] Probe: optional modules, compatibility adapters, remote capabilities

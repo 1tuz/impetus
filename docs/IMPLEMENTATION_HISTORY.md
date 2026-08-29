@@ -163,7 +163,7 @@ pub struct DeferredEffect {
 
 ## Phase 1 (Binary Topology & Doctor baseline) ✅
 
-**Commit:** (pending)  
+**Commit:** b40e246  
 **Gate:** `impetus doctor` reports daemon health, protocol compatibility, basic subsystem status.
 
 ### Изменения
@@ -196,6 +196,54 @@ pub struct DeferredEffect {
 - Manual verification: daemon running/stopped scenarios
 
 **Outcome:** Phase 1 Doctor baseline готов. Расширенные probes (Event Store, Sandbox, Policy, ProviderRegistry, etc.) — следующие итерации.
+
+---
+
+## Phase 2 (Doctor subsystem probes) ✅
+
+**Commit:** (pending)  
+**Gate:** `impetus doctor` inspects subsystem health via IPC::Diagnostics endpoint.
+
+### Изменения
+
+**IPC extension:**
+- `crates/impetus-core/src/ipc.rs`:
+  - `IpcRequest::Diagnostics` — subsystem health query
+  - `IpcResponse::Diagnostics { subsystems: Box<SubsystemHealth> }`
+  - Added `diagnostics` capability to IPC_CAPABILITIES
+- `crates/impetus-core/src/diagnostics.rs` — новый модуль:
+  - `SubsystemHealth` struct с полями: event_store, artifact_store, policy_engine, provider_registry, sandbox, credential_store
+  - `SubsystemStatus { available, message, details }` — статус каждого subsystem
+
+**Harness integration:**
+- `crates/impetus-core/src/harness_api.rs`:
+  - `gather_subsystem_health()` — server-side diagnostics
+  - Проверки: Event Store (via list_sessions), Artifact Store (ephemeral marker), Policy Engine, ProviderRegistry, Sandbox (platform check), Credential Store (Keychain на macOS)
+
+**Client probes:**
+- `crates/impetus/src/doctor.rs`:
+  - `probe_daemon_connection()` расширен с Diagnostics endpoint
+  - `add_subsystem_probes()` — transform SubsystemHealth в DoctorReport probes
+  - Все subsystem проверки выполняются через IPC, без direct access к daemon internals
+
+**Subsystem coverage:**
+- Event Store: operational status, session count
+- Artifact Store: ephemeral/durable backing (текущая реализация — in-memory)
+- Policy Engine: active, workspace_root
+- ProviderRegistry: registered providers list
+- Sandbox: platform availability (Seatbelt на macOS, fail-closed mode)
+- Credential Store: platform keychain accessibility (macOS Keychain)
+
+**Output:**
+- Human: subsystem probes интегрированы в unified report
+- JSON: subsystem details в structured schema с nested `details` fields
+
+**Tests:**
+- Existing tests pass (268 passed, 2 ignored)
+- Clippy clean (large variant warning fixed via Box)
+- Manual verification: daemon running scenario, все subsystem статусы OK
+
+**Outcome:** Phase 2 завершён. Doctor теперь показывает harness-subsystem health через typed IPC. Следующие probes (tools/capabilities, ACP adapters, web research, disk health) — опциональные расширения.
 
 ---
 

@@ -278,6 +278,28 @@ async fn probe_daemon_connection(report: &mut DoctorReport, socket_path: &str) {
                         format!("Cannot list sessions: {}", e),
                         "Daemon may be starting or unhealthy",
                     ));
+                    return;
+                }
+            }
+
+            // Probe: subsystem health via Diagnostics endpoint
+            match client.request(impetus_core::IpcRequest::Diagnostics).await {
+                Ok(impetus_core::IpcResponse::Diagnostics { subsystems }) => {
+                    add_subsystem_probes(report, *subsystems);
+                }
+                Ok(other) => {
+                    report.add(ProbeResult::warn(
+                        "subsystems",
+                        format!("Unexpected diagnostics response: {:?}", other),
+                        "Daemon may not support diagnostics",
+                    ));
+                }
+                Err(e) => {
+                    report.add(ProbeResult::warn(
+                        "subsystems",
+                        format!("Cannot query subsystems: {}", e),
+                        "Daemon may not support diagnostics",
+                    ));
                 }
             }
         }
@@ -292,6 +314,30 @@ async fn probe_daemon_connection(report: &mut DoctorReport, socket_path: &str) {
             );
         }
     }
+}
+
+fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::SubsystemHealth) {
+    let status_to_probe = |name: &str, sub: impetus_core::SubsystemStatus| {
+        if sub.available {
+            ProbeResult::ok(name, sub.message).with_details(sub.details.unwrap_or_default())
+        } else {
+            ProbeResult::warn(name, sub.message, "Check daemon configuration")
+                .with_details(sub.details.unwrap_or_default())
+        }
+    };
+
+    report.add(status_to_probe("event_store", subsystems.event_store));
+    report.add(status_to_probe("artifact_store", subsystems.artifact_store));
+    report.add(status_to_probe("policy_engine", subsystems.policy_engine));
+    report.add(status_to_probe(
+        "provider_registry",
+        subsystems.provider_registry,
+    ));
+    report.add(status_to_probe("sandbox", subsystems.sandbox));
+    report.add(status_to_probe(
+        "credential_store",
+        subsystems.credential_store,
+    ));
 }
 
 fn print_human_report(report: &DoctorReport) {

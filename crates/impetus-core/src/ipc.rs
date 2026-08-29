@@ -16,6 +16,7 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "get_attachment",
     "get_approval_detail",
     "context",
+    "diagnostics",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +68,7 @@ pub enum IpcRequest {
         session_id: Uuid,
         approval_id: Uuid,
     },
+    Diagnostics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,7 +116,10 @@ pub enum IpcResponse {
     },
     ApprovalDetail {
         session_id: Uuid,
-        detail: crate::ApprovalDetail,
+        detail: Box<crate::ApprovalDetail>,
+    },
+    Diagnostics {
+        subsystems: Box<crate::SubsystemHealth>,
     },
     Incompatible {
         supported_version: u16,

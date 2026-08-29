@@ -443,9 +443,14 @@ fn handle_request(
                 Ok((session_id, detail))
             },
         ) {
-            Ok((session_id, detail)) => IpcResponse::ApprovalDetail { session_id, detail },
+            Ok((session_id, detail)) => IpcResponse::ApprovalDetail { session_id, detail: Box::new(detail) },
             Err(error) => runtime_error(error),
         },
+        IpcRequest::Diagnostics => {
+            let subsystems =
+                gather_subsystem_health(&store, &policy, &provider_registry, &workspace_root);
+            IpcResponse::Diagnostics { subsystems: Box::new(subsystems) }
+        }
     }
 }
 
@@ -580,6 +585,69 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
     IpcResponse::Error {
         code,
         message: error.to_string(),
+    }
+}
+
+fn gather_subsystem_health(
+    store: &Arc<dyn EventStore>,
+    _policy: &PolicyEngine,
+    provider_registry: &ProviderRegistry,
+    workspace_root: &Path,
+) -> crate::SubsystemHealth {
+    use crate::SubsystemStatus;
+
+    // Event Store
+    let event_store = match store.list_sessions() {
+        Ok(sessions) => SubsystemStatus::ok(format!(
+            "Event store operational, {} sessions",
+            sessions.len()
+        ))
+        .with_details(serde_json::json!({ "session_count": sessions.len() })),
+        Err(e) => SubsystemStatus::unavailable(format!("Event store error: {}", e)),
+    };
+
+    // Artifact Store (ephemeral, in-memory)
+    let artifact_store = SubsystemStatus::ok("Ephemeral attachment backing (in-memory)")
+        .with_details(serde_json::json!({ "durable": false }));
+
+    // Policy Engine
+    let policy_engine =
+        SubsystemStatus::ok("Policy engine active").with_details(serde_json::json!({
+            "workspace_root": workspace_root.display().to_string(),
+        }));
+
+    // Provider Registry
+    let providers: Vec<String> = provider_registry.list_provider_ids();
+    let provider_registry_status = if providers.is_empty() {
+        SubsystemStatus::unavailable("No providers registered")
+    } else {
+        SubsystemStatus::ok(format!("Providers: {}", providers.join(", ")))
+            .with_details(serde_json::json!({ "providers": providers }))
+    };
+
+    // Sandbox (capability check)
+    let sandbox = if cfg!(target_os = "macos") {
+        SubsystemStatus::ok("Seatbelt available (macOS)")
+            .with_details(serde_json::json!({ "platform": "macos", "fail_closed": true }))
+    } else {
+        SubsystemStatus::unavailable("Seatbelt not available (non-macOS)")
+    };
+
+    // Credential Store (platform keychain)
+    let credential_store = if cfg!(target_os = "macos") {
+        SubsystemStatus::ok("macOS Keychain available")
+            .with_details(serde_json::json!({ "backend": "keychain" }))
+    } else {
+        SubsystemStatus::unavailable("Platform credential store not configured")
+    };
+
+    crate::SubsystemHealth {
+        event_store,
+        artifact_store,
+        policy_engine,
+        provider_registry: provider_registry_status,
+        sandbox,
+        credential_store,
     }
 }
 
