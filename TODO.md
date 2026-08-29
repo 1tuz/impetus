@@ -32,9 +32,10 @@ placeholder responses не считаются done.
 
 ### Binary topology
 
-- [ ] Зафиксировать target roles во всех user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
-- [ ] `task harness` → `cargo run -p impetusd` (не `impetus`)
-- [ ] `task cli` → `cargo run -p impetus` (deprecate `impetus-cli` в dev docs)
+- [x] Зафиксировать target roles во всех user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
+- [x] `task daemon` → `cargo run -p impetusd` (не `harness`)
+- [x] `task client` → `cargo run -p impetus` (не `cli`)
+- [x] `task harness` / `task cli` deprecated aliases
 - [ ] Release artifact: оба binary с явными ролями в install script help
 - [ ] `impetus` auto-discovers socket и safely spawns `impetusd` if needed
 - [ ] Install/uninstall docs: `impetusd` daemon vs `impetus` client

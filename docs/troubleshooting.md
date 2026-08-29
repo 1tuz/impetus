@@ -5,8 +5,8 @@
 Start the daemon before the CLI client or Zap adapter:
 
 ```zsh
-cargo run -p impetusd
-# or, after install:
+task daemon
+# или после установки:
 impetusd
 ```
 

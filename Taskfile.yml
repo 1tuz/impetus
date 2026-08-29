@@ -46,15 +46,25 @@ tasks:
       - task: check
       - task: lint
 
-  harness:
-    desc: Запустить headless harness daemon (impetusd) в текущей terminal tab
+  daemon:
+    desc: Запустить impetusd (authoritative daemon) в текущей terminal tab
     cmds:
       - cargo run -p impetusd
 
-  cli:
-    desc: 'Вызвать impetus client CLI; пример: task cli -- create'
+  harness:
+    desc: 'DEPRECATED: используй task daemon'
+    cmds:
+      - task: daemon
+
+  client:
+    desc: 'Вызвать impetus client CLI; пример: task client -- create'
     cmds:
       - cargo run -p impetus -- {{.CLI_ARGS}}
+
+  cli:
+    desc: 'DEPRECATED: используй task client'
+    cmds:
+      - task: client
 
   ci:list:
     desc: Показать GitLab CI jobs из .gitlab-ci.yml

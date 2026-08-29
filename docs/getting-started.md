@@ -19,6 +19,8 @@ task verify
 Terminal 1 — daemon:
 
 ```zsh
+task daemon
+# или напрямую:
 cargo run -p impetusd
 ```
 
@@ -28,20 +30,20 @@ cargo run -p impetusd
 Terminal 2 — CLI client:
 
 ```zsh
+task client -- create
+# или напрямую:
 cargo run -p impetus -- create
 ```
 
 UUID из вывода — для последующих команд:
 
 ```zsh
-cargo run -p impetus -- prompt <session-id> "Summarize this repository"
-cargo run -p impetus -- stream <session-id>
-cargo run -p impetus -- --help
+task client -- prompt <session-id> "Summarize this repository"
+task client -- stream <session-id>
+task client -- --help
 ```
 
 `stream` печатает stored events; это не interactive TUI.
-
-Legacy: `cargo run -p impetus-cli` — deprecated, используй `impetus`.
 
 ## Provider profile
 

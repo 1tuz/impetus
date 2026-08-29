@@ -59,12 +59,16 @@ task verify
 В первом terminal — daemon:
 
 ```zsh
+task daemon
+# или напрямую:
 cargo run -p impetusd
 ```
 
 Во втором — client CLI:
 
 ```zsh
+task client -- create
+# или напрямую:
 cargo run -p impetus -- create
 cargo run -p impetus -- prompt <session-id> "Опиши этот репозиторий"
 cargo run -p impetus -- stream <session-id>
