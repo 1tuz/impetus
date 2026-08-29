@@ -1,95 +1,139 @@
-# Agentic Terminal для macOS
+# Impetus
 
-Нативный терминал на Rust, в котором обычные shell-команды и задачи, написанные человеческим языком, живут в одном окне. Источник действия всегда явный: команда человека идёт в уже открытый им PTY, а предложение агента проходит `Policy → Allow | NeedsApproval | Deny`; только `Allow` или подтверждённый `NeedsApproval` продолжаются через `Sandbox → Capability → Execution`. Решения и эффекты записываются в локальную историю.
+> **An ultra-lightweight, Rust-built, terminal-first, local-first, all-in-one agent harness for engineering.**
 
-Это небольшой, проверяемый каркас текущего этапа v0.1. Он запускает окно GPUI-CE, использует SQLite WAL для event store и содержит policy/approval и валидируемый каталог будущих capabilities. Настоящий PTY, LLM, SSH, tmux и SFTP появляются только на следующих последовательных этапах.
+[![License](https://img.shields.io/badge/license-Apache--2.0-4B8BBE.svg)](LICENSE)
+[![Architecture](https://img.shields.io/badge/architecture-local--first-000000.svg)](#why-it-exists)
 
-Будущий [Safe Auto mode](docs/SAFE_AUTO_MODE.md) не является bypass: hard-deny и human-only действия не разрешает классификатор, а любой сбой reviewer закрывается блокировкой. [Скриншоты и файлы](docs/ATTACHMENTS.md) будут передаваться только после preview, outbound policy и capability negotiation; сырые bytes не хранятся в event log.
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%"
+       alt="Impetus: a local runtime for durable engineering-agent sessions and explicit control">
+</p>
 
-## Принципы
+Impetus is an ultra-lightweight, Rust-built all-in-one local agent harness: durable sessions, model/tool
+orchestration, safety decisions, credentials, and execution authority stay
+together behind replaceable terminal and remote clients. A client restart
+cannot silently discard an in-flight session or expand its access.
 
-- **macOS-first:** Rust + GPUI-CE + Metal. Нет Electron, Chromium, Tauri/WebView и локального web-интерфейса.
-- **local-first:** история сессий и настройки лежат на Mac; удалённые подключения включаются человеком через профиль.
-- **Ограниченная RAM:** отображаются только видимые Blocks/строки; PTY-вывод будет храниться чанками на диске с маленьким горячим окном в памяти.
-- **Терминал без агента:** прямой ввод команды не проходит через модель и работает без сетевого провайдера.
-- **Безопасность по умолчанию:** модель может предложить действие, но не может сама его одобрить.
+## Why it exists
 
-## Что уже есть
+Engineering agents need long-lived state and controlled tools without making a
+terminal UI, provider, or client application the source of truth. The harness
+is the sole authoritative owner of durable runtime/state; clients never own
+SQLite, policy, model/tool runtime, credentials, or session authority.
 
-| Слой | Состояние v0.1 |
+## Current and target
+
+**Current.** The workspace provides the `impetus` local daemon, durable SQLite
+events, versioned Unix-socket IPC, `HarnessClient`, an `impetus-cli` reference
+client, direct-provider foundations, and experimental Zap adapter baseline.
+`impetus-cli` is command/JSON oriented; no standalone TUI is implemented yet.
+
+**Target.** `impetus` becomes the first-class standalone CLI/TUI for ordinary
+terminals and SSH. Zap keeps its own UI and connects to Impetus as an agent
+backend. Neither client path owns runtime state, and neither requires a custom
+terminal emulator inside Impetus.
+
+## What works now
+
+- Durable sessions and ordered audit events in SQLite WAL.
+- Versioned local Unix-socket negotiation before a client can act.
+- Typed actions through policy, approval, sandbox, capability, and execution
+  checks.
+- Keychain references or a local no-secret provider endpoint; profiles never
+  store raw tokens.
+- Typed Rust client transport, a reference CLI, ACP gateway library, and an
+  experimental Zap integration baseline.
+
+## Request control flow
+
+<p align="center">
+  <a href="./docs/architecture-map.html">
+    <img src="./assets/readme/request-control-flow-v2.svg" width="100%"
+         alt="Request control flow: a client sends a request to Impetus, which controls approval, execution, and durable local history">
+  </a>
+</p>
+
+This is the request-and-safety flow, not a complete system map. The canonical
+architecture explains current components, ownership, and the planned client
+paths: [Architecture](ARCHITECTURE.md).
+
+## Current development setup
+
+Impetus currently runs from a developer checkout; it does not yet publish a
+curl installer or prebuilt binaries.
+
+```zsh
+git clone https://github.com/1tuz/impetus.git
+cd impetus
+task setup
+task verify
+```
+
+Start the daemon in one terminal. Without a provider profile, it uses the
+repository's mock streaming provider.
+
+```zsh
+cargo run -p impetus
+```
+
+In another terminal, create a session and use its UUID with the reference CLI:
+
+```zsh
+cargo run -p impetus-cli -- create
+cargo run -p impetus-cli -- prompt <session-id> "Summarize this repository"
+cargo run -p impetus-cli -- stream <session-id>
+```
+
+For the provider-profile contract, see [configuration](docs/configuration.md).
+
+## Planned distribution
+
+The product distribution target is a prebuilt CLI with checksums, a curl
+installer, clean-machine smoke checks, and update/uninstall documentation.
+This is planned work, not an installation command today.
+
+## Design lineage
+
+Impetus is not a port or fork of one coding agent. It combines proven ideas
+from Codex, Claude Code, OpenClaude, jcode, DeepSeek Harness, Qwen Code, Pi,
+OpenCode, Aider, Kimi Code, and RTK in its own local-first Rust architecture.
+See [Design references](docs/REFERENCES.md).
+
+## Project layout
+
+| Path | Role |
 | --- | --- |
-| Нативное окно GPUI-CE | минимально реализовано |
-| События / runtime | реализованы базовые типы; resume и execution lifecycle ещё не входят в v0.1 |
-| SQLite | WAL event store подключён к приложению; reopen покрыт тестом |
-| Policy / approval | различает user/agent origin, проверяет file scope и покрыт unit-тестами |
-| Capability manifests | каталог валидируется; все пять implementation помечены `planned` |
-| PTY, ANSI, LLM, SSH, tmux, SFTP | спроектированы, но сознательно отложены |
+| `crates/impetus-core` | Durable events, runtime, policy, effects, providers, tools, and IPC types. |
+| `crates/impetus` | Headless Unix-socket daemon and macOS Keychain resolver. |
+| `crates/impetus-cli` | Current reference command-line client. |
+| `crates/impetus-client` | `HarnessClient` contract and local transports. |
+| `crates/impetus-zap-adapter` | Historical/experimental Zap integration baseline. |
+| `crates/impetus-acp-gateway` | ACP profile and gateway library. |
 
-## Требования macOS
+## Documentation
 
-1. Xcode и Command Line Tools: GPUI-CE использует Metal.
-2. Rust `1.98.0`: фиксируется в `rust-toolchain.toml`.
-3. Сеть нужна только для первого скачивания Cargo-зависимостей и для явно одобренных remote capabilities.
+- [Architecture](ARCHITECTURE.md) — canonical current/target architecture.
+- [Roadmap](docs/ROADMAP.md) — implemented foundations and planned gates.
+- [References](docs/REFERENCES.md) — design lineage, protocols, and libraries.
+- [Getting started](docs/getting-started.md) — source-checkout setup.
+- [Development](docs/development.md) — workspace checks and CI.
+- [Implementation history](docs/IMPLEMENTATION_HISTORY.md) — retained delivery
+  record; historical snapshots are not current architecture.
 
-Быстрая проверка окружения:
-
-```zsh
-./scripts/bootstrap-macos.sh
-```
-
-## Запуск и проверка
+## Development
 
 ```zsh
-cargo fmt --all -- --check
-cargo test -p agentic-terminal-core
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p agentic-terminal-app
+task verify
 ```
 
-Повторяемые команды собраны в [Taskfile.yml](Taskfile.yml):
+When `Cargo.toml` or `Cargo.lock` changes, also run `task security`.
 
-```zsh
-task setup     # Xcode/Metal/Rust и Git hooks
-task verify    # fmt, core tests, workspace check, clippy
-task run       # native GPUI приложение
-task --list    # все доступные задачи
-```
+## Contributing
 
-Нужен [Task v3](https://taskfile.dev/docs/installation); на macOS официальный способ — `brew install go-task`. Git subject проверяется repository-owned `commit-msg` hook и командой `task commit:check MESSAGE='ATM-123 docs: Описана схема'`.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). For vulnerabilities, follow
+[SECURITY.md](SECURITY.md).
 
-## Документация
+## License
 
-- [Архитектура и границы ответственности](docs/ARCHITECTURE.md)
-- [Наглядная схема архитектуры](docs/architecture.html)
-- [Детальная схема Safe Auto](docs/safe-auto-architecture.html)
-- [GUI/UX-спецификация](docs/GUI_UX.md)
-- [ACP, Auth Center и внешние coding-agents](docs/ACP_AND_AUTH.md)
-- [Safe Auto mode и threat model](docs/SAFE_AUTO_MODE.md)
-- [Скриншоты, файлы и model context](docs/ATTACHMENTS.md)
-- [Roadmap v0.1–v0.7 и критерии готовности](docs/ROADMAP.md)
-- [Измерения и ограничения v0.1](docs/benchmarks/v0.1.md)
-- [Ближайший исполнимый список задач](TODO.md)
-- [Промт для coding-агента](docs/CODING_AGENT_PROMPT_RU.md)
-- [Правила для coding-агентов](AGENTS.md)
-- [Референсы и статус их использования](docs/REFERENCES.md)
-
-## Структура
-
-```text
-crates/agentic-terminal-app/   GPUI-CE представление и macOS процесс
-crates/agentic-terminal-core/  события, policy, approvals, SQLite, manifests
-config/capabilities.json       декларативный каталог встроенных capabilities
-docs/                          русская архитектурная и продуктовая документация
-scripts/                       проверка/подготовка macOS окружения
-```
-
-## Версии UI-стека
-
-`gpui` и `gpui_platform` зафиксированы на одном GPUI-CE commit `9949f8b2d27bb1d6dbc1efe90be039634cf1fb6b`. Их нельзя обновлять порознь: смешивание опубликованного UI-crate и git-платформы создаёт несовместимые типы. Для разработки включён `runtime_shaders`; перед релизом нужно сравнить старт приложения с предкомпилированными shader-ами.
-
-По умолчанию event store находится в `~/Library/Application Support/Agentic Terminal/events.sqlite3`. Для изолированного smoke-теста путь можно переопределить через `AGENTIC_TERMINAL_DATA_DIR`; секреты туда записывать запрещено.
-
-## Лицензия
-
-Apache-2.0, см. [LICENSE](LICENSE). Перед публичной публикацией проверь владельца copyright и сторонние notices.
+Licensed under [Apache-2.0](LICENSE).

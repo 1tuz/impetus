@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="impetus-hero-title impetus-hero-desc">
+  <title id="impetus-hero-title">Impetus — a local runtime for coding-agent work</title>
+  <desc id="impetus-hero-desc">Impetus keeps durable sessions, explicit control, and replaceable clients in one local macOS runtime.</desc>
+  <rect width="1200" height="360" rx="28" fill="#090c10"/>
+  <path d="M56 64H1144M56 296H1144" stroke="#26313b" stroke-width="2"/>
+  <g fill="#93a1b0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" letter-spacing="2">
+    <text x="58" y="98">LOCAL MACOS RUNTIME</text>
+    <text x="58" y="326">DURABLE SESSIONS · EXPLICIT CONTROL · REPLACEABLE CLIENTS</text>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="58" y="176" fill="#f4f1e9" font-size="76" font-weight="700" letter-spacing="-3">Impetus</text>
+    <text x="62" y="222" fill="#e4a853" font-size="34" font-weight="600">Stop stitching together your agent harness.</text>
+    <text x="62" y="258" fill="#b6c0ca" font-size="24">Sessions, control, and clients — one local runtime.</text>
+  </g>
+</svg>

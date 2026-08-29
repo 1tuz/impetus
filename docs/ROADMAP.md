@@ -1,59 +1,158 @@
-# Roadmap v0.1 → рабочий MVP
+# Roadmap
 
-Каждый этап имеет собственную демонстрацию и завершается только по указанным критериям — не по факту появления файлов. Этапы выполняются последовательно: интерфейс будущего этапа можно обозначить заранее, но нельзя выдавать его за работающую capability.
+Canonical product path. Current truth is in
+[ARCHITECTURE.md](../ARCHITECTURE.md); historical delivery detail is in
+[IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md).
 
-## v0.1 — нативный безопасный фундамент
+## FOUNDATION — current
 
-**Результат:** GPUI-CE окно, append-only события, SQLite WAL, policy, approval и manifests.
+- Durable events and SQLite WAL.
+- Daemon/client split with versioned local IPC.
+- Safety, capability, sandbox, approval, and secret-reference base.
+- `ModelProvider` and `ProviderRegistry` foundations.
+- Basic copied-event fork and compaction/budget primitives.
 
-**Готово, когда:** форматирование, core tests, `cargo check --workspace` и clippy проходят; agent-write внутри workspace создаёт `ApprovalRequested`; выход file target за workspace и SSH в local-only scope получают `Deny`; пользовательское создание local PTY не требует второй approval-card; записанные SQLite события переживают reopen; зафиксированы idle RSS baseline и сценарий измерения; на чистом Mac открывается native Metal window без WebView.
+## AGENT RUNTIME
 
-## v0.2 — полезный локальный терминал без агента
+### Agent Loop
 
-**Результат:** `portable-pty`, проверенный ANSI engine (сначала исследовать `alacritty_terminal`), tab lifecycle, scrollback chunks, resize/Ctrl-C/copy.
+**Target:** first-class autonomous loop:
 
-**Готово, когда:** zsh, Unicode, 24-bit color, resize и Ctrl-C работают в PTY; закрытие tab reap-ит child process; direct command работает без model provider; hot scrollback не превышает 8 MiB на tab; в 30-минутном soak total RSS не выше idle baseline + 128 MiB, а рост между 5-й и 30-й минутами не больше 32 MiB; очередь terminal events ограничена и её capacity указана в benchmark.
+```text
+Model → Tool Orchestrator → Tool request → Effect normalization
+      → Safety / Policy / Sandbox → Execution → Observation → Model
+```
 
-## v0.3 — natural-language loop и Blocks
+It is a distinct subsystem, not provider implementation detail.
 
-**Результат:** один OpenAI-compatible streaming adapter, ACP Gateway для external coding-agents, Auth Center (Keychain reference / system-browser OAuth / agent-owned login), cancellation, composer, plan/tool/agent Blocks, read-only workspace tools, typed contract `Manual | Safe Auto` и attachment refs без host effects.
+### Tool Orchestrator
 
-Вертикальные gates внутри этапа выполняются по порядку:
+**Target:** structured tool lifecycle, normalized effects, durable observations,
+and explicit safety admission.
 
-1. typed event → projection → Intent/Plan/Tool Blocks и read-only workspace action;
-2. mock ACP agent → initialize/session/stream/cancel/permission/exit;
-3. manual local executable profile → capability negotiation и lifecycle;
-4. Keychain-backed direct provider → streaming/cancel без credential в events;
-5. Auth Center → agent-owned, API key reference, browser OAuth и local endpoint states.
-6. Safe Auto mock reviewer → fail-closed verdict, mode invalidation и audit projection без execution.
-7. attachment vertical slice → native selection, image/resource capability negotiation, preview и unsupported state.
+### Model Router
 
-**Готово, когда:** «объясни репозиторий» показывает evidence Blocks без mutation; cancel не зависает; provider restart не дублирует event log; ACP mock-agent проходит initialize/session/stream/cancel; loopback endpoint не расширяет общий network scope; mock reviewer не разрешает hard-deny/human-only и при timeout возвращает block; image attachment уходит только negotiated backend-у, unsupported model получает явный отказ; typed payload/redaction tests подтверждают, что secret и attachment bytes отсутствуют в SQLite/exports/tracing.
+**Current:** provider abstraction, registry foundation, and direct provider path.
 
-## v0.4 — resume, compaction и fork
+**Target:** route by task complexity, capability, provider health, cost,
+latency, privacy, context size, prompt-cache characteristics, remaining budget,
+and reasoning need. Policies: free-first, balanced, quality-first, optional
+local-first. Escalate cheap/local/free → standard → strong only when justified.
 
-**Результат:** token-budget context builder, versioned compaction с source range, resume after restart, immutable parent prefix и fork point, bounded attachment blob lifecycle/delete.
+### Durable budgets
 
-**Готово, когда:** сессия после restart даёт ту же projection; summary показывает source range; child не меняет parent history; long-session benchmark держит RAM ceiling.
+**Target:** per-session/agent steps, calls, tokens, cost, and time state;
+rate-limit scheduling and router feedback.
 
-## v0.5 — локальные эффекты и capability SDK
+## CONTEXT INTELLIGENCE
 
-**Результат:** typed manifest/permissions/version, approval card с exact diff/command/target, workspace sandbox, sample external capability, enforced Safe Auto reviewer/input probe и outbound attachment policy.
+### Token / Context Optimizer
 
-**Готово, когда:** edit не применим до approval/reviewer allow; command не выходит за scope/time/resource limit; hard-deny и human-only не auto-approve; classifier outage/invalid verdict не достигает execution; 3 последовательных или 20 суммарных blocks ставят Safe Auto на паузу; attachment проходит type/size/secret/provenance checks и не отправляется неявно; malformed/over-permissioned plugin отказан безопасно; policy replay детерминирован.
+**Target:** stable prompt prefix, prompt cache, shared fork/subagent prefix,
+delta context, deterministic reducers, artifact store, HOT/WARM/COLD data,
+lazy tools/MCP/instructions, and token/cost/cache telemetry. No unmeasured
+savings claims.
 
-## v0.6 — SSH Manager, tmux, SFTP
+### Instruction model
 
-**Результат:** profiles, Keychain refs, known-host, remote PTY, controlled tmux, SFTP browser с transfer events.
+**Current:** scoped deterministic instruction resolution.
 
-**Готово, когда:** host-key change блокирует connection; model не подключается к произвольному hostname; tmux требует profile + выбранную session; transfer требует file-level approval и восстанавливается после restart.
+**Target:** task-aware lazy instruction and skill selection. SOUL expresses
+persona; AGENTS broad rules; conventions declarative project rules; guides
+factual/process knowledge; skills procedural workflows. None can grant
+network, sudo, SSH, credentials, sandbox scope, or approval.
 
-## v0.7 — рабочий MVP
+### Repo Intelligence
 
-**Результат:** multi-session, search Blocks, notification centre, export/delete, crash recovery, migration, performance suite, packaging/notarization plan.
+**Target:** Tree-sitter map, symbols/imports/dependencies, git diff and recent
+files, ranked token-budgeted context, and lazy/on-demand LSP—not an always-on
+heavy service.
 
-**Главный gate:** пользователь создаёт local tab, работает shell-командами, формулирует задачу словами, видит plan/tool Blocks, одобряет одну правку, resume/fork-ит сессию и ведёт SSH/tmux/SFTP workflow. У каждого эффекта есть audit record; в 60-минутном four-tab demo total RSS не выше v0.1 idle baseline + 384 MiB, а рост между 10-й и 60-й минутами не больше 64 MiB; kill/restart не выдаёт ложное «готово».
+## SESSIONS / ORCHESTRATION
 
-## Намеренно вне MVP
+### Session DAG and checkpoints
 
-Cloud sync, collaboration, marketplace с неограниченными plugins, remote agent daemon, Windows/Linux parity, IDE/editor и multi-user auth меняют trust/memory model и требуют отдельного RFC.
+**Current:** basic fork with copied event history and compaction/budget
+primitives.
+
+**Target:** parent/fork relations, shared history/prefix where useful,
+checkpoints, restore/revert, and branch-aware agent sessions.
+
+### Interrupt, pause, resume
+
+**Target:** durable control states and explicit unknown outcomes across client
+disconnects.
+
+### Swarm
+
+**Target, post-MVP:** isolated subagent sessions with own
+branch/checkpoint/budget/profile/scoped capabilities; shared repo index/cache
+where appropriate; conflict detection; compact worker result to parent. Swarm
+is not automatic for every task.
+
+## AGENT BEHAVIOR
+
+### Profiles and memory
+
+**Target:** profiles/SOUL, durable memory, and scoped instruction selection
+without expanding permissions.
+
+### Self-Repair
+
+**Target flow:**
+
+```text
+Event Log → Failure Detector → Failure Fingerprint → Retry Guard
+→ Candidate Lesson → Validate / Deduplicate → Memory / Convention / Guide / Skill proposal
+```
+
+Signals include repeated tool failure, failed tests, user correction, revert,
+safety denial, abandoned approach, and explicit negative feedback. Equivalent
+failure of the same tool/input/state is `RETRY_BLOCKED`: change strategy.
+Self-Repair cannot change safety policy, sandbox, credentials, permissions, or
+core executable code automatically.
+
+## CLIENTS
+
+### Standalone Harness TUI
+
+**Target:** `cd project && impetus` as first-class CLI/TUI for Terminal.app,
+iTerm, SSH, Linux, and environments without Zap. Evaluate jcode reuse first;
+choose a thin Rust framework only when justified.
+
+### Zap backend integration
+
+**Target MVP:** discover local Impetus; Connect/Authorize; show
+connected/disconnected state; choose Impetus as agent backend; forward agent
+requests. Zap owns its UI. The existing adapter is historical/experimental and
+is not a target renderer/status-bar/Blocks protocol.
+
+## REMOTE
+
+**Target:** controlled SSH, PTY, tmux, and SFTP capabilities through policy,
+approval, and durable events. Current models/stubs are not a completed remote
+agent flow. Later Android/remote control follows this boundary.
+
+## PLATFORM / DISTRIBUTION
+
+**Current focus:** macOS Apple Silicon.
+
+**Target:** Ubuntu 24.04 x86_64, later Linux ARM64 and Intel macOS when needed;
+credential abstraction, release binaries, checksums, curl installer,
+clean-machine smoke, update, and uninstall docs. Do not present a developer
+checkout as final product installation.
+
+## Not now
+
+- A separate native GUI application.
+- A custom terminal emulator or ANSI renderer without proven need.
+- Local HTTP UI, Electron/WebView, Node runtime, cloud sync, marketplace, or
+  multi-user auth.
+- Automatic permission expansion, credentials, or safety-policy changes.
+
+## Readiness rule
+
+A feature is ready only with proportionate tests, runtime smoke where
+applicable, documented trust boundary, and explicit evidence that current code
+meets its gate.
+

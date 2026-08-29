@@ -1,25 +1,52 @@
-# Референсы и как они используются
+# Design references
 
-Это не список зависимостей «на всякий случай». Каждый референс привязан к конкретному контракту и этапу roadmap.
+A reference informs an approach; it never becomes a dependency, permission, or
+claim of implementation automatically.
 
-| Источник                                                                                                                                  | Что берём                                                                                          | Что намеренно не переносим                                                 |
-| ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [GPUI-CE](https://github.com/gpui-ce/gpui-ce)                                                                                             | GPUI/Metal macOS UI, App/Window/Entity модели; один pinned commit для `gpui` и `gpui_platform`     | браузерный UI и зависимость от WebView                                     |
-| [Zed GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples)                                                 | актуальные паттерны окна, layout, focus/input и tests; сверять только с pinned API                 | старые tutorials с `Application::new()` без проверки версии                |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)                                                                       | capability composition, manifest/service boundary, append-only trace, изолируемая сборка runtime   | Node/Cordis/Web UI и исполнение сторонних plugins в UI process             |
-| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) и [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | stdio JSON-RPC к внешним coding-agents, capability negotiation, sessions и ACP auth elicitation; `2.x` — major SDK crate, не автоматическое включение draft protocol v2 | выдачу ACP за универсальный model API, перенос токенов или unstable protocol features без RFC |
-| [Qwen Code: fork subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md)                              | immutable fork point и shared prompt-cache prefix как provider hint                                | бесконтрольное создание subagents без budget/policy                        |
-| [Claude Code Auto mode docs](https://code.claude.com/docs/en/permission-modes) и [engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode) | отдельные input probe/action reviewer, intent-aware проверки, fail-closed fallback и недоверие к repo-local allow | bypass permissions, передачу raw tool output reviewer-у и слепое копирование version-specific правил |
-| [ACP content](https://agentclientprotocol.com/protocol/v1/content) и [Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision) | negotiated image/resource blocks, typed attachment transport и provider file references | implicit upload, base64 в event log и обещание multimodal support без negotiation |
-| [Zap](https://github.com/cristianoliveira/zap)                                                                                            | local-first terminal + natural-language workflow, Blocks/notifications как продуктовая поверхность | перенос всего Warp terminal engine и SSH implementation без audit          |
-| [portable-pty](https://crates.io/crates/portable-pty)                                                                                     | cross-platform PTY seam для v0.2                                                                   | подмена PTY одноразовым `Command::output`                                  |
-| [Alacritty terminal](https://github.com/alacritty/alacritty)                                                                              | кандидат на ANSI/VT parser/terminal state; сначала spike и license/API audit                       | самописный ANSI parser                                                     |
-| [russh](https://github.com/Eugeny/russh)                                                                                                  | async Rust SSH transport для v0.6                                                                  | agent-controlled raw `ssh` command/flags                                   |
+## Architectural / Agent Harness References
 
-## Правило проверки источника
+| Reference | What informs Impetus |
+| --- | --- |
+| [Codex](https://openai.com/codex/) | Tool orchestration, capability/policy boundaries, sandbox execution, structured tool lifecycle. |
+| [Claude Code](https://code.claude.com/docs/) | Long-session compaction/recovery, autonomy/risk concepts, fewer unnecessary approvals. |
+| [OpenClaude](https://github.com/Gitlawb/openclaude) | Per-agent budgets, reasoning effort, separate compaction model, context/token UX, useful multi-model concepts. Reuse always requires separate license/provenance review. |
+| [jcode](https://github.com/andrewlwn77/jcode) | Persistent daemon, lightweight sessions, multi-model, swarm, memory, soft interrupt, low overhead, and Rust TUI ideas. |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Modular capability architecture and stable subsystem interfaces. |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) | Fork-context subagents, inherited prefix/cache, background delegation. |
+| [Pi](https://github.com/badlogic/pi-mono) | Session tree/DAG, shared history, non-destructive context projection. |
+| [OpenCode](https://github.com/anomalyco/opencode) | Checkpoints, diff/revert/fork, workspace transactions, repo-intelligence concepts. |
+| [Aider](https://github.com/Aider-AI/aider) | Repo Map, ranked repository context, token-budgeted symbol/import graph, optional Architect → Editor. |
+| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | Transport-neutral clients, isolated persistent subagents, compact worker-to-parent results. |
+| [RTK](https://github.com/rtk-ai/rtk) | Deterministic tool-output reduction; structured summary for the model while raw output remains an artifact. |
 
-Перед добавлением API-зависимого кода coding-агент обязан сверить exact pinned crate/commit, найти 1–3 реальных использования и указать в PR/отчёте версию. Нельзя переносить snippets из старой статьи или отвечать «это похоже на API». Manifest с `availability=planned` остаётся документацией контракта и не доказывает наличие implementation.
+## Terminal / Frontend
 
-## Внешние ссылки не являются разрешениями
+| Reference | What informs Impetus |
+| --- | --- |
+| [Zap](https://github.com/zerx-lab/zap) | Terminal/frontend UX and a host UI for the Impetus backend. |
 
-Референс может объяснять подход, но не расширяет права модели. Любая зависимость, capability или remote action проходит review, manifest permissions, policy и approval проекта.
+## Protocols
+
+| Reference | What informs Impetus |
+| --- | --- |
+| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) and [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | External coding-agent adapter, negotiation, sessions, updates, permission/auth interaction. |
+| [ACP content](https://agentclientprotocol.com/protocol/v1/content) | Negotiated image/resource blocks and typed attachment references. |
+
+## Implementation libraries
+
+| Reference | Status |
+| --- | --- |
+| [russh](https://github.com/Eugeny/russh) | Candidate low-level SSH transport for the remote target. |
+| [portable-pty](https://crates.io/crates/portable-pty) | Candidate low-level controlled PTY capability. |
+
+## Diagram design
+
+| Reference | What informs Impetus |
+| --- | --- |
+| [diagram-design](https://github.com/cathrynlavery/diagram-design) | Editorial layout, visual hierarchy, accessible SVG, and request-flow diagrams. |
+
+## Source rule
+
+Before API-dependent code, verify exact version/commit, inspect real uses, and
+record compatibility assumptions. A planned upstream feature is not proof that
+it is implemented here.
