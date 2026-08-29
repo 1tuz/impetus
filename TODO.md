@@ -229,7 +229,7 @@ Skeleton/foundation exists; not a working autonomous loop yet.
 - [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
-- [ ] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
+- [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget
 

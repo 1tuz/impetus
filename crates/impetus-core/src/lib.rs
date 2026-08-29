@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod budget;
 pub mod ci;
 pub mod diagnostics;
+pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
 pub mod execution;
@@ -54,6 +55,9 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
+pub use durable_artifacts::{
+    ArtifactMeta as DurableArtifactMeta, ArtifactRef as DurableArtifactRef, DurableArtifactStore,
+};
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
