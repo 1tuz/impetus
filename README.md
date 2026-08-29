@@ -58,40 +58,47 @@ This is the request-and-safety flow, not a complete system map. The canonical
 architecture explains current components, ownership, and the planned client
 paths: [Architecture](ARCHITECTURE.md).
 
-## Current development setup
+## Installation
 
-Impetus currently runs from a developer checkout; it does not yet publish a
-curl installer or prebuilt binaries.
+### Quick install (macOS Apple Silicon)
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/1tuz/impetus/main/scripts/install.sh | zsh
+```
+
+Binaries will be installed to `~/.local/bin`. Add it to your PATH:
+
+```zsh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### From source
 
 ```zsh
 git clone https://github.com/1tuz/impetus.git
 cd impetus
 task setup
 task verify
+cargo build --release -p impetus -p impetus-cli
 ```
 
-Start the daemon in one terminal. Without a provider profile, it uses the
-repository's mock streaming provider.
+## Usage
+
+Start the daemon:
 
 ```zsh
-cargo run -p impetus
+impetus
 ```
 
-In another terminal, create a session and use its UUID with the reference CLI:
+In another terminal, create a session and interact:
 
 ```zsh
-cargo run -p impetus-cli -- create
-cargo run -p impetus-cli -- prompt <session-id> "Summarize this repository"
-cargo run -p impetus-cli -- stream <session-id>
+impetus-cli create
+impetus-cli prompt <session-id> "Summarize this repository"
+impetus-cli stream <session-id>
 ```
 
-For the provider-profile contract, see [configuration](docs/configuration.md).
-
-## Planned distribution
-
-The product distribution target is a prebuilt CLI with checksums, a curl
-installer, clean-machine smoke checks, and update/uninstall documentation.
-This is planned work, not an installation command today.
+For provider configuration, see [configuration docs](docs/configuration.md).
 
 ## Design lineage
 

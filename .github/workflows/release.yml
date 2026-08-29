@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS Binary
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-release-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-release-rust-1.98-
+
+      - name: Build release binaries
+        run: |
+          cargo build --release -p impetus -p impetus-cli
+          strip target/release/impetus
+          strip target/release/impetus-cli
+
+      - name: Package binaries
+        run: |
+          mkdir -p artifacts
+          tar czf artifacts/impetus-macos-aarch64.tar.gz \
+            -C target/release impetus impetus-cli
+          cd artifacts
+          shasum -a 256 impetus-macos-aarch64.tar.gz > impetus-macos-aarch64.tar.gz.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: artifacts/*
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-binaries
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          files: artifacts/*
+          generate_release_notes: true
