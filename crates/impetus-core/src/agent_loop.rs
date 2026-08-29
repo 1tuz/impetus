@@ -188,7 +188,9 @@ impl AgentLoop {
                 let tool_name = if let Some(name_start) = block.find("<tool_name>") {
                     let name_content_start = name_start + "<tool_name>".len();
                     if let Some(name_end) = block[name_content_start..].find("</tool_name>") {
-                        block[name_content_start..name_content_start + name_end].trim().to_string()
+                        block[name_content_start..name_content_start + name_end]
+                            .trim()
+                            .to_string()
                     } else {
                         pos = abs_end + "</tool_use>".len();
                         continue;
@@ -202,8 +204,8 @@ impl AgentLoop {
                 let arguments = if let Some(params_start) = block.find("<parameters>") {
                     let params_content_start = params_start + "<parameters>".len();
                     if let Some(params_end) = block[params_content_start..].find("</parameters>") {
-                        let params_str = block[params_content_start..params_content_start + params_end]
-                            .trim();
+                        let params_str =
+                            block[params_content_start..params_content_start + params_end].trim();
                         // Try to parse as JSON, fallback to empty object
                         serde_json::from_str(params_str).unwrap_or(serde_json::json!({}))
                     } else {

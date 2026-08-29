@@ -255,7 +255,10 @@ mod tests {
     #[test]
     fn large_output_truncated() {
         let reducer = OutputReducer::new(TokenBudget { max_tokens: 50 });
-        let output = (0..100).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+        let output = (0..100)
+            .map(|i| format!("Line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let reduced = reducer.reduce(&output);
 
         assert!(reduced.truncated);
@@ -277,7 +280,10 @@ mod tests {
     #[test]
     fn head_only_strategy() {
         let reducer = OutputReducer::new(TokenBudget { max_tokens: 50 });
-        let output = (0..100).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+        let output = (0..100)
+            .map(|i| format!("Line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let reduced = reducer.reduce_with_strategy(&output, ReductionStrategy::HeadOnly);
 
         assert!(reduced.truncated);
@@ -287,7 +293,10 @@ mod tests {
     #[test]
     fn tail_only_strategy() {
         let reducer = OutputReducer::new(TokenBudget { max_tokens: 50 });
-        let output = (0..100).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+        let output = (0..100)
+            .map(|i| format!("Line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let reduced = reducer.reduce_with_strategy(&output, ReductionStrategy::TailOnly);
 
         assert!(reduced.truncated);

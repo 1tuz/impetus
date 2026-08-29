@@ -19,13 +19,13 @@ pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
-pub mod observations;
 pub mod mock_provider;
 pub mod module;
 pub mod module_fallback;
 pub mod module_ipc;
 pub mod module_lifecycle;
 pub mod module_registry;
+pub mod observations;
 pub mod openai_compat_adapter;
 pub mod openai_provider;
 pub mod output_reducer;
@@ -123,6 +123,6 @@ pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };
 pub use tools::{
-    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
-    ToolError, ToolOutcome, ToolProvenance, ToolResult,
+    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome, ToolProvenance,
+    ToolResult,
 };

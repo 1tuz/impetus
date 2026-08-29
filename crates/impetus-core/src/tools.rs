@@ -476,7 +476,8 @@ mod tests {
     fn temp_root() -> (PathBuf, DurableArtifactStore) {
         let root = std::env::temp_dir().join(format!("agentic-tools-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create temp workspace");
-        let artifacts = DurableArtifactStore::open(root.join("artifacts")).expect("open artifact store");
+        let artifacts =
+            DurableArtifactStore::open(root.join("artifacts")).expect("open artifact store");
         (root, artifacts)
     }
 
