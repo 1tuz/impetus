@@ -165,12 +165,67 @@ impl AgentLoop {
         Ok(result)
     }
 
-    fn extract_tool_calls(&self, _response: &str) -> Vec<ToolCall> {
-        // TODO: Parse tool calls from model response
-        // This requires provider-specific parsing (OpenAI function calling format,
-        // Anthropic tool use blocks, etc.)
-        // For now, return empty to signal no tool calls
-        vec![]
+    fn extract_tool_calls(&self, response: &str) -> Vec<ToolCall> {
+        // Simple XML-style tool call parser for Anthropic/Claude format:
+        // <tool_use>
+        // <tool_name>name</tool_name>
+        // <parameters>{...}</parameters>
+        // </tool_use>
+        //
+        // This is a minimal parser, not a full XML implementation.
+        let mut calls = Vec::new();
+        let mut pos = 0;
+
+        while let Some(start) = response[pos..].find("<tool_use>") {
+            let abs_start = pos + start;
+            let search_from = abs_start + "<tool_use>".len();
+
+            if let Some(end_offset) = response[search_from..].find("</tool_use>") {
+                let abs_end = search_from + end_offset;
+                let block = &response[search_from..abs_end];
+
+                // Extract tool_name
+                let tool_name = if let Some(name_start) = block.find("<tool_name>") {
+                    let name_content_start = name_start + "<tool_name>".len();
+                    if let Some(name_end) = block[name_content_start..].find("</tool_name>") {
+                        block[name_content_start..name_content_start + name_end].trim().to_string()
+                    } else {
+                        pos = abs_end + "</tool_use>".len();
+                        continue;
+                    }
+                } else {
+                    pos = abs_end + "</tool_use>".len();
+                    continue;
+                };
+
+                // Extract parameters
+                let arguments = if let Some(params_start) = block.find("<parameters>") {
+                    let params_content_start = params_start + "<parameters>".len();
+                    if let Some(params_end) = block[params_content_start..].find("</parameters>") {
+                        let params_str = block[params_content_start..params_content_start + params_end]
+                            .trim();
+                        // Try to parse as JSON, fallback to empty object
+                        serde_json::from_str(params_str).unwrap_or(serde_json::json!({}))
+                    } else {
+                        serde_json::json!({})
+                    }
+                } else {
+                    serde_json::json!({})
+                };
+
+                calls.push(ToolCall {
+                    id: format!("tool_{}", calls.len() + 1),
+                    name: tool_name,
+                    arguments,
+                });
+
+                pos = abs_end + "</tool_use>".len();
+            } else {
+                break;
+            }
+        }
+
+        calls
     }
 }
 
@@ -191,5 +246,137 @@ mod tests {
         // MAX_ITERATIONS is set to 50, which is reasonable for agent loops
         const { assert!(MAX_ITERATIONS >= 10) };
         const { assert!(MAX_ITERATIONS <= 100) };
+    }
+
+    #[test]
+    fn extract_tool_calls_single_call() {
+        let response = r#"
+Some reasoning text here.
+<tool_use>
+<tool_name>bash</tool_name>
+<parameters>{"command": "ls -la"}</parameters>
+</tool_use>
+More text after.
+"#;
+
+        let store = Arc::new(crate::MemoryEventStore::default());
+        let workspace = std::env::temp_dir();
+        let scope = crate::SandboxScope {
+            workspace_root: workspace.clone(),
+            allow_network: false,
+            allowed_hosts: vec![],
+        };
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+
+        let calls = agent_loop.extract_tool_calls(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["command"], "ls -la");
+    }
+
+    #[test]
+    fn extract_tool_calls_multiple_calls() {
+        let response = r#"
+<tool_use>
+<tool_name>read_file</tool_name>
+<parameters>{"path": "src/main.rs"}</parameters>
+</tool_use>
+
+<tool_use>
+<tool_name>bash</tool_name>
+<parameters>{"command": "cargo test"}</parameters>
+</tool_use>
+"#;
+
+        let store = Arc::new(crate::MemoryEventStore::default());
+        let workspace = std::env::temp_dir();
+        let scope = crate::SandboxScope {
+            workspace_root: workspace.clone(),
+            allow_network: false,
+            allowed_hosts: vec![],
+        };
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+
+        let calls = agent_loop.extract_tool_calls(response);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[1].name, "bash");
+    }
+
+    #[test]
+    fn extract_tool_calls_no_calls() {
+        let response = "Just a plain text response with no tool calls.";
+
+        let store = Arc::new(crate::MemoryEventStore::default());
+        let workspace = std::env::temp_dir();
+        let scope = crate::SandboxScope {
+            workspace_root: workspace.clone(),
+            allow_network: false,
+            allowed_hosts: vec![],
+        };
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+
+        let calls = agent_loop.extract_tool_calls(response);
+        assert_eq!(calls.len(), 0);
+    }
+
+    #[test]
+    fn extract_tool_calls_malformed_skips() {
+        let response = r#"
+<tool_use>
+<tool_name>valid_tool</tool_name>
+<parameters>{"a": 1}</parameters>
+</tool_use>
+
+<tool_use>
+<tool_name>broken_tool
+</tool_use>
+"#;
+
+        let store = Arc::new(crate::MemoryEventStore::default());
+        let workspace = std::env::temp_dir();
+        let scope = crate::SandboxScope {
+            workspace_root: workspace.clone(),
+            allow_network: false,
+            allowed_hosts: vec![],
+        };
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+
+        let calls = agent_loop.extract_tool_calls(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "valid_tool");
+    }
+
+    #[test]
+    fn extract_tool_calls_empty_parameters() {
+        let response = r#"
+<tool_use>
+<tool_name>no_params_tool</tool_name>
+</tool_use>
+"#;
+
+        let store = Arc::new(crate::MemoryEventStore::default());
+        let workspace = std::env::temp_dir();
+        let scope = crate::SandboxScope {
+            workspace_root: workspace.clone(),
+            allow_network: false,
+            allowed_hosts: vec![],
+        };
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let agent_loop = AgentLoop::new(runtime, policy, workspace);
+
+        let calls = agent_loop.extract_tool_calls(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "no_params_tool");
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
     }
 }

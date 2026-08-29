@@ -203,7 +203,7 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 Skeleton/foundation exists; not a working autonomous loop yet.
 
-- [ ] Replace `extract_tool_calls()` placeholder with provider-aware parsing
+- [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing
 - [ ] Wire Tool Orchestrator to real tool execution through policy/sandbox path
 - [ ] Durable observations from executed tools (not stub responses)
 - [ ] End-to-end slice: model → tool request → execution → observation → model
