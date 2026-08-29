@@ -112,6 +112,24 @@ impetus stream <session-id>
 
 For provider configuration, see [configuration docs](docs/configuration.md).
 
+## Uninstall
+
+Remove binaries:
+
+```zsh
+rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+```
+
+Remove data and sessions:
+
+```zsh
+rm -rf ~/Library/Application\ Support/Impetus  # macOS
+```
+
+Remove credentials from macOS Keychain via **Keychain Access.app** or `security delete-generic-password`.
+
+For detailed cleanup steps, see [getting started](docs/getting-started.md#uninstall).
+
 ## Design lineage
 
 Impetus is not a port or fork of one coding agent. It combines proven ideas

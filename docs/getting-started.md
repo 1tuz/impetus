@@ -63,4 +63,64 @@ cargo run -p impetusd -- /tmp/my-provider.json
 | `impetusd` | Authoritative daemon (socket, SQLite, policy, execution) |
 | `impetus` | User CLI client (`HarnessClient` → socket) |
 
-Target diagnostics: `impetus doctor` — [TODO](../TODO.md) Phase 1.
+Target diagnostics: `impetus doctor`.
+
+## Uninstall
+
+### Installed binaries
+
+If installed via `scripts/install.sh` (default location `~/.local/bin`):
+
+```zsh
+rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+```
+
+If installed to a custom `$IMPETUS_INSTALL_DIR`, remove binaries from that location.
+
+### Data and state
+
+Impetus stores sessions, events, and configuration in:
+
+```zsh
+~/Library/Application Support/Impetus  # macOS
+~/.local/share/impetus                 # Linux (future)
+```
+
+To remove all data:
+
+```zsh
+rm -rf ~/Library/Application\ Support/Impetus
+```
+
+### Credentials
+
+On macOS, provider credentials are stored in Keychain. To remove:
+
+1. Open **Keychain Access.app**
+2. Search for `impetus` or your provider service names
+3. Delete matching keychain items
+
+Or via command line:
+
+```zsh
+# List Impetus keychain entries
+security find-generic-password -s "impetus" 2>&1 | grep "svce"
+
+# Delete specific entry (example)
+security delete-generic-password -s "<service-name>" -a "<account-name>"
+```
+
+### Cleanup summary
+
+```zsh
+# Stop daemon
+pkill impetusd
+
+# Remove binaries
+rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+
+# Remove data
+rm -rf ~/Library/Application\ Support/Impetus
+
+# Remove credentials (Keychain Access or security command)
+```
