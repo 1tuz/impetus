@@ -3,6 +3,7 @@
 //! The crate intentionally owns no native GUI or PTY state. It emits durable events,
 //! makes permission decisions, and exposes small capability seams for the app.
 
+pub mod agent_loop;
 pub mod approval;
 pub mod attachments;
 pub mod budget;
@@ -27,8 +28,10 @@ pub mod remote;
 pub mod runtime;
 pub mod storage;
 pub mod supervisor;
+pub mod tool_orchestrator;
 pub mod tools;
 
+pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
 pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
     ApprovalState, ScopeEstimate,
@@ -88,6 +91,9 @@ pub use remote::{
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
 pub use supervisor::{MockStreamItem, MockStreamingProvider, SessionSupervisor, SupervisorError};
+pub use tool_orchestrator::{
+    OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
+};
 pub use tools::{
     ArtifactMeta, ArtifactRef, ArtifactStore, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
     ToolError, ToolOutcome, ToolProvenance, ToolResult,
