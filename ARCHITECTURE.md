@@ -1,138 +1,533 @@
 # Архитектура Impetus
 
-Это canonical архитектурный документ. Он отделяет текущий код от product target;
-исполняемый порядок работ — в [docs/ROADMAP.md](docs/ROADMAP.md).
+Canonical архитектурный контракт. Отделяет **текущий код** от **product target**.
+
+| Документ | Роль |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Инварианты, границы, ownership, module model |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы и gates |
+| [TODO.md](TODO.md) | Исполнимые задачи |
+| [docs/IMPLEMENTATION_HISTORY.md](docs/IMPLEMENTATION_HISTORY.md) | Только завершённые slices |
 
 ## Product invariant
 
-Impetus — terminal-first, local-first, all-in-one Agent Harness for
-Engineering. Он объединяет durable sessions/events, agent/tool orchestration,
-safety, credentials и execution authority за заменяемыми client surfaces.
-`impetusd` — единственный владелец authoritative durable runtime/state.
-Клиенты не владеют SQLite, policy, model runtime, tool runtime, credentials или
-authoritative session state.
+Impetus — terminal-first, local-first, all-in-one Agent Harness for Engineering:
+durable sessions/events, agent/tool orchestration, safety, credentials и
+execution authority за заменяемыми client surfaces.
 
-## Workspace today
+## Binary topology
+
+```text
+impetus       = user-facing CLI / future TUI
+impetusd      = authoritative daemon / runtime
+impetus-core  = domain / runtime libraries (no standalone binary)
+```
+
+Целевая схема:
+
+```text
+User
+  ↓
+impetus (CLI / TUI)
+  ↓
+HarnessClient
+  ↓
+versioned Unix Domain Socket IPC
+  ↓
+impetusd
+  ↓
+runtime / sessions / models / tools / safety / storage
+```
+
+`impetusd` — единственный authoritative owner:
+
+- durable sessions;
+- Event Log;
+- SQLite;
+- Agent Runtime;
+- Model Router;
+- Tool Runtime;
+- policy;
+- approvals;
+- sandbox;
+- execution;
+- artifacts;
+- context;
+- memory;
+- swarm;
+- credential references.
+
+Клиенты не владеют authoritative state: ни SQLite, ни policy, ни model/tool
+runtime, ни секретами, ни session authority.
+
+**Текущий gap.** Crate split `impetus` / `impetusd` / `impetus-core` в коде
+есть; часть docs и dev-tooling ещё ссылается на старую схему, где `impetus`
+был daemon. Полная миграция — см. [TODO.md](TODO.md) § Binary topology.
+
+## System map (target)
+
+```text
+                         Clients
+              ┌───────────┼────────────┐
+              │           │            │
+           impetus       Zap        future
+         (CLI/TUI)    (adapter)    (remote)
+              │           │            │
+              └──── HarnessClient ─────┘
+                          │
+                    versioned IPC
+                          │
+                      impetusd
+                          │
+                 ┌────────▼─────────┐
+                 │  Harness Kernel  │
+                 │                  │
+                 │ durable state    │
+                 │ safety boundary  │
+                 │ event authority  │
+                 └────────┬─────────┘
+                          │
+                 Module / Service Runtime
+                          │
+       ┌──────────────────┼─────────────────────┐
+       │                  │                     │
+     Models             Agents                Tools
+       │                  │                     │
+       ├── Context / Repo Intelligence          │
+       ├── CI / SCM                             │
+       ├── Remote                               │
+       ├── Output Optimization                  │
+       ├── Memory                               │
+       └── Extension Compatibility              │
+```
+
+Снаружи Module Runtime остаётся mandatory safety/durability boundary. Ни один
+client, plugin или module не обходит Harness Kernel.
+
+## Workspace layout
 
 ```text
 impetus/
 ├── crates/
 │   ├── impetus-core/          durable domain/runtime foundation
 │   ├── impetusd/              headless daemon + Unix socket server
-│   ├── impetus/               user-facing CLI client
+│   ├── impetus/               user-facing CLI (target: CLI/TUI)
 │   ├── impetus-client/        HarnessClient + local transports
 │   ├── impetus-cli/           legacy reference client (deprecated)
 │   ├── impetus-zap-adapter/   experimental historical integration baseline
 │   └── impetus-acp-gateway/   ACP gateway library
 ├── config/                    capability and provider configuration
-├── docs/                      contracts, roadmap and historical snapshots
-├── Cargo.toml                 workspace membership and shared pins
-└── ARCHITECTURE.md            this canonical map
+└── docs/                      contracts, roadmap, history
 ```
 
-## CURRENT
+## CURRENT (code today)
 
 ```text
-impetus / Zap adapter
-          │ typed local IPC
-          ▼
-       impetusd
-          │
-          ▼
-     impetus-core
-events · policy · SQLite · providers · tools · artifacts
+impetus CLI ──HarnessClient──► impetusd ──► impetus-core
+Zap adapter ──HarnessClient──┘
 ```
 
-Current code provides durable events, policy/approval, a versioned Unix-socket
-protocol, `HarnessClient`, provider registry foundation, copied-event forks,
-and a command/JSON client. The Zap adapter renders structured Blocks/OSC as an
-experimental baseline; it is not the target integration architecture. There is
-no standalone TUI yet, no full Session DAG, no model router, and no complete
-remote agent execution flow.
+Реализовано: durable events, policy/approval, versioned Unix-socket protocol,
+`HarnessClient`, provider registry foundation, copied-event forks, command/JSON
+client, первый Agent Loop slice. Zap adapter — experimental baseline, не target
+integration architecture.
 
-## TARGET system
+**Не реализовано:** standalone TUI, `impetus doctor`, Module Runtime,
+полный Session DAG, model router, remote agent flow end-to-end, extension
+compatibility layer, `impetus components`.
+
+## Harness Kernel — неподвижные инварианты
+
+Даже при высокой модульности нельзя позволять заменить или обойти:
 
 ```text
-                    ┌──────────────────┐
-                    │      Zap UI      │
-                    │ Impetus backend  │
-                    └────────┬─────────┘
-                             │
-Terminal / SSH               │
-      │                      │
-      ▼                      │
-┌───────────────┐            │
-│ impetus CLI / │            │
-│ TUI           │            │
-└──────┬────────┘            │
-       └──────────┬──────────┘
-                  ▼
-            HarnessClient
-                  │
-                  ▼
-               impetusd
-                  │
-      ┌───────────┼────────────┐
-      │           │            │
- Agent Runtime  Context      Safety
- Tool Loop      Router       Capabilities
- Sessions      Repo Intel    Sandbox
- Swarm         Artifacts     Execution
- Self-Repair   Memory
-      │
-      ▼
-Durable Event Store
+origin=user|agent
+  ↓
+Policy → Deny | Allow | NeedsApproval
+  ↓
+Sandbox
+  ↓
+Capability
+  ↓
+Execution
+  ↓
+Durable Observation / Event
 ```
 
-The upper subsystems are target architecture unless a roadmap gate says they
-exist. A TUI framework is deliberately not fixed: reuse of jcode ideas is
-evaluated first; a thin Rust TUI may use Ratatui/Crossterm if justified.
+Также invariant:
 
-## Ownership and safety
+- durable session authority в `impetusd`;
+- durable Event Log semantics;
+- approval integrity и `ActionFingerprint` / exact effect;
+- secret isolation (Keychain only; references elsewhere);
+- unknown-outcome semantics (disconnect/crash ≠ `Completed`);
+- capability admission.
 
-Every typed action has `origin=user|agent` and follows:
+Никакой plugin/module не выполняет privileged action в обход этого pipeline.
+Модель не может выдать себе `origin=user` или approval.
+
+Секреты — только macOS Keychain. SQLite, JSONL, tracing, events, tests —
+opaque references, never raw tokens/keys/passphrases.
+
+## Заменяемые реализации
+
+Через Module Runtime постепенно заменяемы:
+
+- model providers;
+- local model runtimes;
+- external agent adapters (ACP);
+- tools;
+- MCP;
+- output optimizers (включая RTK);
+- tokenizers;
+- context reducers;
+- Repo Intelligence;
+- Tree-sitter parsers;
+- LSP;
+- memory backends;
+- CI backends;
+- SCM/Git integrations;
+- sandbox implementations;
+- SSH/tmux/SFTP implementations;
+- storage backend;
+- artifact storage;
+- TUI/client surfaces;
+- Zap adapter;
+- router strategies;
+- swarm policies;
+- self-repair strategies.
+
+**Заменяемость реализации ≠ заменяемость security/durability invariant.**
+
+## Module Runtime
+
+Фундамент настоящей модульности:
 
 ```text
-Policy → Deny | Allow | NeedsApproval → Sandbox → Capability → Execution
+Impetus Module Runtime
++
+Service Registry
++
+Capability Registry
 ```
 
-Only `Allow` or a human-approved request proceeds. A model cannot create
-`origin=user` or approve itself. Disconnect/crash never turns an unknown
-outcome into `Completed`; durable history is replayed on reconnect.
+Модули зависят от typed service contracts, не от конкретных реализаций.
 
-Secrets remain only in macOS Keychain. SQLite, JSONL, tracing, events, and
-tests hold opaque references, never tokens, private keys, or passphrases.
+```text
+НЕ:  AgentLoop → RTK | OpenAI | GitLab | rust-analyzer
+
+ДА:  AgentLoop
+         ↓
+     Service / Capability contract
+         ↓
+     Module Registry
+         ↓
+     selected implementation
+```
+
+### ModuleDescriptor (архитектурный контракт)
+
+Не обязан быть именно такими Rust structs сейчас; фиксирует shape:
+
+```text
+ModuleDescriptor
+  id
+  kind
+  implementation_version
+  contract_version
+  provides[]
+  requires[]
+  capabilities[]
+  compatibility: harness protocol, service contracts, platforms, external versions
+  permissions: filesystem, process, network, secrets, remote
+  lifecycle: discover, probe, start, health, stop
+  execution_semantics: read_only | idempotent | mutating | non_replayable
+  fallback_policy
+  status: healthy | degraded | incompatible | unavailable
+```
+
+### Capability probing
+
+Версия `tool >= X.Y` недостаточна. Нужна capability discovery/probing:
+
+```text
+RTK 0.x
+  cargo.test          supported
+  --workspace         supported
+  --all-features      supported
+  --nocapture         unsupported
+```
+
+То же для Codex, Claude, Gemini, Qwen, Cursor, MCP, LSP, rust-analyzer, GitLab,
+GitHub, tmux, SSH, MLX, llama.cpp и других быстро меняющихся компонентов.
+
+### Safe fallback
+
+Каждый optional module имеет fallback policy, разрешённую только когда безопасно:
+
+```text
+Output optimization
+  RTK → unsupported → Builtin reducer → unavailable → Raw bounded output + ArtifactRef
+```
+
+Execution semantics минимум:
+
+```text
+read_only | idempotent | mutating | non_replayable
+```
+
+Outcomes:
+
+```text
+NotStarted | Started | Completed | Failed | UnknownOutcome
+```
+
+**При `UnknownOutcome` нельзя автоматически повторять mutating/non-replayable
+действие через другой backend** (RTK, SSH, Git, CI, cloud APIs, deployment,
+external tools, plugins).
+
+### External module isolation
+
+Built-in modules — Rust traits in-process. Сторонние / непроверенные:
+
+- предпочтительно отдельный process;
+- versioned IPC;
+- ограниченные capabilities;
+- явные permissions;
+- sandbox where applicable.
+
+Не строить ecosystem на Rust dynamic libraries как основном plugin ABI.
+JS/TS/Cordis/plugin runtime не входит в trust boundary `impetusd` без
+adapter/bridge.
+
+## Extension Compatibility Layer
+
+```text
+External extension ecosystem
+            ↓
+Compatibility Adapter
+            ↓
+Canonical Impetus Module / Skill representation
+            ↓
+Module Runtime
+```
+
+Исследовать совместимость с актуальными upstream-спецификациями:
+
+- Agent Skills;
+- MCP;
+- Agent Plugins;
+- Claude Code extensions/plugins;
+- Codex extensions/plugins/skills;
+- Cursor plugins/rules/skills/agents/commands;
+- DeepSeek Harness/Cordis (через adapter, не arbitrary TS в daemon).
+
+### Canonical internal representation
+
+Внешние форматы нормализуются внутри, не распространяются по core:
+
+```text
+CanonicalModuleSpec | CanonicalSkill | Instruction | AgentProfile
+| Command | LifecycleHook | McpModule | ToolProvider
+```
+
+Примеры:
+
+```text
+Claude/Cursor/Codex Skill  → CanonicalSkill
+CLAUDE.md / AGENTS.md / Cursor rule → Instruction
+external agent definition  → AgentProfile
+MCP                        → McpModule
+plugin command             → Command
+```
+
+### Partial compatibility
+
+При импорте — capability matrix, не all-or-nothing:
+
+```text
+Plugin: example
+  skills     native
+  MCP        native
+  rules      adapted
+  agents     adapted
+  commands   adapted
+  hooks      partial
+  UI         unsupported
+```
+
+Статусы: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`. Unsupported
+component не обязан блокировать весь package.
+
+## Output optimization и RTK
+
+RTK — optional Output Optimizer, не обязательный execution backend:
+
+```text
+CommandSpec
+   ↓
+Policy / Approval / Sandbox
+   ↓
+Execution
+   ↓
+Raw Observation
+   ↓
+Output Optimization
+   ├─ structured parser (native observation)
+   ├─ builtin reducer
+   ├─ RTK (optional, probed, replaceable)
+   └─ raw bounded fallback → ArtifactRef
+```
+
+Целевые native structured observations:
+
+```text
+cargo test → TestObservation
+git diff   → DiffObservation
+search     → SearchObservation
+CI         → PipelineObservation
+```
+
+Полный raw output — Artifact. RTK removable без изменения Agent Loop.
+
+## Provider modularity
+
+`ModelProvider` / `ProviderRegistry` — часть Module Runtime. Router выбирает
+по capability, complexity, health, latency, cost, privacy, context, prompt cache,
+budget, reasoning need. Политики: `local-first`, `free-first`, `balanced`,
+`quality-first`.
+
+Escalation (target):
+
+```text
+light/local model
+  ↓ задача сложная
+minimal sanitised escalation request
+  ↓
+strong/cloud model
+  ↓
+результат → local agent продолжает
+```
+
+Чувствительный repository context по умолчанию не уходит в облако.
+
+## Context Optimizer и модули
+
+Modules/tools/MCP/instructions не обязаны всегда грузиться в prompt:
+
+- lazy discovery;
+- lazy module/tool descriptions;
+- token-budgeted selection;
+- HOT/WARM/COLD;
+- artifacts;
+- structured observations;
+- reducers;
+- prompt-cache friendly stable prefix.
+
+Модульность не раздувает system prompt сотнями descriptions.
 
 ## Clients
 
-The standalone path is `cd project && impetus`: a future first-class CLI/TUI
-connects through `HarnessClient` to `impetusd`. It is for ordinary terminal
-emulators, SSH, and environments without Zap.
+Все clients — thin surfaces через `HarnessClient`; без специального обхода core:
 
-Zap uses its own terminal/agent UI. Its MVP is local discovery, explicit
-Connect/Authorize, connected/disconnected state, selection of Impetus as agent
-backend, and forwarding agent requests. It does not duplicate sessions,
-approvals, model state, a renderer, or a custom Blocks/status-bar protocol.
-The existing adapter remains historical/experimental evidence only.
+| Client | Path |
+| --- | --- |
+| Standalone `impetus` CLI/TUI | `HarnessClient` → IPC → `impetusd` |
+| Zap | own UI + adapter/`HarnessClient` |
+| Future Android/remote | `HarnessClient` |
 
-Impetus is not a terminal emulator. PTY/ANSI parsing, tabs, scrollback, and
-renderer concerns remain client concerns until a proven requirement says
-otherwise.
+`impetus` — не terminal emulator. PTY/ANSI/tabs/scrollback/renderer — client
+concern.
 
-## Current maturity and target boundaries
+### TUI strategy
 
-- **Provider layer:** `ModelProvider` and `ProviderRegistry` are current
-  foundations. Router selection by capability, health, cost, latency, privacy,
-  context, cache, budget, and reasoning need is target work.
-- **Context:** copied-event forks plus compaction/budget primitives are current.
-  Shared-prefix Session DAG, checkpoints, restore/revert, and branch-aware
-  sessions are target work.
-- **Remote:** SSH/tmux/PTY/SFTP models and safety boundaries exist; a controlled
-  end-to-end remote agent flow is target work.
-- **ACP:** an external coding-agent adapter, not universal provider auth or
-  client IPC. The selected agent CLI owns its authorization.
-- **Distribution:** macOS Apple Silicon is current focus; Ubuntu 24.04 x86_64
-  is a target tier, not a present support promise.
+JCode — primary **reference** для standalone TUI (UX patterns), не runtime
+dependency и не fork source:
 
-The visual [request control flow](docs/architecture-map.html) explains one
-safety path. It is deliberately not a full system map.
+```text
+JCode  → reference / UX patterns
+Impetus → собственный thin TUI client
+```
+
+Baseline для исследования: Ratatui + Crossterm. Из JCode — presentation-only
+(composer, keyboard, streaming, markdown, diff, approvals, session picker, fuzzy
+search, command palette, scrolling, resize, status/usage, redraw coalescing).
+Не переносить: Agent Runtime, providers, session/tool authority, auth state.
+
+Codex — secondary UX reference (composer, large paste, doctor, approvals,
+errors/remediation). Детальный audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md).
+
+### Large paste
+
+Обязательна поддержка terminal bracketed paste.
+
+Многострочный paste: один prompt, LF внутри не submit, Unicode сохраняется,
+CRLF/LF нормализуются. Большая вставка компактно:
+
+```text
+[Pasted text · 184 KB · 3920 lines]
+```
+
+Не через раздувание IPC JSON до мегабайт:
+
+```text
+paste → composer → large-paste detection → bounded/chunked upload
+  → impetusd → ArtifactStore → ArtifactRef → Context Builder / Agent
+```
+
+Context Builder читает большой paste частями, сокращает с учётом token budget.
+
+## External agents и ACP
+
+ACP — protocol для внешних coding agents, не universal provider API и не auth
+store. Подключение через `ExternalAgentAdapter`: discovery, version, capability
+negotiation, lifecycle, stream, cancel, reconnect, permissions; CLI-owned auth.
+Поддержка backend — по installed version + ACP registry/discovery, не по имени
+или неизвестному flag.
+
+## Diagnostics
+
+### `impetus doctor`
+
+First-class CLI capability:
+
+```bash
+impetus doctor
+impetus doctor --json
+```
+
+Диагностика через typed APIs (не shell parsing): versions, daemon discovery,
+socket, IPC handshake, protocol compatibility, daemon readiness, Event Store,
+SQLite/WAL/schema/migrations, Artifact Store, sandbox, policy, approvals,
+Keychain, ProviderRegistry, providers, model capabilities, tools, external
+agents, optional modules, compatibility adapters, remote capabilities, disk/runtime
+health.
+
+`doctor --json`: versioned schema, redacted, bug-report ready, no raw secrets.
+Remediation hints, не только errors. Partial extension compatibility matrix —
+в scope doctor.
+
+### `impetus components` (target)
+
+User-facing introspection: list, status, versions, compatibility, source, health,
+update, disable. Optional component update без полного релиза Impetus где
+возможно; concept version/digest lock для reproducibility. Marketplace — не
+сейчас.
+
+## Maturity snapshot
+
+| Area | Current | Target |
+| --- | --- | --- |
+| Daemon/client split | crates exist; docs/tooling gaps | clean `impetus`/`impetusd` everywhere |
+| Safety pipeline | policy, approval, sandbox, admission | unchanged invariants |
+| Provider | `ModelProvider`, registry foundation | router + escalation |
+| Context | copied forks, compaction primitives | Session DAG, lazy modules |
+| Agent loop | first slice | full orchestrator |
+| TUI | none | thin Ratatui client |
+| Module Runtime | not implemented | registry, contracts, probing |
+| Extensions | not implemented | adapters + canonical model |
+| RTK | dev convention (CodeWhale) | optional output optimizer module |
+| Remote | models/stubs | controlled E2E flow |
+
+Визуальный [request control flow](docs/architecture-map.html) — один safety path,
+не полная system map.

@@ -140,18 +140,22 @@ pub struct DeferredEffect {
 
 ---
 
-## Следующие фазы
+## Примечание о структуре workspace
 
-**B1 — Typed client & push subscription:**
-- Event store notification (cursor backfill + push)
-- Typed domain methods (не IpcResponse enum)
-- Убрать poll loops из daemon/Zap/memory-client
+Записи выше отражают slices на момент соответствующих commits. Имена crate и
+роли binary со временем менялись:
 
-**B2 — Complete existing DTOs:**
-- Attachment/diff/detail endpoints
-- Bounded/redacted content delivery
+- **target:** `impetus` = user CLI/TUI client, `impetusd` = daemon, `impetus-core` = libraries;
+- **не реализовано** на момент этого журнала и позже: Module Runtime, standalone TUI,
+  `impetus doctor`, model router, extension compatibility layer, `impetus components`.
 
-**C1 — Provider registry:**
-- ModelProvider trait
-- Provider discovery/metadata
-- Убрать concrete ProviderBackend enum из Harness
+Актуальный план — [ROADMAP.md](ROADMAP.md) и [TODO.md](../TODO.md), не этот файл.
+
+## Исторический backlog (pre-2026-09, superseded)
+
+Следующие пункты были next steps на момент ранних фаз; часть уже поставлена
+после commits выше. Не использовать как текущий план:
+
+- B1 — typed client, push subscription, убрать poll loops
+- B2 — attachment/diff/detail endpoints
+- C1 — `ModelProvider` / registry (foundation есть; router — target)

@@ -1,45 +1,66 @@
 # Architecture reader guide
 
-[ARCHITECTURE.md](../ARCHITECTURE.md) is the canonical architecture. This page
-is a compact guide to its CURRENT/TARGET distinction.
+[ARCHITECTURE.md](../ARCHITECTURE.md) — canonical architecture. Эта страница —
+компактный guide к CURRENT/TARGET.
+
+## Binary topology (target)
+
+```text
+impetus       → user-facing CLI / future TUI
+impetusd      → authoritative daemon
+impetus-core  → libraries (no binary)
+```
+
+```text
+impetus ──HarnessClient──► impetusd ──► impetus-core
+```
 
 ## CURRENT
 
 | Component | Path | Responsibility |
 | --- | --- | --- |
-| Core | `crates/impetus-core` | Events/projections, session runtime, policy, approvals, effects, providers, read-only tools, IPC messages. |
-| Daemon | `crates/impetus` | Unix-socket server, provider profile, macOS Keychain resolver. |
+| Core | `crates/impetus-core` | Events, session runtime, policy, approvals, effects, providers, tools, IPC types. |
+| Daemon | `crates/impetusd` | Unix-socket server, provider profile, macOS Keychain resolver. |
+| CLI client | `crates/impetus` | User-facing commands via `HarnessClient` (target: CLI/TUI). |
 | Client contract | `crates/impetus-client` | `HarnessClient`, in-memory and Unix transports. |
-| Reference CLI | `crates/impetus-cli` | Command/JSON `create`, `list`, `prompt`, `stream`, `cancel`, `context`. |
-| Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental structured adapter baseline. |
-| ACP gateway | `crates/impetus-acp-gateway` | Library types and gateway logic for external ACP agents. |
+| Legacy CLI | `crates/impetus-cli` | Deprecated reference client. |
+| Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental baseline. |
+| ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. |
 
-The all-in-one harness owns SQLite, policy decisions, Keychain lookup,
-execution authority, and authoritative session state. Client disconnects
-preserve durable history; unknown work is not reported as completed.
+Harness (`impetusd`) owns SQLite, policy, Keychain lookup, execution authority,
+authoritative session state. Client disconnect preserves durable history; unknown
+work is not reported as completed.
 
-`ModelProvider` and `ProviderRegistry` are implemented foundations. The
-current direct provider path remains profile-driven. Copied event history on a
-fork is not a Session DAG.
+`ModelProvider` / `ProviderRegistry` — implemented foundations. Copied-event fork
+≠ Session DAG. Module Runtime, TUI, doctor, extension adapters — not implemented.
+
+**Migration note:** часть older docs и `task harness` ещё отражают эпоху, когда
+daemon назывался `impetus`. Target и crates — см. [TODO.md](../TODO.md) Phase 1.
 
 ## TARGET clients
 
-The standalone first-class client is `impetus` CLI/TUI, connecting through
-`HarnessClient` to `impetusd`. It is planned for normal terminals, SSH, and
-environments without Zap; its implementation framework is not decided.
+Standalone first-class client: `impetus` CLI/TUI via `HarnessClient` → `impetusd`.
+TUI reference audit: [TUI_REFERENCE.md](TUI_REFERENCE.md).
 
-Zap retains its own UI and selects Impetus as an agent backend after explicit
-Connect/Authorize. The target is discovery, connection status, backend
-selection, and request forwarding—not duplicated sessions, approvals, model
-state, renderer, or custom Blocks protocol.
+Zap: own UI, Impetus as agent backend after Connect/Authorize. No duplicated
+sessions, approvals, or renderer in adapter target.
+
+All clients (including future remote): `HarnessClient` only — no core bypass.
 
 ## Trust boundary
 
-A typed effect follows Policy (`allow`, `deny`, or `needs approval`),
-sandbox availability, capability scope, and execution. Credential data is
-transient; profiles contain opaque Keychain references, never raw tokens.
+```text
+origin=user|agent → Policy → Sandbox → Capability → Execution → Durable Event
+```
 
-## Historical material
+Credentials transient; profiles hold Keychain references only.
 
-[IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md) and files under
-`docs/archived/` are historical snapshots, not current architecture.
+## Related docs
+
+| Topic | Document |
+| --- | --- |
+| Module Runtime, invariants | [ARCHITECTURE.md](../ARCHITECTURE.md) |
+| Phases and gates | [ROADMAP.md](ROADMAP.md) |
+| Executable tasks | [TODO.md](../TODO.md) |
+| Shipped slices | [IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md) |
+| Historical snapshots | `docs/archived/` |

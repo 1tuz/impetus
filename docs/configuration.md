@@ -1,9 +1,9 @@
 # Configuration
 
-The daemon accepts one optional command-line argument:
+Daemon `impetusd` accepts one optional command-line argument:
 
 ```text
-impetus [--provider-profile PATH]
+impetusd [--provider-profile PATH]
 ```
 
 Without that argument, Impetus uses its mock streaming provider. The daemon
@@ -14,7 +14,7 @@ rejects unknown arguments and profiles with unknown fields.
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `IMPETUS_DATA_DIR` | `~/Library/Application Support/Impetus` | SQLite event store directory. |
-| `IMPETUS_SOCKET` | `<data-dir>/harness.sock` | Unix-socket path used by the daemon, CLI, and Zap adapter. |
+| `IMPETUS_SOCKET` | `<data-dir>/harness.sock` | Unix-socket path used by daemon, `impetus` CLI, and Zap adapter. |
 
 The daemon creates the Unix socket with mode `0600`. It refuses to replace an
 existing socket path, so stop the old daemon before starting another one at the

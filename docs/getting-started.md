@@ -1,67 +1,64 @@
 # Getting started
 
-This guide runs the daemon and reference CLI from a source checkout. Impetus
-does not currently publish an installer or a packaged application.
+Developer checkout: daemon `impetusd` + CLI client `impetus`. Нет packaged
+installer в этом guide — см. [README](../README.md) для curl install.
 
 ## Prerequisites
 
 - macOS
 - Rust `1.98.0`, selected by `rust-toolchain.toml`
-- [Task](https://taskfile.dev/) for the repository shortcuts
-
-From the repository root, install the pinned Rust toolchain and validate the
-workspace:
+- [Task](https://taskfile.dev/) for repository shortcuts
 
 ```zsh
 task setup
 task verify
 ```
 
-`task setup` checks the local macOS/Rust prerequisites, installs Rust `1.98.0`
-with `clippy` and `rustfmt`, and configures the repository-owned Git hooks.
+## Start daemon and client
 
-## Start a mock session
-
-In the first terminal, run the daemon:
+Terminal 1 — daemon:
 
 ```zsh
-cargo run -p impetus
+cargo run -p impetusd
 ```
 
-The daemon creates its data directory at
-`~/Library/Application Support/Impetus` unless you override it. With no
-arguments, it serves the built-in mock streaming provider.
+Создаёт data dir `~/Library/Application Support/Impetus` (или `IMPETUS_DATA_DIR`).
+Без аргументов — mock streaming provider.
 
-In a second terminal, create a session:
+Terminal 2 — CLI client:
 
 ```zsh
-cargo run -p impetus-cli -- create
+cargo run -p impetus -- create
 ```
 
-The command prints a UUID. Use that UUID in later commands:
+UUID из вывода — для последующих команд:
 
 ```zsh
-cargo run -p impetus-cli -- prompt <session-id> "Summarize this repository"
-cargo run -p impetus-cli -- stream <session-id>
+cargo run -p impetus -- prompt <session-id> "Summarize this repository"
+cargo run -p impetus -- stream <session-id>
+cargo run -p impetus -- --help
 ```
 
-`stream` prints the events currently stored after sequence zero; it is not an
-interactive terminal. Use `list`, `cancel`, or `context` as needed:
+`stream` печатает stored events; это не interactive TUI.
+
+Legacy: `cargo run -p impetus-cli` — deprecated, используй `impetus`.
+
+## Provider profile
+
+Пример — loopback OpenAI-compatible endpoint без credential:
 
 ```zsh
-cargo run -p impetus-cli -- --help
+cp config/provider-profile.example.json /tmp/my-provider.json
+cargo run -p impetusd -- /tmp/my-provider.json
 ```
 
-## Use a local provider
+См. [configuration](configuration.md).
 
-The example profile targets a loopback OpenAI-compatible endpoint without a
-credential. Copy it outside the repository if you need to edit it:
+## Roles
 
-```zsh
-cp config/provider-profile.example.json /tmp/impetus-provider.json
-cargo run -p impetus -- --provider-profile /tmp/impetus-provider.json
-```
+| Binary | Role |
+| --- | --- |
+| `impetusd` | Authoritative daemon (socket, SQLite, policy, execution) |
+| `impetus` | User CLI client (`HarnessClient` → socket) |
 
-The profile must contain only supported non-secret fields. See
-[configuration](configuration.md) before configuring a Keychain-backed or OAuth
-provider.
+Target diagnostics: `impetus doctor` — [TODO](../TODO.md) Phase 1.

@@ -1,23 +1,23 @@
 # Troubleshooting
 
-## `connect harness socket` fails
+## `connect harness socket` / `Failed to connect to impetusd` fails
 
-Start the daemon before using `impetus-cli` or `impetus-zap-adapter`:
+Start the daemon before the CLI client or Zap adapter:
 
 ```zsh
-cargo run -p impetus
+cargo run -p impetusd
+# or, after install:
+impetusd
 ```
 
-The client and daemon must use the same `IMPETUS_SOCKET` value. If neither sets
-it, both default to
+Client and daemon must share `IMPETUS_SOCKET`. Default:
 `~/Library/Application Support/Impetus/harness.sock`.
 
 ## The daemon refuses to replace a socket
 
-Another daemon may still be running, or a previous run left a socket at the
-configured path. Stop the process that owns the socket before starting a new
-daemon. Do not delete a socket until you have confirmed that no daemon is using
-it.
+Another `impetusd` may still be running, or a previous run left a socket at the
+configured path. Stop the owning process before starting a new daemon. Do not
+delete a socket until you have confirmed no daemon is using it.
 
 ## A provider profile is rejected
 
@@ -31,24 +31,27 @@ Check these constraints:
   `account` fields.
 - The file contains no extra fields and no raw credential.
 
-Compare the file with `config/provider-profile.example.json` and read
-[configuration](configuration.md).
+Compare with `config/provider-profile.example.json` and [configuration](configuration.md).
 
 ## A Keychain-backed provider cannot authenticate
 
-The daemon resolves the configured `service` and `account` only when it sends a
-provider request. Confirm that the matching generic-password entry exists in
-the macOS Keychain and that the process has permission to read it. The returned
-error is deliberately redacted; do not paste credentials into an issue or log.
+`impetusd` resolves `service` and `account` only when sending a provider
+request. Confirm the generic-password entry exists and the process may read it.
+Errors are redacted; do not paste credentials into issues or logs.
 
 ## A planned interface returns `Unavailable`
 
-The IPC protocol advertises attachment and approval-detail requests, but their
-backing storage/detail work is still on the roadmap. Do not depend on these
-endpoints as a complete public API yet.
+The IPC protocol advertises attachment and approval-detail requests, but backing
+work is still on the roadmap. Do not treat these as a complete public API yet.
+
+## Diagnostics (planned)
+
+`impetus doctor` and `impetus doctor --json` will report versions, socket, IPC
+compatibility, store health, providers, modules, and remediation hints. Not
+implemented yet — see [TODO.md](../TODO.md) Phase 1.
 
 ## CI behaves differently from `task verify`
 
 GitLab CI runs a narrower unit-test scope for Linux Docker execution. Local
-`task verify` runs `cargo test --workspace`, including the macOS integration
-tests. See [development](development.md) for the exact command sets.
+`task verify` runs `cargo test --workspace`, including macOS integration tests.
+See [development](development.md).

@@ -34,8 +34,8 @@ licenses`.
 
 | Command | Purpose |
 | --- | --- |
-| `task harness` | Run the headless daemon. |
-| `task cli -- <args>` | Run the reference CLI, for example `task cli -- list`. |
+| `task harness` | Run `impetusd` (daemon). Taskfile still uses legacy `-p impetus` — see [TODO.md](../TODO.md). |
+| `task cli -- <args>` | Legacy `impetus-cli`; prefer `cargo run -p impetus -- …`. |
 | `task ci:list` | List jobs declared in `.gitlab-ci.yml`. |
 | `task ci:local` | Run GitLab CI locally with the trusted shell executor. |
 

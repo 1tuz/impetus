@@ -1,8 +1,15 @@
 # TODO — Impetus Harness
 
-Short-term work queue. See `docs/ROADMAP.md` and `ARCHITECTURE.md` for context.
+Исполнимая карта работ. Контекст: [ARCHITECTURE.md](ARCHITECTURE.md),
+[docs/ROADMAP.md](docs/ROADMAP.md). Завершённое — [docs/IMPLEMENTATION_HISTORY.md](docs/IMPLEMENTATION_HISTORY.md).
 
-## Foundation (done)
+**Правило:** `[x]` только при working vertical slice + tests + gate. Stubs и
+placeholder responses не считаются done.
+
+---
+
+## Phase 0 — Foundation (done)
+
 - [x] Headless runtime with SQLite WAL and durable Event Log
 - [x] Versioned local IPC via Unix Domain Socket
 - [x] `HarnessClient` for Unix transport and in-memory tests
@@ -13,44 +20,190 @@ Short-term work queue. See `docs/ROADMAP.md` and `ARCHITECTURE.md` for context.
 - [x] Sandbox integration for shell/process capabilities
 - [x] Attachment/diff/detail DTO backing services with bounded storage
 - [x] First autonomous Agent Loop and Tool Orchestrator slice
-
-## In Progress
-
-### 3. Durable budgets and rules-based Model Router
-- [ ] Token and wall-time budget tracking per session
-- [ ] Budget enforcement in agent loop
-- [ ] Model Router foundation with provider selection rules
-- [ ] Cost estimation and budget warnings
-
-### 4. Standalone `impetus` CLI/TUI and Zap integration
-- [x] Binary topology: `impetus` (client) and `impetusd` (daemon)
-- [x] `impetus` CLI using `HarnessClient` → `impetusd`
-- [x] Release pipeline builds both binaries
-- [x] Install script deploys `impetus` + `impetusd`
-- [ ] `impetus` auto-discovers and safely spawns `impetusd` if needed
-- [ ] Basic TUI for interactive sessions
-- [ ] Zap discovery/connect/authorize protocol
-- [ ] Backend handoff between Zap and Impetus
-
-## Next (prioritized)
-
-5. Provider credential management via Keychain API
-6. Multi-turn conversation state with tool result accumulation
-7. Streaming response chunking and client sync
-8. Policy customization and approval UI contracts
-9. Session fork/checkpoint without duplication
-10. Error recovery and retry logic in agent loop
-11. Parallel tool execution where safe
-12. Cross-session state isolation and cleanup
-13. Audit log with redacted tool arguments
-14. Integration tests for full request flows
-15. Performance benchmarks for event log queries
-16. Documentation: architecture diagrams and API contracts
-17. Security review: secret handling, sandbox escapes, policy bypass
-18. Client examples: minimal TUI, read-only observer
-19. Migration strategy for schema changes
-20. End-to-end verification: no policy bypass, no credential leakage
+- [x] `ModelProvider` trait and `ProviderRegistry` foundation
+- [x] Crate split: `impetus-core`, `impetusd`, `impetus` (initial)
 
 ---
 
-**Completion criterion**: A task is done when it has a working vertical slice, tests, and passes relevant gates. Do not treat stubs, copied forks, or placeholder responses as complete flows.
+## Phase 1 — Binary topology & diagnostics (early)
+
+Целевая роль имён: `impetus` = user client, `impetusd` = daemon. Crate split
+есть; миграция имён/ролей в docs и dev-tooling не завершена.
+
+### Binary topology
+
+- [ ] Зафиксировать target roles во всех user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
+- [ ] `task harness` → `cargo run -p impetusd` (не `impetus`)
+- [ ] `task cli` → `cargo run -p impetus` (deprecate `impetus-cli` в dev docs)
+- [ ] Release artifact: оба binary с явными ролями в install script help
+- [ ] `impetus` auto-discovers socket и safely spawns `impetusd` if needed
+- [ ] Install/uninstall docs: `impetusd` daemon vs `impetus` client
+
+### Doctor
+
+- [ ] `impetus doctor` — human-readable diagnostics + remediation
+- [ ] `impetus doctor --json` — versioned redacted schema for bug reports
+- [ ] Probe: `impetus`/`impetusd` versions
+- [ ] Probe: daemon discovery, socket path, permissions
+- [ ] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
+- [ ] Probe: daemon readiness
+- [ ] Probe: Event Store, SQLite WAL, schema/migrations
+- [ ] Probe: Artifact Store
+- [ ] Probe: sandbox availability (Seatbelt fail-closed)
+- [ ] Probe: policy and approval subsystem
+- [ ] Probe: Keychain accessibility (redacted)
+- [ ] Probe: ProviderRegistry, providers, model capabilities
+- [ ] Probe: tools/capabilities registration
+- [ ] Probe: external agents / ACP adapters
+- [ ] Probe: optional modules, compatibility adapters, remote capabilities
+- [ ] Probe: disk/runtime health
+- [ ] Partial extension compatibility matrix in doctor output
+
+### Components (introspection)
+
+- [ ] `impetus components list`
+- [ ] `impetus components status` (health, version, compatibility, source)
+- [ ] Concept: component version/digest lock for reproducibility
+- [ ] Update/disable flows (design; no marketplace)
+
+---
+
+## Phase 2 — Module Runtime / extensibility foundation
+
+Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
+
+- [ ] Typed service contracts (decouple AgentLoop from concrete backends)
+- [ ] `ServiceRegistry` / `ModuleRegistry`
+- [ ] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
+- [ ] Capability negotiation and probing API (not version-only checks)
+- [ ] Module lifecycle: discover, probe, start, health, stop
+- [ ] Compatibility: harness protocol, service contracts, platforms, external versions
+- [ ] Permissions: filesystem, process, network, secrets, remote
+- [ ] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
+- [ ] Safe fallback policies per module kind
+- [ ] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
+- [ ] External module isolation: separate process + versioned IPC + sandbox where applicable
+- [ ] Tests: module incompatible/degraded/unavailable paths without policy bypass
+
+---
+
+## Phase 3 — Extension compatibility
+
+- [ ] Extension Compatibility Adapter layer (design + minimal slice)
+- [ ] Canonical types: `CanonicalModuleSpec`, `CanonicalSkill`, `Instruction`, `AgentProfile`, `Command`, `McpModule`, `ToolProvider`
+- [ ] Import capability matrix: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`
+- [ ] Agent Skills adapter (upstream spec audit first)
+- [ ] MCP adapter
+- [ ] Agent Plugins adapter
+- [ ] Claude Code extensions/plugins adapter
+- [ ] Codex extensions/plugins/skills adapter
+- [ ] Cursor plugins/rules/skills/agents/commands adapter
+- [ ] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
+- [ ] `doctor` reports per-package partial compatibility
+
+---
+
+## Phase 4 — Output optimization
+
+- [ ] `TestObservation` from `cargo test` (native structured path)
+- [ ] `DiffObservation` from `git diff`
+- [ ] `SearchObservation` from repo search
+- [ ] `PipelineObservation` from CI backends
+- [ ] Builtin output reducer (token-bounded)
+- [ ] RTK optional adapter: probe capabilities, not hard dependency
+- [ ] Bounded raw fallback → `ArtifactRef`
+- [ ] Full raw output stored as Artifact alongside structured observation
+
+---
+
+## Phase 5 — Agent runtime (continued)
+
+### Durable budgets & Model Router
+
+- [ ] Token and wall-time budget tracking per session (durable)
+- [ ] Budget enforcement in agent loop
+- [ ] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
+- [ ] Router policies: local-first, free-first, balanced, quality-first
+- [ ] Escalation: local → sanitised cloud request → result back to local agent
+- [ ] Cost estimation and budget warnings
+
+### Agent loop hardening
+
+- [ ] Multi-turn conversation state with tool result accumulation
+- [ ] Streaming response chunking and client sync
+- [ ] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
+- [ ] Parallel tool execution where safe (read_only/idempotent only)
+- [ ] Cross-session state isolation and cleanup
+- [ ] Audit log with redacted tool arguments
+
+---
+
+## Phase 6 — Context & sessions
+
+- [ ] Lazy module/tool/MCP description loading in Context Optimizer
+- [ ] HOT/WARM/COLD context tiers
+- [ ] Token-budgeted module/tool selection for prompt
+- [ ] Session fork/checkpoint without full event duplication (shared prefix)
+- [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
+- [ ] Large paste: bracketed paste in TUI
+- [ ] Large paste: detection threshold + compact composer display
+- [ ] Large paste: chunked upload to `impetusd` → ArtifactStore → `ArtifactRef`
+- [ ] Context Builder: read large artifact in parts, summarize within token budget
+
+---
+
+## Phase 7 — TUI (standalone `impetus`)
+
+Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md). JCode = UX reference only.
+
+- [ ] JCode source audit (presentation components)
+- [ ] Ratatui + Crossterm spike / evaluation
+- [ ] TUI shell: `HarnessClient` only, no core imports
+- [ ] Composer (single-line + multiline mode)
+- [ ] Bracketed paste support
+- [ ] Large paste UX (`[Pasted text · N KB · M lines]`)
+- [ ] Streaming output rendering
+- [ ] Markdown rendering (bounded)
+- [ ] Diff view
+- [ ] Approval UI (typed approvals from harness)
+- [ ] Session picker / list
+- [ ] Fuzzy search (sessions, commands)
+- [ ] Command palette
+- [ ] Scrollback / resize
+- [ ] Status / usage UI
+- [ ] Redraw / event coalescing for performance
+- [ ] Codex UX patterns: errors + remediation display
+
+---
+
+## Phase 8 — Clients & integrations
+
+- [ ] Zap discovery/connect/authorize protocol
+- [ ] Zap backend handoff (Impetus as agent backend)
+- [ ] Provider credential management via Keychain API (user-facing flows)
+- [ ] Policy customization and approval UI contracts (IPC)
+- [ ] Integration tests for full request flows
+- [ ] Performance benchmarks for event log queries
+- [ ] Migration strategy for schema changes documented + tested
+
+---
+
+## Phase 9 — Remote & platform
+
+- [ ] Controlled SSH/tmux/SFTP agent flow end-to-end
+- [ ] Ubuntu 24.04 x86_64 release tier
+- [ ] Clean-machine install smoke
+- [ ] Update and uninstall documentation
+
+---
+
+## Phase 10 — Security & verification
+
+- [ ] Security review: secret handling, sandbox escapes, policy bypass
+- [ ] End-to-end verification: no policy bypass, no credential leakage
+- [ ] Client examples: minimal read-only observer
+
+---
+
+**Completion criterion:** working vertical slice, tests, passes relevant gates.
+Do not mark roadmap items done in IMPLEMENTATION_HISTORY until shipped.

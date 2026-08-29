@@ -24,15 +24,25 @@ SQLite, policy, model/tool runtime, credentials, or session authority.
 
 ## Current and target
 
-**Current.** The workspace provides the `impetusd` local daemon, durable SQLite
-events, versioned Unix-socket IPC, `HarnessClient`, an `impetus` CLI reference
-client, direct-provider foundations, and experimental Zap adapter baseline.
-`impetus` is command/JSON oriented; no standalone TUI is implemented yet.
+**Product model.**
 
-**Target.** `impetus` becomes the first-class standalone CLI/TUI for ordinary
-terminals and SSH. Zap keeps its own UI and connects to Impetus as an agent
-backend. Neither client path owns runtime state, and neither requires a custom
-terminal emulator inside Impetus.
+```text
+impetus   → user-facing CLI (future TUI)
+impetusd  → local-first harness daemon (authoritative runtime)
+```
+
+`impetusd` owns durable sessions, Event Log, SQLite, policy, execution, and
+credential references. Clients send typed requests and render events; they never
+own authoritative state.
+
+**Current.** The workspace ships `impetusd` and an `impetus` CLI client over
+versioned Unix-socket IPC and `HarnessClient`, plus provider registry foundations
+and an experimental Zap adapter. Command/JSON oriented; no TUI, `doctor`, or
+Module Runtime yet.
+
+**Target.** Modular, extensible harness: `impetus` becomes first-class CLI/TUI;
+Zap keeps its own UI as another `HarnessClient` consumer. See
+[Architecture](ARCHITECTURE.md) for kernel invariants vs replaceable modules.
 
 ## What works now
 
@@ -123,8 +133,10 @@ See [Design references](docs/REFERENCES.md).
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md) — canonical current/target architecture.
-- [Roadmap](docs/ROADMAP.md) — implemented foundations and planned gates.
+- [Architecture](ARCHITECTURE.md) — kernel invariants, module model, client/daemon split.
+- [Roadmap](docs/ROADMAP.md) — phases and gates.
+- [TODO](TODO.md) — executable task list.
+- [TUI reference audit](docs/TUI_REFERENCE.md) — JCode/Codex UX decisions (planned).
 - [References](docs/REFERENCES.md) — design lineage, protocols, and libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks and CI.

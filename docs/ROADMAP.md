@@ -1,158 +1,186 @@
 # Roadmap
 
-Canonical product path. Current truth is in
-[ARCHITECTURE.md](../ARCHITECTURE.md); historical delivery detail is in
-[IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md).
+Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTURE.md);
+история поставки — [IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md);
+исполнимые задачи — [TODO.md](../TODO.md).
 
 ## FOUNDATION — current
 
-- Durable events and SQLite WAL.
-- Daemon/client split with versioned local IPC.
-- Safety, capability, sandbox, approval, and secret-reference base.
-- `ModelProvider` and `ProviderRegistry` foundations.
-- Basic copied-event fork and compaction/budget primitives.
+- Durable events и SQLite WAL.
+- Crate split `impetus` (client) / `impetusd` (daemon) / `impetus-core` (in progress; docs/tooling cleanup pending).
+- Versioned local IPC, `HarnessClient`.
+- Safety, capability, sandbox, approval, secret-reference base.
+- `ModelProvider` и `ProviderRegistry` foundations.
+- Basic copied-event fork и compaction/budget primitives.
+- First Agent Loop / Tool Orchestrator slice.
+
+## MODULE RUNTIME / EXTENSIBILITY FOUNDATION
+
+Ранняя архитектурная фаза — **до** массового внедрения конкретных integrations.
+
+**Gate:**
+
+- typed service contracts (не hard deps AgentLoop → concrete backends);
+- `ServiceRegistry` / `ModuleRegistry`;
+- `ModuleDescriptor` shape;
+- capability negotiation и probing (не только version compare);
+- lifecycle: discover, probe, start, health, stop;
+- compatibility matrix (harness protocol, contracts, platforms);
+- permissions model;
+- execution semantics: `read_only | idempotent | mutating | non_replayable`;
+- safe fallback policies;
+- `UnknownOutcome` rule (no auto-retry mutating/non-replayable on alternate backend);
+- external-module isolation (process + IPC preferred);
+- Extension Compatibility Adapter foundation + canonical internal types;
+- partial import (`SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`).
+
+**Не в gate:** marketplace, plugin manager UI, arbitrary dynamic library ABI.
+
+## BINARY TOPOLOGY & DIAGNOSTICS
+
+**Target:**
+
+- однозначные роли: `impetus` = CLI/TUI client, `impetusd` = daemon;
+- release/install ship оба binary;
+- client auto-discovers / safely spawns `impetusd`;
+- `impetus doctor` и `impetus doctor --json` (typed, redacted, remediation);
+- `impetus components` introspection (list/status/health; update later).
 
 ## AGENT RUNTIME
 
 ### Agent Loop
 
-**Target:** first-class autonomous loop:
+**Target:**
 
 ```text
 Model → Tool Orchestrator → Tool request → Effect normalization
       → Safety / Policy / Sandbox → Execution → Observation → Model
 ```
 
-It is a distinct subsystem, not provider implementation detail.
+Отдельная подсистема, не деталь provider implementation.
 
 ### Tool Orchestrator
 
 **Target:** structured tool lifecycle, normalized effects, durable observations,
-and explicit safety admission.
+explicit safety admission.
 
 ### Model Router
 
-**Current:** provider abstraction, registry foundation, and direct provider path.
+**Current:** provider abstraction, registry foundation, direct provider path.
 
-**Target:** route by task complexity, capability, provider health, cost,
-latency, privacy, context size, prompt-cache characteristics, remaining budget,
-and reasoning need. Policies: free-first, balanced, quality-first, optional
-local-first. Escalate cheap/local/free → standard → strong only when justified.
+**Target:** route by complexity, capability, health, cost, latency, privacy,
+context, prompt cache, budget, reasoning. Policies: `local-first`, `free-first`,
+`balanced`, `quality-first`. Escalation light/local → strong/cloud через
+minimal sanitised request; sensitive repo context не уходит в облако по умолчанию.
 
 ### Durable budgets
 
-**Target:** per-session/agent steps, calls, tokens, cost, and time state;
-rate-limit scheduling and router feedback.
+**Target:** per-session steps, calls, tokens, cost, time; rate limits; router
+feedback.
+
+## OUTPUT OPTIMIZATION
+
+**Target:**
+
+```text
+Execution → Raw Observation → Output Optimization
+  ├─ native structured observations (Test/Diff/Search/Pipeline)
+  ├─ builtin reducer
+  ├─ RTK (optional, probed, replaceable)
+  └─ bounded raw + ArtifactRef
+```
+
+RTK не обязателен; removable без изменения Agent Loop.
 
 ## CONTEXT INTELLIGENCE
 
 ### Token / Context Optimizer
 
-**Target:** stable prompt prefix, prompt cache, shared fork/subagent prefix,
-delta context, deterministic reducers, artifact store, HOT/WARM/COLD data,
-lazy tools/MCP/instructions, and token/cost/cache telemetry. No unmeasured
-savings claims.
+**Target:** stable prefix, prompt cache, shared fork/subagent prefix, delta
+context, deterministic reducers, artifact store, HOT/WARM/COLD, lazy
+tools/MCP/instructions, telemetry. Large paste → ArtifactRef, не giant IPC JSON.
 
 ### Instruction model
 
 **Current:** scoped deterministic instruction resolution.
 
-**Target:** task-aware lazy instruction and skill selection. SOUL expresses
-persona; AGENTS broad rules; conventions declarative project rules; guides
-factual/process knowledge; skills procedural workflows. None can grant
-network, sudo, SSH, credentials, sandbox scope, or approval.
+**Target:** task-aware lazy instruction/skill selection. SOUL, AGENTS,
+conventions, guides, skills — без расширения permissions.
 
 ### Repo Intelligence
 
-**Target:** Tree-sitter map, symbols/imports/dependencies, git diff and recent
-files, ranked token-budgeted context, and lazy/on-demand LSP—not an always-on
-heavy service.
+**Target:** Tree-sitter map, symbols/imports, git diff, ranked token-budgeted
+context, lazy LSP.
 
 ## SESSIONS / ORCHESTRATION
 
 ### Session DAG and checkpoints
 
-**Current:** basic fork with copied event history and compaction/budget
-primitives.
+**Current:** basic fork with copied history.
 
-**Target:** parent/fork relations, shared history/prefix where useful,
-checkpoints, restore/revert, and branch-aware agent sessions.
+**Target:** parent/fork, shared prefix, checkpoints, restore/revert, branch-aware
+sessions.
 
 ### Interrupt, pause, resume
 
-**Target:** durable control states and explicit unknown outcomes across client
-disconnects.
+**Target:** durable control states; explicit unknown outcomes across disconnects.
 
 ### Swarm
 
-**Target, post-MVP:** isolated subagent sessions with own
-branch/checkpoint/budget/profile/scoped capabilities; shared repo index/cache
-where appropriate; conflict detection; compact worker result to parent. Swarm
-is not automatic for every task.
+**Target, post-MVP:** isolated subagent sessions; compact worker results; not
+automatic for every task.
 
 ## AGENT BEHAVIOR
 
 ### Profiles and memory
 
-**Target:** profiles/SOUL, durable memory, and scoped instruction selection
-without expanding permissions.
+**Target:** profiles/SOUL, durable memory, scoped instructions.
 
 ### Self-Repair
 
-**Target flow:**
-
-```text
-Event Log → Failure Detector → Failure Fingerprint → Retry Guard
-→ Candidate Lesson → Validate / Deduplicate → Memory / Convention / Guide / Skill proposal
-```
-
-Signals include repeated tool failure, failed tests, user correction, revert,
-safety denial, abandoned approach, and explicit negative feedback. Equivalent
-failure of the same tool/input/state is `RETRY_BLOCKED`: change strategy.
-Self-Repair cannot change safety policy, sandbox, credentials, permissions, or
-core executable code automatically.
+**Target:** Event Log → failure fingerprint → retry guard → lesson proposal.
+Cannot change safety, sandbox, credentials, or core code automatically.
 
 ## CLIENTS
 
 ### Standalone Harness TUI
 
-**Target:** `cd project && impetus` as first-class CLI/TUI for Terminal.app,
-iTerm, SSH, Linux, and environments without Zap. Evaluate jcode reuse first;
-choose a thin Rust framework only when justified.
+**Target:** `cd project && impetus` — first-class CLI/TUI. JCode = UX reference
+only; Ratatui/Crossterm baseline. Bracketed paste + large-paste artifact flow.
+Audit: [TUI_REFERENCE.md](TUI_REFERENCE.md).
 
 ### Zap backend integration
 
-**Target MVP:** discover local Impetus; Connect/Authorize; show
-connected/disconnected state; choose Impetus as agent backend; forward agent
-requests. Zap owns its UI. The existing adapter is historical/experimental and
-is not a target renderer/status-bar/Blocks protocol.
+**Target MVP:** discover, Connect/Authorize, status, backend selection, forward
+requests. Zap owns UI. Existing adapter — historical baseline only.
+
+## EXTENSION ECOSYSTEM
+
+**Target:** compatibility adapters for Skills, MCP, Agent Plugins, Claude/Codex/Cursor
+extensions; canonical internal representation; `doctor` shows partial compatibility.
+Upstream spec check before locking format.
 
 ## REMOTE
 
-**Target:** controlled SSH, PTY, tmux, and SFTP capabilities through policy,
-approval, and durable events. Current models/stubs are not a completed remote
-agent flow. Later Android/remote control follows this boundary.
+**Target:** controlled SSH, PTY, tmux, SFTP through policy/approval/events.
+Current models/stubs ≠ completed flow.
 
 ## PLATFORM / DISTRIBUTION
 
 **Current focus:** macOS Apple Silicon.
 
-**Target:** Ubuntu 24.04 x86_64, later Linux ARM64 and Intel macOS when needed;
-credential abstraction, release binaries, checksums, curl installer,
-clean-machine smoke, update, and uninstall docs. Do not present a developer
-checkout as final product installation.
+**Target:** Ubuntu 24.04 x86_64, later Linux ARM64 / Intel macOS; checksums, curl
+installer, clean-machine smoke, update/uninstall docs.
 
 ## Not now
 
-- A separate native GUI application.
-- A custom terminal emulator or ANSI renderer without proven need.
-- Local HTTP UI, Electron/WebView, Node runtime, cloud sync, marketplace, or
-  multi-user auth.
-- Automatic permission expansion, credentials, or safety-policy changes.
+- Separate native GUI app.
+- Custom terminal emulator / ANSI renderer without proven need.
+- Local HTTP UI, Electron/WebView, Node runtime in harness.
+- Cloud sync, marketplace, multi-user auth.
+- Automatic permission/credential/safety-policy expansion.
 
 ## Readiness rule
 
-A feature is ready only with proportionate tests, runtime smoke where
-applicable, documented trust boundary, and explicit evidence that current code
-meets its gate.
-
+Feature ready только с proportionate tests, runtime smoke where applicable,
+documented trust boundary, explicit evidence gate is met.

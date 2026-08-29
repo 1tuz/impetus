@@ -18,15 +18,22 @@ runtime/state — harness.
 
 ## CURRENT и TARGET
 
-**CURRENT.** В workspace есть local daemon `impetus`, SQLite events,
-versioned Unix-socket IPC, `HarnessClient`, command/JSON reference client
-`impetus-cli`, foundation provider layer и экспериментальный Zap adapter.
-Standalone TUI пока не реализован.
+**Модель.**
 
-**TARGET.** `impetus` — first-class standalone CLI/TUI для Terminal.app,
-iTerm, SSH и Linux. Zap сохраняет собственный UI и подключает Impetus как
-agent backend. Эти paths не конкурируют и не требуют собственного terminal
-emulator внутри Impetus.
+```text
+impetus   → пользовательский CLI (будущий TUI)
+impetusd  → local-first daemon (authoritative runtime)
+```
+
+`impetusd` владеет durable sessions, Event Log, SQLite, policy, execution и
+credential references. Клиенты не владеют authoritative state.
+
+**CURRENT.** `impetusd` + CLI `impetus` через Unix-socket IPC и `HarnessClient`,
+provider registry foundation, экспериментальный Zap adapter. TUI, `doctor`, Module
+Runtime — не реализованы.
+
+**TARGET.** Модульный harness: `impetus` — first-class CLI/TUI; Zap — ещё один
+`HarnessClient` consumer. См. [Architecture](ARCHITECTURE.md).
 
 ## Что работает сейчас
 
