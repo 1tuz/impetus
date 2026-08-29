@@ -68,6 +68,8 @@ pub struct ToolResult {
     pub artifact: Option<ArtifactRef>,
     pub line_count: usize,
     pub byte_count: usize,
+    pub original_tokens: usize,
+    pub reduced_tokens: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +202,13 @@ impl ReadOnlyTools {
 
         let byte_count = full.len();
         let line_count = full.lines().count();
-        let truncated = byte_count > MAX_TOOL_PREVIEW_BYTES;
+
+        // Apply token-based reduction
+        let reducer = crate::OutputReducer::default();
+        let reduced = reducer.reduce(&full);
+
+        // Store full output as artifact if truncated (byte or token)
+        let truncated = byte_count > MAX_TOOL_PREVIEW_BYTES || reduced.truncated;
         let artifact = if truncated {
             Some(
                 artifacts
@@ -210,11 +218,9 @@ impl ReadOnlyTools {
         } else {
             None
         };
-        let preview = if truncated {
-            truncate_utf8(&full, MAX_TOOL_PREVIEW_BYTES).to_owned()
-        } else {
-            full
-        };
+
+        // Use reduced content as preview
+        let preview = reduced.content.into_owned();
 
         Ok(ToolOutcome::Allowed {
             result: ToolResult {
@@ -225,6 +231,8 @@ impl ReadOnlyTools {
                 artifact,
                 line_count,
                 byte_count,
+                original_tokens: reduced.original_tokens,
+                reduced_tokens: reduced.reduced_tokens,
             },
         })
     }

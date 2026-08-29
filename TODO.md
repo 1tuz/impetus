@@ -113,9 +113,10 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] `SearchObservation` from repo search
 - [x] `PipelineObservation` from CI backends
 - [x] Builtin output reducer (token-bounded)
+- [x] Bounded raw fallback → `ArtifactRef`
+- [x] Full raw output stored as Artifact alongside structured observation
 - [ ] RTK optional adapter: probe capabilities, not hard dependency
-- [ ] Bounded raw fallback → `ArtifactRef`
-- [ ] Full raw output stored as Artifact alongside structured observation
+- [ ] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
 
 ---
 
