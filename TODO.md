@@ -37,7 +37,7 @@ placeholder responses не считаются done.
 - [x] `task client` → `cargo run -p impetus` (не `cli`)
 - [x] `task harness` / `task cli` deprecated aliases
 - [ ] Release artifact: оба binary с явными ролями в install script help
-- [ ] `impetus` auto-discovers socket и safely spawns `impetusd` if needed
+- [x] `impetus` auto-discovers socket и safely spawns `impetusd` if needed
 - [ ] Install/uninstall docs: `impetusd` daemon vs `impetus` client
 
 ### Doctor

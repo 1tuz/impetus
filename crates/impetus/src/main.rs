@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use impetus_client::HarnessClient;
 use uuid::Uuid;
 
+mod daemon;
 mod doctor;
 
 #[derive(Parser)]
@@ -54,19 +55,19 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let socket_path = std::env::var("IMPETUS_SOCKET").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").expect("HOME not set");
-        format!("{home}/Library/Application Support/Impetus/harness.sock")
-    });
+    let socket_path = daemon::discover_socket_path();
 
     if let Commands::Doctor { json } = cli.command {
         doctor::run_diagnostics(&socket_path, json).await?;
         return Ok(());
     }
 
+    // Auto-spawn daemon if not running
+    daemon::ensure_daemon_running(&socket_path).await?;
+
     let client = impetus_client::UnixSocketTransport::connect(&socket_path)
         .await
-        .context("Failed to connect to impetusd. Make sure the daemon is running with: impetusd")?;
+        .context("Failed to connect to impetusd after ensuring it's running")?;
 
     match cli.command {
         Commands::Doctor { .. } => unreachable!("handled above"),
