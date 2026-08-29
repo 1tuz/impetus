@@ -1,0 +1,9 @@
+{
+  "id": "local-mock-agent",
+  "display_name": "Local Mock ACP Agent",
+  "command": "/usr/local/bin/mock-acp-agent",
+  "args": ["--stdio"],
+  "credential_strategy": {
+    "kind": "agent_owned"
+  }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "impetus-acp-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+impetus-core = { path = "../impetus-core" }
+agent-client-protocol.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[[example]]
+name = "mock_agent_bin"
+path = "examples/mock_agent_bin.rs"

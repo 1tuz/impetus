@@ -24,9 +24,9 @@ tasks:
       - cargo fmt --all -- --check
 
   test:
-    desc: Запустить unit-тесты core
+    desc: Запустить unit-тесты всего Rust workspace
     cmds:
-      - cargo test -p agentic-terminal-core
+      - cargo test --workspace
 
   check:
     desc: Проверить весь Rust workspace
@@ -46,10 +46,41 @@ tasks:
       - task: check
       - task: lint
 
-  run:
-    desc: Запустить native GPUI приложение
+  harness:
+    desc: Запустить headless harness daemon в текущей terminal tab
     cmds:
-      - cargo run -p agentic-terminal-app
+      - cargo run -p impetus
+
+  cli:
+    desc: 'Вызвать reference CLI; пример: task cli -- create'
+    cmds:
+      - cargo run -p impetus-cli -- {{.CLI_ARGS}}
+
+  ci:list:
+    desc: Показать GitLab CI jobs из .gitlab-ci.yml
+    cmds:
+      - gitlab-ci-local --list-csv-all
+
+  ci:local:
+    desc: Выполнить GitLab CI локально trusted shell executor-ом
+    cmds:
+      - gitlab-ci-local --force-shell-executor --shell-executor-no-image
+
+  security:audit:
+    desc: Проверить Cargo.lock по RustSec advisories
+    cmds:
+      - cargo audit
+
+  security:deny:
+    desc: Проверить advisories, лицензии, bans и sources Cargo dependency graph
+    cmds:
+      - cargo deny check advisories bans sources licenses
+
+  security:
+    desc: Выполнить все dependency security checks
+    cmds:
+      - task: security:audit
+      - task: security:deny
 
   commit:check:
     desc: 'Проверить Git subject (KEY-123 type: Результат)'

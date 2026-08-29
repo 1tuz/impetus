@@ -1,0 +1,21 @@
+name: Update star history
+
+on:
+  schedule:
+    - cron: "23 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  chart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Render and commit the star chart
+        uses: jal-co/shieldcn@fe6344a6b47622d671b07752a87236e585ce59c4 # v1.0.0
+        with:
+          output: assets/readme/star-chart.svg
+          mode: both
+          theme: slate

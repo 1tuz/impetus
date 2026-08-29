@@ -1,0 +1,16 @@
+[package]
+name = "impetus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+impetus-core = { path = "../impetus-core" }
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "=3.7.0"

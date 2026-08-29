@@ -1,0 +1,39 @@
+image: rust:1.98.0-bookworm
+
+stages:
+  - verify
+  - security
+
+cache:
+  key: "rust-1.98"
+  paths:
+    - target/
+
+fmt:
+  stage: verify
+  script:
+    - cargo fmt --all -- --check
+
+test:
+  stage: verify
+  timeout: 10m
+  script:
+    - cargo test --workspace --lib --bins
+
+check:
+  stage: verify
+  script:
+    - cargo check --workspace
+
+clippy:
+  stage: verify
+  script:
+    - cargo clippy --workspace --all-targets -- -D warnings
+
+dependency-security:
+  stage: security
+  script:
+    - cargo install --locked cargo-audit --version 0.22.2
+    - cargo audit
+    - cargo install --locked cargo-deny --version 0.20.2
+    - cargo deny check advisories bans sources licenses
