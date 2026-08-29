@@ -112,7 +112,7 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] `DiffObservation` from `git diff`
 - [x] `SearchObservation` from repo search
 - [x] `PipelineObservation` from CI backends
-- [ ] Builtin output reducer (token-bounded)
+- [x] Builtin output reducer (token-bounded)
 - [ ] RTK optional adapter: probe capabilities, not hard dependency
 - [ ] Bounded raw fallback → `ArtifactRef`
 - [ ] Full raw output stored as Artifact alongside structured observation
