@@ -81,6 +81,31 @@ impl Harness {
         }
     }
 
+    #[cfg(test)]
+    fn with_test_provider(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        provider: Arc<dyn crate::ModelProvider>,
+    ) -> Self {
+        let workspace_root = policy.scope().workspace_root.clone();
+        let default_provider_id = provider.provider_id().to_string();
+        let registry = ProviderRegistry::new();
+        registry
+            .register(provider)
+            .expect("failed to register test provider");
+        Self {
+            store,
+            policy,
+            provider_registry: registry,
+            default_provider_id,
+            credential_resolver: Arc::new(NoCredentialResolver),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
+            workspace_root,
+            session_coordinator: SessionCoordinator::default(),
+            attachments: crate::AttachmentStore::new(),
+        }
+    }
+
     /// Use a user-selected direct-provider profile. The profile is supplied by
     /// daemon startup, not client IPC; credentials remain outside this type.
     pub fn with_openai_provider(
@@ -408,46 +433,54 @@ fn handle_request(
                 accepted,
             };
             runtime.resolve_approval(resolution.clone())?;
-            if accepted && let Some(deferred) = deferred {
-                match deferred.1.as_str() {
-                    "write_file" | "edit_file" => crate::ToolOrchestrator::execute_approved_write(
-                        &runtime, request, resolution, deferred,
-                    ),
-                    "bash" | "shell" | "exec" => crate::ToolOrchestrator::execute_approved_bash(
-                        &runtime, request, resolution, deferred,
-                    ),
-                    name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
-                }
-                .map_err(|error| RuntimeError::Denied(error.to_string()))?;
-                if let Some(run_id) = runtime.active_run_id()? {
-                    let workspace_root = runtime.workspace_root()?;
-                    let messages = resolve_provider_messages(&workspace_root, &runtime)
-                        .map_err(|error| RuntimeError::Denied(error.to_string()))?;
-                    let cancellation = CancellationToken::new();
-                    if let Ok(mut active) = cancellations.lock() {
-                        active.insert(session_id, cancellation.clone());
-                    }
-                    let task_runtime = runtime.clone();
-                    let task_registry = provider_registry.clone();
-                    let task_provider_id = default_provider_id.clone();
-                    let task_resolver = credential_resolver.clone();
-                    let task_cancellations = cancellations.clone();
-                    tokio::spawn(async move {
-                        run_agent_loop(
-                            task_runtime,
-                            run_id,
-                            task_registry,
-                            task_provider_id,
-                            task_resolver,
-                            messages,
-                            cancellation,
-                        )
-                        .await;
-                        if let Ok(mut active) = task_cancellations.lock() {
-                            active.remove(&session_id);
+            if let Some(deferred) = deferred {
+                if accepted {
+                    match deferred.1.as_str() {
+                        "write_file" | "edit_file" => {
+                            crate::ToolOrchestrator::execute_approved_write(
+                                &runtime, request, resolution, deferred,
+                            )
                         }
-                    });
+                        "bash" | "shell" | "exec" => {
+                            crate::ToolOrchestrator::execute_approved_bash(
+                                &runtime, request, resolution, deferred,
+                            )
+                        }
+                        name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
+                    }
+                    .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                } else {
+                    crate::ToolOrchestrator::record_approval_rejection(&runtime, deferred);
                 }
+            }
+            if let Some(run_id) = runtime.active_run_id()? {
+                let workspace_root = runtime.workspace_root()?;
+                let messages = resolve_provider_messages(&workspace_root, &runtime)
+                    .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                let cancellation = CancellationToken::new();
+                if let Ok(mut active) = cancellations.lock() {
+                    active.insert(session_id, cancellation.clone());
+                }
+                let task_runtime = runtime.clone();
+                let task_registry = provider_registry.clone();
+                let task_provider_id = default_provider_id.clone();
+                let task_resolver = credential_resolver.clone();
+                let task_cancellations = cancellations.clone();
+                tokio::spawn(async move {
+                    run_agent_loop(
+                        task_runtime,
+                        run_id,
+                        task_registry,
+                        task_provider_id,
+                        task_resolver,
+                        messages,
+                        cancellation,
+                    )
+                    .await;
+                    if let Ok(mut active) = task_cancellations.lock() {
+                        active.remove(&session_id);
+                    }
+                });
             }
             Ok(session_id)
         }) {
@@ -838,7 +871,7 @@ mod tests {
     use super::*;
     use crate::{
         CredentialStrategy, EventPayload, MemoryEventStore, ProviderError, ProviderProfile,
-        RetryBudget,
+        RetryBudget, mock_provider::MockStreamItem,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1314,5 +1347,198 @@ mod tests {
         assert!(detail.diff_preview.is_some());
         // New file creation case
         assert!(detail.diff_preview.unwrap().contains("new file"));
+    }
+
+    #[tokio::test]
+    async fn approval_resume_returns_durable_tool_observations_to_the_model() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("evidence.txt"), "confirmed evidence")
+            .expect("fixture");
+        let store = Arc::new(MemoryEventStore::default());
+        let provider = Arc::new(MockProvider::scripted(
+            "scripted",
+            "test-model",
+            [
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "<tool_use><tool_name>read_file</tool_name><parameters>{\"path\":\"evidence.txt\"}</parameters></tool_use>".into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "<tool_use><tool_name>write_file</tool_name><parameters>{\"path\":\"result.txt\",\"content\":\"approved result\"}</parameters></tool_use>".into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "completed after approval".into(),
+                }],
+            ],
+        ));
+        let harness = Harness::with_test_provider(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider.clone(),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("session creation")
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "inspect evidence and write the result".into(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::AwaitingApproval,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("event stream")
+        };
+        let approval_id = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.id)
+                }
+                _ => None,
+            })
+            .expect("write approval");
+        assert!(matches!(
+            harness.handle(IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            }),
+            IpcResponse::ApprovalResolved { .. }
+        ));
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("result.txt")).expect("written result"),
+            "approved result"
+        );
+        let received = provider.received_messages();
+        assert_eq!(received.len(), 3);
+        let resume_context = serde_json::to_string(&received[2]).expect("serialize context");
+        assert!(resume_context.contains("confirmed evidence"));
+        assert!(resume_context.contains("file written"));
+        assert!(store.list(session_id).expect("events").iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Agent(crate::AgentEvent::Final { text, .. })
+                    if text == "completed after approval"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn rejected_approval_records_denial_and_resumes_without_execution() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let provider = Arc::new(MockProvider::scripted(
+            "scripted-rejection",
+            "test-model",
+            [
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "<tool_use><tool_name>write_file</tool_name><parameters>{\"path\":\"blocked.txt\",\"content\":\"must not write\"}</parameters></tool_use>".into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "completed after rejection".into(),
+                }],
+            ],
+        ));
+        let harness = Harness::with_test_provider(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider,
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("session creation")
+        };
+        harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "try the write".into(),
+        });
+        let approval_id = loop {
+            let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+                session_id,
+                after_sequence: 0,
+            }) else {
+                panic!("event stream")
+            };
+            if let Some(approval_id) = events.iter().find_map(|event| match &event.payload {
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.id)
+                }
+                _ => None,
+            }) {
+                break approval_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: false,
+            }),
+            IpcResponse::ApprovalResolved { .. }
+        ));
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!workspace.path().join("blocked.txt").exists());
+        assert!(store.list(session_id).expect("events").iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Tool(crate::ToolEvent::Observed {
+                    outcome: crate::ToolEventOutcome::Denied,
+                    error: Some(error),
+                    ..
+                }) if error == "user rejected approval"
+            )
+        }));
     }
 }

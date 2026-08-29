@@ -302,6 +302,26 @@ impl ToolOrchestrator {
         }
     }
 
+    pub fn record_approval_rejection(
+        runtime: &Arc<AgentRuntime>,
+        deferred: (String, String, serde_json::Value),
+    ) -> ToolObservation {
+        let (tool_call_id, tool_name, arguments) = deferred;
+        Self::record_observation(
+            runtime,
+            crate::ToolCall {
+                id: tool_call_id,
+                name: tool_name,
+                arguments: arguments.clone(),
+            },
+            summarize_arguments(&arguments),
+            ToolOutcomeStatus::Denied,
+            String::new(),
+            None,
+            Some("user rejected approval".into()),
+        )
+    }
+
     pub fn execute_approved_write(
         runtime: &Arc<AgentRuntime>,
         request: crate::ApprovalRequest,

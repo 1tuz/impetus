@@ -35,6 +35,16 @@ enum Commands {
         /// Session ID to cancel
         session_id: Uuid,
     },
+    /// Approve or reject a pending agent action
+    Approve {
+        /// Session that owns the approval
+        session_id: Uuid,
+        /// Pending approval ID
+        approval_id: Uuid,
+        /// Reject the pending action instead of approving it
+        #[arg(long)]
+        reject: bool,
+    },
     /// Send a prompt to a session
     Prompt {
         /// Session ID to prompt
@@ -121,6 +131,28 @@ async fn main() -> Result<()> {
                 other => bail!("Unexpected response: {other:?}"),
             }
         }
+        Commands::Approve {
+            session_id,
+            approval_id,
+            reject,
+        } => {
+            let response = client
+                .request(impetus_core::IpcRequest::ResolveApproval {
+                    session_id,
+                    approval_id,
+                    accepted: !reject,
+                })
+                .await?;
+            match response {
+                impetus_core::IpcResponse::ApprovalResolved { .. } => {
+                    println!("Approval {approval_id} resolved for session {session_id}");
+                }
+                impetus_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error resolving approval: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
+            }
+        }
         Commands::Prompt { session_id, text } => {
             let response = client
                 .request(impetus_core::IpcRequest::Prompt { session_id, text })
@@ -181,5 +213,23 @@ mod tests {
         let id = Uuid::new_v4();
         let cli = Cli::try_parse_from(["impetus", "context", &id.to_string()]).unwrap();
         assert!(matches!(cli.command, Commands::Context { session_id } if session_id == id));
+    }
+
+    #[test]
+    fn parses_rejected_approval() {
+        let session_id = Uuid::new_v4();
+        let approval_id = Uuid::new_v4();
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "approve",
+            &session_id.to_string(),
+            &approval_id.to_string(),
+            "--reject",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Approve { reject: true, .. }
+        ));
     }
 }
