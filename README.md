@@ -24,10 +24,10 @@ SQLite, policy, model/tool runtime, credentials, or session authority.
 
 ## Current and target
 
-**Current.** The workspace provides the `impetus` local daemon, durable SQLite
-events, versioned Unix-socket IPC, `HarnessClient`, an `impetus-cli` reference
+**Current.** The workspace provides the `impetusd` local daemon, durable SQLite
+events, versioned Unix-socket IPC, `HarnessClient`, an `impetus` CLI reference
 client, direct-provider foundations, and experimental Zap adapter baseline.
-`impetus-cli` is command/JSON oriented; no standalone TUI is implemented yet.
+`impetus` is command/JSON oriented; no standalone TUI is implemented yet.
 
 **Target.** `impetus` becomes the first-class standalone CLI/TUI for ordinary
 terminals and SSH. Zap keeps its own UI and connects to Impetus as an agent
@@ -81,7 +81,7 @@ git clone https://github.com/1tuz/impetus.git
 cd impetus
 task setup
 task verify
-cargo build --release -p impetus -p impetus-cli
+cargo build --release -p impetus -p impetusd
 ```
 
 ## Usage
@@ -89,15 +89,15 @@ cargo build --release -p impetus -p impetus-cli
 Start the daemon:
 
 ```zsh
-impetus
+impetusd
 ```
 
 In another terminal, create a session and interact:
 
 ```zsh
-impetus-cli create
-impetus-cli prompt <session-id> "Summarize this repository"
-impetus-cli stream <session-id>
+impetus create
+impetus prompt <session-id> "Summarize this repository"
+impetus stream <session-id>
 ```
 
 For provider configuration, see [configuration docs](docs/configuration.md).
@@ -114,8 +114,9 @@ See [Design references](docs/REFERENCES.md).
 | Path | Role |
 | --- | --- |
 | `crates/impetus-core` | Durable events, runtime, policy, effects, providers, tools, and IPC types. |
-| `crates/impetus` | Headless Unix-socket daemon and macOS Keychain resolver. |
-| `crates/impetus-cli` | Current reference command-line client. |
+| `crates/impetusd` | Headless Unix-socket daemon and macOS Keychain resolver. |
+| `crates/impetus` | User-facing command-line client. |
+| `crates/impetus-cli` | Legacy reference client (deprecated, use `impetus`). |
 | `crates/impetus-client` | `HarnessClient` contract and local transports. |
 | `crates/impetus-zap-adapter` | Historical/experimental Zap integration baseline. |
 | `crates/impetus-acp-gateway` | ACP profile and gateway library. |

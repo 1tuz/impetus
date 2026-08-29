@@ -43,15 +43,15 @@ jobs:
 
       - name: Build release binaries
         run: |
-          cargo build --release --target ${{ matrix.target }} -p impetus -p impetus-cli
+          cargo build --release --target ${{ matrix.target }} -p impetus -p impetusd
           strip target/${{ matrix.target }}/release/impetus || true
-          strip target/${{ matrix.target }}/release/impetus-cli || true
+          strip target/${{ matrix.target }}/release/impetusd || true
 
       - name: Package binaries
         run: |
           mkdir -p dist
           tar czf dist/${{ matrix.artifact_name }}.tar.gz \
-            -C target/${{ matrix.target }}/release impetus impetus-cli
+            -C target/${{ matrix.target }}/release impetus impetusd
           cd dist
           if command -v shasum >/dev/null; then
             shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256

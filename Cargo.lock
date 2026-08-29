@@ -1120,8 +1120,9 @@ name = "impetus"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "impetus-client",
  "impetus-core",
- "security-framework",
  "serde_json",
  "tokio",
  "uuid",
@@ -1199,6 +1200,18 @@ dependencies = [
  "impetus-client",
  "impetus-core",
  "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "impetusd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "impetus-core",
+ "security-framework",
  "serde_json",
  "tokio",
  "uuid",

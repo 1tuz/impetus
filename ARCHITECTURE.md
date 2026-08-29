@@ -18,9 +18,10 @@ authoritative session state.
 impetus/
 ├── crates/
 │   ├── impetus-core/          durable domain/runtime foundation
-│   ├── impetus/               headless daemon + Unix socket server
+│   ├── impetusd/              headless daemon + Unix socket server
+│   ├── impetus/               user-facing CLI client
 │   ├── impetus-client/        HarnessClient + local transports
-│   ├── impetus-cli/           current command/JSON reference client
+│   ├── impetus-cli/           legacy reference client (deprecated)
 │   ├── impetus-zap-adapter/   experimental historical integration baseline
 │   └── impetus-acp-gateway/   ACP gateway library
 ├── config/                    capability and provider configuration
@@ -32,7 +33,7 @@ impetus/
 ## CURRENT
 
 ```text
-impetus-cli / Zap adapter
+impetus / Zap adapter
           │ typed local IPC
           ▼
        impetusd

@@ -84,9 +84,9 @@ install_binaries() {
   
   info "Установка в $INSTALL_DIR..."
   mv "$TMPDIR/impetus" "$INSTALL_DIR/impetus"
-  mv "$TMPDIR/impetus-cli" "$INSTALL_DIR/impetus-cli"
+  mv "$TMPDIR/impetusd" "$INSTALL_DIR/impetusd"
   
-  chmod +x "$INSTALL_DIR/impetus" "$INSTALL_DIR/impetus-cli"
+  chmod +x "$INSTALL_DIR/impetus" "$INSTALL_DIR/impetusd"
 }
 
 show_post_install() {
@@ -97,8 +97,8 @@ show_post_install() {
   info "  export PATH=\"\$HOME/.local/bin:\$PATH\""
   info ""
   info "Запуск:"
-  info "  impetus         # запустить daemon"
-  info "  impetus-cli     # CLI клиент"
+  info "  impetusd       # запустить daemon"
+  info "  impetus        # CLI клиент"
   info ""
   info "Документация: https://github.com/$REPO"
 }

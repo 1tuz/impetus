@@ -2,6 +2,7 @@
 members = [
   "crates/impetus-core",
   "crates/impetus",
+  "crates/impetusd",
   "crates/impetus-cli",
   "crates/impetus-client", "crates/impetus-zap-adapter", "crates/impetus-acp-gateway",
 ]
