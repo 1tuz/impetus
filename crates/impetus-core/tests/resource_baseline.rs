@@ -80,9 +80,18 @@ fn baseline_artifact_bytes() {
     let id_large = artifacts.store(&large).expect("store large");
 
     // Проверяем размер через metadata
-    let meta_small = artifacts.metadata(&id_small.id).expect("metadata small").expect("artifact not found");
-    let meta_medium = artifacts.metadata(&id_medium.id).expect("metadata medium").expect("artifact not found");
-    let meta_large = artifacts.metadata(&id_large.id).expect("metadata large").expect("artifact not found");
+    let meta_small = artifacts
+        .metadata(&id_small.id)
+        .expect("metadata small")
+        .expect("artifact not found");
+    let meta_medium = artifacts
+        .metadata(&id_medium.id)
+        .expect("metadata medium")
+        .expect("artifact not found");
+    let meta_large = artifacts
+        .metadata(&id_large.id)
+        .expect("metadata large")
+        .expect("artifact not found");
 
     assert_eq!(meta_small.byte_count, small.len());
     assert_eq!(meta_medium.byte_count, medium.len());
