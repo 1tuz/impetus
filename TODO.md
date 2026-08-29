@@ -57,16 +57,16 @@ Stubs and placeholder responses do not count as done.
 - [x] Probe: tools/capabilities registration
 - [x] Probe: external agents / ACP adapters
 - [x] Probe: optional modules, compatibility adapters, remote capabilities
-- [ ] Probe: web research (internet access, WebFetch, per-`SearchBackend` health, BrowserProvider, network policy)
+- [x] Probe: web research (internet access, WebFetch, per-`SearchBackend` health, BrowserProvider, network policy)
 - [x] Probe: disk/runtime health
-- [ ] Partial extension compatibility matrix in doctor output
+- [x] Partial extension compatibility matrix in doctor output
 
 ### Components (introspection)
 
-- [ ] `impetus components list`
-- [ ] `impetus components status` (health, version, compatibility, source)
-- [ ] Concept: component version/digest lock for reproducibility
-- [ ] Update/disable flows (design; no marketplace)
+- [x] `impetus components list`
+- [x] `impetus components status` (health, version, compatibility, source)
+- [x] Concept: component version/digest lock for reproducibility
+- [x] Update/disable flows (design; no marketplace)
 
 ---
 

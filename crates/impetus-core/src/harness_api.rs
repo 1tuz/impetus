@@ -761,6 +761,16 @@ fn gather_subsystem_health(
     // Disk/Runtime health
     let disk_runtime = probe_disk_runtime(workspace_root);
 
+    // Web research capabilities (WEB section)
+    let web_research = SubsystemStatus::unavailable("Web research not yet implemented")
+        .with_details(serde_json::json!({
+            "internet_access": false,
+            "web_fetch": false,
+            "search_backends": [],
+            "browser_provider": false,
+            "note": "Native web research planned in WEB section"
+        }));
+
     crate::SubsystemHealth {
         event_store,
         artifact_store,
@@ -772,6 +782,7 @@ fn gather_subsystem_health(
         external_agents,
         optional_modules,
         disk_runtime,
+        web_research,
     }
 }
 

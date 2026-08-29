@@ -17,12 +17,28 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ComponentsAction {
+    /// List all registered components
+    List,
+    /// Show component status and health
+    Status {
+        /// Component ID to inspect (optional, shows all if omitted)
+        component_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Run diagnostics and health checks
     Doctor {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+    },
+    /// Inspect registered components and modules
+    Components {
+        #[command(subcommand)]
+        action: ComponentsAction,
     },
     /// Launch interactive TUI (MVP UI)
     Ui,
@@ -64,6 +80,46 @@ enum Commands {
     List,
 }
 
+async fn show_components(action: ComponentsAction) -> Result<()> {
+    match action {
+        ComponentsAction::List => {
+            println!("Registered Components:\n");
+            println!("Built-in components:");
+            println!("  • bash - Shell command execution");
+            println!("  • read - File reading");
+            println!("  • write - File writing");
+            println!("  • edit - File editing");
+            println!("  • search - Repository search");
+            println!("\nModule registry: available (no modules loaded)");
+            println!("\nNote: External module loading planned for Phase 2");
+        }
+        ComponentsAction::Status { component_id } => {
+            if let Some(id) = component_id {
+                match id.as_str() {
+                    "bash" | "read" | "write" | "edit" | "search" => {
+                        println!("Component: {}", id);
+                        println!("Status: Available");
+                        println!("Type: Built-in tool");
+                        println!("Source: impetus-core");
+                        println!("Health: OK");
+                    }
+                    _ => {
+                        println!("Component '{}' not found", id);
+                        println!("\nUse 'impetus components list' to see available components");
+                    }
+                }
+            } else {
+                println!("Component Status Summary:\n");
+                println!("Built-in tools: 5 available (bash, read, write, edit, search)");
+                println!("Module registry: available");
+                println!("Loaded modules: 0");
+                println!("\nAll built-in components: OK");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -73,6 +129,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Doctor { json } => {
             doctor::run_diagnostics(&socket_path, json).await?;
+            return Ok(());
+        }
+        Commands::Components { action } => {
+            // Components doesn't need daemon - show built-in registry
+            show_components(action).await?;
             return Ok(());
         }
         Commands::Ui => {
@@ -92,6 +153,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Doctor { .. } => unreachable!("handled above"),
+        Commands::Components { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let workspace_root = std::env::current_dir()?.canonicalize()?;

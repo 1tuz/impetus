@@ -351,6 +351,52 @@ fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::Sub
         subsystems.optional_modules,
     ));
     report.add(status_to_probe("disk_runtime", subsystems.disk_runtime));
+    report.add(status_to_probe("web_research", subsystems.web_research));
+}
+
+fn print_compatibility_matrix() {
+    use impetus_core::CompatibilityMatrix;
+
+    let matrices = CompatibilityMatrix::all();
+
+    for matrix in matrices {
+        let source_name = format!("{:?}", matrix.source);
+        println!("\n{}", source_name);
+
+        // Count capability levels
+        let mut supported = 0;
+        let mut partial = 0;
+        let mut _unsupported = 0;
+        let mut _incompatible = 0;
+
+        for cap in matrix.capabilities.values() {
+            match cap {
+                impetus_core::ImportCapability::Supported => supported += 1,
+                impetus_core::ImportCapability::Partial => partial += 1,
+                impetus_core::ImportCapability::Unsupported => _unsupported += 1,
+                impetus_core::ImportCapability::Incompatible => _incompatible += 1,
+            }
+        }
+
+        let total = matrix.capabilities.len();
+        if supported == total {
+            println!("  ✓ Full support ({} capabilities)", total);
+        } else if supported + partial > 0 {
+            println!(
+                "  ⚠ Partial support ({}/{} capabilities)",
+                supported + partial,
+                total
+            );
+        } else {
+            println!("  ✗ Not supported");
+        }
+
+        if !matrix.notes.is_empty() {
+            for note in &matrix.notes {
+                println!("    {}", note);
+            }
+        }
+    }
 }
 
 fn print_human_report(report: &DoctorReport) {
@@ -382,4 +428,9 @@ fn print_human_report(report: &DoctorReport) {
     };
 
     println!("Overall: {}", summary);
+
+    println!("\n{}", "=".repeat(26));
+    println!("Extension Compatibility");
+    println!("{}", "=".repeat(26));
+    print_compatibility_matrix();
 }
