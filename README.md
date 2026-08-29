@@ -54,6 +54,8 @@ Zap keeps its own UI as another `HarnessClient` consumer. See
   store raw tokens.
 - Typed Rust client transport, a reference CLI, ACP gateway library, and an
   experimental Zap integration baseline.
+- Agent-loop vertical for filesystem reads plus approval-gated writes and shell
+  commands; each result is persisted before it is returned to the model.
 
 ## Request control flow
 
@@ -108,6 +110,10 @@ In another terminal, create a session and interact:
 impetus create
 impetus prompt <session-id> "Summarize this repository"
 impetus stream <session-id>
+# When the stream shows a pending approval:
+impetus approve <session-id> <approval-id>
+# Or reject it and let the model continue with the denial observation:
+impetus approve <session-id> <approval-id> --reject
 ```
 
 For provider configuration, see [configuration docs](docs/configuration.md).

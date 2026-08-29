@@ -1,10 +1,10 @@
 # TODO — Impetus Harness
 
-Исполнимая карта работ. Контекст: [ARCHITECTURE.md](ARCHITECTURE.md),
+Executable work map. Context: [ARCHITECTURE.md](ARCHITECTURE.md),
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
-**Правило:** `[x]` только при working vertical slice + tests + gate. Stubs и
-placeholder responses не считаются done.
+**Rule:** mark `[x]` only after a working vertical slice, tests, and its gate.
+Stubs and placeholder responses do not count as done.
 
 ---
 
@@ -19,7 +19,7 @@ placeholder responses не считаются done.
 - [x] Typed `Action` with `origin=user|agent` and request ID tracking
 - [x] Sandbox integration for shell/process capabilities
 - [x] Attachment/diff/detail DTO contracts with bounded ephemeral/in-memory backing (not durable `ArtifactStore`)
-- [x] Agent Loop / Tool Orchestrator **skeleton only** — types and wiring; `extract_tool_calls()` and real tool execution are placeholders (see Phase 5)
+- [x] Agent Loop / Tool Orchestrator vertical slice: durable observations, policy-gated read tools, and exact approval/resume for writes and shell commands (see Phase 5)
 - [x] `ModelProvider` trait and `ProviderRegistry` foundation
 - [x] Crate split: `impetus-core`, `impetusd`, `impetus` (initial)
 
@@ -202,17 +202,17 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 ### Agent loop (real implementation)
 
-Skeleton/foundation exists; not a working autonomous loop yet.
+The baseline vertical is working. The remaining items harden and extend it.
 
 - [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing
-- [ ] Wire Tool Orchestrator to real tool execution through policy/sandbox path
-- [ ] Durable observations from executed tools (not stub responses)
-- [ ] End-to-end slice: model → tool request → execution → observation → model
+- [x] Wire Tool Orchestrator to real tool execution through policy/sandbox path
+- [x] Durable observations from executed tools (not stub responses)
+- [x] End-to-end slice: model → tool request → execution → observation → model
 - [ ] Wire web research tools through `WebResearchService` (when WEB slice lands)
 
 ### Agent loop hardening
 
-- [ ] Multi-turn conversation state with tool result accumulation
+- [x] Multi-turn conversation state with durable tool result accumulation and approval/rejection resume
 - [ ] Streaming response chunking and client sync
 - [ ] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
 - [ ] Parallel tool execution where safe (read_only/idempotent only)
