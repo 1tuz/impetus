@@ -64,8 +64,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Делить работу на атомарные коммиты по одной причине изменения; не смешивать tooling, продуктовый код и независимую документацию без необходимости.
 - До commit выполнить `task verify`. Для Rust/CI-изменения при наличии `.gitlab-ci.yml` также выполнить `task ci:list` и relevant local job либо `task ci:local`; при изменении job/toolchain/dependency policy актуализировать pipeline в том же commit. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
-- Subject обязателен в формате `KEY-123 type: Результат`; ключ соответствует задаче, разрешены `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-- Русское описание начинается с заглавной буквы, формулирует получившийся результат, не инфинитив, не заканчивается точкой и вместе с prefix занимает не более 72 символов.
-- Перед предложением или созданием commit subject проверить длину: prefix + `: ` + описание ≤ 72 символа. Прогнать `task commit:check MESSAGE='ATM-123 docs: Описана схема'` если доступна task, иначе посчитать вручную (KEY-123 = 7, пробел = 1, type: = 5–9, пробел = 1, описание = остаток до 72). Русские буквы считать за один символ каждая.
+- **Commit message на английском языке.** Формат: `type: Brief summary (closes #N)` или `type(scope): Summary (refs #N)`
+- Разрешённые типы: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+- Subject <= 72 символа, начинается с lowercase (после `type:`), без точки в конце
+- **Issue-driven workflow:** каждый значимый commit должен ссылаться на issue через `closes #N`, `fixes #N` или `refs #N`
+- Body (опционально) описывает «что» и «почему», не «как». Wrap на 72 символа.
+- Примеры:
+  - `feat: add subsystem health probes to doctor (closes #42)`
+  - `fix(ipc): handle large enum variants with Box (refs #38)`
+  - `docs: update implementation history for phase 2`
 - Не использовать `--no-verify`, не коммитить secrets, `.env`, локальные БД, provider credentials, browser caches, `target/` и generated runtime state.
 - Не делать amend/rebase/force-push и не настраивать remote без прямого указания пользователя.
