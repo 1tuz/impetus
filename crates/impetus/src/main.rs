@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 mod daemon;
 mod doctor;
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "impetus")]
@@ -23,6 +24,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Launch interactive TUI (MVP UI)
+    Ui,
     /// Create a new session
     Create,
     /// Stream events from a session
@@ -57,9 +60,17 @@ async fn main() -> Result<()> {
 
     let socket_path = daemon::discover_socket_path();
 
-    if let Commands::Doctor { json } = cli.command {
-        doctor::run_diagnostics(&socket_path, json).await?;
-        return Ok(());
+    match cli.command {
+        Commands::Doctor { json } => {
+            doctor::run_diagnostics(&socket_path, json).await?;
+            return Ok(());
+        }
+        Commands::Ui => {
+            daemon::ensure_daemon_running(&socket_path).await?;
+            tui::run(&socket_path).await?;
+            return Ok(());
+        }
+        _ => {}
     }
 
     // Auto-spawn daemon if not running
@@ -71,6 +82,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Doctor { .. } => unreachable!("handled above"),
+        Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let response = client
                 .request(impetus_core::IpcRequest::CreateSession)
