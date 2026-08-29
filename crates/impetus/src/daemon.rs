@@ -34,7 +34,7 @@ pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
 
     // Spawn daemon
     let impetusd_path = find_impetusd_binary()?;
-    
+
     Command::new(&impetusd_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -62,35 +62,33 @@ pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
 /// Find impetusd binary in PATH or next to impetus binary
 fn find_impetusd_binary() -> Result<String> {
     // Development mode: look for target/debug/impetusd
-    if cfg!(debug_assertions) {
-        if let Ok(current_exe) = std::env::current_exe() {
-            // target/debug/impetus -> target/debug/impetusd
-            if let Some(parent) = current_exe.parent() {
-                let impetusd = parent.join("impetusd");
-                if impetusd.exists() {
-                    return Ok(impetusd.to_string_lossy().to_string());
-                }
-            }
+    if cfg!(debug_assertions)
+        && let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        let impetusd = parent.join("impetusd");
+        if impetusd.exists() {
+            return Ok(impetusd.to_string_lossy().to_string());
         }
     }
 
     // Try PATH
-    if let Ok(output) = Command::new("which").arg("impetusd").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(path);
-            }
+    if let Ok(output) = Command::new("which").arg("impetusd").output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(path);
         }
     }
 
     // Try next to current binary (release mode)
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            let impetusd = parent.join("impetusd");
-            if impetusd.exists() {
-                return Ok(impetusd.to_string_lossy().to_string());
-            }
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        let impetusd = parent.join("impetusd");
+        if impetusd.exists() {
+            return Ok(impetusd.to_string_lossy().to_string());
         }
     }
 

@@ -6,11 +6,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait AgentLoopStrategy: Send + Sync {
     /// Execute one turn of the agent loop
-    async fn execute_turn(
-        &self,
-        session_id: uuid::Uuid,
-        prompt: String,
-    ) -> Result<Vec<Event>>;
+    async fn execute_turn(&self, session_id: uuid::Uuid, prompt: String) -> Result<Vec<Event>>;
 
     /// Get strategy name
     fn name(&self) -> &str;

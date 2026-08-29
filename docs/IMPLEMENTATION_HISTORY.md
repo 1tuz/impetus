@@ -247,6 +247,102 @@ pub struct DeferredEffect {
 
 ---
 
+## Phase 1 — Binary Topology & Auto-Spawn ✅
+
+**Commit:** 6679042 (2026-08-29)  
+**Gate:** Client must safely discover and spawn daemon; stale sockets cleaned; doctor diagnoses without mutating state.
+
+### Изменения
+
+**Auto-spawn daemon:**
+- `crates/impetus/src/daemon.rs` — новый модуль:
+  - `discover_socket_path()` — IMPETUS_SOCKET env или default `~/Library/Application Support/Impetus/harness.sock`
+  - `is_daemon_running()` — async socket connect probe
+  - `ensure_daemon_running()` — spawn if needed, wait up to 3s, remove stale socket
+  - `find_impetusd_binary()` — lookup: target/debug (dev), PATH, sibling binary (release)
+
+**Client integration:**
+- `crates/impetus/src/main.rs`:
+  - All commands except `doctor` call `ensure_daemon_running()` before connecting
+  - Doctor intentionally skips auto-spawn to diagnose actual state
+  - Socket discovery centralized via `daemon::discover_socket_path()`
+
+**Binary discovery strategy:**
+1. Development: `target/debug/impetusd` next to `target/debug/impetus`
+2. Installed: `which impetusd` from PATH
+3. Release bundle: `impetusd` next to `impetus` binary
+
+**Graceful startup:**
+- Remove stale socket before spawn
+- Spawn with null stdin/stdout/stderr (daemon detaches)
+- Poll socket availability every 500ms for up to 3 seconds
+- Clear error message if daemon fails to start
+
+**Tests:**
+- Manual: `pkill impetusd; cargo run -p impetus -- list` → daemon spawns, command succeeds
+- Manual: `cargo run -p impetus -- doctor` → reports actual state, no auto-spawn
+- Existing tests pass (270 passed, 2 ignored)
+
+**Outcome:** Phase 1 topology complete. Client transparently manages daemon lifecycle. Next: release artifacts with install/uninstall docs.
+
+---
+
+## Phase 2 — Module Runtime Foundation ✅
+
+**Commit:** 2321e2c (2026-08-29)  
+**Gate:** Pluggable strategies, capability probing, UnknownOutcome enforcement, safe fallback policies.
+
+### Изменения
+
+**Module contracts:**
+- `crates/impetus-core/src/module.rs` — core types:
+  - `ModuleDescriptor` — id, name, version, kind, provides/requires, capabilities, permissions
+  - `ModuleKind` — AgentLoop, Scheduler, ToolProvider, SearchBackend, BrowserProvider, CredentialResolver, PolicyExtension, Custom
+  - `ModuleState` — Discovered, Probing, Ready, Starting, Running, Degraded, Stopping, Stopped, Failed, Incompatible
+  - `ExecutionSemantics` — ReadOnly, Idempotent, Mutating, NonReplayable
+  - `ModulePermissions` — filesystem, network, process, secrets, remote
+  - `CapabilityProbe` — availability check with version/details
+  - `CompatibilityReport` — harness/module version compatibility
+
+**Module registry:**
+- `crates/impetus-core/src/module_registry.rs`:
+  - `ModuleRegistry` — register, list, get, update state/health, probe capabilities, check compatibility
+  - Thread-safe via `Arc<RwLock<HashMap>>`
+  - Tests: register/list, probe capabilities
+
+**Service contracts:**
+- `crates/impetus-core/src/service_contract.rs`:
+  - `AgentLoopStrategy` trait — execute_turn, name, version, supports_capability
+  - `AgentScheduler` trait — schedule/cancel tasks
+  - `ServiceRegistry` — pluggable strategies (agent_loop, scheduler)
+  - `ScheduledTask` — Immediate, Delayed, Cron
+
+**Module lifecycle:**
+- `crates/impetus-core/src/module_lifecycle.rs`:
+  - `ModuleLifecycle` — discover, probe, start, stop, health_check, restart
+  - State transitions: Discovered → Probing → Ready → Starting → Running
+  - Degraded mode support when capabilities partially available
+  - Tests: full lifecycle transitions
+
+**Fallback policies:**
+- `crates/impetus-core/src/module_fallback.rs`:
+  - `FallbackPolicy` — strategy (FailFast, Retry, Alternate, Degrade, SafeDefault), max_retries, allow_degraded
+  - `UnknownOutcomePolicy` — enforces no retry/fallback for Mutating/NonReplayable operations with UnknownOutcome
+  - `OperationOutcome` — Success, Failure, Unknown
+  - Default policies per ModuleKind (e.g., CredentialResolver → FailFast, SearchBackend → Alternate)
+  - Tests: UnknownOutcome blocks mutating retry, allows idempotent/readonly retry
+
+**Dependencies:**
+- Added `chrono` to impetus-core for ModuleHealth timestamps
+
+**Tests:**
+- 277 passed, 2 ignored
+- Coverage: lifecycle transitions, UnknownOutcome enforcement, per-kind fallback policies
+
+**Outcome:** Phase 2 foundation complete. Pluggable strategies, safe fallback policies, UnknownOutcome enforcement in place. Next: external process isolation, integration tests for degraded/incompatible paths.
+
+---
+
 ## Исторический backlog (pre-2026-09, superseded)
 
 Следующие пункты были next steps на момент ранних фаз; часть уже поставлена

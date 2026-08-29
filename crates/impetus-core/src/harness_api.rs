@@ -443,13 +443,18 @@ fn handle_request(
                 Ok((session_id, detail))
             },
         ) {
-            Ok((session_id, detail)) => IpcResponse::ApprovalDetail { session_id, detail: Box::new(detail) },
+            Ok((session_id, detail)) => IpcResponse::ApprovalDetail {
+                session_id,
+                detail: Box::new(detail),
+            },
             Err(error) => runtime_error(error),
         },
         IpcRequest::Diagnostics => {
             let subsystems =
                 gather_subsystem_health(&store, &policy, &provider_registry, &workspace_root);
-            IpcResponse::Diagnostics { subsystems: Box::new(subsystems) }
+            IpcResponse::Diagnostics {
+                subsystems: Box::new(subsystems),
+            }
         }
     }
 }

@@ -79,12 +79,12 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] `ServiceRegistry` / `ModuleRegistry`
 - [x] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
 - [x] Capability negotiation and probing API (not version-only checks)
-- [ ] Module lifecycle: discover, probe, start, health, stop
+- [x] Module lifecycle: discover, probe, start, health, stop
 - [x] Compatibility: harness protocol, service contracts, platforms, external versions
 - [x] Permissions: filesystem, process, network, secrets, remote
 - [x] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
-- [ ] Safe fallback policies per module kind
-- [ ] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
+- [x] Safe fallback policies per module kind
+- [x] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
 - [ ] External module isolation: separate process + versioned IPC + sandbox where applicable
 - [ ] Tests: module incompatible/degraded/unavailable paths without policy bypass
 

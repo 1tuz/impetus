@@ -18,6 +18,8 @@ pub mod instructions;
 pub mod ipc;
 pub mod mock_provider;
 pub mod module;
+pub mod module_fallback;
+pub mod module_lifecycle;
 pub mod module_registry;
 pub mod openai_compat_adapter;
 pub mod openai_provider;
