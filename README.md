@@ -158,8 +158,6 @@ See [Design references](docs/REFERENCES.md).
 - [References](docs/REFERENCES.md) — design lineage, protocols, and libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks and CI.
-- [Implementation history](docs/IMPLEMENTATION_HISTORY.md) — retained delivery
-  record; historical snapshots are not current architecture.
 
 ## Development
 

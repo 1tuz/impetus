@@ -1,7 +1,7 @@
 # TODO — Impetus Harness
 
 Исполнимая карта работ. Контекст: [ARCHITECTURE.md](ARCHITECTURE.md),
-[docs/ROADMAP.md](docs/ROADMAP.md). Завершённое — [docs/IMPLEMENTATION_HISTORY.md](docs/IMPLEMENTATION_HISTORY.md).
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 **Правило:** `[x]` только при working vertical slice + tests + gate. Stubs и
 placeholder responses не считаются done.
@@ -289,4 +289,3 @@ Reference audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (audit not 
 ---
 
 **Completion criterion:** working vertical slice, tests, passes relevant gates.
-Do not mark roadmap items done in IMPLEMENTATION_HISTORY until shipped.

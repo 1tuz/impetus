@@ -1,7 +1,6 @@
 # Roadmap
 
 Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTURE.md);
-история поставки — [IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md);
 исполнимые задачи — [TODO.md](../TODO.md).
 
 ## FOUNDATION — current

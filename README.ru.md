@@ -94,8 +94,6 @@ architecture. См. [References](docs/REFERENCES.md).
 - [References](docs/REFERENCES.md) — design lineage, protocols и libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks и CI.
-- [Implementation history](docs/IMPLEMENTATION_HISTORY.md) — historical record,
-  не current architecture.
 
 ## Лицензия
 

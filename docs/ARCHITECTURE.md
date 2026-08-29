@@ -62,5 +62,3 @@ Credentials transient; profiles hold opaque platform-store references only (Keyc
 | Module Runtime, invariants | [ARCHITECTURE.md](../ARCHITECTURE.md) |
 | Phases and gates | [ROADMAP.md](ROADMAP.md) |
 | Executable tasks | [TODO.md](../TODO.md) |
-| Shipped slices | [IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md) |
-| Historical snapshots | `docs/archived/` |

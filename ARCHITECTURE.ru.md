@@ -7,7 +7,6 @@ Canonical архитектурный контракт. Отделяет **тек
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Инварианты, границы, ownership, module model |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы и gates |
 | [TODO.md](TODO.md) | Исполнимые задачи |
-| [docs/IMPLEMENTATION_HISTORY.md](docs/IMPLEMENTATION_HISTORY.md) | Только завершённые slices |
 
 ## Product invariant
 

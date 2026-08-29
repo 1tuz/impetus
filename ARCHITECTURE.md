@@ -123,7 +123,6 @@
 
 - **Detailed architecture** (Russian): [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)
 - **Roadmap**: [docs/ROADMAP.md](docs/ROADMAP.md)
-- **Implementation history**: [docs/IMPLEMENTATION_HISTORY.md](docs/IMPLEMENTATION_HISTORY.md)
 - **TODO**: [TODO.md](TODO.md)
 
 ## References
