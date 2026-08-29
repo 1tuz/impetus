@@ -123,18 +123,14 @@ impl ModuleRegistry {
 
         // Check if module has unfulfilled requirements
         // Any requirement that is not a known harness capability is unfulfilled
-        let has_unfulfilled_requirements = module
-            .descriptor
-            .requires
-            .iter()
-            .any(|req| {
-                // Only accept requirements that start with "harness" and match current version pattern
-                // For now, any harness requirement with specific version (like harness_v999) is unfulfilled
-                !req.starts_with("harness>=")
-                    && !req.starts_with("harness<=")
-                    && req != "harness"
-                    && !req.is_empty()
-            });
+        let has_unfulfilled_requirements = module.descriptor.requires.iter().any(|req| {
+            // Only accept requirements that start with "harness" and match current version pattern
+            // For now, any harness requirement with specific version (like harness_v999) is unfulfilled
+            !req.starts_with("harness>=")
+                && !req.starts_with("harness<=")
+                && req != "harness"
+                && !req.is_empty()
+        });
 
         if has_unfulfilled_requirements {
             details.insert("requirements".to_string(), Compatibility::Incompatible);

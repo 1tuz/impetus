@@ -69,8 +69,8 @@ pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
 pub use extension_compat::{
     AgentProfile, CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, Command,
     CommandArgument, CommandHandler, CompatibilityMatrix, ExtensionSource, ImportCapability,
-    ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities,
-    McpModule, McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
+    ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities, McpModule,
+    McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{

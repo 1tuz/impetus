@@ -1,7 +1,7 @@
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 
 /// Extension compatibility adapter
@@ -61,8 +61,7 @@ impl ExtensionAdapter {
         // Attempt import (placeholder for actual implementation)
         warnings.push(format!(
             "Import from {:?} at {:?} not yet implemented",
-            source,
-            path
+            source, path
         ));
 
         Ok(ImportResult {

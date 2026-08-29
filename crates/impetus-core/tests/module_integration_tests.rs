@@ -1,6 +1,5 @@
 use impetus_core::module::{
-    Compatibility, ExecutionSemantics, ModuleDescriptor, ModuleKind, ModulePermissions,
-    ModuleState,
+    Compatibility, ExecutionSemantics, ModuleDescriptor, ModuleKind, ModulePermissions, ModuleState,
 };
 use impetus_core::module_fallback::{
     FallbackPolicy, FallbackStrategy, OperationOutcome, UnknownOutcomePolicy,
@@ -29,7 +28,9 @@ async fn test_incompatible_module_rejected() {
     registry.register(descriptor.clone()).unwrap();
 
     // Check compatibility
-    let compat_report = registry.check_compatibility("incompatible-module", "1.0.0").unwrap();
+    let compat_report = registry
+        .check_compatibility("incompatible-module", "1.0.0")
+        .unwrap();
     assert_eq!(compat_report.overall, Compatibility::Incompatible);
 
     // Module should not be allowed to start
@@ -178,7 +179,7 @@ async fn test_module_permission_enforcement() {
         capabilities: vec![],
         permissions: ModulePermissions {
             filesystem: vec!["/".to_string()], // Root access
-            network: vec!["*".to_string()],     // All network
+            network: vec!["*".to_string()],    // All network
             process: true,
             secrets: vec!["*".to_string()], // All secrets
             remote: true,

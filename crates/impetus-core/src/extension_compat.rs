@@ -107,9 +107,17 @@ pub struct Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CommandHandler {
-    Native { function: String },
-    External { executable: String, args: Vec<String> },
-    Mcp { server: String, method: String },
+    Native {
+        function: String,
+    },
+    External {
+        executable: String,
+        args: Vec<String>,
+    },
+    Mcp {
+        server: String,
+        method: String,
+    },
 }
 
 /// Command argument
@@ -297,9 +305,7 @@ impl CompatibilityMatrix {
         Self {
             source: ExtensionSource::DeepSeekHarness,
             capabilities,
-            notes: vec![
-                "Process adapter planned, no TS in daemon".to_string(),
-            ],
+            notes: vec!["Process adapter planned, no TS in daemon".to_string()],
         }
     }
 
@@ -359,7 +365,10 @@ mod tests {
     #[test]
     fn import_capability_levels() {
         assert_ne!(ImportCapability::Supported, ImportCapability::Partial);
-        assert_ne!(ImportCapability::Unsupported, ImportCapability::Incompatible);
+        assert_ne!(
+            ImportCapability::Unsupported,
+            ImportCapability::Incompatible
+        );
     }
 
     #[test]

@@ -68,8 +68,8 @@ impl ExternalModule {
         }
 
         // Set up socket listener before spawning process
-        let listener = UnixListener::bind(&self.socket_path)
-            .context("Failed to bind module IPC socket")?;
+        let listener =
+            UnixListener::bind(&self.socket_path).context("Failed to bind module IPC socket")?;
 
         // Spawn module process with socket path
         let child = Command::new(binary_path)
@@ -85,13 +85,11 @@ impl ExternalModule {
         drop(process_guard);
 
         // Wait for module to connect
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            listener.accept(),
-        )
-        .await
-        .context("Module connection timeout")?
-        .context("Failed to accept module connection")?;
+        let (_stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .context("Module connection timeout")?
+                .context("Failed to accept module connection")?;
 
         self.set_state(ModuleState::Ready).await;
 
@@ -125,7 +123,10 @@ impl ExternalModule {
     }
 
     /// Probe module capabilities via IPC
-    pub async fn probe_capabilities(&self, stream: &mut UnixStream) -> Result<Vec<CapabilityProbe>> {
+    pub async fn probe_capabilities(
+        &self,
+        stream: &mut UnixStream,
+    ) -> Result<Vec<CapabilityProbe>> {
         self.send_message(stream, ModuleMessage::ProbeCapabilities)
             .await?;
 
@@ -258,11 +259,11 @@ impl ExternalModuleManager {
 
         // Attempt graceful shutdown, fall back to kill
         let stream_result = UnixStream::connect(&module.socket_path).await;
-        if let Ok(mut stream) = stream_result {
-            if module.shutdown(&mut stream).await.is_ok() {
-                self.modules.write().await.remove(module_id);
-                return Ok(());
-            }
+        if let Ok(mut stream) = stream_result
+            && module.shutdown(&mut stream).await.is_ok()
+        {
+            self.modules.write().await.remove(module_id);
+            return Ok(());
         }
 
         // Force kill if graceful shutdown failed

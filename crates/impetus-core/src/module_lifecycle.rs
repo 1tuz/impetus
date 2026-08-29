@@ -44,7 +44,9 @@ impl ModuleLifecycle {
     pub async fn start(&self, module_id: &str) -> Result<()> {
         // Check compatibility before starting
         let harness_version = env!("CARGO_PKG_VERSION");
-        let compat = self.registry.check_compatibility(module_id, harness_version)?;
+        let compat = self
+            .registry
+            .check_compatibility(module_id, harness_version)?;
         if compat.overall == crate::module::Compatibility::Incompatible {
             anyhow::bail!(
                 "Module {} is incompatible with harness version {}",
