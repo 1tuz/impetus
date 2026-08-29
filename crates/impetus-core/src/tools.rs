@@ -6,13 +6,12 @@
 //! normalized into policy actions before any filesystem access.
 
 use crate::{
-    ActionOrigin, EffectExecution, EffectSeam, EventPayload, NormalizedEffect, NoticeEvent,
+    ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectExecution, EffectSeam,
+    EventPayload, NormalizedEffect, NoticeEvent,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use thiserror::Error;
 
 /// Maximum UTF-8 bytes kept inline in a tool preview. The full bounded,
@@ -65,7 +64,7 @@ pub struct ToolResult {
     pub provenance: ToolProvenance,
     pub preview: String,
     pub truncated: bool,
-    pub artifact: Option<ArtifactRef>,
+    pub artifact: Option<DurableArtifactRef>,
     pub line_count: usize,
     pub byte_count: usize,
     pub original_tokens: usize,
@@ -129,7 +128,7 @@ impl ReadOnlyTools {
         &self,
         tool: ReadOnlyTool,
         origin: ActionOrigin,
-        artifacts: &ArtifactStore,
+        artifacts: &DurableArtifactStore,
     ) -> Result<ToolOutcome, ToolError> {
         let seam = EffectSeam::workspace_read(&self.root);
         self.run_with_seam(tool, origin, artifacts, &seam)
@@ -142,7 +141,7 @@ impl ReadOnlyTools {
         &self,
         tool: ReadOnlyTool,
         origin: ActionOrigin,
-        artifacts: &ArtifactStore,
+        artifacts: &DurableArtifactStore,
         seam: &EffectSeam,
     ) -> Result<ToolOutcome, ToolError> {
         let effect = self.normalize(&tool, origin);
@@ -164,7 +163,7 @@ impl ReadOnlyTools {
     fn execute_capability(
         &self,
         tool: ReadOnlyTool,
-        artifacts: &ArtifactStore,
+        artifacts: &DurableArtifactStore,
     ) -> Result<ToolOutcome, ToolError> {
         let resolved = match tool {
             ReadOnlyTool::List { ref target }
@@ -371,96 +370,6 @@ impl ReadOnlyTool {
     }
 }
 
-/// Disk-backed artifact store with a content hash, metadata, range-read and
-/// deterministic identity. The full content stays on disk; only refs travel
-/// through harness events and model context.
-pub struct ArtifactStore {
-    root: PathBuf,
-    index: Mutex<BTreeMap<String, ArtifactMeta>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactRef {
-    pub id: String,
-    pub byte_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactMeta {
-    pub id: String,
-    pub byte_count: usize,
-    pub created_unix_ms: u64,
-}
-
-impl ArtifactStore {
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
-        let root = root.into();
-        std::fs::create_dir_all(&root).map_err(|e| ToolError::Artifact(e.to_string()))?;
-        Ok(Self {
-            root,
-            index: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    pub fn store(&self, bytes: &[u8]) -> Result<ArtifactRef, ToolError> {
-        let id = content_hash(bytes);
-        let path = self.root.join(&id);
-        if !path.exists() {
-            std::fs::write(&path, bytes).map_err(|e| ToolError::Artifact(e.to_string()))?;
-        }
-        let meta = ArtifactMeta {
-            id: id.clone(),
-            byte_count: bytes.len(),
-            created_unix_ms: now_unix_ms(),
-        };
-        self.index
-            .lock()
-            .map_err(|_| ToolError::Artifact("artifact index poisoned".into()))?
-            .insert(id.clone(), meta);
-        Ok(ArtifactRef {
-            id,
-            byte_count: bytes.len(),
-        })
-    }
-
-    pub fn read_range(&self, id: &str, start: usize, len: usize) -> Result<Vec<u8>, ToolError> {
-        let path = self.root.join(id);
-        let bytes = std::fs::read(&path).map_err(|e| ToolError::Artifact(e.to_string()))?;
-        let end = (start + len).min(bytes.len());
-        Ok(bytes.get(start..end).unwrap_or(&[]).to_vec())
-    }
-
-    pub fn metadata(&self, id: &str) -> Option<ArtifactMeta> {
-        self.index.lock().ok()?.get(id).cloned()
-    }
-}
-
-fn content_hash(bytes: &[u8]) -> String {
-    // FNV-1a 64-bit, hex-encoded. Deterministic and dependency-free; used only
-    // for content-addressed dedup, not for security.
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &byte in bytes {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
-}
-
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn truncate_utf8(source: &str, max_bytes: usize) -> &str {
-    let mut end = source.len().min(max_bytes);
-    while !source.is_char_boundary(end) {
-        end -= 1;
-    }
-    &source[..end]
-}
-
 pub(crate) fn redact_text(source: &str) -> String {
     let mut output = String::with_capacity(source.len());
     let mut private_key_block = false;
@@ -564,10 +473,10 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn temp_root() -> (PathBuf, ArtifactStore) {
+    fn temp_root() -> (PathBuf, DurableArtifactStore) {
         let root = std::env::temp_dir().join(format!("agentic-tools-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create temp workspace");
-        let artifacts = ArtifactStore::open(root.join("artifacts")).expect("open artifact store");
+        let artifacts = DurableArtifactStore::open(root.join("artifacts")).expect("open artifact store");
         (root, artifacts)
     }
 
@@ -672,7 +581,7 @@ mod tests {
         let slice = artifacts.read_range(&first.id, 4, 5).expect("range read");
         assert_eq!(slice, b"quick");
         assert_eq!(
-            artifacts.metadata(&first.id).unwrap().byte_count,
+            artifacts.metadata(&first.id).unwrap().unwrap().byte_count,
             bytes.len()
         );
     }

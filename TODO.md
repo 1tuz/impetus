@@ -115,8 +115,8 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] Builtin output reducer (token-bounded)
 - [x] Bounded raw fallback → `ArtifactRef`
 - [x] Full raw output stored as Artifact alongside structured observation
+- [x] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
 - [ ] RTK optional adapter: probe capabilities, not hard dependency
-- [ ] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
 
 ---
 

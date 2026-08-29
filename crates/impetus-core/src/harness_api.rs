@@ -8,7 +8,8 @@
 //! the client.
 
 use crate::{
-    AgentRuntime, ArtifactStore, CredentialResolver, EventStore, IPC_CAPABILITIES, IPC_VERSION,
+    AgentRuntime, CredentialResolver, DurableArtifactStore, EventStore, IPC_CAPABILITIES,
+    IPC_VERSION,
     InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse, MockProvider, NoCredentialResolver,
     OpenAiCompatibleAdapter, OpenAiCompatibleProvider, PolicyEngine, ProviderError,
     ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
@@ -333,7 +334,7 @@ fn handle_request(
             target,
             pattern,
         } => {
-            let artifact_store = ArtifactStore::open(artifact_root().join("artifacts"))
+            let artifact_store = DurableArtifactStore::open(artifact_root().join("artifacts"))
                 .expect("open artifact store");
             // The IPC effect scope is owned by the harness policy, not by the
             // daemon's current directory or an independently constructed tool

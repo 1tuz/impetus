@@ -123,6 +123,6 @@ pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };
 pub use tools::{
-    ArtifactMeta, ArtifactRef, ArtifactStore, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
+    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
     ToolError, ToolOutcome, ToolProvenance, ToolResult,
 };
