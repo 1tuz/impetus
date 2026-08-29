@@ -1,18 +1,18 @@
 # Roadmap
 
-Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTURE.md);
-исполнимые задачи — [TODO.md](../TODO.md).
+Canonical product path. Invariants are in [ARCHITECTURE.md](../ARCHITECTURE.md);
+executable tasks are in [TODO.md](../TODO.md).
 
 ## FOUNDATION — current
 
-- Durable events и SQLite WAL.
-- Crate split `impetus` (client) / `impetusd` (daemon) / `impetus-core` (in progress; docs/tooling cleanup pending).
+- Durable events and SQLite WAL.
+- Crate split `impetus` (client) / `impetusd` (daemon) / `impetus-core`.
 - Versioned local IPC, `HarnessClient`.
 - Safety, capability, sandbox, approval, secret-reference base.
 - `ModelProvider` и `ProviderRegistry` foundations.
 - Basic copied-event fork и compaction/budget primitives.
 - Attachment/diff/detail DTOs with bounded **ephemeral/in-memory** backing (not durable `ArtifactStore`).
-- Agent Loop / Tool Orchestrator **skeleton** — `extract_tool_calls()` and tool execution still placeholder.
+- Agent Loop / Tool Orchestrator vertical slice: read tools execute through policy and sandbox; writes and shell commands require exact user approval, then resume with durable observations.
 
 ## MODULE RUNTIME / EXTENSIBILITY FOUNDATION
 
@@ -51,7 +51,10 @@ Canonical product path. Инварианты — [ARCHITECTURE.md](../ARCHITECTU
 
 ### Agent Loop
 
-**Current:** skeleton types and wiring; `extract_tool_calls()` and real tool execution are placeholders.
+**Current:** a working single-session vertical slice parses model tool calls,
+executes read-only tools, defers mutating tools for exact approval, and resumes
+the model from durable observations. Native provider tool-call protocols, web
+research, durable artifact backing, and model routing remain future work.
 
 **Target:**
 
@@ -64,8 +67,12 @@ Model → Tool Orchestrator → Tool request → Effect normalization
 
 ### Tool Orchestrator
 
-**Target:** structured tool lifecycle, normalized effects, durable observations,
-explicit safety admission.
+**Current:** structured tool lifecycle, normalized effects, durable observations,
+and explicit safety admission for `list_files`, `read_file`, `search`,
+`write_file`, `edit_file`, and `bash`/`shell`/`exec`.
+
+**Target:** provider-native structured tool calls, durable artifact backing,
+bounded execution, and the remaining tool families.
 
 ### Model Router
 

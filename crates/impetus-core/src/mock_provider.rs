@@ -4,6 +4,8 @@
 
 use crate::{ModelProvider, ProviderError, ProviderHealth, ProviderMessage};
 use async_trait::async_trait;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,8 @@ pub struct MockProvider {
     provider_id: String,
     model_id: String,
     items: Vec<MockStreamItem>,
+    scripts: Arc<Mutex<VecDeque<Vec<MockStreamItem>>>>,
+    received_messages: Arc<Mutex<Vec<Vec<ProviderMessage>>>>,
 }
 
 impl MockProvider {
@@ -30,7 +34,26 @@ impl MockProvider {
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             items: items.into_iter().collect(),
+            scripts: Arc::new(Mutex::new(VecDeque::new())),
+            received_messages: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    pub fn scripted(
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        scripts: impl IntoIterator<Item = Vec<MockStreamItem>>,
+    ) -> Self {
+        let mut provider = Self::new(provider_id, model_id, []);
+        provider.scripts = Arc::new(Mutex::new(scripts.into_iter().collect()));
+        provider
+    }
+
+    pub fn received_messages(&self) -> Vec<Vec<ProviderMessage>> {
+        self.received_messages
+            .lock()
+            .map(|messages| messages.clone())
+            .unwrap_or_default()
     }
 
     pub fn default_mock() -> Self {
@@ -67,12 +90,21 @@ impl ModelProvider for MockProvider {
 
     async fn stream_messages(
         &self,
-        _messages: &[ProviderMessage],
+        messages: &[ProviderMessage],
         _credential: Option<&str>,
         cancel: CancellationToken,
         mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        for item in &self.items {
+        if let Ok(mut received) = self.received_messages.lock() {
+            received.push(messages.to_vec());
+        }
+        let items = self
+            .scripts
+            .lock()
+            .ok()
+            .and_then(|mut scripts| scripts.pop_front())
+            .unwrap_or_else(|| self.items.clone());
+        for item in &items {
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }

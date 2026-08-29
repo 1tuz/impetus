@@ -33,6 +33,7 @@ pub enum EventPayload {
 #[serde(rename_all = "snake_case")]
 pub enum SessionEvent {
     Created,
+    WorkspaceRoot { workspace_root: std::path::PathBuf },
     Attached,
 }
 
@@ -59,8 +60,37 @@ pub struct PlanEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ToolEvent {
-    Started { name: String },
-    Finished { name: String, summary: String },
+    Started {
+        name: String,
+    },
+    Finished {
+        name: String,
+        summary: String,
+    },
+    Observed {
+        tool_call_id: String,
+        tool_name: String,
+        arguments_summary: String,
+        outcome: ToolEventOutcome,
+        preview: String,
+        artifact: Option<crate::DurableArtifactRef>,
+        error: Option<String>,
+    },
+    Deferred {
+        approval_id: Uuid,
+        tool_call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolEventOutcome {
+    Success,
+    Error,
+    Denied,
+    ApprovalRequired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -152,6 +152,10 @@ pub struct DeferredEffect {
 }
 
 impl DeferredEffect {
+    pub fn from_durable(effect: NormalizedEffect, approval: ApprovalRequest) -> Self {
+        Self { effect, approval }
+    }
+
     pub fn approval(&self) -> &ApprovalRequest {
         &self.approval
     }
@@ -376,6 +380,21 @@ impl EffectSeam {
         current_intent_revision: u64,
         execution: impl FnOnce() -> Result<T, E>,
     ) -> Result<EffectExecution<T>, E> {
+        self.execute_after_approval_with_admission(
+            deferred,
+            resolution,
+            current_intent_revision,
+            |_| execution(),
+        )
+    }
+
+    pub fn execute_after_approval_with_admission<T, E>(
+        &self,
+        deferred: DeferredEffect,
+        resolution: ApprovalResolution,
+        current_intent_revision: u64,
+        execution: impl FnOnce(&AdmittedOperation) -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
         let approval = deferred.approval;
 
         // Verify capability version matches
@@ -410,7 +429,11 @@ impl EffectSeam {
 
         Ok(match self.policy_decision(&deferred.effect.action) {
             PolicyDecision::NeedsApproval { .. } => match self.sandbox.admit(&deferred.effect) {
-                Ok(()) => EffectExecution::Executed(execution()?),
+                Ok(()) => {
+                    let admission =
+                        AdmittedOperation::new(deferred.effect.clone(), current_intent_revision);
+                    EffectExecution::Executed(execution(&admission)?)
+                }
                 Err(reason) => EffectExecution::Denied { reason },
             },
             PolicyDecision::Allow => EffectExecution::Denied {

@@ -65,6 +65,7 @@ pub use effects::{
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
     EventPayload, IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
+    ToolEventOutcome,
 };
 pub use execution::{
     ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,

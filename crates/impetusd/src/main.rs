@@ -220,7 +220,7 @@ async fn write_response(
 fn required_capability(request: &IpcRequest) -> &'static str {
     match request {
         IpcRequest::Hello { .. } => unreachable!("hello is negotiated separately"),
-        IpcRequest::CreateSession => "session_create",
+        IpcRequest::CreateSession { .. } => "session_create",
         IpcRequest::Attach { .. } => "session_attach",
         IpcRequest::ListSessions => "session_list",
         IpcRequest::Stream { .. } => "event_stream",
@@ -333,9 +333,12 @@ mod tests {
     #[tokio::test]
     async fn prompt_restarts_mock_provider_without_duplicating_durable_chunks() {
         let store = Arc::new(MemoryEventStore::default());
-        let IpcResponse::Session { session_id, .. } =
-            handle_request(store.clone(), IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = handle_request(
+            store.clone(),
+            IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+            },
+        ) else {
             panic!("create session response")
         };
         assert!(matches!(
@@ -400,9 +403,12 @@ mod tests {
     #[tokio::test]
     async fn tool_read_outside_workspace_is_denied_over_ipc() {
         let store = Arc::new(MemoryEventStore::default());
-        let IpcResponse::Session { session_id, .. } =
-            handle_request(store.clone(), IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = handle_request(
+            store.clone(),
+            IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+            },
+        ) else {
             panic!("create session response")
         };
         // Workspace root for the harness test is the crate directory; an
@@ -429,9 +435,12 @@ mod tests {
     #[tokio::test]
     async fn cancel_stops_mock_stream_before_restart_completes_it() {
         let store = Arc::new(MemoryEventStore::default());
-        let IpcResponse::Session { session_id, .. } =
-            handle_request(store.clone(), IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = handle_request(
+            store.clone(),
+            IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+            },
+        ) else {
             panic!("create session response")
         };
         assert!(matches!(
@@ -478,8 +487,9 @@ mod tests {
     async fn second_prompt_is_rejected_while_run_is_active() {
         let store = Arc::new(MemoryEventStore::default());
         let harness = Harness::new(store.clone(), impetus_core::harness_api::policy());
-        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession)
-        else {
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+        }) else {
             panic!("create session response")
         };
         assert!(matches!(

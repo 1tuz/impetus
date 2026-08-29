@@ -3,6 +3,7 @@ use crate::{
     IntentEvent, PlanEvent, RunEvent, ToolEvent,
 };
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -13,10 +14,12 @@ pub struct SessionProjection {
     pub latest_intent: Option<String>,
     pub latest_intent_revision: Option<u64>,
     pub latest_plan: Option<String>,
+    pub workspace_root: Option<PathBuf>,
     pub tool_summaries: BTreeMap<String, String>,
     pub agent_output: String,
     pub agent_chunk_ids: BTreeMap<Uuid, u64>,
     pub pending_approvals: BTreeMap<Uuid, ApprovalRequest>,
+    pub deferred_tools: BTreeMap<Uuid, (String, String, serde_json::Value)>,
     pub active_run_id: Option<Uuid>,
     pub last_run_id: Option<Uuid>,
     pub outcome: Option<RunEvent>,
@@ -42,10 +45,12 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         latest_intent: None,
         latest_intent_revision: None,
         latest_plan: None,
+        workspace_root: None,
         tool_summaries: BTreeMap::new(),
         agent_output: String::new(),
         agent_chunk_ids: BTreeMap::new(),
         pending_approvals: BTreeMap::new(),
+        deferred_tools: BTreeMap::new(),
         active_run_id: None,
         last_run_id: None,
         outcome: None,
@@ -72,6 +77,9 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         }
         projection.last_sequence = event.sequence;
         match &event.payload {
+            EventPayload::Session(crate::SessionEvent::WorkspaceRoot { workspace_root }) => {
+                projection.workspace_root = Some(workspace_root.clone());
+            }
             EventPayload::Intent(IntentEvent { text }) => {
                 projection.latest_intent = Some(text.clone());
                 projection.latest_intent_revision = Some(event.sequence);
@@ -88,6 +96,24 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
                 projection
                     .tool_summaries
                     .insert(name.clone(), summary.clone());
+            }
+            EventPayload::Tool(ToolEvent::Observed {
+                tool_name, outcome, ..
+            }) => {
+                projection
+                    .tool_summaries
+                    .insert(tool_name.clone(), format!("{outcome:?}"));
+            }
+            EventPayload::Tool(ToolEvent::Deferred {
+                approval_id,
+                tool_call_id,
+                tool_name,
+                arguments,
+            }) => {
+                projection.deferred_tools.insert(
+                    *approval_id,
+                    (tool_call_id.clone(), tool_name.clone(), arguments.clone()),
+                );
             }
             EventPayload::Agent(AgentEvent::Chunk {
                 run_id,
@@ -110,6 +136,7 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
             }
             EventPayload::Approval(ApprovalEvent::Resolved { request }) => {
                 projection.pending_approvals.remove(&request.id);
+                projection.deferred_tools.remove(&request.id);
             }
             EventPayload::Run(RunEvent::Started { run_id }) => {
                 projection.active_run_id = Some(*run_id);

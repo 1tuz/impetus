@@ -70,6 +70,12 @@ impl StatusBar {
                     ToolEvent::Finished { .. } => {
                         state.current_action = None;
                     }
+                    ToolEvent::Observed { tool_name, .. } => {
+                        state.current_action = Some(format!("Tool: {tool_name}"));
+                    }
+                    ToolEvent::Deferred { tool_name, .. } => {
+                        state.current_action = Some(format!("Approval required: {tool_name}"));
+                    }
                 }
             }
             EventPayload::Approval(approval_event) => {

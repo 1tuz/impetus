@@ -16,6 +16,7 @@ use impetus_core::{
     PolicyEngine,
 };
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -45,8 +46,11 @@ pub trait HarnessClient: Send + Sync {
     async fn request(&self, request: IpcRequest) -> Result<IpcResponse>;
 
     /// Create a durable session owned by the harness.
-    async fn create_session(&self) -> Result<uuid::Uuid> {
-        match self.request(IpcRequest::CreateSession).await? {
+    async fn create_session(&self, workspace_root: PathBuf) -> Result<uuid::Uuid> {
+        match self
+            .request(IpcRequest::CreateSession { workspace_root })
+            .await?
+        {
             IpcResponse::Session { session_id, .. } => Ok(session_id),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
@@ -288,7 +292,10 @@ mod tests {
                 .any(|capability| capability == "context")
         );
 
-        let session_id = client.create_session().await.unwrap();
+        let session_id = client
+            .create_session(std::env::current_dir().unwrap().canonicalize().unwrap())
+            .await
+            .unwrap();
 
         let context = client.get_context(session_id).await.unwrap();
         assert!(
@@ -298,7 +305,11 @@ mod tests {
 
         let mut subscription = client.subscribe_live(session_id, 0).await.unwrap();
         let events = subscription.next_events().await.unwrap();
-        assert_eq!(events.len(), 1, "session-created event is backfilled once");
+        assert_eq!(
+            events.len(),
+            2,
+            "session creation and workspace are backfilled"
+        );
 
         // Read-only tool path still denies escaping the workspace.
         let outcome = client
