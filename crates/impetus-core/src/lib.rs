@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod effects;
 pub mod events;
 pub mod execution;
+pub mod extension_adapter;
+pub mod extension_compat;
 pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
@@ -62,6 +64,13 @@ pub use execution::{
     ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
     PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
     PtySessionStore, PtySessionStoreError, SqlitePtySessionStore,
+};
+pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
+pub use extension_compat::{
+    AgentProfile, CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, Command,
+    CommandArgument, CommandHandler, CompatibilityMatrix, ExtensionSource, ImportCapability,
+    ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities,
+    McpModule, McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{

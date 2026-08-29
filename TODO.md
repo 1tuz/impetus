@@ -92,9 +92,9 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ## Phase 3 — Extension compatibility
 
-- [ ] Extension Compatibility Adapter layer (design + minimal slice)
-- [ ] Canonical types: `CanonicalModuleSpec`, `CanonicalSkill`, `Instruction`, `AgentProfile`, `Command`, `McpModule`, `ToolProvider`
-- [ ] Import capability matrix: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`
+- [x] Extension Compatibility Adapter layer (design + minimal slice)
+- [x] Canonical types: `CanonicalModuleSpec`, `CanonicalSkill`, `Instruction`, `AgentProfile`, `Command`, `McpModule`, `ToolProvider`
+- [x] Import capability matrix: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`
 - [ ] Agent Skills adapter (upstream spec audit first)
 - [ ] MCP adapter
 - [ ] Agent Plugins adapter
