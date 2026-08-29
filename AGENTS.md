@@ -62,16 +62,60 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Git и коммиты
 
+### Feature branch workflow (строго обязательно)
+
+**НИКОГДА НЕ ПУШИТЬ НАПРЯМУЮ В `main`.** Любой push в main без MR — нарушение workflow.
+
+#### Перед началом работы
+
+1. **Проверить issue:** `glab issue list` или GitLab Web UI
+2. **Создать issue,** если не существует (каждая задача = issue)
+3. **Создать feature branch от main:**
+   ```bash
+   git checkout main
+   git pull
+   git checkout -b feature/issue-42-short-description
+   ```
+   Шаблон: `feature/issue-N-description` или `fix/issue-N-bug-name`
+
+#### Workflow
+
+1. Работа в feature branch
+2. Атомарные коммиты: каждый с `closes #N`, `fixes #N` или `refs #N`
+3. **До push:** `task verify` (fmt, test, check, clippy)
+4. **Push в feature branch:**
+   ```bash
+   git push -u origin feature/issue-42-short-description
+   ```
+5. **Создать MR через CLI:**
+   ```bash
+   glab mr create --fill --remove-source-branch
+   ```
+   Или через GitLab Web UI с галочкой «Delete source branch after merge»
+6. **Включить auto-merge** в MR: «Set to auto-merge» после создания
+7. CI проходит (fmt, test, check, clippy) → **GitLab автоматически мерджит в main**
+
+#### Auto-merge настройка (один раз на проект)
+
+В GitLab Project Settings → Merge Requests:
+- ✓ «Pipelines must succeed» (требовать проходящий CI)
+- ✓ «All threads must be resolved» (опционально)
+- Approvals: 0 (разрешить auto-merge без review)
+
+В каждом MR нажать кнопку **«Set to auto-merge»** — мердж произойдёт после успешного pipeline.
+
+### Commit правила
+
 - Делить работу на атомарные коммиты по одной причине изменения; не смешивать tooling, продуктовый код и независимую документацию без необходимости.
 - До commit выполнить `task verify`. Для Rust/CI-изменения при наличии `.gitlab-ci.yml` также выполнить `task ci:list` и relevant local job либо `task ci:local`; при изменении job/toolchain/dependency policy актуализировать pipeline в том же commit. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
 - **Commit message на английском языке.** Формат: `type: Brief summary (closes #N)` или `type(scope): Summary (refs #N)`
 - Разрешённые типы: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
 - Subject <= 72 символа, начинается с lowercase (после `type:`), без точки в конце
-- **Issue-driven workflow:** каждый значимый commit должен ссылаться на issue через `closes #N`, `fixes #N` или `refs #N`
+- **Issue-driven workflow (строго обязательно):** каждый commit должен ссылаться на issue через `closes #N`, `fixes #N` или `refs #N`. Если issue нет — **остановиться и создать issue сначала**. Работа без issue запрещена.
 - Body (опционально) описывает «что» и «почему», не «как». Wrap на 72 символа.
 - Примеры:
   - `feat: add subsystem health probes to doctor (closes #42)`
   - `fix(ipc): handle large enum variants with Box (refs #38)`
-  - `docs: update implementation history for phase 2`
+  - `docs: update implementation history for phase 2 (refs #15)`
 - Не использовать `--no-verify`, не коммитить secrets, `.env`, локальные БД, provider credentials, browser caches, `target/` и generated runtime state.
 - Не делать amend/rebase/force-push и не настраивать remote без прямого указания пользователя.

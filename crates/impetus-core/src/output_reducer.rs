@@ -223,7 +223,7 @@ pub enum ReductionStrategy {
 
 /// Estimate token count (rough approximation: ~4 chars per token)
 fn estimate_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 /// Truncate text to approximate token budget

@@ -4,6 +4,16 @@ stages:
   - verify
   - security
 
+workflow:
+  rules:
+    # Run pipeline for merge requests
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Run pipeline for main branch (after merge)
+    - if: $CI_COMMIT_BRANCH == "main"
+    # Prevent direct pushes to main from triggering pipeline
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
+      when: never
+
 cache:
   key: "rust-1.98"
   paths:
