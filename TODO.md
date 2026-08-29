@@ -85,8 +85,8 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
 - [x] Safe fallback policies per module kind
 - [x] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
-- [ ] External module isolation: separate process + versioned IPC + sandbox where applicable
-- [ ] Tests: module incompatible/degraded/unavailable paths without policy bypass
+- [x] External module isolation: separate process + versioned IPC + sandbox where applicable
+- [x] Tests: module incompatible/degraded/unavailable paths without policy bypass
 
 ---
 

@@ -119,11 +119,40 @@ impl ModuleRegistry {
             .get(module_id)
             .ok_or_else(|| anyhow::anyhow!("Module {} not found", module_id))?;
 
-        // Simple version check for now
-        let overall = if module.descriptor.version == harness_version {
+        let mut details = HashMap::new();
+
+        // Check if module has unfulfilled requirements
+        // Any requirement that is not a known harness capability is unfulfilled
+        let has_unfulfilled_requirements = module
+            .descriptor
+            .requires
+            .iter()
+            .any(|req| {
+                // Only accept requirements that start with "harness" and match current version pattern
+                // For now, any harness requirement with specific version (like harness_v999) is unfulfilled
+                !req.starts_with("harness>=")
+                    && !req.starts_with("harness<=")
+                    && req != "harness"
+                    && !req.is_empty()
+            });
+
+        if has_unfulfilled_requirements {
+            details.insert("requirements".to_string(), Compatibility::Incompatible);
+        }
+
+        // Simple version check
+        let version_compat = if module.descriptor.version == harness_version {
             Compatibility::Compatible
         } else {
             Compatibility::PartiallyCompatible
+        };
+        details.insert("version".to_string(), version_compat);
+
+        // Overall compatibility
+        let overall = if has_unfulfilled_requirements {
+            Compatibility::Incompatible
+        } else {
+            version_compat
         };
 
         Ok(CompatibilityReport {
@@ -131,7 +160,7 @@ impl ModuleRegistry {
             harness_version: harness_version.to_string(),
             module_version: module.descriptor.version.clone(),
             overall,
-            details: HashMap::new(),
+            details,
         })
     }
 
