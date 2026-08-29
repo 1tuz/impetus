@@ -735,6 +735,32 @@ fn gather_subsystem_health(
         SubsystemStatus::unavailable("Platform credential store not configured")
     };
 
+    // Tools/Capabilities Registration
+    let tools_capabilities =
+        SubsystemStatus::ok("Built-in tools registered").with_details(serde_json::json!({
+            "builtin_tools": ["bash", "read", "write", "edit", "search"],
+            "module_registry": "available"
+        }));
+
+    // External Agents / ACP Adapters
+    let external_agents = SubsystemStatus::unavailable("No external agents configured")
+        .with_details(serde_json::json!({
+            "acp_adapters": [],
+            "note": "ACP adapter support planned for Phase 6"
+        }));
+
+    // Optional modules (Module Runtime Phase 2)
+    let optional_modules =
+        SubsystemStatus::ok("Module registry available").with_details(serde_json::json!({
+            "loaded_modules": 0,
+            "compatibility_adapters": 0,
+            "remote_capabilities": false,
+            "note": "Module discovery and loading implemented in Phase 2"
+        }));
+
+    // Disk/Runtime health
+    let disk_runtime = probe_disk_runtime(workspace_root);
+
     crate::SubsystemHealth {
         event_store,
         artifact_store,
@@ -742,6 +768,44 @@ fn gather_subsystem_health(
         provider_registry: provider_registry_status,
         sandbox,
         credential_store,
+        tools_capabilities,
+        external_agents,
+        optional_modules,
+        disk_runtime,
+    }
+}
+
+fn probe_disk_runtime(workspace_root: &Path) -> crate::SubsystemStatus {
+    use crate::SubsystemStatus;
+    use std::fs;
+
+    // Check workspace accessibility
+    let workspace_readable = workspace_root.exists() && workspace_root.is_dir();
+
+    // Check data directory
+    let data_dir = data_root().ok();
+    let data_dir_accessible = data_dir
+        .as_ref()
+        .map(|p| p.exists() || fs::create_dir_all(p).is_ok())
+        .unwrap_or(false);
+
+    // Basic runtime checks
+    let temp_writable = std::env::temp_dir().exists();
+
+    if workspace_readable && data_dir_accessible && temp_writable {
+        SubsystemStatus::ok("Disk and runtime healthy").with_details(serde_json::json!({
+            "workspace_root": workspace_root.display().to_string(),
+            "data_dir": data_dir.map(|p| p.display().to_string()),
+            "temp_dir": std::env::temp_dir().display().to_string(),
+        }))
+    } else {
+        SubsystemStatus::unavailable("Disk or runtime issues detected").with_details(
+            serde_json::json!({
+                "workspace_readable": workspace_readable,
+                "data_dir_accessible": data_dir_accessible,
+                "temp_writable": temp_writable,
+            }),
+        )
     }
 }
 

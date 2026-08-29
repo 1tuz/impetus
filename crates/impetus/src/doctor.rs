@@ -338,6 +338,19 @@ fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::Sub
         "credential_store",
         subsystems.credential_store,
     ));
+    report.add(status_to_probe(
+        "tools_capabilities",
+        subsystems.tools_capabilities,
+    ));
+    report.add(status_to_probe(
+        "external_agents",
+        subsystems.external_agents,
+    ));
+    report.add(status_to_probe(
+        "optional_modules",
+        subsystems.optional_modules,
+    ));
+    report.add(status_to_probe("disk_runtime", subsystems.disk_runtime));
 }
 
 fn print_human_report(report: &DoctorReport) {

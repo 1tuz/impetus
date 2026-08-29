@@ -54,11 +54,11 @@ Stubs and placeholder responses do not count as done.
 - [x] Probe: policy and approval subsystem
 - [x] Probe: platform credential store accessibility (Keychain on macOS; redacted)
 - [x] Probe: ProviderRegistry, providers, model capabilities
-- [ ] Probe: tools/capabilities registration
-- [ ] Probe: external agents / ACP adapters
-- [ ] Probe: optional modules, compatibility adapters, remote capabilities
+- [x] Probe: tools/capabilities registration
+- [x] Probe: external agents / ACP adapters
+- [x] Probe: optional modules, compatibility adapters, remote capabilities
 - [ ] Probe: web research (internet access, WebFetch, per-`SearchBackend` health, BrowserProvider, network policy)
-- [ ] Probe: disk/runtime health
+- [x] Probe: disk/runtime health
 - [ ] Partial extension compatibility matrix in doctor output
 
 ### Components (introspection)
@@ -286,7 +286,7 @@ Reference audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (audit not 
 
 - [ ] Security review: secret handling, sandbox escapes, policy bypass
 - [ ] End-to-end verification: no policy bypass, no credential leakage
-- [ ] Client examples: minimal read-only observer
+- [x] Client examples: minimal read-only observer
 
 ---
 

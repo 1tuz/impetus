@@ -8,6 +8,10 @@ pub struct SubsystemHealth {
     pub provider_registry: SubsystemStatus,
     pub sandbox: SubsystemStatus,
     pub credential_store: SubsystemStatus,
+    pub tools_capabilities: SubsystemStatus,
+    pub external_agents: SubsystemStatus,
+    pub optional_modules: SubsystemStatus,
+    pub disk_runtime: SubsystemStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
