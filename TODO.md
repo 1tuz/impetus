@@ -92,10 +92,10 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ## Phase 3 — Extension compatibility
 
-- [ ] Extension Compatibility Adapter layer (types exist; no working adapters yet)
-- [ ] Canonical types (defined but not used in real imports)
-- [ ] Import capability matrix (all entries Unsupported; no real capability detection)
-- [ ] Agent Skills adapter (upstream spec audit first)
+- [x] Extension Compatibility Adapter layer (types exist; no working adapters yet)
+- [x] Canonical types (defined but not used in real imports)
+- [x] Import capability matrix (all entries Unsupported; no real capability detection)
+- [x] Agent Skills adapter (upstream spec audit first)
 - [ ] MCP adapter
 - [ ] Agent Plugins adapter
 - [ ] Claude Code extensions/plugins adapter
