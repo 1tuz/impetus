@@ -6,6 +6,7 @@
 pub mod agent_loop;
 pub mod approval;
 pub mod attachments;
+pub mod audit_log;
 pub mod budget;
 pub mod ci;
 pub mod cost_estimation;
@@ -52,6 +53,7 @@ pub use approval::{
     ApprovalState, ScopeEstimate,
 };
 pub use attachments::{Attachment, AttachmentError, AttachmentStore, StoreStats};
+pub use audit_log::{AuditEntry, AuditLog, AuditQuery};
 pub use budget::{BudgetChecker, BudgetConfig, BudgetError, BudgetState, ReasoningEffort};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
@@ -68,8 +70,8 @@ pub use effects::{
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
-    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
-    ToolEventOutcome,
+    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent, RunEvent, SessionEvent,
+    ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
     ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
@@ -122,8 +124,8 @@ pub use remote::{
     TmuxSessionStore, TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
-pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
-pub use supervisor::{MockStreamItem, MockStreamingProvider, SessionSupervisor, SupervisorError};
+pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError};
+pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };

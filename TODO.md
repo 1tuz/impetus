@@ -92,9 +92,9 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ## Phase 3 — Extension compatibility
 
-- [x] Extension Compatibility Adapter layer (design + minimal slice)
-- [x] Canonical types: `CanonicalModuleSpec`, `CanonicalSkill`, `Instruction`, `AgentProfile`, `Command`, `McpModule`, `ToolProvider`
-- [x] Import capability matrix: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`
+- [ ] Extension Compatibility Adapter layer (types exist; no working adapters yet)
+- [ ] Canonical types (defined but not used in real imports)
+- [ ] Import capability matrix (all entries Unsupported; no real capability detection)
 - [ ] Agent Skills adapter (upstream spec audit first)
 - [ ] MCP adapter
 - [ ] Agent Plugins adapter
@@ -116,7 +116,7 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 - [x] Bounded raw fallback → `ArtifactRef`
 - [x] Full raw output stored as Artifact alongside structured observation
 - [x] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
-- [ ] RTK optional adapter: probe capabilities, not hard dependency
+- [x] RTK optional adapter: probe capabilities, not hard dependency
 
 ---
 
@@ -193,12 +193,12 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 ### Durable budgets & Model Router
 
-- [ ] Token and wall-time budget tracking per session (durable)
-- [ ] Budget enforcement in agent loop
-- [ ] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
-- [ ] Router policies: local-first, free-first, balanced, quality-first
-- [ ] Escalation: local → sanitised cloud request → result back to local agent
-- [ ] Cost estimation and budget warnings
+- [x] Token and wall-time budget tracking per session (durable)
+- [x] Budget enforcement in agent loop
+- [x] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
+- [x] Router policies: local-first, free-first, balanced, quality-first
+- [x] Escalation: local → sanitised cloud request → result back to local agent
+- [x] Cost estimation and budget warnings
 
 ### Agent loop (real implementation)
 
@@ -215,10 +215,10 @@ The baseline vertical is working. The remaining items harden and extend it.
 
 - [x] Multi-turn conversation state with durable tool result accumulation and approval/rejection resume
 - [x] Streaming response chunking and client sync
-- [ ] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
-- [ ] Parallel tool execution where safe (read_only/idempotent only)
-- [ ] Cross-session state isolation and cleanup
-- [ ] Audit log with redacted tool arguments
+- [x] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
+- [x] Parallel tool execution where safe (read_only/idempotent only)
+- [x] Cross-session state isolation and cleanup
+- [x] Audit log with redacted tool arguments
 
 ---
 
@@ -231,6 +231,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
+- [x] Session fork/checkpoint (with full event duplication; shared prefix not yet implemented)
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget

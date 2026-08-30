@@ -1,10 +1,14 @@
 /target
+**/target/
 /.agentic-terminal/
 /.worktrees/
 *.db
 *.db-shm
 *.db-wal
 .DS_Store
+opencode.json
+*.html
+!docs/**/*.html
 /.obsidian/
 /.firecrawl/
 __pycache__/

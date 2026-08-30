@@ -50,6 +50,31 @@ pub enum ActionKind {
     TmuxAttach,
 }
 
+impl ActionKind {
+    /// Classify action for parallel execution safety
+    pub fn execution_semantics(&self) -> crate::module::ExecutionSemantics {
+        use crate::module::ExecutionSemantics;
+        match self {
+            ActionKind::ReadFile => ExecutionSemantics::ReadOnly,
+            ActionKind::WriteFile => ExecutionSemantics::Mutating,
+            ActionKind::SpawnProcess => ExecutionSemantics::NonReplayable,
+            ActionKind::NetworkConnect => ExecutionSemantics::Idempotent,
+            ActionKind::SshConnect => ExecutionSemantics::NonReplayable,
+            ActionKind::SftpTransfer => ExecutionSemantics::Mutating,
+            ActionKind::TmuxAttach => ExecutionSemantics::NonReplayable,
+        }
+    }
+
+    /// Check if action can be executed in parallel with other actions
+    pub fn can_parallelize(&self) -> bool {
+        matches!(
+            self.execution_semantics(),
+            crate::module::ExecutionSemantics::ReadOnly
+                | crate::module::ExecutionSemantics::Idempotent
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Action {
     pub origin: ActionOrigin,

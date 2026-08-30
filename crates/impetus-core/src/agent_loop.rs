@@ -5,8 +5,8 @@
 //! observation feeding back into the next model turn.
 
 use crate::{
-    AgentRuntime, ModelProvider, PolicyEngine, ProviderError, ProviderMessage, RuntimeError,
-    RuntimeStatus, ToolOrchestrator,
+    AgentRuntime, BudgetError, EventPayload, ModelProvider, PolicyEngine, ProviderError,
+    ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -16,6 +16,15 @@ use uuid::Uuid;
 /// Maximum iterations per agent loop run to prevent infinite loops.
 const MAX_ITERATIONS: u32 = 50;
 
+/// Maximum retry attempts for transient errors
+const MAX_RETRY_ATTEMPTS: u32 = 3;
+
+/// Initial backoff in milliseconds
+const INITIAL_BACKOFF_MS: u64 = 1000;
+
+/// Backoff multiplier for exponential backoff
+const BACKOFF_MULTIPLIER: u64 = 2;
+
 #[derive(Debug, Error)]
 pub enum AgentLoopError {
     #[error(transparent)]
@@ -24,6 +33,8 @@ pub enum AgentLoopError {
     Provider(#[from] ProviderError),
     #[error(transparent)]
     Orchestrator(#[from] crate::OrchestratorError),
+    #[error(transparent)]
+    Budget(#[from] BudgetError),
     #[error("agent loop exceeded maximum iterations ({MAX_ITERATIONS})")]
     MaxIterationsExceeded,
     #[error("agent loop cancelled")]
@@ -87,9 +98,9 @@ impl AgentLoop {
 
             iteration += 1;
 
-            // Phase 1: Model inference
+            // Phase 1: Model inference with retry logic
             let model_response = self
-                .call_model(run_id, &provider, &messages, &cancellation)
+                .call_model_with_retry(run_id, &provider, &messages, &cancellation)
                 .await?;
 
             // Phase 2: Extract tool calls from response
@@ -120,6 +131,74 @@ impl AgentLoop {
         }
     }
 
+    async fn call_model_with_retry(
+        &self,
+        run_id: Uuid,
+        provider: &Arc<dyn ModelProvider>,
+        messages: &[ProviderMessage],
+        cancellation: &CancellationToken,
+    ) -> Result<String, AgentLoopError> {
+        let mut attempt = 0;
+
+        loop {
+            attempt += 1;
+
+            match self
+                .call_model(run_id, provider, messages, cancellation)
+                .await
+            {
+                Ok(response) => {
+                    // Success — emit retry success event if we retried
+                    if attempt > 1 {
+                        self.runtime
+                            .record_event(EventPayload::Retry(RetryEvent::Succeeded { attempt }))?;
+                    }
+                    return Ok(response);
+                }
+                Err(AgentLoopError::Provider(provider_error)) => {
+                    // Check if error is transient and we haven't exhausted retries
+                    if provider_error.is_transient() && attempt < MAX_RETRY_ATTEMPTS {
+                        let backoff_ms = INITIAL_BACKOFF_MS * BACKOFF_MULTIPLIER.pow(attempt - 1);
+
+                        // Emit retry attempt event
+                        self.runtime
+                            .record_event(EventPayload::Retry(RetryEvent::Attempting {
+                                attempt,
+                                max_attempts: MAX_RETRY_ATTEMPTS,
+                                reason: provider_error.to_string(),
+                                backoff_ms,
+                            }))?;
+
+                        // Wait with cancellation check
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {},
+                            _ = cancellation.cancelled() => {
+                                return Err(AgentLoopError::Cancelled);
+                            }
+                        }
+
+                        continue;
+                    } else {
+                        // Permanent error or retries exhausted
+                        if attempt > 1 {
+                            self.runtime.record_event(EventPayload::Retry(
+                                RetryEvent::Exhausted {
+                                    attempts: attempt,
+                                    last_error: provider_error.to_string(),
+                                },
+                            ))?;
+                        }
+                        return Err(AgentLoopError::Provider(provider_error));
+                    }
+                }
+                Err(other_error) => {
+                    // Non-provider errors (Budget, Runtime, Cancelled) — fail immediately
+                    return Err(other_error);
+                }
+            }
+        }
+    }
+
     async fn call_model(
         &self,
         run_id: Uuid,
@@ -130,6 +209,13 @@ impl AgentLoop {
         // Check runtime status before calling model
         if !matches!(self.runtime.status(), Ok(RuntimeStatus::Running)) {
             return Err(AgentLoopError::Runtime(RuntimeError::InactiveRun(run_id)));
+        }
+
+        // Budget enforcement: check before model call
+        let estimated_tokens = self.estimate_request_tokens(messages);
+        if let Err(budget_error) = self.runtime.check_budget(estimated_tokens) {
+            self.emit_budget_limit_event(&budget_error)?;
+            return Err(AgentLoopError::Budget(budget_error));
         }
 
         let accumulated = Arc::new(std::sync::Mutex::new(String::new()));
@@ -174,6 +260,39 @@ impl AgentLoop {
             .await?;
 
         let result = accumulated.lock().unwrap().clone();
+
+        // Record turn completion with actual token usage
+        let actual_tokens = self.estimate_response_tokens(&result);
+        self.runtime.record_turn(estimated_tokens + actual_tokens)?;
+
+        // Emit budget update event
+        if let Some(state) = self.runtime.budget_state() {
+            let context_percent = self
+                .runtime
+                .budget()
+                .as_ref()
+                .and_then(|b| {
+                    let guard = b.lock().unwrap();
+                    guard.config().context_limit
+                })
+                .map(|limit| state.context_used_percent(limit))
+                .unwrap_or(0);
+
+            self.runtime
+                .record_event(EventPayload::Budget(crate::BudgetEvent::Updated {
+                    turns_used: state.turns_used,
+                    tokens_used: state.tokens_used,
+                    compaction_count: state.compaction_count,
+                    context_used_percent: context_percent,
+                }))?;
+
+            // Emit approaching warnings
+            if let Some(checker) = self.runtime.budget() {
+                let guard = checker.lock().unwrap();
+                self.emit_approaching_warnings(&guard, &state)?;
+            }
+        }
+
         Ok(result)
     }
 
@@ -240,6 +359,74 @@ impl AgentLoop {
         }
 
         calls
+    }
+
+    /// Estimate request tokens (rough heuristic: 4 chars per token)
+    fn estimate_request_tokens(&self, messages: &[ProviderMessage]) -> u64 {
+        let total_chars: usize = messages.iter().map(|m| m.content().len()).sum();
+        (total_chars / 4).max(100) as u64
+    }
+
+    /// Estimate response tokens
+    fn estimate_response_tokens(&self, response: &str) -> u64 {
+        (response.len() / 4).max(50) as u64
+    }
+
+    /// Emit budget limit event when budget check fails
+    fn emit_budget_limit_event(&self, error: &BudgetError) -> Result<(), RuntimeError> {
+        match error {
+            BudgetError::TurnLimitExceeded { limit, used } => {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TurnLimitApproaching {
+                        limit: *limit,
+                        used: *used,
+                    },
+                ))?;
+            }
+            BudgetError::TokenLimitExceeded { limit, used, .. } => {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TokenLimitApproaching {
+                        limit: *limit,
+                        used: *used,
+                    },
+                ))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Emit approaching warnings at 80% and 95% thresholds
+    fn emit_approaching_warnings(
+        &self,
+        checker: &crate::BudgetChecker,
+        state: &crate::BudgetState,
+    ) -> Result<(), RuntimeError> {
+        if let Some(max_turns) = checker.config().max_turns {
+            let percent = (state.turns_used as f64 / max_turns as f64 * 100.0) as u8;
+            if (80..100).contains(&percent) {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TurnLimitApproaching {
+                        limit: max_turns,
+                        used: state.turns_used,
+                    },
+                ))?;
+            }
+        }
+
+        if let Some(max_tokens) = checker.config().max_tokens {
+            let percent = (state.tokens_used as f64 / max_tokens as f64 * 100.0) as u8;
+            if (80..100).contains(&percent) {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TokenLimitApproaching {
+                        limit: max_tokens,
+                        used: state.tokens_used,
+                    },
+                ))?;
+            }
+        }
+
+        Ok(())
     }
 }
 

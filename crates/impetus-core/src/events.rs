@@ -27,6 +27,7 @@ pub enum EventPayload {
     Backend(BackendEvent),
     Budget(BudgetEvent),
     Notice(NoticeEvent),
+    Retry(RetryEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,6 +181,25 @@ pub enum NoticeEvent {
     Legacy {
         event_kind: String,
         body: serde_json::Value,
+    },
+}
+
+/// Retry event tracking for error recovery
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryEvent {
+    Attempting {
+        attempt: u32,
+        max_attempts: u32,
+        reason: String,
+        backoff_ms: u64,
+    },
+    Succeeded {
+        attempt: u32,
+    },
+    Exhausted {
+        attempts: u32,
+        last_error: String,
     },
 }
 

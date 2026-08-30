@@ -123,3 +123,16 @@ cargo clippy --workspace --all-targets -- -D warnings
   - `docs: update implementation history for phase 2 (refs #15)`
 - Не использовать `--no-verify`, не коммитить secrets, `.env`, локальные БД, provider credentials, browser caches, `target/` и generated runtime state.
 - Не делать amend/rebase/force-push и не настраивать remote без прямого указания пользователя.
+
+## Запрещённые файлы и директории в репозитории
+
+Следующие категории файлов и директорий **запрещены** в коммитах и должны быть в `.gitignore`:
+
+- **Build artifacts:** `target/`, `**/target/`, любые compiled binaries и intermediate build outputs
+- **Temporary configs:** `config/` с example/template конфигами (допустимы только versioned `.example` файлы в `docs/` или корне)
+- **Archived/obsolete docs:** `docs/archived/`, `docs/superpowers/`, historical audits/spikes/roadmaps (актуальные: `ARCHITECTURE.md`, `ROADMAP.md`)
+- **Generated HTML/diagrams:** `*.html` в корне или `docs/` (кроме явно versioned reference docs)
+- **IDE/tool artifacts:** `opencode.json`, `.DS_Store`, `__pycache__/`, `*.pyc`
+- **Runtime state:** `*.db`, `*.db-shm`, `*.db-wal`, session logs, trace dumps
+
+Перед коммитом проверять `git status` и `git diff --cached`. Если случайно staged запрещённый файл — `git reset HEAD <file>` и добавить в `.gitignore`.
