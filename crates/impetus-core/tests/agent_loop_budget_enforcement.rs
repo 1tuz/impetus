@@ -158,6 +158,9 @@ async fn budget_enforcement_stops_on_turn_limit() {
         )
         .await;
     assert!(result.is_ok());
+    runtime_arc
+        .finish_run(impetus_core::RunEvent::Completed { run_id: run_id_1 })
+        .unwrap();
     assert_eq!(runtime_arc.budget_state().unwrap().turns_used, 1);
 
     // Turn 2: OK (at limit)
@@ -171,6 +174,9 @@ async fn budget_enforcement_stops_on_turn_limit() {
         )
         .await;
     assert!(result.is_ok());
+    runtime_arc
+        .finish_run(impetus_core::RunEvent::Completed { run_id: run_id_2 })
+        .unwrap();
     assert_eq!(runtime_arc.budget_state().unwrap().turns_used, 2);
 
     // Turn 3: Should fail
