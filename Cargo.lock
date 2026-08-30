@@ -1581,6 +1581,7 @@ dependencies = [
 name = "impetus-core"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "async-trait",
  "base64 0.23.1",
@@ -1641,6 +1642,7 @@ dependencies = [
 name = "impetusd"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "impetus-acp-gateway",
  "impetus-core",

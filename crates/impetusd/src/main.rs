@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use impetus_acp_gateway::{AcpGateway, AcpProfile};
+use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
@@ -88,12 +88,17 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
             let profile: AcpProfile = serde_json::from_slice(&profile_bytes)
                 .context("acp profile must contain only the documented non-secret fields")?;
             profile.validate().context("invalid acp profile")?;
-            let gateway = AcpGateway::new(profile)
-                .map_err(|e| anyhow::anyhow!("failed to create acp gateway: {}", e))?;
+
+            // Create ACP agent config from profile
+            // TODO: pass profile.args when SDK supports it
+            let config = agent_client_protocol::AcpAgentConfig::new(&profile.command);
+
             Ok(Harness::with_acp_gateway(
                 store,
                 impetus_core::harness_api::policy(),
-                gateway,
+                config,
+                profile.id,
+                profile.display_name,
             ))
         }
         _ => bail!("usage: impetusd [--provider-profile PATH | --acp-profile PATH]"),
