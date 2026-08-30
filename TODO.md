@@ -217,8 +217,8 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Streaming response chunking and client sync
 - [x] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
 - [x] Parallel tool execution where safe (read_only/idempotent only)
-- [ ] Cross-session state isolation and cleanup
-- [ ] Audit log with redacted tool arguments
+- [x] Cross-session state isolation and cleanup
+- [x] Audit log with redacted tool arguments
 
 ---
 
