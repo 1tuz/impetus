@@ -1,6 +1,8 @@
 use crate::events::Event;
+use crate::reference_store::ReferenceService;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Service contract for agent loop strategy
 #[async_trait]
@@ -54,6 +56,7 @@ pub enum TaskSchedule {
 pub struct ServiceRegistry {
     agent_loop: Option<Box<dyn AgentLoopStrategy>>,
     scheduler: Option<Box<dyn AgentScheduler>>,
+    reference_store: Option<Arc<dyn ReferenceService>>,
 }
 
 impl ServiceRegistry {
@@ -61,6 +64,7 @@ impl ServiceRegistry {
         Self {
             agent_loop: None,
             scheduler: None,
+            reference_store: None,
         }
     }
 
@@ -82,6 +86,16 @@ impl ServiceRegistry {
     /// Get registered scheduler
     pub fn scheduler(&self) -> Option<&dyn AgentScheduler> {
         self.scheduler.as_ref().map(|s| s.as_ref())
+    }
+
+    /// Register a reference store
+    pub fn register_reference_store(&mut self, store: Arc<dyn ReferenceService>) {
+        self.reference_store = Some(store);
+    }
+
+    /// Get registered reference store
+    pub fn reference_store(&self) -> Option<Arc<dyn ReferenceService>> {
+        self.reference_store.clone()
     }
 }
 
