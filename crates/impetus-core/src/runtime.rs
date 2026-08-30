@@ -1,7 +1,7 @@
 use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
-    DeferredEffect, Event, EventPayload, EventStore, IntentEvent, NoticeEvent, PolicyDecision,
-    PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
+    BudgetChecker, BudgetConfig, DeferredEffect, Event, EventPayload, EventStore, IntentEvent,
+    NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -55,6 +55,7 @@ pub struct AgentRuntime {
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
     workspace_root: PathBuf,
+    budget: Option<BudgetChecker>,
     // A2 Phase 2: Store deferred effects for approval continuation.
     // Maps approval_id -> DeferredEffect so approved work can resume.
     deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
@@ -72,11 +73,13 @@ impl AgentRuntime {
     }
 
     pub fn create(store: Arc<dyn EventStore>, policy: PolicyEngine) -> Result<Self, RuntimeError> {
+        let session_id = store.create_session()?;
         Ok(Self {
-            session_id: store.create_session()?,
+            session_id,
             store,
             workspace_root: policy.scope().workspace_root.clone(),
             policy,
+            budget: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -105,6 +108,7 @@ impl AgentRuntime {
             store,
             policy: scoped_policy,
             workspace_root,
+            budget: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -127,6 +131,7 @@ impl AgentRuntime {
             store,
             policy: policy_for_workspace(&policy, workspace_root.clone()),
             workspace_root,
+            budget: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -143,12 +148,49 @@ impl AgentRuntime {
             store,
             workspace_root: policy.scope().workspace_root.clone(),
             policy,
+            budget: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn session_id(&self) -> Uuid {
         self.session_id
+    }
+
+    /// Set budget configuration for this runtime
+    pub fn set_budget(&mut self, config: BudgetConfig) -> Result<(), RuntimeError> {
+        // Load existing budget state from store
+        let state = self.store.as_ref().get_budget_state(self.session_id)?;
+        self.budget = Some(BudgetChecker::new(config));
+        // Restore state
+        if let Some(ref mut checker) = self.budget {
+            *checker.state_mut() = state;
+        }
+        Ok(())
+    }
+
+    /// Get current budget state (if budget enabled)
+    pub fn budget_state(&self) -> Option<&crate::budget::BudgetState> {
+        self.budget.as_ref().map(|b| b.state())
+    }
+
+    /// Check if budget allows this request
+    pub fn check_budget(&self, estimated_tokens: u64) -> Result<(), crate::budget::BudgetError> {
+        if let Some(ref checker) = self.budget {
+            checker.check_all(estimated_tokens)?;
+        }
+        Ok(())
+    }
+
+    /// Record turn completion and persist budget state
+    pub fn record_turn(&mut self, tokens_used: u64) -> Result<(), RuntimeError> {
+        if let Some(ref mut checker) = self.budget {
+            checker.record_turn(tokens_used);
+            self.store
+                .as_ref()
+                .update_budget_state(self.session_id, checker.state())?;
+        }
+        Ok(())
     }
 
     pub fn workspace_root(&self) -> Result<PathBuf, RuntimeError> {
