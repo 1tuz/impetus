@@ -7,7 +7,6 @@ use impetus_core::{
     ProviderMessage, SandboxScope,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::test]
 async fn budget_enforcement_stops_agent_loop_on_token_limit() {
@@ -34,19 +33,28 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
     runtime.set_budget(budget_config).unwrap();
 
     // Mock provider: returns text that will consume tokens
-    let mock = Arc::new(MockProvider::with_sequence(vec![
-        MockStreamItem::Chunk("First response chunk ".to_string()),
-        MockStreamItem::Chunk("with some content".to_string()),
-        MockStreamItem::Done,
-    ]));
+    let mock = Arc::new(MockProvider::new(
+        "mock",
+        "mock-model",
+        vec![
+            MockStreamItem::Chunk {
+                chunk_id: 1,
+                text: "First response chunk ".to_string(),
+            },
+            MockStreamItem::Chunk {
+                chunk_id: 2,
+                text: "with some content".to_string(),
+            },
+        ],
+    ));
 
     let session_id = runtime.session_id();
-    let run_id = uuid::Uuid::new_v4();
-    runtime.start_run(run_id).unwrap();
+    let run_id = runtime.start_run().unwrap();
 
     let messages = vec![ProviderMessage::user("test request")];
 
-    let agent_loop = impetus_core::AgentLoop::new(Arc::new(runtime.clone()));
+    let runtime_arc = Arc::new(runtime);
+    let agent_loop = impetus_core::AgentLoop::new(runtime_arc.clone());
     let cancellation = tokio_util::sync::CancellationToken::new();
 
     // First turn should succeed
@@ -58,12 +66,12 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
     assert!(result.is_ok());
 
     // Check budget state was updated
-    let state = runtime.budget_state().unwrap();
+    let state = runtime_arc.budget_state().unwrap();
     assert_eq!(state.turns_used, 1);
     assert!(state.tokens_used > 0);
 
     // Verify BudgetEvent::Updated was emitted
-    let events = store.events(session_id).unwrap();
+    let events = runtime_arc.events().unwrap();
     let budget_events: Vec<_> = events
         .iter()
         .filter_map(|e| match &e.payload {
@@ -77,15 +85,13 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
         "BudgetEvent::Updated should be emitted"
     );
 
-    // Now simulate budget exhaustion: manually push budget to limit
-    let mut runtime_mut = runtime.clone();
-    runtime_mut.record_turn(400).unwrap();
+    // Manually push budget to limit by recording additional turns
+    runtime_arc.record_turn(400).unwrap();
 
     // Next turn should fail with budget error
-    let run_id_2 = uuid::Uuid::new_v4();
-    runtime_mut.start_run(run_id_2).unwrap();
+    let run_id_2 = runtime_arc.start_run().unwrap();
 
-    let result = impetus_core::AgentLoop::new(Arc::new(runtime_mut.clone()))
+    let result = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(
             run_id_2,
             mock.clone(),
@@ -128,18 +134,22 @@ async fn budget_enforcement_stops_on_turn_limit() {
     };
     runtime.set_budget(budget_config).unwrap();
 
-    let mock = Arc::new(MockProvider::with_sequence(vec![
-        MockStreamItem::Chunk("Response".to_string()),
-        MockStreamItem::Done,
-    ]));
+    let mock = Arc::new(MockProvider::new(
+        "mock",
+        "mock-model",
+        vec![MockStreamItem::Chunk {
+            chunk_id: 1,
+            text: "Response".to_string(),
+        }],
+    ));
 
     let messages = vec![ProviderMessage::user("test")];
     let cancellation = tokio_util::sync::CancellationToken::new();
+    let runtime_arc = Arc::new(runtime);
 
     // Turn 1: OK
-    let run_id_1 = uuid::Uuid::new_v4();
-    runtime.start_run(run_id_1).unwrap();
-    let result = impetus_core::AgentLoop::new(Arc::new(runtime.clone()))
+    let run_id_1 = runtime_arc.start_run().unwrap();
+    let result = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(
             run_id_1,
             mock.clone(),
@@ -148,13 +158,11 @@ async fn budget_enforcement_stops_on_turn_limit() {
         )
         .await;
     assert!(result.is_ok());
-    assert_eq!(runtime.budget_state().unwrap().turns_used, 1);
+    assert_eq!(runtime_arc.budget_state().unwrap().turns_used, 1);
 
     // Turn 2: OK (at limit)
-    let run_id_2 = uuid::Uuid::new_v4();
-    let mut runtime_2 = runtime.clone();
-    runtime_2.start_run(run_id_2).unwrap();
-    let result = impetus_core::AgentLoop::new(Arc::new(runtime_2.clone()))
+    let run_id_2 = runtime_arc.start_run().unwrap();
+    let result = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(
             run_id_2,
             mock.clone(),
@@ -163,13 +171,11 @@ async fn budget_enforcement_stops_on_turn_limit() {
         )
         .await;
     assert!(result.is_ok());
-    assert_eq!(runtime_2.budget_state().unwrap().turns_used, 2);
+    assert_eq!(runtime_arc.budget_state().unwrap().turns_used, 2);
 
     // Turn 3: Should fail
-    let run_id_3 = uuid::Uuid::new_v4();
-    let mut runtime_3 = runtime_2.clone();
-    runtime_3.start_run(run_id_3).unwrap();
-    let result = impetus_core::AgentLoop::new(Arc::new(runtime_3.clone()))
+    let run_id_3 = runtime_arc.start_run().unwrap();
+    let result = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(
             run_id_3,
             mock.clone(),
@@ -210,24 +216,28 @@ async fn budget_events_emitted_on_approaching_limit() {
     };
     runtime.set_budget(budget_config).unwrap();
 
-    let mock = Arc::new(MockProvider::with_sequence(vec![
-        MockStreamItem::Chunk("Response".to_string()),
-        MockStreamItem::Done,
-    ]));
+    let mock = Arc::new(MockProvider::new(
+        "mock",
+        "mock-model",
+        vec![MockStreamItem::Chunk {
+            chunk_id: 1,
+            text: "Response".to_string(),
+        }],
+    ));
 
     let session_id = runtime.session_id();
     let messages = vec![ProviderMessage::user("test")];
     let cancellation = tokio_util::sync::CancellationToken::new();
+    let runtime_arc = Arc::new(runtime);
 
     // Execute first turn
-    let run_id = uuid::Uuid::new_v4();
-    runtime.start_run(run_id).unwrap();
-    let _ = impetus_core::AgentLoop::new(Arc::new(runtime.clone()))
+    let run_id = runtime_arc.start_run().unwrap();
+    let _ = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(run_id, mock.clone(), messages, cancellation)
         .await;
 
     // Check that BudgetEvent::Updated was emitted
-    let events = store.events(session_id).unwrap();
+    let events = runtime_arc.events().unwrap();
     let budget_updated = events.iter().any(|e| {
         matches!(
             &e.payload,
@@ -238,10 +248,9 @@ async fn budget_events_emitted_on_approaching_limit() {
     assert!(budget_updated, "BudgetEvent::Updated should be emitted");
 
     // Manually push to 85% to trigger approaching warning
-    let mut runtime_mut = runtime.clone();
-    runtime_mut.record_turn(800).unwrap();
+    runtime_arc.record_turn(800).unwrap();
 
-    let events_after = store.events(session_id).unwrap();
+    let events_after = runtime_arc.events().unwrap();
     let approaching_events: Vec<_> = events_after
         .iter()
         .filter_map(|e| match &e.payload {
