@@ -161,6 +161,42 @@ impl Harness {
         }
     }
 
+    /// Use an external ACP-compatible coding agent.
+    /// The gateway owns agent process lifecycle; credentials are agent-owned.
+    pub fn with_acp_gateway(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        gateway: impetus_acp_gateway::AcpGateway,
+    ) -> Self {
+        let workspace_root = policy.scope().workspace_root.clone();
+        let registry = ProviderRegistry::new();
+
+        // Register mock for tests
+        let mock = Arc::new(MockProvider::default_mock());
+        registry
+            .register(mock)
+            .expect("failed to register mock provider");
+
+        // Register ACP adapter
+        let provider_id = gateway.profile().id.clone();
+        let adapter = Arc::new(crate::AcpAdapter::new(gateway));
+        registry
+            .register(adapter)
+            .expect("failed to register acp gateway");
+
+        Self {
+            store,
+            policy,
+            provider_registry: registry,
+            default_provider_id: provider_id,
+            credential_resolver: Arc::new(NoCredentialResolver),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
+            workspace_root,
+            session_coordinator: SessionCoordinator::default(),
+            attachments: crate::AttachmentStore::new(),
+        }
+    }
+
     pub fn policy(&self) -> PolicyEngine {
         self.policy.clone()
     }

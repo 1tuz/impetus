@@ -25,6 +25,7 @@ base64 = "0.23.1"
 regex = "1.11.1"
 chrono = "0.4.45"
 serde_yaml = "0.9"
+impetus-acp-gateway = { path = "../impetus-acp-gateway" }
 
 [dev-dependencies]
 tempfile = "3.15"

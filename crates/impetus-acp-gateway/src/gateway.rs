@@ -27,11 +27,14 @@ pub enum AgentStatus {
 }
 
 /// ACP Gateway для external coding-agent.
+#[derive(Debug)]
 pub struct AcpGateway {
     profile: AcpProfile,
     status: AgentStatus,
+    #[allow(dead_code)]
     child: Option<Child>,
     request_id: AtomicU64,
+    #[allow(dead_code)]
     notification_rx: Option<mpsc::UnboundedReceiver<JsonRpcNotification>>,
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
 }
