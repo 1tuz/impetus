@@ -55,7 +55,7 @@ pub struct AgentRuntime {
     store: Arc<dyn EventStore>,
     policy: PolicyEngine,
     workspace_root: PathBuf,
-    budget: Option<BudgetChecker>,
+    budget: Option<Arc<Mutex<BudgetChecker>>>,
     // A2 Phase 2: Store deferred effects for approval continuation.
     // Maps approval_id -> DeferredEffect so approved work can resume.
     deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
@@ -161,39 +161,41 @@ impl AgentRuntime {
     pub fn set_budget(&mut self, config: BudgetConfig) -> Result<(), RuntimeError> {
         // Load existing budget state from store
         let state = self.store.as_ref().get_budget_state(self.session_id)?;
-        self.budget = Some(BudgetChecker::new(config));
+        let mut checker = BudgetChecker::new(config);
         // Restore state
-        if let Some(ref mut checker) = self.budget {
-            *checker.state_mut() = state;
-        }
+        *checker.state_mut() = state;
+        self.budget = Some(Arc::new(Mutex::new(checker)));
         Ok(())
     }
 
     /// Get current budget state (if budget enabled)
-    pub fn budget_state(&self) -> Option<&crate::budget::BudgetState> {
-        self.budget.as_ref().map(|b| b.state())
+    pub fn budget_state(&self) -> Option<crate::budget::BudgetState> {
+        self.budget
+            .as_ref()
+            .map(|b| b.lock().unwrap().state().clone())
     }
 
     /// Get budget checker reference (if budget enabled)
-    pub fn budget(&self) -> Option<&BudgetChecker> {
-        self.budget.as_ref()
+    pub fn budget(&self) -> Option<Arc<Mutex<BudgetChecker>>> {
+        self.budget.clone()
     }
 
     /// Check if budget allows this request
     pub fn check_budget(&self, estimated_tokens: u64) -> Result<(), crate::budget::BudgetError> {
         if let Some(ref checker) = self.budget {
-            checker.check_all(estimated_tokens)?;
+            checker.lock().unwrap().check_all(estimated_tokens)?;
         }
         Ok(())
     }
 
     /// Record turn completion and persist budget state
-    pub fn record_turn(&mut self, tokens_used: u64) -> Result<(), RuntimeError> {
-        if let Some(ref mut checker) = self.budget {
-            checker.record_turn(tokens_used);
+    pub fn record_turn(&self, tokens_used: u64) -> Result<(), RuntimeError> {
+        if let Some(ref checker) = self.budget {
+            let mut guard = checker.lock().unwrap();
+            guard.record_turn(tokens_used);
             self.store
                 .as_ref()
-                .update_budget_state(self.session_id, checker.state())?;
+                .update_budget_state(self.session_id, guard.state())?;
         }
         Ok(())
     }

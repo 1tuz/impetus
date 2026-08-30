@@ -186,27 +186,33 @@ impl AgentLoop {
 
         // Record turn completion with actual token usage
         let actual_tokens = self.estimate_response_tokens(&result);
-        let mut runtime_mut = self.runtime.clone();
-        runtime_mut.record_turn(estimated_tokens + actual_tokens)?;
+        self.runtime.record_turn(estimated_tokens + actual_tokens)?;
 
         // Emit budget update event
-        if let Some(state) = runtime_mut.budget_state() {
-            let context_percent = runtime_mut
+        if let Some(state) = self.runtime.budget_state() {
+            let context_percent = self
+                .runtime
                 .budget()
-                .and_then(|b| b.config().context_limit)
+                .as_ref()
+                .and_then(|b| {
+                    let guard = b.lock().unwrap();
+                    guard.config().context_limit
+                })
                 .map(|limit| state.context_used_percent(limit))
                 .unwrap_or(0);
 
-            runtime_mut.record_event(EventPayload::Budget(crate::BudgetEvent::Updated {
-                turns_used: state.turns_used,
-                tokens_used: state.tokens_used,
-                compaction_count: state.compaction_count,
-                context_used_percent: context_percent,
-            }))?;
+            self.runtime
+                .record_event(EventPayload::Budget(crate::BudgetEvent::Updated {
+                    turns_used: state.turns_used,
+                    tokens_used: state.tokens_used,
+                    compaction_count: state.compaction_count,
+                    context_used_percent: context_percent,
+                }))?;
 
             // Emit approaching warnings
-            if let Some(checker) = runtime_mut.budget() {
-                self.emit_approaching_warnings(checker, state)?;
+            if let Some(checker) = self.runtime.budget() {
+                let guard = checker.lock().unwrap();
+                self.emit_approaching_warnings(&guard, &state)?;
             }
         }
 
@@ -280,15 +286,7 @@ impl AgentLoop {
 
     /// Estimate request tokens (rough heuristic: 4 chars per token)
     fn estimate_request_tokens(&self, messages: &[ProviderMessage]) -> u64 {
-        let total_chars: usize = messages
-            .iter()
-            .map(|m| match m {
-                ProviderMessage::System(s) => s.len(),
-                ProviderMessage::User(u) => u.len(),
-                ProviderMessage::Assistant(a) => a.len(),
-                ProviderMessage::Tool(t) => t.len(),
-            })
-            .sum();
+        let total_chars: usize = messages.iter().map(|m| m.content().len()).sum();
         (total_chars / 4).max(100) as u64
     }
 
