@@ -783,38 +783,53 @@ fn gather_subsystem_health(
         optional_modules,
         disk_runtime,
         web_research,
+        output_optimization: probe_output_optimization(),
     }
 }
 
 fn probe_disk_runtime(workspace_root: &Path) -> crate::SubsystemStatus {
     use crate::SubsystemStatus;
-    use std::fs;
 
     // Check workspace accessibility
     let workspace_readable = workspace_root.exists() && workspace_root.is_dir();
 
-    // Check data directory
-    let data_dir = data_root().ok();
-    let data_dir_accessible = data_dir
-        .as_ref()
-        .map(|p| p.exists() || fs::create_dir_all(p).is_ok())
-        .unwrap_or(false);
-
     // Basic runtime checks
     let temp_writable = std::env::temp_dir().exists();
 
-    if workspace_readable && data_dir_accessible && temp_writable {
+    if workspace_readable && temp_writable {
         SubsystemStatus::ok("Disk and runtime healthy").with_details(serde_json::json!({
             "workspace_root": workspace_root.display().to_string(),
-            "data_dir": data_dir.map(|p| p.display().to_string()),
             "temp_dir": std::env::temp_dir().display().to_string(),
         }))
     } else {
         SubsystemStatus::unavailable("Disk or runtime issues detected").with_details(
             serde_json::json!({
                 "workspace_readable": workspace_readable,
-                "data_dir_accessible": data_dir_accessible,
                 "temp_writable": temp_writable,
+            }),
+        )
+    }
+}
+
+fn probe_output_optimization() -> crate::SubsystemStatus {
+    use crate::SubsystemStatus;
+    use crate::rtk_adapter::RtkAdapter;
+
+    let probe = RtkAdapter::probe();
+
+    if probe.available {
+        SubsystemStatus::ok("Output optimization available").with_details(serde_json::json!({
+            "builtin_reducer": true,
+            "rtk_available": true,
+            "rtk_version": probe.version,
+            "rtk_capabilities": probe.capabilities.iter().map(|c| format!("{:?}", c)).collect::<Vec<_>>(),
+        }))
+    } else {
+        SubsystemStatus::ok("Builtin reducer only (RTK not found)").with_details(
+            serde_json::json!({
+                "builtin_reducer": true,
+                "rtk_available": false,
+                "note": "RTK is optional; builtin reducer works without it",
             }),
         )
     }

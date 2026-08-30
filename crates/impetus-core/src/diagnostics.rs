@@ -13,6 +13,7 @@ pub struct SubsystemHealth {
     pub optional_modules: SubsystemStatus,
     pub disk_runtime: SubsystemStatus,
     pub web_research: SubsystemStatus,
+    pub output_optimization: SubsystemStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -2,7 +2,12 @@
 //!
 //! Large tool outputs (test logs, diffs, search results) are reduced to fit
 //! within token budgets while preserving key information for the model.
+//!
+//! Reduction pipeline:
+//! 1. Try RTK adapter (if available)
+//! 2. Fall back to builtin reducer
 
+use crate::rtk_adapter::RtkAdapter;
 use std::borrow::Cow;
 
 /// Token budget for output reduction
@@ -20,11 +25,25 @@ impl Default for TokenBudget {
 /// Output reducer with token budget enforcement
 pub struct OutputReducer {
     budget: TokenBudget,
+    rtk: Option<RtkAdapter>,
 }
 
 impl OutputReducer {
     pub fn new(budget: TokenBudget) -> Self {
-        Self { budget }
+        Self {
+            budget,
+            rtk: Some(RtkAdapter::new()),
+        }
+    }
+
+    /// Create without RTK adapter (testing or explicit opt-out)
+    pub fn new_without_rtk(budget: TokenBudget) -> Self {
+        Self { budget, rtk: None }
+    }
+
+    /// Check if RTK is available
+    pub fn has_rtk(&self) -> bool {
+        self.rtk.as_ref().is_some_and(|rtk| rtk.is_available())
     }
 
     /// Reduce raw output to fit within token budget
@@ -37,9 +56,34 @@ impl OutputReducer {
                 truncated: false,
                 original_tokens: estimated_tokens,
                 reduced_tokens: estimated_tokens,
+                reducer_used: ReducerUsed::None,
             };
         }
 
+        // Try RTK first if available
+        if let Some(rtk) = &self.rtk
+            && let Some(reduced_text) = rtk.reduce(raw_output, self.budget.max_tokens)
+        {
+            let reduced_tokens = estimate_tokens(&reduced_text);
+            return ReducedOutput {
+                content: Cow::Owned(reduced_text),
+                truncated: true,
+                original_tokens: estimated_tokens,
+                reduced_tokens,
+                reducer_used: ReducerUsed::Rtk,
+            };
+        }
+
+        // Fall back to builtin reducer
+        self.reduce_builtin(raw_output, estimated_tokens)
+    }
+
+    /// Builtin reduction (original logic)
+    fn reduce_builtin<'a>(
+        &self,
+        raw_output: &'a str,
+        estimated_tokens: usize,
+    ) -> ReducedOutput<'a> {
         // Simple line-based truncation with head/tail preservation
         let lines: Vec<&str> = raw_output.lines().collect();
         let total_lines = lines.len();
@@ -52,6 +96,7 @@ impl OutputReducer {
                 truncated: true,
                 original_tokens: estimated_tokens,
                 reduced_tokens: estimate_tokens(&reduced),
+                reducer_used: ReducerUsed::Builtin,
             };
         }
 
@@ -83,6 +128,7 @@ impl OutputReducer {
             truncated: true,
             original_tokens: estimated_tokens,
             reduced_tokens: estimate_tokens(&reduced),
+            reducer_used: ReducerUsed::Builtin,
         }
     }
 
@@ -108,6 +154,7 @@ impl OutputReducer {
                 truncated: false,
                 original_tokens: estimated_tokens,
                 reduced_tokens: estimated_tokens,
+                reducer_used: ReducerUsed::None,
             };
         }
 
@@ -117,6 +164,7 @@ impl OutputReducer {
             truncated: true,
             original_tokens: estimated_tokens,
             reduced_tokens: estimate_tokens(&reduced),
+            reducer_used: ReducerUsed::Builtin,
         }
     }
 
@@ -128,6 +176,7 @@ impl OutputReducer {
                 truncated: false,
                 original_tokens: estimated_tokens,
                 reduced_tokens: estimated_tokens,
+                reducer_used: ReducerUsed::None,
             };
         }
 
@@ -151,6 +200,7 @@ impl OutputReducer {
             truncated: true,
             original_tokens: estimated_tokens,
             reduced_tokens: current_tokens,
+            reducer_used: ReducerUsed::Builtin,
         }
     }
 
@@ -181,6 +231,7 @@ impl OutputReducer {
                 truncated: true,
                 original_tokens: estimated_tokens,
                 reduced_tokens: estimate_tokens(&truncated),
+                reducer_used: ReducerUsed::Builtin,
             };
         }
 
@@ -189,6 +240,7 @@ impl OutputReducer {
             truncated: error_lines.len() < raw_output.lines().count(),
             original_tokens: estimated_tokens,
             reduced_tokens,
+            reducer_used: ReducerUsed::Builtin,
         }
     }
 }
@@ -206,6 +258,18 @@ pub struct ReducedOutput<'a> {
     pub truncated: bool,
     pub original_tokens: usize,
     pub reduced_tokens: usize,
+    pub reducer_used: ReducerUsed,
+}
+
+/// Which reducer was used
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReducerUsed {
+    /// No reduction needed
+    None,
+    /// External RTK adapter
+    Rtk,
+    /// Builtin reducer
+    Builtin,
 }
 
 /// Reduction strategy
