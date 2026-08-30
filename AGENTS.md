@@ -66,23 +66,26 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **НИКОГДА НЕ ПУШИТЬ НАПРЯМУЮ В `main`.** Любой push в main без MR — нарушение workflow.
 
+**Проверка текущей ветки:** перед началом работы всегда выполнить `git branch --show-current` и убедиться, что не на `main`. Задачи из TODO.md берутся последовательно; каждая задача = один issue + одна feature branch.
+
 #### Перед началом работы
 
-1. **Проверить issue:** `glab issue list` или GitLab Web UI
-2. **Создать issue,** если не существует (каждая задача = issue)
-3. **Создать feature branch от main:**
+1. **Проверить текущую ветку:** `git branch --show-current` — если `main`, остановиться и создать feature branch
+2. **Проверить открытые issue:** `glab issue list` — выбрать следующую задачу из TODO.md
+3. **Создать issue,** если не существует (каждая задача из TODO.md = issue)
+4. **Создать feature branch от актуального main:**
    ```bash
    git checkout main
-   git pull
+   git pull origin main
    git checkout -b feature/issue-42-short-description
    ```
    Шаблон: `feature/issue-N-description` или `fix/issue-N-bug-name`
 
 #### Workflow
 
-1. Работа в feature branch
+1. Работа в feature branch (никогда не в `main`)
 2. Атомарные коммиты: каждый с `closes #N`, `fixes #N` или `refs #N`
-3. **До push:** `task verify` (fmt, test, check, clippy)
+3. **До push:** обязательно `task verify` (fmt, test, check, clippy)
 4. **Push в feature branch:**
    ```bash
    git push -u origin feature/issue-42-short-description
@@ -94,6 +97,7 @@ cargo clippy --workspace --all-targets -- -D warnings
    Или через GitLab Web UI с галочкой «Delete source branch after merge»
 6. **Включить auto-merge** в MR: «Set to auto-merge» после создания
 7. CI проходит (fmt, test, check, clippy) → **GitLab автоматически мерджит в main**
+8. После мерджа: `git checkout main && git pull` для следующей задачи
 
 #### Auto-merge настройка (один раз на проект)
 
