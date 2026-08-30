@@ -1,10 +1,8 @@
 //! Integration test: Parallel tool execution for read-only and idempotent tools
 
 use impetus_core::{
-    Action, ActionKind, ActionOrigin, AgentRuntime, PolicyEngine, SandboxScope, ToolCall,
-    ToolOrchestrator,
+    AgentRuntime, PolicyEngine, SandboxScope, ToolCall, ToolOrchestrator,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
