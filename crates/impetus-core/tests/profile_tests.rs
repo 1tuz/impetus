@@ -9,7 +9,9 @@ fn test_profile_defaults() {
     let standard = Profile::Standard.default_bindings();
     assert_eq!(
         standard.agent_loop,
-        ServiceBinding::Builtin("standard".to_string())
+        ServiceBinding::Builtin {
+            variant: "standard".to_string()
+        }
     );
 
     let minimal = Profile::Minimal.default_bindings();
@@ -51,7 +53,9 @@ fn test_profile_config_resolution() {
     // Default services unchanged
     assert_eq!(
         resolved.scheduler,
-        ServiceBinding::Builtin("standard".to_string())
+        ServiceBinding::Builtin {
+            variant: "standard".to_string()
+        }
     );
 }
 
@@ -123,7 +127,9 @@ fn test_profile_descriptions() {
 
 #[test]
 fn test_service_binding_serialization() {
-    let builtin = ServiceBinding::Builtin("standard".to_string());
+    let builtin = ServiceBinding::Builtin {
+        variant: "standard".to_string(),
+    };
     let json = serde_json::to_string(&builtin).unwrap();
     assert!(json.contains("builtin"));
     assert!(json.contains("standard"));

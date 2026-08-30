@@ -28,39 +28,85 @@ impl Profile {
     pub fn default_bindings(&self) -> ServiceBindings {
         match self {
             Self::Standard => ServiceBindings {
-                agent_loop: ServiceBinding::Builtin("standard".to_string()),
-                scheduler: ServiceBinding::Builtin("standard".to_string()),
-                model_router: ServiceBinding::Builtin("balanced".to_string()),
-                context: ServiceBinding::Builtin("lazy".to_string()),
-                reference: ServiceBinding::Builtin("yaml".to_string()),
-                memory: ServiceBinding::Builtin("standard".to_string()),
-                policy: ServiceBinding::Builtin("standard".to_string()),
-                tools: ServiceBinding::Builtin("standard".to_string()),
-                output_reducer: ServiceBinding::Builtin("standard".to_string()),
+                agent_loop: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                scheduler: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                model_router: ServiceBinding::Builtin {
+                    variant: "balanced".to_string(),
+                },
+                context: ServiceBinding::Builtin {
+                    variant: "lazy".to_string(),
+                },
+                reference: ServiceBinding::Builtin {
+                    variant: "yaml".to_string(),
+                },
+                memory: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                policy: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                tools: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                output_reducer: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
                 custom: HashMap::new(),
             },
             Self::Minimal => ServiceBindings {
-                agent_loop: ServiceBinding::Builtin("minimal".to_string()),
-                scheduler: ServiceBinding::Builtin("sync".to_string()),
-                model_router: ServiceBinding::Builtin("direct".to_string()),
+                agent_loop: ServiceBinding::Builtin {
+                    variant: "minimal".to_string(),
+                },
+                scheduler: ServiceBinding::Builtin {
+                    variant: "sync".to_string(),
+                },
+                model_router: ServiceBinding::Builtin {
+                    variant: "direct".to_string(),
+                },
                 context: ServiceBinding::Disabled,
                 reference: ServiceBinding::Disabled,
                 memory: ServiceBinding::Disabled,
-                policy: ServiceBinding::Builtin("permissive".to_string()),
-                tools: ServiceBinding::Builtin("minimal".to_string()),
+                policy: ServiceBinding::Builtin {
+                    variant: "permissive".to_string(),
+                },
+                tools: ServiceBinding::Builtin {
+                    variant: "minimal".to_string(),
+                },
                 output_reducer: ServiceBinding::Disabled,
                 custom: HashMap::new(),
             },
             Self::Creator => ServiceBindings {
-                agent_loop: ServiceBinding::Builtin("standard".to_string()),
-                scheduler: ServiceBinding::Builtin("standard".to_string()),
-                model_router: ServiceBinding::Builtin("balanced".to_string()),
-                context: ServiceBinding::Builtin("lazy".to_string()),
-                reference: ServiceBinding::Builtin("yaml".to_string()),
-                memory: ServiceBinding::Builtin("standard".to_string()),
-                policy: ServiceBinding::Builtin("standard".to_string()),
-                tools: ServiceBinding::Builtin("standard".to_string()),
-                output_reducer: ServiceBinding::Builtin("standard".to_string()),
+                agent_loop: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                scheduler: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                model_router: ServiceBinding::Builtin {
+                    variant: "balanced".to_string(),
+                },
+                context: ServiceBinding::Builtin {
+                    variant: "lazy".to_string(),
+                },
+                reference: ServiceBinding::Builtin {
+                    variant: "yaml".to_string(),
+                },
+                memory: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                policy: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                tools: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
+                output_reducer: ServiceBinding::Builtin {
+                    variant: "standard".to_string(),
+                },
                 custom: HashMap::new(),
             },
         }
@@ -69,10 +115,10 @@ impl Profile {
 
 /// Service binding specification
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "type")]
+#[serde(rename_all = "lowercase", tag = "type", content = "value")]
 pub enum ServiceBinding {
     /// Built-in implementation with variant name
-    Builtin(String),
+    Builtin { variant: String },
     /// Custom module by ID
     Custom { module_id: String },
     /// External module via IPC
@@ -118,34 +164,16 @@ impl ProfileConfig {
         let mut bindings = self.profile.default_bindings();
 
         if let Some(overrides) = &self.services {
-            // Apply overrides
-            if overrides.agent_loop != ServiceBinding::Builtin(String::new()) {
-                bindings.agent_loop = overrides.agent_loop.clone();
-            }
-            if overrides.scheduler != ServiceBinding::Builtin(String::new()) {
-                bindings.scheduler = overrides.scheduler.clone();
-            }
-            if overrides.model_router != ServiceBinding::Builtin(String::new()) {
-                bindings.model_router = overrides.model_router.clone();
-            }
-            if overrides.context != ServiceBinding::Builtin(String::new()) {
-                bindings.context = overrides.context.clone();
-            }
-            if overrides.reference != ServiceBinding::Builtin(String::new()) {
-                bindings.reference = overrides.reference.clone();
-            }
-            if overrides.memory != ServiceBinding::Builtin(String::new()) {
-                bindings.memory = overrides.memory.clone();
-            }
-            if overrides.policy != ServiceBinding::Builtin(String::new()) {
-                bindings.policy = overrides.policy.clone();
-            }
-            if overrides.tools != ServiceBinding::Builtin(String::new()) {
-                bindings.tools = overrides.tools.clone();
-            }
-            if overrides.output_reducer != ServiceBinding::Builtin(String::new()) {
-                bindings.output_reducer = overrides.output_reducer.clone();
-            }
+            // Apply all non-default overrides
+            bindings.agent_loop = overrides.agent_loop.clone();
+            bindings.scheduler = overrides.scheduler.clone();
+            bindings.model_router = overrides.model_router.clone();
+            bindings.context = overrides.context.clone();
+            bindings.reference = overrides.reference.clone();
+            bindings.memory = overrides.memory.clone();
+            bindings.policy = overrides.policy.clone();
+            bindings.tools = overrides.tools.clone();
+            bindings.output_reducer = overrides.output_reducer.clone();
             // Merge custom bindings
             bindings.custom.extend(overrides.custom.clone());
         }
@@ -168,11 +196,15 @@ mod tests {
         let bindings = Profile::Standard.default_bindings();
         assert_eq!(
             bindings.agent_loop,
-            ServiceBinding::Builtin("standard".to_string())
+            ServiceBinding::Builtin {
+                variant: "standard".to_string()
+            }
         );
         assert_eq!(
             bindings.model_router,
-            ServiceBinding::Builtin("balanced".to_string())
+            ServiceBinding::Builtin {
+                variant: "balanced".to_string()
+            }
         );
     }
 
@@ -205,7 +237,9 @@ mod tests {
         // Other services remain default
         assert_eq!(
             resolved.scheduler,
-            ServiceBinding::Builtin("standard".to_string())
+            ServiceBinding::Builtin {
+                variant: "standard".to_string()
+            }
         );
     }
 
