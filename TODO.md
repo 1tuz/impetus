@@ -171,9 +171,9 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
 
 Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
-- [ ] Audit `websearch`, `webfetch`, browser tool, Browser Provider Protocol
-- [ ] Audit fallback handling, anti-bot detection, output bounding, HTML cleanup
-- [ ] Per-area `ADAPT | REIMPLEMENT | SKIP`; attribution if code adapted
+- [x] Audit `websearch`, `webfetch`, browser tool, Browser Provider Protocol
+- [x] Audit fallback handling, anti-bot detection, output bounding, HTML cleanup
+- [x] Per-area `ADAPT | REIMPLEMENT | SKIP`; attribution if code adapted
 
 ### Browser (optional)
 
