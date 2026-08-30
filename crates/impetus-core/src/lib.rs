@@ -36,6 +36,7 @@ pub mod provider;
 pub mod provider_registry;
 pub mod provider_trait;
 pub mod remote;
+pub mod rtk_adapter;
 pub mod runtime;
 pub mod service_contract;
 pub mod storage;
