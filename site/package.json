@@ -1,0 +1,17 @@
+{
+  "name": "impetus-landing",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1",
+    "build": "astro build",
+    "check": "astro check && astro build && node --test tests/site.test.mjs",
+    "test": "astro build && node --test tests/site.test.mjs"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "astro": "^5.7.0",
+    "typescript": "^5.8.3"
+  }
+}

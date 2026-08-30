@@ -1,0 +1,180 @@
+---
+import Logo from "../components/Logo.astro";
+import TerminalPreview from "../components/TerminalPreview.astro";
+import ControlFlow from "../components/ControlFlow.astro";
+import CopyCommand from "../components/CopyCommand.astro";
+import "../styles/global.css";
+
+const installHref = "#install";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#070A0E" />
+    <meta name="description" content="Impetus is a local-first Rust agent runtime with durable sessions, policy-gated tools, and typed IPC." />
+    <title>Impetus — A runtime you can trust</title>
+  </head>
+  <body id="top">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <Logo />
+        <nav class="site-nav" aria-label="Primary navigation" data-nav>
+          <a href="#capabilities">Capabilities</a>
+          <a href="#architecture">Architecture</a>
+          <a href="https://github.com/1tuz/impetus">GitHub <span aria-hidden="true">↗</span></a>
+          <a class="site-nav__install" href={installHref}>Install</a>
+        </nav>
+        <button class="menu-button" type="button" aria-label="Toggle navigation" aria-expanded="false" data-menu-button>Menu</button>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero section">
+        <div class="shell hero__grid">
+          <div class="hero__copy">
+            <p class="eyebrow">Rust agent runtime / local-first</p>
+            <h1>Give coding agents a runtime you can trust.</h1>
+            <p class="hero__lede">Durable sessions, policy-gated tools, and local execution in one Rust harness—independent of any client or model.</p>
+            <div class="hero__actions">
+              <a class="button button--primary" href={installHref}>Install Impetus</a>
+              <a class="button button--secondary" href="https://github.com/1tuz/impetus">View on GitHub <span aria-hidden="true">↗</span></a>
+            </div>
+            <p class="hero__proof"><span aria-hidden="true"></span> daemon owns state &nbsp;/&nbsp; clients render events &nbsp;/&nbsp; secrets stay references</p>
+          </div>
+          <div class="hero__ledger" aria-label="Example durable event ledger">
+            <div class="ledger__head"><span>CONTROL LEDGER</span><span>SESSION 7F3A · LIVE</span></div>
+            <ol>
+              <li><b>01</b><span>REQUEST</span><strong>prompt.received</strong></li>
+              <li class="ledger__pending"><b>02</b><span>POLICY</span><strong>needs_approval</strong></li>
+              <li class="ledger__approved"><b>03</b><span>HUMAN</span><strong>approval.accepted</strong></li>
+              <li class="ledger__active"><b>04</b><span>SANDBOX</span><strong>capability.started</strong></li>
+              <li class="ledger__approved"><b>05</b><span>OUTCOME</span><strong>execution.completed</strong></li>
+            </ol>
+            <footer>durable event #000184 <strong>persisted</strong></footer>
+          </div>
+        </div>
+      </section>
+
+      <section id="capabilities" class="section capabilities">
+        <div class="shell">
+          <p class="eyebrow">01 / Durable control</p>
+          <div class="section-heading">
+            <h2>One authority. No hidden state.</h2>
+            <p>The daemon owns lifecycle, policy, credentials, and execution. Clients stay replaceable.</p>
+          </div>
+          <div class="capability-grid">
+            <article class="capability capability--wide">
+              <span class="capability__index">01</span>
+              <h3>Durable sessions survive the client.</h3>
+              <p>Disconnect, reconnect, or swap interfaces without losing the authoritative event history.</p>
+              <div class="event-table" aria-label="Durable event log example">
+                <span>0181 <b>prompt.accepted</b><em>persisted</em></span>
+                <span>0182 <b>model.stream.started</b><em>live</em></span>
+                <span>0183 <b>policy.needs_approval</b><em class="event-table__amber">waiting</em></span>
+                <span>0184 <b>approval.accepted</b><em>persisted</em></span>
+              </div>
+            </article>
+            <article class="capability capability--policy">
+              <span class="capability__index">02</span>
+              <h3>Policy before execution.</h3>
+              <p>Every typed action resolves to deny, allow, or human approval.</p>
+              <div class="state-list"><span>DENY</span><span>APPROVE</span><span>ALLOW</span></div>
+            </article>
+            <article class="capability">
+              <span class="capability__index">03</span>
+              <h3>References, never raw secrets.</h3>
+              <p>Keychain-backed credentials stay outside events, payloads, traces, and tests.</p>
+              <code>keychain://provider/default</code>
+            </article>
+            <article class="capability">
+              <span class="capability__index">04</span>
+              <h3>Typed IPC keeps clients replaceable.</h3>
+              <p>CLI, TUI, ACP, and Zap-facing paths request work; they do not own it.</p>
+              <code>request → durable event</code>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture" class="section architecture">
+        <div class="shell architecture__grid">
+          <div>
+            <p class="eyebrow">02 / Request flow</p>
+            <h2>Every action earns its outcome.</h2>
+            <p class="section-copy">Typed requests move through a fixed control path. Unknown outcomes never become completed.</p>
+          </div>
+          <ControlFlow />
+          <aside class="architecture__rule">The model cannot grant itself user origin or approval.</aside>
+        </div>
+      </section>
+
+      <section class="section cli-showcase">
+        <div class="shell">
+          <p class="eyebrow">03 / Real CLI</p>
+          <div class="section-heading section-heading--inline">
+            <h2>The runtime speaks in durable events.</h2>
+            <p>Create a session, prompt it, approve gated work, and replay stored history from the CLI.</p>
+          </div>
+          <TerminalPreview />
+          <ul class="command-strip" aria-label="Available Impetus commands">
+            <li><code>doctor</code><span>diagnose local setup</span></li>
+            <li><code>create</code><span>start a durable session</span></li>
+            <li><code>prompt</code><span>submit a typed request</span></li>
+            <li><code>stream</code><span>replay stored events</span></li>
+            <li><code>approve</code><span>accept gated work</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="install" class="section install">
+        <div class="shell install__panel">
+          <div class="install__copy">
+            <p class="eyebrow">04 / Install</p>
+            <h2>Local runtime.<br />One verified path.</h2>
+            <p>Supported today: macOS Apple Silicon and Linux x86_64.</p>
+          </div>
+          <div class="install__command">
+            <p>QUICK INSTALL</p>
+            <CopyCommand />
+            <ul><li>SHA-256 verified</li><li>No latest tags</li><li>Keychain boundary</li></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section final-action">
+        <div class="shell final-action__panel">
+          <div>
+            <p class="eyebrow">Ready when your agent is</p>
+            <h2>Make every action accountable.</h2>
+            <p>Run locally. Keep durable state. Put policy before execution.</p>
+          </div>
+          <div class="final-action__buttons">
+            <a class="button button--primary" href={installHref}>Install Impetus</a>
+            <a class="button button--secondary" href="https://github.com/1tuz/impetus">View on GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer shell">
+      <Logo compact />
+      <span>Rust agent runtime · local-first · open source</span>
+      <span>Apache-2.0</span>
+      <a href="https://github.com/1tuz/impetus">Repository ↗</a>
+    </footer>
+
+    <script>
+      const menuButton = document.querySelector("[data-menu-button]");
+      const nav = document.querySelector("[data-nav]");
+      menuButton?.addEventListener("click", () => {
+        const expanded = menuButton.getAttribute("aria-expanded") === "true";
+        menuButton.setAttribute("aria-expanded", String(!expanded));
+        nav?.toggleAttribute("data-open", !expanded);
+      });
+    </script>
+  </body>
+</html>

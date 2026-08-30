@@ -1,0 +1,20 @@
+---
+const steps = [
+  ["01", "Client request", "typed request · origin=agent", "neutral"],
+  ["02", "Policy decision", "deny · allow · needs approval", "warning"],
+  ["03", "Human approval", "explicitly accepted", "success"],
+  ["04", "Sandbox + capability", "bounded execution", "accent"],
+  ["05", "Durable outcome", "stored event log", "success"],
+];
+---
+
+<ol class="control-flow" aria-label="Impetus request control flow">
+  {steps.map(([number, label, detail, tone]) => (
+    <li class:list={["control-flow__step", `control-flow__step--${tone}`]}>
+      <span class="control-flow__rail" aria-hidden="true"></span>
+      <span class="control-flow__number">{number}</span>
+      <strong>{label}</strong>
+      <span>{detail}</span>
+    </li>
+  ))}
+</ol>

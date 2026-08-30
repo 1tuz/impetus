@@ -1,0 +1,26 @@
+---
+const command = "curl -fsSL https://raw.githubusercontent.com/1tuz/impetus/main/scripts/install.sh | zsh";
+---
+
+<div class="copy-command">
+  <code id="install-command">{command}</code>
+  <button type="button" data-copy-command aria-describedby="copy-status" aria-label="Copy install command">Copy</button>
+  <span id="copy-status" class="sr-only" aria-live="polite"></span>
+</div>
+
+<script>
+  const button = document.querySelector<HTMLButtonElement>("[data-copy-command]");
+  const status = document.querySelector<HTMLElement>("#copy-status");
+  const command = document.querySelector<HTMLElement>("#install-command");
+
+  button?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(command?.textContent ?? "");
+      button.textContent = "Copied";
+      status && (status.textContent = "Copied install command.");
+    } catch {
+      button.textContent = "Select";
+      status && (status.textContent = "Copy failed. Select the command manually.");
+    }
+  });
+</script>
