@@ -49,6 +49,23 @@ enum Commands {
     },
     /// List all sessions
     List,
+    /// Show current profile and configuration
+    Profile,
+    /// Show service bindings and module status
+    Components {
+        #[command(subcommand)]
+        action: Option<ComponentsAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ComponentsAction {
+    /// List all registered modules
+    List,
+    /// Show service bindings
+    Bindings,
+    /// Show module status and health
+    Status,
 }
 
 #[tokio::main]
@@ -181,6 +198,73 @@ async fn main() -> Result<()> {
                     bail!("Error listing sessions: {message}");
                 }
                 other => bail!("Unexpected response: {other:?}"),
+            }
+        }
+        Commands::Profile => {
+            // For now, show default profile configuration
+            // In future, this will query harness for actual runtime profile
+            let profile = impetus_core::Profile::default();
+            let bindings = profile.default_bindings();
+
+            println!("Profile: {:?}", profile);
+            println!("Description: {}", profile.description());
+            println!("\nDefault service bindings:");
+            println!("  agent_loop:      {:?}", bindings.agent_loop);
+            println!("  scheduler:       {:?}", bindings.scheduler);
+            println!("  model_router:    {:?}", bindings.model_router);
+            println!("  context:         {:?}", bindings.context);
+            println!("  reference:       {:?}", bindings.reference);
+            println!("  memory:          {:?}", bindings.memory);
+            println!("  policy:          {:?}", bindings.policy);
+            println!("  tools:           {:?}", bindings.tools);
+            println!("  output_reducer:  {:?}", bindings.output_reducer);
+
+            if !bindings.custom.is_empty() {
+                println!("\nCustom bindings:");
+                for (name, binding) in &bindings.custom {
+                    println!("  {}: {:?}", name, binding);
+                }
+            }
+        }
+        Commands::Components { action } => {
+            match action {
+                None | Some(ComponentsAction::List) => {
+                    // TODO: Query harness for registered modules
+                    println!("Registered modules:");
+                    println!("  (Module registry query not yet implemented via IPC)");
+                    println!("\nBuiltin services:");
+                    println!("  agent_loop (standard)");
+                    println!("  scheduler (standard)");
+                    println!("  model_router (balanced)");
+                    println!("  context (lazy)");
+                    println!("  reference (yaml)");
+                    println!("  memory (standard)");
+                    println!("  policy (standard)");
+                    println!("  tools (standard)");
+                    println!("  output_reducer (standard)");
+                }
+                Some(ComponentsAction::Bindings) => {
+                    let profile = impetus_core::Profile::default();
+                    let bindings = profile.default_bindings();
+
+                    println!("Service bindings:");
+                    println!("  AgentLoop        → {:?}", bindings.agent_loop);
+                    println!("  Scheduler        → {:?}", bindings.scheduler);
+                    println!("  ModelRouter      → {:?}", bindings.model_router);
+                    println!("  ContextService   → {:?}", bindings.context);
+                    println!("  ReferenceService → {:?}", bindings.reference);
+                    println!("  MemoryService    → {:?}", bindings.memory);
+                    println!("  Policy           → {:?}", bindings.policy);
+                    println!("  ToolProvider     → {:?}", bindings.tools);
+                    println!("  OutputReducer    → {:?}", bindings.output_reducer);
+                }
+                Some(ComponentsAction::Status) => {
+                    // TODO: Query harness for module health
+                    println!("Module health status:");
+                    println!("  (Module health query not yet implemented via IPC)");
+                    println!("\nCurrent state:");
+                    println!("  All builtin services: Ready");
+                }
             }
         }
     }

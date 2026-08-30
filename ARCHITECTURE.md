@@ -110,7 +110,8 @@
 - **Phase 0**: Foundation (done) — IPC, policy, events, sandbox
 - **Phase 1**: Binary topology & diagnostics (done) — doctor, daemon discovery
 - **Phase 2**: Module runtime (done) — external IPC, fallback policies, tests
-- **Phase 3**: Extension compatibility (in progress) — canonical types, adapters
+- **Phase 3**: Extension compatibility (done) — canonical types, adapters
+- **Phase 3.5**: VimTrap architecture (done) — profile system, service providers, kernel invariants
 - **Phase 4**: Output optimization — structured observations, RTK integration
 - **Phase 5**: Agent runtime — real loop, tool execution, web research
 - **Phase 6**: Context & sessions — lazy loading, artifact store, fork/checkpoint
@@ -122,6 +123,8 @@
 ## Documentation
 
 - **Detailed architecture** (Russian): [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)
+- **Kernel invariants**: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
+- **VimTrap principle**: [docs/VimTrap_Implementation_Plan.md](docs/VimTrap_Implementation_Plan.md)
 - **Roadmap**: [docs/ROADMAP.md](docs/ROADMAP.md)
 - **TODO**: [TODO.md](TODO.md)
 
