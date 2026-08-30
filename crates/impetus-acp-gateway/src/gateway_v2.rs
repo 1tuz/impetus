@@ -75,7 +75,6 @@ pub struct PermissionOption {
 type PermissionRequestWithSender = (PermissionRequest, oneshot::Sender<PermissionDecision>);
 
 /// ACP Gateway using official SDK.
-#[derive(Debug)]
 pub struct AcpGatewayV2 {
     config: AcpAgentConfig,
     state: Arc<Mutex<GatewayState>>,
@@ -227,11 +226,10 @@ impl AcpGatewayV2 {
         self.update_rx.lock().await.recv().await
     }
 
-    /// Receive next permission request (with response channel).
-    pub async fn recv_permission_request(
-        &self,
-    ) -> Option<(PermissionRequest, oneshot::Sender<PermissionDecision>)> {
-        self.permission_rx.lock().await.recv().await
+    /// Receive next permission request (blocking until decision).
+    pub async fn recv_permission_request(&self) -> Option<PermissionRequest> {
+        let (req, _tx) = self.permission_rx.lock().await.recv().await?;
+        Some(req)
     }
 
     /// Respond to permission request.
