@@ -213,15 +213,15 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for Agent Skills
     pub fn agent_skills() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("instructions".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("instructions".to_string(), ImportCapability::Supported);
         capabilities.insert("tools".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("triggers".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("triggers".to_string(), ImportCapability::Supported);
         capabilities.insert("profiles".to_string(), ImportCapability::Unsupported);
 
         Self {
             source: ExtensionSource::AgentSkills,
             capabilities,
-            notes: vec!["Requires upstream spec audit before implementation".to_string()],
+            notes: vec!["SKILL.md parser implemented with frontmatter support".to_string()],
         }
     }
 
