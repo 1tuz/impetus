@@ -48,6 +48,7 @@ pub mod storage;
 pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tools;
+pub mod web_research;
 
 pub use acp_adapter::AcpAdapter;
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};

@@ -24,6 +24,7 @@ anyhow = "1.0.100"
 futures-util = "0.3.31"
 humantime-serde = "1.1.1"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "default-tls"] }
+scraper = "0.27.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 semver = "1.0.27"

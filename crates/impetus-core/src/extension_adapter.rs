@@ -62,8 +62,12 @@ impl ExtensionAdapter {
         // Attempt real import for Agent Skills
         match source {
             ExtensionSource::AgentSkills => {
-                let skill_path = path.join("SKILL.md");
-                if !skill_path.exists() {
+                let skill_path = if path.is_dir() {
+                    path.join("SKILL.md")
+                } else {
+                    path.to_path_buf()
+                };
+                if !skill_path.is_file() {
                     warnings.push(format!("SKILL.md not found at {:?}", skill_path));
                     return Ok(ImportResult {
                         source,
