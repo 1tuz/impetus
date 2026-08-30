@@ -95,6 +95,7 @@
 ### Storage
 - **EventStore**: SQLite WAL, schema migrations, event replay
 - **ArtifactStore**: bounded ephemeral/in-memory backing (durable planned)
+- **ReferenceStore**: YAML-based partitioned storage for long-term agent reference data (Tempo worklogs, past decisions, project patterns)
 - **Keychain**: macOS-native secret storage, never in SQLite
 
 ## Security Model

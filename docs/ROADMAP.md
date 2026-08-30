@@ -153,6 +153,20 @@ tools/MCP/instructions, telemetry. Large paste → `ArtifactRef`, не giant IPC
 **Target:** task-aware lazy instruction/skill selection. SOUL, AGENTS,
 conventions, guides, skills — без расширения permissions.
 
+### Reference Store
+
+**Current:** YAML-based reference store with:
+- `ReferenceService` trait and `YamlReferenceService` implementation
+- Partitioned storage (monthly/yearly/by-project sharding)
+- Lazy loading with search filters and top-K results
+- Privacy-aware (public/internal/private sensitivity)
+- Tempo importer vertical slice (CSV → YAML → search → agent context)
+- Complete test coverage and working CLI example
+
+**Target:** reference datasets as long-term agent memory. Jira Tempo worklogs,
+past decisions, project patterns — queryable context that doesn't bloat prompts.
+YAML remains authoritative; derived indexes (if added) stay rebuildable.
+
 ### Repo Intelligence
 
 **Target:** Tree-sitter map, symbols/imports, git diff, ranked token-budgeted
