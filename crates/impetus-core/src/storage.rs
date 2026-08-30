@@ -42,6 +42,10 @@ pub trait EventStore: Send + Sync {
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError>;
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError>;
 
+    /// Delete session and all its events.
+    /// Returns Ok(()) even if session doesn't exist (idempotent).
+    fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError>;
+
     /// Fork session up to given sequence number (inclusive).
     /// Creates new session with events copied from source up to checkpoint.
     fn fork_session(
@@ -187,6 +191,12 @@ impl EventStore for MemoryEventStore {
         }
 
         Ok(new_session_id)
+    }
+
+    fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError> {
+        let mut events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        events.retain(|e| e.session_id != session_id);
+        Ok(())
     }
 
     fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
@@ -419,6 +429,21 @@ impl EventStore for SqliteEventStore {
 
         transaction.commit()?;
         Ok(new_session_id)
+    }
+
+    fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError> {
+        let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM events WHERE session_id = ?",
+            [session_id.to_string()],
+        )?;
+        transaction.execute(
+            "DELETE FROM sessions WHERE id = ?",
+            [session_id.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
