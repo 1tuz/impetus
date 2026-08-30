@@ -5,8 +5,8 @@
 //! observation feeding back into the next model turn.
 
 use crate::{
-    AgentRuntime, ModelProvider, PolicyEngine, ProviderError, ProviderMessage, RuntimeError,
-    RuntimeStatus, ToolOrchestrator,
+    AgentRuntime, BudgetError, EventPayload, ModelProvider, PolicyEngine, ProviderError,
+    ProviderMessage, RuntimeError, RuntimeStatus, ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -24,6 +24,8 @@ pub enum AgentLoopError {
     Provider(#[from] ProviderError),
     #[error(transparent)]
     Orchestrator(#[from] crate::OrchestratorError),
+    #[error(transparent)]
+    Budget(#[from] BudgetError),
     #[error("agent loop exceeded maximum iterations ({MAX_ITERATIONS})")]
     MaxIterationsExceeded,
     #[error("agent loop cancelled")]
@@ -132,6 +134,13 @@ impl AgentLoop {
             return Err(AgentLoopError::Runtime(RuntimeError::InactiveRun(run_id)));
         }
 
+        // Budget enforcement: check before model call
+        let estimated_tokens = self.estimate_request_tokens(messages);
+        if let Err(budget_error) = self.runtime.check_budget(estimated_tokens) {
+            self.emit_budget_limit_event(&budget_error)?;
+            return Err(AgentLoopError::Budget(budget_error));
+        }
+
         let accumulated = Arc::new(std::sync::Mutex::new(String::new()));
         let runtime = self.runtime.clone();
         let chunk_id = Arc::new(std::sync::Mutex::new(
@@ -174,6 +183,33 @@ impl AgentLoop {
             .await?;
 
         let result = accumulated.lock().unwrap().clone();
+
+        // Record turn completion with actual token usage
+        let actual_tokens = self.estimate_response_tokens(&result);
+        let mut runtime_mut = self.runtime.clone();
+        runtime_mut.record_turn(estimated_tokens + actual_tokens)?;
+
+        // Emit budget update event
+        if let Some(state) = runtime_mut.budget_state() {
+            let context_percent = runtime_mut
+                .budget()
+                .and_then(|b| b.config().context_limit)
+                .map(|limit| state.context_used_percent(limit))
+                .unwrap_or(0);
+
+            runtime_mut.record_event(EventPayload::Budget(crate::BudgetEvent::Updated {
+                turns_used: state.turns_used,
+                tokens_used: state.tokens_used,
+                compaction_count: state.compaction_count,
+                context_used_percent: context_percent,
+            }))?;
+
+            // Emit approaching warnings
+            if let Some(checker) = runtime_mut.budget() {
+                self.emit_approaching_warnings(checker, state)?;
+            }
+        }
+
         Ok(result)
     }
 
@@ -240,6 +276,82 @@ impl AgentLoop {
         }
 
         calls
+    }
+
+    /// Estimate request tokens (rough heuristic: 4 chars per token)
+    fn estimate_request_tokens(&self, messages: &[ProviderMessage]) -> u64 {
+        let total_chars: usize = messages
+            .iter()
+            .map(|m| match m {
+                ProviderMessage::System(s) => s.len(),
+                ProviderMessage::User(u) => u.len(),
+                ProviderMessage::Assistant(a) => a.len(),
+                ProviderMessage::Tool(t) => t.len(),
+            })
+            .sum();
+        (total_chars / 4).max(100) as u64
+    }
+
+    /// Estimate response tokens
+    fn estimate_response_tokens(&self, response: &str) -> u64 {
+        (response.len() / 4).max(50) as u64
+    }
+
+    /// Emit budget limit event when budget check fails
+    fn emit_budget_limit_event(&self, error: &BudgetError) -> Result<(), RuntimeError> {
+        match error {
+            BudgetError::TurnLimitExceeded { limit, used } => {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TurnLimitApproaching {
+                        limit: *limit,
+                        used: *used,
+                    },
+                ))?;
+            }
+            BudgetError::TokenLimitExceeded { limit, used, .. } => {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TokenLimitApproaching {
+                        limit: *limit,
+                        used: *used,
+                    },
+                ))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Emit approaching warnings at 80% and 95% thresholds
+    fn emit_approaching_warnings(
+        &self,
+        checker: &crate::BudgetChecker,
+        state: &crate::BudgetState,
+    ) -> Result<(), RuntimeError> {
+        if let Some(max_turns) = checker.config().max_turns {
+            let percent = (state.turns_used as f64 / max_turns as f64 * 100.0) as u8;
+            if percent >= 80 && percent < 100 {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TurnLimitApproaching {
+                        limit: max_turns,
+                        used: state.turns_used,
+                    },
+                ))?;
+            }
+        }
+
+        if let Some(max_tokens) = checker.config().max_tokens {
+            let percent = (state.tokens_used as f64 / max_tokens as f64 * 100.0) as u8;
+            if percent >= 80 && percent < 100 {
+                self.runtime.record_event(EventPayload::Budget(
+                    crate::BudgetEvent::TokenLimitApproaching {
+                        limit: max_tokens,
+                        used: state.tokens_used,
+                    },
+                ))?;
+            }
+        }
+
+        Ok(())
     }
 }
 

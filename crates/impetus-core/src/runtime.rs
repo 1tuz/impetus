@@ -174,6 +174,11 @@ impl AgentRuntime {
         self.budget.as_ref().map(|b| b.state())
     }
 
+    /// Get budget checker reference (if budget enabled)
+    pub fn budget(&self) -> Option<&BudgetChecker> {
+        self.budget.as_ref()
+    }
+
     /// Check if budget allows this request
     pub fn check_budget(&self, estimated_tokens: u64) -> Result<(), crate::budget::BudgetError> {
         if let Some(ref checker) = self.budget {
