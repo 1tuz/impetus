@@ -1,0 +1,11 @@
+Issue key,Issue summary,Date,Logged time (h),Work description,Project key,Work author,Work ID
+IMP-42,Fix OAuth authorization,2024-01-15,6,Fixed OAuth authorization flow with proper token refresh,IMP,john.doe,123456
+IMP-43,Add unit tests for OAuth,2024-01-16,4,Added comprehensive unit tests for OAuth module,IMP,john.doe,123457
+IMP-44,Update OAuth documentation,2024-01-16,2,Updated API documentation for OAuth endpoints,IMP,john.doe,123458
+IMP-45,Refactor authentication module,2024-01-17,8,Refactored authentication module to use new OAuth flow,IMP,jane.smith,123459
+IMP-46,Fix token expiration bug,2024-01-18,3,Fixed bug where tokens were not properly refreshed on expiration,IMP,john.doe,123460
+IMP-47,Add integration tests,2024-01-19,5,Added integration tests for full OAuth flow,IMP,jane.smith,123461
+IMP-48,Performance optimization,2024-01-20,6,Optimized token validation performance,IMP,john.doe,123462
+OTHER-1,Unrelated task,2024-01-21,4,Worked on completely different feature,OTHER,bob.jones,123463
+IMP-49,Security audit,2024-01-22,7,Conducted security audit of OAuth implementation,IMP,jane.smith,123464
+IMP-50,Deploy to staging,2024-01-23,3,Deployed OAuth changes to staging environment,IMP,john.doe,123465
