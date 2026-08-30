@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+pub mod protocol;
 pub mod unix;
 
 pub use unix::UnixSocketTransport;

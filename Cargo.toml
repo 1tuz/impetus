@@ -4,7 +4,9 @@ members = [
   "crates/impetus",
   "crates/impetusd",
   "crates/impetus-cli",
-  "crates/impetus-client", "crates/impetus-zap-adapter", "crates/impetus-acp-gateway",
+  "crates/impetus-client",
+  "crates/impetus-tui",
+  "crates/impetus-zap-adapter", "crates/impetus-acp-gateway",
 ]
 resolver = "2"
 
