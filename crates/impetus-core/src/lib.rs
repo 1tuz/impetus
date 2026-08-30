@@ -122,7 +122,7 @@ pub use remote::{
     TmuxSessionStore, TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
-pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
+pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError};
 pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
