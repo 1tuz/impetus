@@ -6,6 +6,7 @@
 pub mod agent_loop;
 pub mod approval;
 pub mod attachments;
+pub mod audit_log;
 pub mod budget;
 pub mod ci;
 pub mod cost_estimation;
@@ -52,6 +53,7 @@ pub use approval::{
     ApprovalState, ScopeEstimate,
 };
 pub use attachments::{Attachment, AttachmentError, AttachmentStore, StoreStats};
+pub use audit_log::{AuditEntry, AuditLog, AuditQuery};
 pub use budget::{BudgetChecker, BudgetConfig, BudgetError, BudgetState, ReasoningEffort};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
