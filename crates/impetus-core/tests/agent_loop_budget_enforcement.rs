@@ -3,7 +3,7 @@
 //! Verifies that budget limits prevent agent loop from exceeding configured constraints.
 
 use impetus_core::{
-    AgentRuntime, BudgetConfig, EventPayload, MockProvider, MockStreamItem, PolicyEngine,
+    AgentRuntime, BudgetConfig, EventPayload, MockProvider, MockProviderItem, PolicyEngine,
     ProviderMessage, SandboxScope,
 };
 use std::sync::Arc;
@@ -37,11 +37,11 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
         "mock",
         "mock-model",
         vec![
-            MockStreamItem::Chunk {
+            MockProviderItem::Chunk {
                 chunk_id: 1,
                 text: "First response chunk ".to_string(),
             },
-            MockStreamItem::Chunk {
+            MockProviderItem::Chunk {
                 chunk_id: 2,
                 text: "with some content".to_string(),
             },
@@ -137,7 +137,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
     let mock = Arc::new(MockProvider::new(
         "mock",
         "mock-model",
-        vec![MockStreamItem::Chunk {
+        vec![MockProviderItem::Chunk {
             chunk_id: 1,
             text: "Response".to_string(),
         }],
@@ -219,7 +219,7 @@ async fn budget_events_emitted_on_approaching_limit() {
     let mock = Arc::new(MockProvider::new(
         "mock",
         "mock-model",
-        vec![MockStreamItem::Chunk {
+        vec![MockProviderItem::Chunk {
             chunk_id: 1,
             text: "Response".to_string(),
         }],
