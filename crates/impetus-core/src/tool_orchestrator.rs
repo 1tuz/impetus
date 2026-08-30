@@ -80,6 +80,9 @@ impl ToolOrchestrator {
 
     /// Process a batch of tool calls from the model.
     ///
+    /// Parallelizes read-only and idempotent tools while preserving
+    /// sequential execution for mutating operations.
+    ///
     /// For each tool:
     /// 1. Normalize into an Action
     /// 2. Request policy decision
@@ -93,9 +96,49 @@ impl ToolOrchestrator {
         tool_calls: Vec<crate::ToolCall>,
         runtime: &Arc<AgentRuntime>,
     ) -> Result<Vec<ToolObservation>, OrchestratorError> {
-        let mut observations = Vec::new();
+        // Partition tool calls into parallelizable and sequential
+        let (parallel_calls, sequential_calls): (Vec<_>, Vec<_>) =
+            tool_calls.into_iter().partition(|tool_call| {
+                // Try to normalize and check if parallelizable
+                self.normalize_tool_call(tool_call)
+                    .ok()
+                    .map(|action| action.kind.can_parallelize())
+                    .unwrap_or(false)
+            });
 
-        for tool_call in tool_calls {
+        let mut observations = Vec::with_capacity(parallel_calls.len() + sequential_calls.len());
+
+        // Execute parallel tools concurrently
+        if !parallel_calls.is_empty() {
+            let mut handles = Vec::new();
+
+            for tool_call in parallel_calls {
+                let runtime = runtime.clone();
+                let orchestrator_policy = self.policy.clone();
+                let orchestrator_workspace = self.workspace_root.clone();
+                let orchestrator_artifact = self.artifact_root.clone();
+
+                let handle = tokio::spawn(async move {
+                    let orchestrator = ToolOrchestrator::with_artifact_root(
+                        orchestrator_policy,
+                        orchestrator_workspace,
+                        orchestrator_artifact,
+                    );
+                    orchestrator.process_single_tool(tool_call, &runtime).await
+                });
+                handles.push(handle);
+            }
+
+            // Collect results in order
+            for handle in handles {
+                if let Ok(observation) = handle.await {
+                    observations.push(observation);
+                }
+            }
+        }
+
+        // Execute sequential tools one by one
+        for tool_call in sequential_calls {
             let observation = self.process_single_tool(tool_call, runtime).await;
             observations.push(observation);
         }
