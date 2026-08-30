@@ -22,3 +22,7 @@ __pycache__/
 .codewhale/
 /.agents/
 /.openclaude/
+/site/.astro/
+/site/dist/
+/site/node_modules/
+/docs/superpowers/

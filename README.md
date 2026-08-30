@@ -74,6 +74,8 @@ paths: [Architecture](ARCHITECTURE.md).
 
 ## Installation
 
+The product landing page is published at [1tuz.github.io/impetus](https://1tuz.github.io/impetus/).
+
 ### Quick install
 
 Supported platforms: macOS Apple Silicon, Linux x86_64

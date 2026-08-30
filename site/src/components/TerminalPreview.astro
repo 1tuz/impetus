@@ -1,0 +1,27 @@
+---
+const events = [
+  ["$ impetus create --profile local", "terminal__command"],
+  ["session 7f3a created · durable", "terminal__success"],
+  ["$ impetus prompt 7f3a \\\"Ship the requested change\\\"", "terminal__command"],
+  ["event  model.stream.started", "terminal__muted"],
+  ["tool   shell.exec  origin=agent", "terminal__accent"],
+  ["policy needs_approval  reason=workspace_write", "terminal__warning"],
+  ["✓ approved by user", "terminal__success"],
+  ["event  execution.completed  exit=0", "terminal__success"],
+];
+---
+
+<div class="terminal" aria-label="Example Impetus CLI event transcript">
+  <div class="terminal__bar">
+    <span class="terminal__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span>impetus — session 7f3a</span>
+    <span class="terminal__status">LIVE</span>
+  </div>
+  <div class="terminal__body">
+    {events.map(([event, className], index) => (
+      <p class:list={["terminal__line", className, { "terminal__line--reveal": index < 5 }]}>
+        {event}{index === 0 && <span class="terminal__cursor" aria-hidden="true">█</span>}
+      </p>
+    ))}
+  </div>
+</div>
