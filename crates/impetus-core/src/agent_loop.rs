@@ -327,7 +327,7 @@ impl AgentLoop {
     ) -> Result<(), RuntimeError> {
         if let Some(max_turns) = checker.config().max_turns {
             let percent = (state.turns_used as f64 / max_turns as f64 * 100.0) as u8;
-            if percent >= 80 && percent < 100 {
+            if (80..100).contains(&percent) {
                 self.runtime.record_event(EventPayload::Budget(
                     crate::BudgetEvent::TurnLimitApproaching {
                         limit: max_turns,
@@ -339,7 +339,7 @@ impl AgentLoop {
 
         if let Some(max_tokens) = checker.config().max_tokens {
             let percent = (state.tokens_used as f64 / max_tokens as f64 * 100.0) as u8;
-            if percent >= 80 && percent < 100 {
+            if (80..100).contains(&percent) {
                 self.runtime.record_event(EventPayload::Budget(
                     crate::BudgetEvent::TokenLimitApproaching {
                         limit: max_tokens,
