@@ -124,9 +124,9 @@ pub struct ModelRouterConfig {
     #[serde(default)]
     pub models: Vec<ModelMetadata>,
 
-    /// Escalation chain for retries
+    /// Fallback chain for technical failures (model unavailable, rate limit, etc.)
     #[serde(default)]
-    pub escalation_chain: Vec<String>,
+    pub fallback_chain: Vec<String>,
 }
 
 /// Model router for intelligent model selection
@@ -242,15 +242,15 @@ impl ModelRouter {
         score
     }
 
-    /// Get escalation model after failure
-    pub fn escalate(&self, current_model: &str) -> Option<ModelSelection> {
+    /// Get fallback model after technical failure
+    pub fn fallback(&self, current_model: &str) -> Option<ModelSelection> {
         let current_idx = self
             .config
-            .escalation_chain
+            .fallback_chain
             .iter()
             .position(|m| m == current_model)?;
 
-        let next_model_id = self.config.escalation_chain.get(current_idx + 1)?;
+        let next_model_id = self.config.fallback_chain.get(current_idx + 1)?;
         let next_model = self
             .config
             .models
@@ -260,7 +260,7 @@ impl ModelRouter {
         Some(ModelSelection {
             provider_id: next_model.provider_id.clone(),
             model_id: next_model.model_id.clone(),
-            reasoning: format!("Escalated from {}", current_model),
+            reasoning: format!("Fallback from {}", current_model),
         })
     }
 }
@@ -316,7 +316,7 @@ mod tests {
         let config = ModelRouterConfig {
             policy: RouterPolicy::LocalFirst,
             models: vec![mock_local_model(), mock_cloud_model()],
-            escalation_chain: vec![],
+            fallback_chain: vec![],
         };
         let router = ModelRouter::new(config);
 
@@ -336,7 +336,7 @@ mod tests {
         let config = ModelRouterConfig {
             policy: RouterPolicy::QualityFirst,
             models: vec![mock_local_model(), mock_cloud_model()],
-            escalation_chain: vec![],
+            fallback_chain: vec![],
         };
         let router = ModelRouter::new(config);
 
@@ -356,7 +356,7 @@ mod tests {
         let config = ModelRouterConfig {
             policy: RouterPolicy::Balanced,
             models: vec![mock_local_model()],
-            escalation_chain: vec![],
+            fallback_chain: vec![],
         };
         let router = ModelRouter::new(config);
 
@@ -370,16 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn escalation_chain_works() {
+    fn fallback_chain_works() {
         let config = ModelRouterConfig {
             policy: RouterPolicy::Balanced,
             models: vec![mock_local_model(), mock_cloud_model()],
-            escalation_chain: vec!["llama3:8b".to_string(), "gpt-4".to_string()],
+            fallback_chain: vec!["llama3:8b".to_string(), "gpt-4".to_string()],
         };
         let router = ModelRouter::new(config);
 
-        let escalated = router.escalate("llama3:8b").unwrap();
-        assert_eq!(escalated.model_id, "gpt-4");
+        let fallback = router.fallback("llama3:8b").unwrap();
+        assert_eq!(fallback.model_id, "gpt-4");
     }
 
     #[test]
