@@ -13,6 +13,8 @@ pub enum MockStreamItem {
     Chunk { chunk_id: u32, text: String },
     ToolCall { tool: String, arguments: String },
     Error { message: String },
+    TransientError { message: String },
+    PermanentError { message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +121,12 @@ impl ModelProvider for MockProvider {
                 }
                 MockStreamItem::Error { message } => {
                     return Err(ProviderError::RequestFailed(message.clone()));
+                }
+                MockStreamItem::TransientError { message: _ } => {
+                    return Err(ProviderError::Timeout);
+                }
+                MockStreamItem::PermanentError { message: _ } => {
+                    return Err(ProviderError::MissingCredential);
                 }
             }
 

@@ -215,7 +215,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 
 - [x] Multi-turn conversation state with durable tool result accumulation and approval/rejection resume
 - [x] Streaming response chunking and client sync
-- [ ] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
+- [x] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
 - [ ] Parallel tool execution where safe (read_only/idempotent only)
 - [ ] Cross-session state isolation and cleanup
 - [ ] Audit log with redacted tool arguments
