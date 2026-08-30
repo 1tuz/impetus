@@ -92,9 +92,9 @@ Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
 
 ## Phase 3 — Extension compatibility
 
-- [x] Extension Compatibility Adapter layer (design + minimal slice)
-- [x] Canonical types: `CanonicalModuleSpec`, `CanonicalSkill`, `Instruction`, `AgentProfile`, `Command`, `McpModule`, `ToolProvider`
-- [x] Import capability matrix: `SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`
+- [ ] Extension Compatibility Adapter layer (types exist; no working adapters yet)
+- [ ] Canonical types (defined but not used in real imports)
+- [ ] Import capability matrix (all entries Unsupported; no real capability detection)
 - [ ] Agent Skills adapter (upstream spec audit first)
 - [ ] MCP adapter
 - [ ] Agent Plugins adapter
@@ -231,6 +231,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
+- [x] Session fork/checkpoint (with full event duplication; shared prefix not yet implemented)
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget
