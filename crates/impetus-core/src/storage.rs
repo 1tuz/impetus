@@ -1,3 +1,4 @@
+use crate::budget::BudgetState;
 use crate::events::{Event, EventPayload, SessionEvent, legacy_payload};
 use rusqlite::{Connection, TransactionBehavior, params};
 use std::path::Path;
@@ -53,6 +54,12 @@ pub trait EventStore: Send + Sync {
     /// Returns a receiver that gets (session_id, sequence) on every append.
     /// Channel size is 100; old notifications may be dropped but cursors handle gaps.
     fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)>;
+
+    /// Get budget state for session.
+    fn get_budget_state(&self, session_id: Uuid) -> Result<BudgetState, StoreError>;
+
+    /// Update budget state for session.
+    fn update_budget_state(&self, session_id: Uuid, state: &BudgetState) -> Result<(), StoreError>;
 }
 
 pub struct MemoryEventStore {
@@ -185,6 +192,20 @@ impl EventStore for MemoryEventStore {
     fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
         self.notifier.subscribe()
     }
+
+    fn get_budget_state(&self, _session_id: Uuid) -> Result<BudgetState, StoreError> {
+        // In-memory store: return fresh state (not persisted)
+        Ok(BudgetState::new())
+    }
+
+    fn update_budget_state(
+        &self,
+        _session_id: Uuid,
+        _state: &BudgetState,
+    ) -> Result<(), StoreError> {
+        // In-memory store: no-op (not persisted)
+        Ok(())
+    }
 }
 
 pub struct SqliteEventStore {
@@ -210,6 +231,17 @@ impl SqliteEventStore {
         )?;
         add_column_if_missing(&connection, "events", "schema_version", "INTEGER")?;
         add_column_if_missing(&connection, "events", "payload_json", "TEXT")?;
+
+        // Budget state columns
+        add_column_if_missing(&connection, "sessions", "turns_used", "INTEGER DEFAULT 0")?;
+        add_column_if_missing(&connection, "sessions", "tokens_used", "INTEGER DEFAULT 0")?;
+        add_column_if_missing(
+            &connection,
+            "sessions",
+            "compaction_count",
+            "INTEGER DEFAULT 0",
+        )?;
+
         connection.execute_batch(
             "INSERT OR IGNORE INTO sessions (id, created_at_unix_ms, updated_at_unix_ms)
              SELECT session_id, MIN(at_unix_ms), MAX(at_unix_ms) FROM events GROUP BY session_id;",
@@ -391,6 +423,61 @@ impl EventStore for SqliteEventStore {
 
     fn subscribe_notifications(&self) -> broadcast::Receiver<(Uuid, u64)> {
         self.notifier.subscribe()
+    }
+
+    fn get_budget_state(&self, session_id: Uuid) -> Result<BudgetState, StoreError> {
+        let connection = self.connection.lock().unwrap();
+        let mut stmt = connection.prepare(
+            "SELECT turns_used, tokens_used, compaction_count, created_at_unix_ms FROM sessions WHERE id = ?",
+        )?;
+        let session_id_str = session_id.to_string();
+        let result = stmt.query_row([&session_id_str], |row| {
+            let turns_used: i64 = row.get(0)?;
+            let tokens_used: i64 = row.get(1)?;
+            let compaction_count: i64 = row.get(2)?;
+            let created_at_unix_ms: i64 = row.get(3)?;
+
+            let elapsed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                - created_at_unix_ms;
+
+            let started_at =
+                std::time::Instant::now() - std::time::Duration::from_millis(elapsed.max(0) as u64);
+
+            Ok(BudgetState {
+                turns_used: turns_used as u32,
+                tokens_used: tokens_used as u64,
+                compaction_count: compaction_count as u32,
+                started_at,
+            })
+        });
+
+        match result {
+            Ok(state) => Ok(state),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(BudgetState::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn update_budget_state(&self, session_id: Uuid, state: &BudgetState) -> Result<(), StoreError> {
+        let connection = self.connection.lock().unwrap();
+        let session_id_str = session_id.to_string();
+        connection.execute(
+            "UPDATE sessions SET turns_used = ?, tokens_used = ?, compaction_count = ?, updated_at_unix_ms = ? WHERE id = ?",
+            rusqlite::params![
+                state.turns_used as i64,
+                state.tokens_used as i64,
+                state.compaction_count as i64,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+                session_id_str,
+            ],
+        )?;
+        Ok(())
     }
 }
 
