@@ -4,6 +4,7 @@
 //! makes permission decisions, and exposes small capability seams for the app.
 
 pub mod agent_loop;
+pub mod agent_skills_adapter;
 pub mod approval;
 pub mod attachments;
 pub mod audit_log;
@@ -48,6 +49,7 @@ pub mod tool_orchestrator;
 pub mod tools;
 
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
+pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
     ApprovalState, ScopeEstimate,
