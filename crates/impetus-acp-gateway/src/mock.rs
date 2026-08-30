@@ -82,6 +82,7 @@ impl MockAgent {
             "initialize" => self.handle_initialize(request),
             "session/create" => self.handle_session_create(request),
             "session/cancel" => self.handle_session_cancel(request),
+            "chat/completions" => self.handle_chat_completions(request),
             "exit" => self.handle_exit(request),
             _ => Ok(JsonRpcResponse {
                 jsonrpc: "2.0".into(),
@@ -228,6 +229,56 @@ impl MockAgent {
             jsonrpc: "2.0".into(),
             id: request.id,
             result: Some(serde_json::json!({})),
+            error: None,
+        })
+    }
+
+    fn handle_chat_completions(
+        &mut self,
+        request: JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, MockAgentError> {
+        if !self.initialized {
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32600,
+                    message: "Not initialized".into(),
+                    data: None,
+                }),
+            });
+        }
+
+        // Extract last user message
+        let messages = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("messages"))
+            .and_then(|m| m.as_array())
+            .ok_or(MockAgentError::InvalidParams)?;
+
+        let last_content = messages
+            .last()
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("unknown");
+
+        // Return OpenAI-compatible response
+        let result = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": format!("Mock ACP agent received: {}", last_content)
+                },
+                "finish_reason": "stop"
+            }]
+        });
+
+        Ok(JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: request.id,
+            result: Some(result),
             error: None,
         })
     }

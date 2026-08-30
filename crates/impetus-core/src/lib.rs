@@ -3,6 +3,7 @@
 //! The crate intentionally owns no native GUI or PTY state. It emits durable events,
 //! makes permission decisions, and exposes small capability seams for the app.
 
+pub mod acp_adapter;
 pub mod agent_loop;
 pub mod agent_skills_adapter;
 pub mod approval;
@@ -48,6 +49,7 @@ pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tools;
 
+pub use acp_adapter::AcpAdapter;
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
 pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use approval::{

@@ -1460,7 +1460,6 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
- "impetus-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1503,6 +1502,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "humantime-serde",
+ "impetus-acp-gateway",
  "regex",
  "reqwest",
  "rusqlite",
@@ -1555,6 +1555,7 @@ name = "impetusd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "impetus-acp-gateway",
  "impetus-core",
  "security-framework",
  "serde_json",

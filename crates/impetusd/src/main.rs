@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use impetus_acp_gateway::{AcpGateway, AcpProfile};
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
@@ -42,34 +43,61 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Direct providers are enabled only by an explicit daemon-start profile file.
+/// Direct providers and ACP agents are enabled only by an explicit daemon-start profile file.
 /// The file is deserialized into a deny-unknown-fields DTO, so a raw token
 /// cannot be silently accepted as configuration.
+///
+/// Usage:
+///   impetusd                                  # mock provider only
+///   impetusd --provider-profile PATH          # OpenAI-compatible direct provider
+///   impetusd --acp-profile PATH               # External ACP agent (Codex, Cursor, etc.)
 fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harness> {
     let mut arguments = std::env::args_os().skip(1);
     let Some(flag) = arguments.next() else {
         return Ok(Harness::new(store, impetus_core::harness_api::policy()));
     };
-    if flag != "--provider-profile" {
-        bail!("usage: impetus [--provider-profile PATH]");
+
+    let flag_str = flag.to_str().context("invalid UTF-8 in command flag")?;
+
+    match flag_str {
+        "--provider-profile" => {
+            let profile_path = arguments
+                .next()
+                .context("--provider-profile requires PATH")?;
+            if arguments.next().is_some() {
+                bail!("usage: impetusd [--provider-profile PATH]");
+            }
+            let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
+            let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
+                .context("provider profile must contain only the documented non-secret fields")?;
+            let provider = OpenAiCompatibleProvider::new(profile, RetryBudget::default())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(Harness::with_openai_provider_and_resolver(
+                store,
+                impetus_core::harness_api::policy(),
+                provider,
+                Arc::new(MacosKeychainResolver),
+            ))
+        }
+        "--acp-profile" => {
+            let profile_path = arguments.next().context("--acp-profile requires PATH")?;
+            if arguments.next().is_some() {
+                bail!("usage: impetusd [--acp-profile PATH]");
+            }
+            let profile_bytes = std::fs::read(profile_path).context("read acp profile")?;
+            let profile: AcpProfile = serde_json::from_slice(&profile_bytes)
+                .context("acp profile must contain only the documented non-secret fields")?;
+            profile.validate().context("invalid acp profile")?;
+            let gateway = AcpGateway::new(profile)
+                .map_err(|e| anyhow::anyhow!("failed to create acp gateway: {}", e))?;
+            Ok(Harness::with_acp_gateway(
+                store,
+                impetus_core::harness_api::policy(),
+                gateway,
+            ))
+        }
+        _ => bail!("usage: impetusd [--provider-profile PATH | --acp-profile PATH]"),
     }
-    let profile_path = arguments
-        .next()
-        .context("--provider-profile requires PATH")?;
-    if arguments.next().is_some() {
-        bail!("usage: impetus [--provider-profile PATH]");
-    }
-    let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
-    let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
-        .context("provider profile must contain only the documented non-secret fields")?;
-    let provider = OpenAiCompatibleProvider::new(profile, RetryBudget::default())
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(Harness::with_openai_provider_and_resolver(
-        store,
-        impetus_core::harness_api::policy(),
-        provider,
-        Arc::new(MacosKeychainResolver),
-    ))
 }
 
 /// The daemon owns the macOS Keychain lookup. The resolver returns only a

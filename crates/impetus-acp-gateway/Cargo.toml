@@ -8,7 +8,6 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-impetus-core = { path = "../impetus-core" }
 agent-client-protocol.workspace = true
 anyhow.workspace = true
 serde.workspace = true
