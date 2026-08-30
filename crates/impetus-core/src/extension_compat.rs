@@ -221,7 +221,7 @@ impl CompatibilityMatrix {
         Self {
             source: ExtensionSource::AgentSkills,
             capabilities,
-            notes: vec!["SKILL.md instruction and trigger import is supported".to_string()],
+            notes: vec!["SKILL.md parser implemented with frontmatter support".to_string()],
         }
     }
 

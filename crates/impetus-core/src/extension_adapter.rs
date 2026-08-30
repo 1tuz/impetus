@@ -1,3 +1,4 @@
+use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
 };
@@ -58,45 +59,61 @@ impl ExtensionAdapter {
             });
         }
 
-        if source == ExtensionSource::AgentSkills {
-            let skill_path = if path.is_dir() {
-                path.join("SKILL.md")
-            } else {
-                path.to_path_buf()
-            };
-            if !skill_path.is_file() {
-                warnings.push(format!("SKILL.md not found at {:?}", skill_path));
-                return Ok(ImportResult {
+        // Attempt real import for Agent Skills
+        match source {
+            ExtensionSource::AgentSkills => {
+                let skill_path = if path.is_dir() {
+                    path.join("SKILL.md")
+                } else {
+                    path.to_path_buf()
+                };
+                if !skill_path.is_file() {
+                    warnings.push(format!("SKILL.md not found at {:?}", skill_path));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+
+                match AgentSkillsAdapter::import(&skill_path).await {
+                    Ok((_skill, spec)) => Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Supported,
+                        canonical: Some(spec),
+                        warnings,
+                        errors,
+                    }),
+                    Err(e) => {
+                        errors.push(format!("Failed to parse SKILL.md: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            _ => {
+                // Other sources still unsupported
+                warnings.push(format!(
+                    "Import from {:?} at {:?} not yet implemented",
+                    source, path
+                ));
+
+                Ok(ImportResult {
                     source,
-                    capability: ImportCapability::Unsupported,
+                    capability: overall_capability,
                     canonical: None,
                     warnings,
                     errors,
-                });
+                })
             }
-            let (_, canonical) = crate::AgentSkillsAdapter::import(&skill_path).await?;
-            return Ok(ImportResult {
-                source,
-                capability: ImportCapability::Supported,
-                canonical: Some(canonical),
-                warnings,
-                errors,
-            });
         }
-
-        // Attempt import (placeholder for actual implementation)
-        warnings.push(format!(
-            "Import from {:?} at {:?} not yet implemented",
-            source, path
-        ));
-
-        Ok(ImportResult {
-            source,
-            capability: overall_capability,
-            canonical: None,
-            warnings,
-            errors,
-        })
     }
 
     /// Assess overall capability from matrix
