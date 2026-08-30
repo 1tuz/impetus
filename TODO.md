@@ -193,12 +193,12 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 ### Durable budgets & Model Router
 
-- [ ] Token and wall-time budget tracking per session (durable)
-- [ ] Budget enforcement in agent loop
-- [ ] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
-- [ ] Router policies: local-first, free-first, balanced, quality-first
-- [ ] Escalation: local → sanitised cloud request → result back to local agent
-- [ ] Cost estimation and budget warnings
+- [x] Token and wall-time budget tracking per session (durable)
+- [x] Budget enforcement in agent loop
+- [x] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
+- [x] Router policies: local-first, free-first, balanced, quality-first
+- [x] Escalation: local → sanitised cloud request → result back to local agent
+- [x] Cost estimation and budget warnings
 
 ### Agent loop (real implementation)
 

@@ -77,6 +77,14 @@ impl ProviderMessage {
             content: content.into(),
         }
     }
+
+    pub fn role(&self) -> &str {
+        self.role
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
 }
 
 /// Resolves an explicit profile's credential only when a provider request is
