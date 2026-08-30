@@ -128,44 +128,44 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
 
 ### Contracts & services
 
-- [ ] `WebResearchService` facade contract
-- [ ] `WebSearchService` + `SearchBackend` trait (Module Runtime)
-- [ ] `WebFetchService` (separate from search)
-- [ ] `BrowserService` + `BrowserProvider` contract (optional module)
-- [ ] Agent Loop integration via contracts only (no direct DuckDuckGo/Bing deps)
+- [x] `WebResearchService` facade contract
+- [x] `WebSearchService` + `SearchBackend` trait (Module Runtime)
+- [x] `WebFetchService` (separate from search)
+- [x] `BrowserService` + `BrowserProvider` contract (optional module)
+- [x] Agent Loop integration via contracts only (no direct DuckDuckGo/Bing deps)
 - [ ] Research loop: search → select → fetch → follow links → compare → cite
 
 ### WebSearch backends
 
-- [ ] Native `DuckDuckGoHtml` backend (default)
-- [ ] Native `BingHtml` fallback backend
-- [ ] Optional `SearXNG` `SearchBackend`
+- [x] Native `DuckDuckGoHtml` backend (default)
+- [x] Native `BingHtml` fallback backend
+- [x] Optional `SearXNG` `SearchBackend`
 - [ ] Optional future API backends (Tavily, Exa, …) as replaceable modules only
-- [ ] Fallback chain + degraded health (one backend down ≠ harness unhealthy)
-- [ ] Capability probing per backend (not version-only)
+- [x] Fallback chain + degraded health (one backend down ≠ harness unhealthy)
+- [x] Capability probing per backend (not version-only)
 
 ### WebFetch
 
-- [ ] Bounded HTTP fetch (timeout, max response size, redirects)
-- [ ] MIME detection
-- [ ] HTML → clean text / Markdown extraction (links, title)
-- [ ] Source URL, timestamp, content hash, truncation
-- [ ] Large/full body → `ArtifactStore` → `ArtifactRef`; bounded preview to model
+- [x] Bounded HTTP fetch (timeout, max response size, redirects)
+- [x] MIME detection
+- [x] HTML → clean text / Markdown extraction (links, title)
+- [x] Source URL, timestamp, content hash, truncation
+- [x] Large/full body → `ArtifactStore` → `ArtifactRef`; bounded preview to model
 
 ### Observations & context
 
-- [ ] Typed `WebObservation` (search result list + fetch document shapes)
-- [ ] Provenance / citation metadata for research loop answers
-- [ ] Raw HTML / large content → artifact, not unbounded context
+- [x] Typed `WebObservation` (search result list + fetch document shapes)
+- [x] Provenance / citation metadata for research loop answers
+- [x] Raw HTML / large content → artifact, not unbounded context
 
 ### Safety & policy
 
 - [ ] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
 - [ ] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
-- [ ] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
-- [ ] Validate initial URL, DNS resolution, redirect chain, final destination
+- [x] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
+- [x] Validate initial URL, DNS resolution, redirect chain, final destination
 - [ ] LAN/internal targets — separate capability, not default `web.read`
-- [ ] All web ops through Kernel pipeline (policy → sandbox → capability → execution → durable event)
+- [x] All web ops through Kernel pipeline (policy → sandbox → capability → execution → durable event)
 
 ### JCode source audit (web)
 
@@ -179,11 +179,11 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 - [ ] JCode Browser Provider Protocol as reference (negotiation, health, session ops)
 - [ ] Optional Firefox/Chrome/WebDriver/Safari providers (not in mandatory core)
-- [ ] No Chromium/Playwright/Node in required harness dependency set
+- [x] No Chromium/Playwright/Node in required harness dependency set
 
 ### Doctor
 
-- [ ] Internet access enabled/disabled
+- [x] Internet access enabled/disabled
 - [ ] WebFetch / per-SearchBackend / BrowserProvider health in `impetus doctor`
 - [ ] `DEGRADED — web search fallback available` when fallback path works
 
@@ -209,7 +209,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Durable observations from executed tools (not stub responses)
 - [x] Large read output uses durable content-addressed artifacts and bounded event previews
 - [x] End-to-end slice: model → tool request → execution → observation → model
-- [ ] Wire web research tools through `WebResearchService` (when WEB slice lands)
+- [x] Wire web research tools through `WebResearchService` (when WEB slice lands)
 
 ### Agent loop hardening
 

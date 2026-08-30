@@ -59,6 +59,7 @@ pub struct ToolOrchestrator {
     policy: PolicyEngine,
     workspace_root: PathBuf,
     artifact_root: PathBuf,
+    web_research: Option<Arc<dyn crate::web_research::WebResearchService>>,
 }
 
 impl ToolOrchestrator {
@@ -75,7 +76,17 @@ impl ToolOrchestrator {
             policy,
             workspace_root,
             artifact_root,
+            web_research: None,
         }
+    }
+
+    /// Attach the daemon-owned semantic web service. Provider details stay outside the agent loop.
+    pub fn with_web_research(
+        mut self,
+        service: Arc<dyn crate::web_research::WebResearchService>,
+    ) -> Self {
+        self.web_research = Some(service);
+        self
     }
 
     /// Process a batch of tool calls from the model.
@@ -117,13 +128,15 @@ impl ToolOrchestrator {
                 let orchestrator_policy = self.policy.clone();
                 let orchestrator_workspace = self.workspace_root.clone();
                 let orchestrator_artifact = self.artifact_root.clone();
+                let web_research = self.web_research.clone();
 
                 let handle = tokio::spawn(async move {
                     let orchestrator = ToolOrchestrator::with_artifact_root(
                         orchestrator_policy,
                         orchestrator_workspace,
                         orchestrator_artifact,
-                    );
+                    )
+                    .with_optional_web_research(web_research);
                     orchestrator.process_single_tool(tool_call, &runtime).await
                 });
                 handles.push(handle);
@@ -144,6 +157,14 @@ impl ToolOrchestrator {
         }
 
         Ok(observations)
+    }
+
+    fn with_optional_web_research(
+        mut self,
+        service: Option<Arc<dyn crate::web_research::WebResearchService>>,
+    ) -> Self {
+        self.web_research = service;
+        self
     }
 
     async fn process_single_tool(
@@ -216,6 +237,64 @@ impl ToolOrchestrator {
             );
         }
 
+        if matches!(tool_call.name.as_str(), "web_search" | "web_fetch") {
+            let status = match runtime.request_action_with_capability_version(action, Some(1)) {
+                Ok(status) => status,
+                Err(RuntimeError::Denied(reason)) => {
+                    return Self::record_observation(
+                        runtime,
+                        tool_call,
+                        arguments_summary,
+                        ToolOutcomeStatus::Denied,
+                        String::new(),
+                        None,
+                        Some(reason),
+                    );
+                }
+                Err(error) => {
+                    return Self::record_observation(
+                        runtime,
+                        tool_call,
+                        arguments_summary,
+                        ToolOutcomeStatus::Error,
+                        String::new(),
+                        None,
+                        Some(error.to_string()),
+                    );
+                }
+            };
+            if matches!(status, crate::RuntimeStatus::AwaitingApproval) {
+                if let Some(approval_id) = runtime.events().ok().and_then(|events| {
+                    events.iter().rev().find_map(|event| match &event.payload {
+                        crate::EventPayload::Approval(crate::ApprovalEvent::Requested {
+                            request,
+                        }) => Some(request.id),
+                        _ => None,
+                    })
+                }) {
+                    let _ = runtime.record_deferred_tool(
+                        approval_id,
+                        tool_call.id.clone(),
+                        tool_call.name.clone(),
+                        tool_call.arguments.clone(),
+                    );
+                }
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::ApprovalRequired,
+                    String::new(),
+                    None,
+                    Some("awaiting user approval".into()),
+                );
+            }
+
+            return self
+                .execute_web_tool(runtime, tool_call, arguments_summary)
+                .await;
+        }
+
         match self.execute_read_only(&tool_call) {
             Ok(ToolOutcome::Allowed { result }) => Self::record_observation(
                 runtime,
@@ -254,6 +333,7 @@ impl ToolOrchestrator {
         // Map tool names to ActionKind
         let kind = match tool_call.name.as_str() {
             "list_files" | "read_file" | "search" => ActionKind::ReadFile,
+            "web_search" | "web_fetch" => ActionKind::NetworkConnect,
             "write_file" | "edit_file" => ActionKind::WriteFile,
             "bash" | "shell" | "exec" => ActionKind::SpawnProcess,
             name => {
@@ -269,6 +349,15 @@ impl ToolOrchestrator {
             .map(|s| s.to_string());
         let target = if kind == ActionKind::SpawnProcess {
             Some(self.workspace_root.display().to_string())
+        } else if tool_call.name == "web_search" {
+            Some("web-search:auto".into())
+        } else if tool_call.name == "web_fetch" {
+            tool_call
+                .arguments
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|url| reqwest::Url::parse(url).ok())
+                .and_then(|url| url.host_str().map(str::to_owned))
         } else {
             target
         };
@@ -324,6 +413,102 @@ impl ToolOrchestrator {
                 tool: tool_call.name.clone(),
                 reason: error.to_string(),
             })
+    }
+
+    async fn execute_web_tool(
+        &self,
+        runtime: &Arc<AgentRuntime>,
+        tool_call: crate::ToolCall,
+        arguments_summary: String,
+    ) -> ToolObservation {
+        let action = match self.normalize_tool_call(&tool_call) {
+            Ok(action) => action,
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+        };
+        let effect = crate::NormalizedEffect::network_connect(
+            ActionOrigin::Agent,
+            action.summary,
+            action.target.unwrap_or_else(|| "web:invalid-target".into()),
+        );
+        let seam = EffectSeam::with_sandbox(
+            self.policy.clone(),
+            Sandbox::Provisioned {
+                scope: self.policy.scope().clone(),
+            },
+        );
+        match seam.decide(&effect) {
+            crate::EffectDecision::Allow => {}
+            crate::EffectDecision::NeedsApproval { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::ApprovalRequired,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+            crate::EffectDecision::Deny { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Denied,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+        }
+        let Some(service) = &self.web_research else {
+            return Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Error,
+                String::new(),
+                None,
+                Some("web research service is unavailable".into()),
+            );
+        };
+        let artifacts = match DurableArtifactStore::open(&self.artifact_root) {
+            Ok(artifacts) => artifacts,
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(format!("cannot open artifact store: {error}")),
+                );
+            }
+        };
+        let observation =
+            crate::web_research::execute_web_tool(service.as_ref(), &tool_call, &artifacts)
+                .await
+                .expect("web tool names are checked before dispatch");
+        Self::record_observation(
+            runtime,
+            tool_call,
+            observation.arguments_summary,
+            observation.outcome,
+            observation.preview,
+            observation.artifact,
+            observation.error,
+        )
     }
 
     fn record_observation(
@@ -571,6 +756,71 @@ fn contains_sensitive_value(arguments: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use crate::{MemoryEventStore, SandboxScope};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingWebService(AtomicUsize);
+
+    #[async_trait]
+    impl crate::web_research::WebSearchService for CountingWebService {
+        async fn search(
+            &self,
+            _request: crate::web_research::SearchRequest,
+        ) -> Result<crate::web_research::SearchResponse, crate::web_research::WebError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            unreachable!("network-disabled policy must stop web search before execution")
+        }
+    }
+
+    #[async_trait]
+    impl crate::web_research::WebFetchService for CountingWebService {
+        async fn fetch(
+            &self,
+            _request: crate::web_research::FetchRequest,
+        ) -> Result<crate::web_research::FetchedPage, crate::web_research::WebError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            unreachable!("network-disabled policy must stop web fetch before execution")
+        }
+    }
+
+    #[tokio::test]
+    async fn web_search_is_denied_before_service_execution_when_network_is_disabled() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let service = Arc::new(CountingWebService(AtomicUsize::new(0)));
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf())
+            .with_web_research(service.clone());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "web-call".into(),
+                    name: "web_search".into(),
+                    arguments: serde_json::json!({"query": "private research"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("tool orchestration");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Denied);
+        assert_eq!(service.0.load(Ordering::SeqCst), 0);
+        assert!(runtime.events().expect("events").iter().any(|event| {
+            matches!(
+                &event.payload,
+                crate::EventPayload::Tool(crate::ToolEvent::Observed {
+                    tool_name,
+                    outcome: ToolOutcomeStatus::Denied,
+                    ..
+                }) if tool_name == "web_search"
+            )
+        }));
+    }
 
     #[test]
     fn normalize_read_file_tool() {

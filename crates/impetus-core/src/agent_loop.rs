@@ -63,10 +63,20 @@ impl AgentLoop {
         let workspace_root = runtime
             .workspace_root()
             .expect("runtime always has a workspace root");
+        let mut web_research = crate::web_research::WebResearchEngine::production(
+            crate::web_research::EgressPolicy::default(),
+        );
+        if let Ok(artifacts) = crate::DurableArtifactStore::open(crate::default_artifact_root()) {
+            web_research = web_research.with_artifact_store(
+                Arc::new(artifacts),
+                crate::web_research::ArtifactPolicy::default(),
+            );
+        }
         Self {
             runtime,
             policy: policy.clone(),
-            tool_orchestrator: ToolOrchestrator::new(policy, workspace_root),
+            tool_orchestrator: ToolOrchestrator::new(policy, workspace_root)
+                .with_web_research(Arc::new(web_research)),
         }
     }
 

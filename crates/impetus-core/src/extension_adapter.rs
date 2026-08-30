@@ -58,6 +58,32 @@ impl ExtensionAdapter {
             });
         }
 
+        if source == ExtensionSource::AgentSkills {
+            let skill_path = if path.is_dir() {
+                path.join("SKILL.md")
+            } else {
+                path.to_path_buf()
+            };
+            if !skill_path.is_file() {
+                warnings.push(format!("SKILL.md not found at {:?}", skill_path));
+                return Ok(ImportResult {
+                    source,
+                    capability: ImportCapability::Unsupported,
+                    canonical: None,
+                    warnings,
+                    errors,
+                });
+            }
+            let (_, canonical) = crate::AgentSkillsAdapter::import(&skill_path).await?;
+            return Ok(ImportResult {
+                source,
+                capability: ImportCapability::Supported,
+                canonical: Some(canonical),
+                warnings,
+                errors,
+            });
+        }
+
         // Attempt import (placeholder for actual implementation)
         warnings.push(format!(
             "Import from {:?} at {:?} not yet implemented",

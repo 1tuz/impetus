@@ -65,9 +65,7 @@ impl AgentSkillsAdapter {
     /// Convert CanonicalSkill to CanonicalModuleSpec
     pub fn to_module_spec(skill: &CanonicalSkill, version: Option<String>) -> CanonicalModuleSpec {
         let mut capabilities = vec!["instructions".to_string()];
-        if !skill.triggers.is_empty() {
-            capabilities.push("triggers".to_string());
-        }
+        capabilities.push("triggers".to_string());
         if !skill.tools.is_empty() {
             capabilities.push("tools".to_string());
         }

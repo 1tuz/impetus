@@ -47,6 +47,7 @@ pub mod storage;
 pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tools;
+pub mod web_research;
 
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
 pub use agent_skills_adapter::AgentSkillsAdapter;

@@ -684,7 +684,7 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
 
 fn gather_subsystem_health(
     store: &Arc<dyn EventStore>,
-    _policy: &PolicyEngine,
+    policy: &PolicyEngine,
     provider_registry: &ProviderRegistry,
     workspace_root: &Path,
 ) -> crate::SubsystemHealth {
@@ -761,15 +761,24 @@ fn gather_subsystem_health(
     // Disk/Runtime health
     let disk_runtime = probe_disk_runtime(workspace_root);
 
-    // Web research capabilities (WEB section)
-    let web_research = SubsystemStatus::unavailable("Web research not yet implemented")
-        .with_details(serde_json::json!({
-            "internet_access": false,
-            "web_fetch": false,
-            "search_backends": [],
-            "browser_provider": false,
-            "note": "Native web research planned in WEB section"
-        }));
+    // Offline-safe web inspection: live backend checks are deliberately not run by doctor.
+    let web_engine = crate::web_research::WebResearchEngine::production(
+        crate::web_research::EgressPolicy::default(),
+    );
+    let web_report = crate::web_research::WebDoctor::inspect(
+        &web_engine,
+        crate::web_research::BrowserServiceStatus::Unavailable,
+    );
+    let web_research = SubsystemStatus::ok("Native web research contract available").with_details(
+        serde_json::json!({
+            "internet_access": policy.scope().allow_network,
+            "web_fetch": true,
+            "search_backends": web_report.search_backends,
+            "browser_provider": web_report.browser,
+            "live_probe_performed": web_report.live_probe_performed,
+            "notes": web_report.notes,
+        }),
+    );
 
     crate::SubsystemHealth {
         event_store,
@@ -1148,7 +1157,7 @@ mod tests {
             target: None,
         };
         let expected_decision = policy.evaluate(&denied_ssh);
-        let store = Arc::new(MemoryEventStore::default());
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
         let harness = Harness::new(store.clone(), policy.clone());
         let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
             workspace_root: root.clone(),
@@ -1727,5 +1736,21 @@ mod tests {
                 EventPayload::Agent(crate::AgentEvent::Final { .. })
             )
         }));
+    }
+
+    #[test]
+    fn doctor_reports_offline_safe_web_research_contract() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let health =
+            gather_subsystem_health(&store, &policy, &ProviderRegistry::new(), workspace.path());
+
+        assert!(health.web_research.available);
+        let details = health.web_research.details.expect("web details");
+        assert_eq!(details["internet_access"], false);
+        assert_eq!(details["web_fetch"], true);
+        assert_eq!(details["search_backends"][0]["id"], "bing_html");
+        assert_eq!(details["search_backends"][1]["id"], "duckduckgo");
     }
 }
