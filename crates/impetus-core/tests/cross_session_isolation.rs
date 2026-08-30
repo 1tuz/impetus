@@ -5,9 +5,7 @@
 //! - Resources are cleaned up on session termination
 //! - No memory leaks or state pollution between sessions
 
-use impetus_core::{
-    EventPayload, EventStore, MemoryEventStore, SessionEvent, SqliteEventStore,
-};
+use impetus_core::{EventPayload, EventStore, MemoryEventStore, SessionEvent, SqliteEventStore};
 use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
