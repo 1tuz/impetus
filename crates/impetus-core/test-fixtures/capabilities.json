@@ -1,0 +1,47 @@
+[
+  {
+    "id": "terminal.pty",
+    "version": "0.1.0",
+    "description": "Owns local PTY lifecycle and terminal byte stream.",
+    "availability": "planned",
+    "roadmap_phase": "v0.6",
+    "permissions": ["process.spawn"],
+    "entrypoint": "builtin:terminal_pty"
+  },
+  {
+    "id": "ssh.manager",
+    "version": "0.1.0",
+    "description": "Resolves a named SSH profile and opens an approved connection.",
+    "availability": "planned",
+    "roadmap_phase": "v0.6",
+    "permissions": ["network.ssh", "secrets.ssh_key"],
+    "entrypoint": "builtin:ssh_manager"
+  },
+  {
+    "id": "sftp.transfer",
+    "version": "0.1.0",
+    "description": "Lists and transfers remote files after explicit approval.",
+    "availability": "planned",
+    "roadmap_phase": "v0.6",
+    "permissions": ["network.sftp", "filesystem.read", "filesystem.write"],
+    "entrypoint": "builtin:sftp_transfer"
+  },
+  {
+    "id": "tmux.session",
+    "version": "0.1.0",
+    "description": "Lists, creates or attaches tmux sessions inside an approved SSH transport.",
+    "availability": "planned",
+    "roadmap_phase": "v0.6",
+    "permissions": ["network.ssh", "process.spawn"],
+    "entrypoint": "builtin:tmux_session"
+  },
+  {
+    "id": "agent.acp_gateway",
+    "version": "0.1.0",
+    "description": "Connects an explicitly selected ACP external agent and maps its lifecycle into durable Blocks.",
+    "availability": "planned",
+    "roadmap_phase": "v0.3",
+    "permissions": ["process.spawn", "agent.session"],
+    "entrypoint": "builtin:acp_gateway"
+  }
+]
