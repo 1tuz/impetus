@@ -48,14 +48,13 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
         ],
     ));
 
-    let session_id = runtime.session_id();
-    let run_id = runtime.start_run().unwrap();
-
     let messages = vec![ProviderMessage::user("test request")];
 
     let runtime_arc = Arc::new(runtime);
     let agent_loop = impetus_core::AgentLoop::new(runtime_arc.clone());
     let cancellation = tokio_util::sync::CancellationToken::new();
+
+    let run_id = runtime_arc.start_run().unwrap();
 
     // First turn should succeed
     let result = agent_loop
@@ -234,7 +233,6 @@ async fn budget_events_emitted_on_approaching_limit() {
         }],
     ));
 
-    let session_id = runtime.session_id();
     let messages = vec![ProviderMessage::user("test")];
     let cancellation = tokio_util::sync::CancellationToken::new();
     let runtime_arc = Arc::new(runtime);
@@ -263,7 +261,7 @@ async fn budget_events_emitted_on_approaching_limit() {
     runtime_arc.record_turn(800).unwrap();
 
     let events_after = runtime_arc.events().unwrap();
-    let approaching_events: Vec<_> = events_after
+    let _approaching_events: Vec<_> = events_after
         .iter()
         .filter_map(|e| match &e.payload {
             EventPayload::Budget(impetus_core::BudgetEvent::TokenLimitApproaching {
