@@ -8,6 +8,7 @@ pub mod approval;
 pub mod attachments;
 pub mod budget;
 pub mod ci;
+pub mod cost_estimation;
 pub mod diagnostics;
 pub mod durable_artifacts;
 pub mod effects;
