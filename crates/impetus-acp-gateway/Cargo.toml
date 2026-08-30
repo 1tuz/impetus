@@ -21,3 +21,6 @@ uuid.workspace = true
 [[example]]
 name = "mock_agent_bin"
 path = "examples/mock_agent_bin.rs"
+
+[dev-dependencies]
+which = "7.0"
