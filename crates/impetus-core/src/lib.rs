@@ -36,16 +36,21 @@ pub mod openai_provider;
 pub mod output_reducer;
 pub mod plugins;
 pub mod policy;
+pub mod profile;
 pub mod projection;
 pub mod provider;
 pub mod provider_registry;
 pub mod provider_trait;
+pub mod reference_store;
+pub mod reference_tools;
 pub mod remote;
 pub mod rtk_adapter;
 pub mod runtime;
 pub mod service_contract;
+pub mod service_provider;
 pub mod storage;
 pub mod supervisor;
+pub mod tempo_importer;
 pub mod tool_orchestrator;
 pub mod tools;
 pub mod web_research;
@@ -113,6 +118,7 @@ pub use policy::{
     Action, ActionFingerprint, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine,
     PolicySnapshot, PolicyVersion, SandboxScope,
 };
+pub use profile::{Profile, ProfileConfig, ServiceBinding, ServiceBindings};
 pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use provider::{
     CredentialResolver, CredentialStrategy, NoCredentialResolver, OpenAiCompatibleProvider,
@@ -120,6 +126,16 @@ pub use provider::{
 };
 pub use provider_registry::ProviderRegistry;
 pub use provider_trait::ModelProvider;
+pub use reference_store::{
+    DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,
+    RecordProvenance, RecordSource, ReferenceRecord, ReferenceService, SearchFilters, SearchResult,
+    Sensitivity, YamlReferenceService,
+};
+pub use reference_tools::{
+    ReferenceGetRequest, ReferenceGetResponse, ReferenceListDatasetsResponse,
+    ReferenceSearchRequest, ReferenceSearchResponse, ReferenceToolError, ReferenceToolKind,
+    ReferenceTools,
+};
 pub use remote::{
     HostKeyFingerprint, HostKeyVerificationError, SSHApproval, SSHApprovalStore,
     SSHApprovalStoreError, SSHConnectionError, SSHConnectionRequest, SSHKeyReference, SSHProfile,
@@ -129,8 +145,12 @@ pub use remote::{
     TmuxSessionStore, TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
+pub use service_provider::{
+    ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
+};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError};
 pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
+pub use tempo_importer::{TempoImporter, TempoImporterConfig, TempoWorklog};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };
