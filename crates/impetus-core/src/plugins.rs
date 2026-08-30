@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn repository_catalog_is_valid_and_explicitly_planned() {
         let registry =
-            CapabilityRegistry::from_json(include_str!("../../../config/capabilities.json"))
+            CapabilityRegistry::from_json(include_str!("../test-fixtures/capabilities.json"))
                 .expect("valid capability catalog");
         assert_eq!(registry.all().count(), 5);
         assert!(
