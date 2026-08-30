@@ -64,6 +64,9 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
 
     // Agent loop completes normally (no tool calls)
     assert!(result.is_ok());
+    runtime_arc
+        .finish_run(impetus_core::RunEvent::Completed { run_id })
+        .unwrap();
 
     // Check budget state was updated
     let state = runtime_arc.budget_state().unwrap();
@@ -241,6 +244,9 @@ async fn budget_events_emitted_on_approaching_limit() {
     let _ = impetus_core::AgentLoop::new(runtime_arc.clone())
         .execute(run_id, mock.clone(), messages, cancellation)
         .await;
+    runtime_arc
+        .finish_run(impetus_core::RunEvent::Completed { run_id })
+        .unwrap();
 
     // Check that BudgetEvent::Updated was emitted
     let events = runtime_arc.events().unwrap();
