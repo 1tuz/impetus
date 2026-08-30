@@ -140,9 +140,7 @@ async fn import_multiple_skills() {
             .await
             .expect("Import should succeed");
 
-        if let (ImportCapability::Supported, Some(spec)) =
-            (result.capability, result.canonical)
-        {
+        if let (ImportCapability::Supported, Some(spec)) = (result.capability, result.canonical) {
             registry
                 .register(spec)
                 .expect("Registration should succeed");
