@@ -246,6 +246,39 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
                 }
             }
         }
+        EventPayload::Retry(retry_event) => {
+            use impetus_core::RetryEvent;
+            match retry_event {
+                RetryEvent::Attempting {
+                    attempt,
+                    max_attempts,
+                    reason,
+                    backoff_ms,
+                } => {
+                    render_block(
+                        "Retry",
+                        &format!(
+                            "Attempt {}/{}: {} (backoff: {}ms)",
+                            attempt, max_attempts, reason, backoff_ms
+                        ),
+                    );
+                    osc::send_warning(&format!("Retrying (attempt {})", attempt));
+                }
+                RetryEvent::Succeeded { attempt } => {
+                    render_block("Retry", &format!("Succeeded after {} attempts", attempt));
+                }
+                RetryEvent::Exhausted {
+                    attempts,
+                    last_error,
+                } => {
+                    render_block(
+                        "Retry",
+                        &format!("Exhausted after {} attempts: {}", attempts, last_error),
+                    );
+                    osc::send_error(&format!("Retry failed: {}", last_error));
+                }
+            }
+        }
     }
 }
 

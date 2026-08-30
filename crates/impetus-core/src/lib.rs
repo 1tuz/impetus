@@ -68,8 +68,8 @@ pub use effects::{
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
-    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RunEvent, SessionEvent, ToolEvent,
-    ToolEventOutcome,
+    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent, RunEvent, SessionEvent,
+    ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
     ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
@@ -123,7 +123,7 @@ pub use remote::{
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore};
-pub use supervisor::{MockStreamItem, MockStreamingProvider, SessionSupervisor, SupervisorError};
+pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };

@@ -209,6 +209,27 @@ pub enum ProviderError {
     RequestFailed(String),
     #[error("provider returned malformed stream")]
     MalformedStream,
+    #[error("rate limit exceeded: {0}")]
+    RateLimited(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("timeout")]
+    Timeout,
+    #[error("model unavailable: {0}")]
+    ModelUnavailable(String),
+}
+
+impl ProviderError {
+    /// Classify error as transient (safe to retry) or permanent
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::RateLimited(_)
+                | ProviderError::Network(_)
+                | ProviderError::Timeout
+                | ProviderError::ModelUnavailable(_)
+        )
+    }
 }
 
 #[derive(Clone)]

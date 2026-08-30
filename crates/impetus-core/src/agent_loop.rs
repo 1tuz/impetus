@@ -6,7 +6,7 @@
 
 use crate::{
     AgentRuntime, BudgetError, EventPayload, ModelProvider, PolicyEngine, ProviderError,
-    ProviderMessage, RuntimeError, RuntimeStatus, ToolOrchestrator,
+    ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -15,6 +15,15 @@ use uuid::Uuid;
 
 /// Maximum iterations per agent loop run to prevent infinite loops.
 const MAX_ITERATIONS: u32 = 50;
+
+/// Maximum retry attempts for transient errors
+const MAX_RETRY_ATTEMPTS: u32 = 3;
+
+/// Initial backoff in milliseconds
+const INITIAL_BACKOFF_MS: u64 = 1000;
+
+/// Backoff multiplier for exponential backoff
+const BACKOFF_MULTIPLIER: u64 = 2;
 
 #[derive(Debug, Error)]
 pub enum AgentLoopError {
@@ -89,9 +98,9 @@ impl AgentLoop {
 
             iteration += 1;
 
-            // Phase 1: Model inference
+            // Phase 1: Model inference with retry logic
             let model_response = self
-                .call_model(run_id, &provider, &messages, &cancellation)
+                .call_model_with_retry(run_id, &provider, &messages, &cancellation)
                 .await?;
 
             // Phase 2: Extract tool calls from response
@@ -118,6 +127,74 @@ impl AgentLoop {
                     serde_json::to_string(&observation)
                         .map_err(|error| ProviderError::RequestFailed(error.to_string()))?,
                 ));
+            }
+        }
+    }
+
+    async fn call_model_with_retry(
+        &self,
+        run_id: Uuid,
+        provider: &Arc<dyn ModelProvider>,
+        messages: &[ProviderMessage],
+        cancellation: &CancellationToken,
+    ) -> Result<String, AgentLoopError> {
+        let mut attempt = 0;
+
+        loop {
+            attempt += 1;
+
+            match self
+                .call_model(run_id, provider, messages, cancellation)
+                .await
+            {
+                Ok(response) => {
+                    // Success — emit retry success event if we retried
+                    if attempt > 1 {
+                        self.runtime
+                            .record_event(EventPayload::Retry(RetryEvent::Succeeded { attempt }))?;
+                    }
+                    return Ok(response);
+                }
+                Err(AgentLoopError::Provider(provider_error)) => {
+                    // Check if error is transient and we haven't exhausted retries
+                    if provider_error.is_transient() && attempt < MAX_RETRY_ATTEMPTS {
+                        let backoff_ms = INITIAL_BACKOFF_MS * BACKOFF_MULTIPLIER.pow(attempt - 1);
+
+                        // Emit retry attempt event
+                        self.runtime
+                            .record_event(EventPayload::Retry(RetryEvent::Attempting {
+                                attempt,
+                                max_attempts: MAX_RETRY_ATTEMPTS,
+                                reason: provider_error.to_string(),
+                                backoff_ms,
+                            }))?;
+
+                        // Wait with cancellation check
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {},
+                            _ = cancellation.cancelled() => {
+                                return Err(AgentLoopError::Cancelled);
+                            }
+                        }
+
+                        continue;
+                    } else {
+                        // Permanent error or retries exhausted
+                        if attempt > 1 {
+                            self.runtime.record_event(EventPayload::Retry(
+                                RetryEvent::Exhausted {
+                                    attempts: attempt,
+                                    last_error: provider_error.to_string(),
+                                },
+                            ))?;
+                        }
+                        return Err(AgentLoopError::Provider(provider_error));
+                    }
+                }
+                Err(other_error) => {
+                    // Non-provider errors (Budget, Runtime, Cancelled) — fail immediately
+                    return Err(other_error);
+                }
             }
         }
     }
