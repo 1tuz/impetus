@@ -20,6 +20,7 @@ pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
 pub mod mock_provider;
+pub mod model_router;
 pub mod module;
 pub mod module_fallback;
 pub mod module_ipc;
