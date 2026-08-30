@@ -9,6 +9,7 @@
 opencode.json
 *.html
 !docs/**/*.html
+!crates/impetus-core/tests/fixtures/web/*.html
 /.obsidian/
 /.firecrawl/
 __pycache__/
