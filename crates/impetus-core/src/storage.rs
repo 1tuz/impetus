@@ -1,6 +1,6 @@
 use crate::budget::BudgetState;
 use crate::events::{Event, EventPayload, SessionEvent, legacy_payload};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -33,6 +33,8 @@ pub struct SessionInfo {
     pub id: Uuid,
     pub created_at_unix_ms: u64,
     pub updated_at_unix_ms: u64,
+    pub parent_session_id: Option<Uuid>,
+    pub fork_sequence: Option<u64>,
 }
 
 pub trait EventStore: Send + Sync {
@@ -66,8 +68,16 @@ pub trait EventStore: Send + Sync {
     fn update_budget_state(&self, session_id: Uuid, state: &BudgetState) -> Result<(), StoreError>;
 }
 
+#[derive(Debug, Clone)]
+struct MemorySessionMetadata {
+    id: Uuid,
+    parent_session_id: Option<Uuid>,
+    fork_sequence: Option<u64>,
+}
+
 pub struct MemoryEventStore {
     events: Mutex<Vec<Event>>,
+    sessions: Mutex<Vec<MemorySessionMetadata>>,
     notifier: broadcast::Sender<(Uuid, u64)>,
 }
 
@@ -76,6 +86,7 @@ impl Default for MemoryEventStore {
         let (notifier, _) = broadcast::channel(100);
         Self {
             events: Mutex::default(),
+            sessions: Mutex::default(),
             notifier,
         }
     }
@@ -89,6 +100,14 @@ impl EventStore for MemoryEventStore {
             .lock()
             .map_err(|_| StoreError::Poisoned)?
             .push(event);
+        self.sessions
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .push(MemorySessionMetadata {
+                id: session_id,
+                parent_session_id: None,
+                fork_sequence: None,
+            });
         Ok(session_id)
     }
 
@@ -102,52 +121,105 @@ impl EventStore for MemoryEventStore {
     }
 
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError> {
-        let mut events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
-        let mut sequences = events
-            .iter()
-            .filter(|event| event.session_id == session_id)
-            .map(|event| event.sequence);
-        let Some(last_sequence) = sequences
-            .next()
-            .map(|first| sequences.fold(first, u64::max))
-        else {
-            return Err(StoreError::MissingSession(session_id));
-        };
+        // Get logical last sequence by reading full history (prefix + suffix)
+        let current_events = self.list(session_id)?;
+        let last_sequence = current_events.last().map(|e| e.sequence).unwrap_or(0);
         let sequence = last_sequence + 1;
+
         let event = Event::new(session_id, sequence, payload);
-        events.push(event.clone());
+        self.events
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .push(event.clone());
         let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(event)
     }
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError> {
-        Ok(self
-            .events
-            .lock()
-            .map_err(|_| StoreError::Poisoned)?
-            .iter()
-            .filter(|e| e.session_id == session_id)
-            .cloned()
-            .collect())
+        let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        let sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
+
+        // Build ancestry chain
+        let mut ancestry = Vec::new();
+        let mut current_id = session_id;
+        let mut current_fork_seq: Option<u64> = None;
+
+        loop {
+            let session_meta = sessions.iter().find(|s| s.id == current_id);
+            if let Some(meta) = session_meta {
+                if let Some(parent_id) = meta.parent_session_id {
+                    ancestry.push((current_id, current_fork_seq));
+                    current_id = parent_id;
+                    current_fork_seq = meta.fork_sequence;
+                } else {
+                    // Root session
+                    ancestry.push((current_id, current_fork_seq));
+                    break;
+                }
+            } else {
+                // No metadata found, treat as root
+                ancestry.push((current_id, current_fork_seq));
+                break;
+            }
+        }
+
+        // Reverse to get root -> ... -> current
+        ancestry.reverse();
+
+        // Collect events with logical renumbering
+        let mut all_events = Vec::new();
+        let mut logical_sequence = 0u64;
+
+        for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
+            let is_current = idx == ancestry.len() - 1;
+            let session_events: Vec<Event> = events
+                .iter()
+                .filter(|e| {
+                    if e.session_id != *sid {
+                        return false;
+                    }
+                    if is_current {
+                        true
+                    } else if let Some(up_to) = up_to_seq_opt {
+                        e.sequence <= *up_to
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect();
+
+            for mut event in session_events {
+                logical_sequence += 1;
+                event.sequence = logical_sequence;
+                all_events.push(event);
+            }
+        }
+
+        Ok(all_events)
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError> {
         let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
-        let mut sessions = std::collections::BTreeMap::<Uuid, (u64, u64)>::new();
+        let sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut sessions_map = std::collections::BTreeMap::<Uuid, (u64, u64)>::new();
         for event in events.iter() {
-            sessions
+            sessions_map
                 .entry(event.session_id)
                 .and_modify(|times| times.1 = times.1.max(event.at_unix_ms))
                 .or_insert((event.at_unix_ms, event.at_unix_ms));
         }
-        Ok(sessions
+        Ok(sessions_map
             .into_iter()
-            .map(
-                |(id, (created_at_unix_ms, updated_at_unix_ms))| SessionInfo {
+            .map(|(id, (created_at_unix_ms, updated_at_unix_ms))| {
+                let meta = sessions.iter().find(|s| s.id == id);
+                SessionInfo {
                     id,
                     created_at_unix_ms,
                     updated_at_unix_ms,
-                },
-            )
+                    parent_session_id: meta.and_then(|m| m.parent_session_id),
+                    fork_sequence: meta.and_then(|m| m.fork_sequence),
+                }
+            })
             .collect())
     }
 
@@ -156,39 +228,25 @@ impl EventStore for MemoryEventStore {
         source_session_id: Uuid,
         up_to_sequence: u64,
     ) -> Result<Uuid, StoreError> {
-        let mut events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
 
-        // Get source events up to checkpoint
-        let source_events: Vec<Event> = events
+        // Verify source session exists and has events up to checkpoint
+        let source_exists = events
             .iter()
-            .filter(|e| e.session_id == source_session_id && e.sequence <= up_to_sequence)
-            .cloned()
-            .collect();
+            .any(|e| e.session_id == source_session_id && e.sequence <= up_to_sequence);
 
-        if source_events.is_empty() {
+        if !source_exists {
             return Err(StoreError::MissingSession(source_session_id));
         }
 
-        // Create new session
+        // Create new session with parent reference (no event copying, no SessionCreated)
         let new_session_id = Uuid::new_v4();
-        let mut new_sequence = 0u64;
-
-        // Copy events with new session_id and renumbered sequences
-        for source_event in source_events {
-            new_sequence += 1;
-            let new_event = Event::with_metadata(
-                source_event.schema_version,
-                Uuid::new_v4(),
-                new_session_id,
-                new_sequence,
-                source_event.at_unix_ms,
-                source_event.payload.clone(),
-            );
-            events.push(new_event.clone());
-            let _ = self
-                .notifier
-                .send((new_event.session_id, new_event.sequence));
-        }
+        sessions.push(MemorySessionMetadata {
+            id: new_session_id,
+            parent_session_id: Some(source_session_id),
+            fork_sequence: Some(up_to_sequence),
+        });
 
         Ok(new_session_id)
     }
@@ -252,6 +310,10 @@ impl SqliteEventStore {
             "INTEGER DEFAULT 0",
         )?;
 
+        // Session DAG columns
+        add_column_if_missing(&connection, "sessions", "parent_session_id", "TEXT")?;
+        add_column_if_missing(&connection, "sessions", "fork_sequence", "INTEGER")?;
+
         connection.execute_batch(
             "INSERT OR IGNORE INTO sessions (id, created_at_unix_ms, updated_at_unix_ms)
              SELECT session_id, MIN(at_unix_ms), MAX(at_unix_ms) FROM events GROUP BY session_id;",
@@ -298,13 +360,14 @@ impl EventStore for SqliteEventStore {
     }
 
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError> {
+        // Get logical last sequence by reading full history (prefix + suffix)
+        let current_events = self.list(session_id)?;
+        let last_sequence = current_events.last().map(|e| e.sequence).unwrap_or(0);
+        let next_sequence = last_sequence + 1;
+
         let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let next_sequence = transaction.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE session_id = ?1",
-            [session_id.to_string()],
-            |row| row.get::<_, u64>(0),
-        )?;
+
         let event = Event::new(session_id, next_sequence, payload);
         insert_event(&transaction, &event)?;
         let changed = transaction.execute(
@@ -321,40 +384,142 @@ impl EventStore for SqliteEventStore {
 
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError> {
         let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
-        let mut statement = conn.prepare("SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json FROM events WHERE session_id = ?1 ORDER BY sequence")?;
-        let rows = statement.query_map([session_id.to_string()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<u16>>(6)?,
-                row.get::<_, Option<String>>(7)?,
-            ))
-        })?;
-        rows.map(|row| row.map_err(StoreError::from).and_then(decode_event))
-            .collect()
+
+        // Build ancestry chain: current session <- parent <- grandparent ...
+        let mut ancestry = Vec::new();
+        let mut current_id = session_id;
+        let mut current_fork_seq: Option<u64> = None;
+
+        loop {
+            let parent_info: Option<(String, u64)> = conn
+                .query_row(
+                    "SELECT parent_session_id, fork_sequence FROM sessions WHERE id = ?1",
+                    params![current_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<u64>>(1)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .and_then(|(p, f)| p.zip(f));
+
+            if let Some((parent_id_str, fork_seq)) = parent_info {
+                let parent_id =
+                    Uuid::parse_str(&parent_id_str).map_err(|_| StoreError::InvalidUuid {
+                        field: "parent_session_id",
+                        value: parent_id_str.to_string(),
+                    })?;
+                ancestry.push((current_id, current_fork_seq));
+                current_id = parent_id;
+                current_fork_seq = Some(fork_seq);
+            } else {
+                // Root session
+                ancestry.push((current_id, current_fork_seq));
+                break;
+            }
+        }
+
+        // Reverse to get root -> ... -> current
+        ancestry.reverse();
+
+        // Collect events: for each ancestor, read events up to fork_sequence (or all for current)
+        let mut all_events = Vec::new();
+        let mut logical_sequence = 0u64;
+
+        for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
+            let is_current = idx == ancestry.len() - 1;
+            let events_query = if is_current {
+                // Current session: read all its own events
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
+                     FROM events WHERE session_id = ?1 ORDER BY sequence"
+                )?;
+                stmt.query_map([sid.to_string()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<u16>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            } else {
+                // Ancestor: read events up to fork_sequence
+                let up_to = up_to_seq_opt.ok_or_else(|| StoreError::MissingSession(*sid))?;
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
+                     FROM events WHERE session_id = ?1 AND sequence <= ?2 ORDER BY sequence"
+                )?;
+                stmt.query_map(params![sid.to_string(), up_to], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<u16>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+
+            for row in events_query {
+                let mut event = decode_event(row)?;
+                // Renumber to logical sequence
+                logical_sequence += 1;
+                event.sequence = logical_sequence;
+                all_events.push(event);
+            }
+        }
+
+        Ok(all_events)
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError> {
         let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
-        let mut statement = conn.prepare("SELECT id, created_at_unix_ms, updated_at_unix_ms FROM sessions ORDER BY updated_at_unix_ms DESC, id")?;
+        let mut statement = conn.prepare(
+            "SELECT id, created_at_unix_ms, updated_at_unix_ms, parent_session_id, fork_sequence \
+             FROM sessions ORDER BY updated_at_unix_ms DESC, id",
+        )?;
         statement
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<u64>>(4)?,
+                ))
             })?
             .map(|row| {
-                let (id, created_at_unix_ms, updated_at_unix_ms) = row?;
+                let (id, created_at_unix_ms, updated_at_unix_ms, parent_id_str, fork_sequence) =
+                    row?;
                 let id = Uuid::parse_str(&id).map_err(|_| StoreError::InvalidUuid {
                     field: "session id",
                     value: id,
                 })?;
+                let parent_session_id = parent_id_str
+                    .map(|s| {
+                        Uuid::parse_str(&s).map_err(|_| StoreError::InvalidUuid {
+                            field: "parent_session_id",
+                            value: s,
+                        })
+                    })
+                    .transpose()?;
                 Ok(SessionInfo {
                     id,
                     created_at_unix_ms,
                     updated_at_unix_ms,
+                    parent_session_id,
+                    fork_sequence,
                 })
             })
             .collect()
@@ -368,38 +533,21 @@ impl EventStore for SqliteEventStore {
         let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // Get source events up to checkpoint
-        let source_events: Result<Vec<Event>, StoreError> = {
-            let mut statement = transaction.prepare(
-                "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
-                 FROM events WHERE session_id = ?1 AND sequence <= ?2 ORDER BY sequence"
-            )?;
-            statement
-                .query_map(
-                    params![source_session_id.to_string(), up_to_sequence],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get::<_, String>(4)?,
-                            row.get::<_, String>(5)?,
-                            row.get::<_, Option<u16>>(6)?,
-                            row.get::<_, Option<String>>(7)?,
-                        ))
-                    },
-                )?
-                .map(|row| row.map_err(StoreError::from).and_then(decode_event))
-                .collect()
-        };
-        let source_events = source_events?;
+        // Verify source session exists and has events up to checkpoint
+        let exists: bool = transaction
+            .query_row(
+                "SELECT 1 FROM events WHERE session_id = ?1 AND sequence <= ?2 LIMIT 1",
+                params![source_session_id.to_string(), up_to_sequence],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
 
-        if source_events.is_empty() {
+        if !exists {
             return Err(StoreError::MissingSession(source_session_id));
         }
 
-        // Create new session
+        // Create new session with parent reference (no event copying, no SessionCreated)
         let new_session_id = Uuid::new_v4();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -407,25 +555,10 @@ impl EventStore for SqliteEventStore {
             .as_millis() as u64;
 
         transaction.execute(
-            "INSERT INTO sessions (id, created_at_unix_ms, updated_at_unix_ms) VALUES (?1, ?2, ?2)",
-            params![new_session_id.to_string(), now],
+            "INSERT INTO sessions (id, created_at_unix_ms, updated_at_unix_ms, parent_session_id, fork_sequence) \
+             VALUES (?1, ?2, ?2, ?3, ?4)",
+            params![new_session_id.to_string(), now, source_session_id.to_string(), up_to_sequence],
         )?;
-
-        // Copy events with new session_id and renumbered sequences
-        for (new_sequence, source_event) in source_events.iter().enumerate() {
-            let new_event = Event::with_metadata(
-                source_event.schema_version,
-                Uuid::new_v4(),
-                new_session_id,
-                (new_sequence as u64) + 1,
-                source_event.at_unix_ms,
-                source_event.payload.clone(),
-            );
-            insert_event(&transaction, &new_event)?;
-            let _ = self
-                .notifier
-                .send((new_event.session_id, new_event.sequence));
-        }
 
         transaction.commit()?;
         Ok(new_session_id)
