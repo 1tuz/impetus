@@ -34,7 +34,7 @@ async fn test_incompatible_module_rejected() {
     assert_eq!(compat_report.overall, Compatibility::Incompatible);
 
     // Module should not be allowed to start
-    let result = lifecycle.start("incompatible-module").await;
+    let result = lifecycle.start("incompatible-module", None).await;
     assert!(result.is_err());
 }
 
