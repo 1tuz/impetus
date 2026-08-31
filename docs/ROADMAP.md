@@ -82,10 +82,10 @@ remaining tool families.
 
 **Current:** provider abstraction, registry foundation, direct provider path.
 
-**Target:** route by complexity, capability, health, cost, latency, privacy,
+**Target:** route by capability, health, cost, latency, privacy,
 context, prompt cache, budget, reasoning. Policies: `local-first`, `free-first`,
-`balanced`, `quality-first`. Escalation light/local → strong/cloud через
-minimal sanitised request; sensitive repo context не уходит в облако по умолчанию.
+`balanced`, `quality-first`. Technical fallback between providers when unavailable.
+Sensitive repo context не уходит в облако по умолчанию.
 
 ### Durable budgets
 

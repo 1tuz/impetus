@@ -218,15 +218,15 @@ Datasets have sensitivity levels:
 - **Internal**: Organization-only
 - **Private**: User-only, not sent to cloud models by default
 
-The agent respects sensitivity when escalating to cloud models:
+The agent respects sensitivity when routing to models:
 
 ```rust
 match dataset.sensitivity {
     Sensitivity::Private => {
-        // Only use with local models or sanitized cloud requests
+        // Only use with local models by default
     }
     Sensitivity::Internal => {
-        // Organization-approved cloud models only
+        // Organization-approved models only
     }
     Sensitivity::Public => {
         // Any model

@@ -86,7 +86,7 @@ fn model_router_selects_by_policy() {
     let config = ModelRouterConfig {
         policy: RouterPolicy::LocalFirst,
         models: vec![local_model.clone(), cloud_model.clone()],
-        escalation_chain: vec![],
+        fallback_chain: vec![],
     };
     let router = ModelRouter::new(config);
 
@@ -104,7 +104,7 @@ fn model_router_selects_by_policy() {
     let config = ModelRouterConfig {
         policy: RouterPolicy::QualityFirst,
         models: vec![local_model.clone(), cloud_model.clone()],
-        escalation_chain: vec![],
+        fallback_chain: vec![],
     };
     let router = ModelRouter::new(config);
 
@@ -214,7 +214,7 @@ fn vertical_slice_budget_router_integration() {
     let router_config = ModelRouterConfig {
         policy: RouterPolicy::LocalFirst,
         models,
-        escalation_chain: vec!["llama3:8b".to_string(), "gpt-4o".to_string()],
+        fallback_chain: vec!["llama3:8b".to_string(), "gpt-4o".to_string()],
     };
     let router = ModelRouter::new(router_config);
 
@@ -248,9 +248,9 @@ fn vertical_slice_budget_router_integration() {
     runtime.record_turn(4000).unwrap();
     assert_eq!(runtime.budget_state().unwrap().tokens_used, 9000);
 
-    // Escalate if local model fails
-    let escalated = router.escalate("llama3:8b").unwrap();
-    assert_eq!(escalated.model_id, "gpt-4o");
+    // Fallback if local model fails (technical failure: unavailable, rate limit, etc.)
+    let fallback = router.fallback("llama3:8b").unwrap();
+    assert_eq!(fallback.model_id, "gpt-4o");
 
     // Budget state persisted in runtime
     let state = runtime.budget_state().unwrap();
