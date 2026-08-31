@@ -11,6 +11,7 @@ pub mod attachments;
 pub mod audit_log;
 pub mod budget;
 pub mod ci;
+pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod diagnostics;
 pub mod durable_artifacts;
@@ -68,6 +69,10 @@ pub use budget::{BudgetChecker, BudgetConfig, BudgetError, BudgetState, Reasonin
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
+};
+pub use context_optimizer::{
+    ArtifactChunkRequest, ContextOptimizer, ContextOptimizerConfig, ContextOptimizerError,
+    ContextRunState, ContextTelemetry, ContextTier, OptimizedContext,
 };
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
 pub use durable_artifacts::{

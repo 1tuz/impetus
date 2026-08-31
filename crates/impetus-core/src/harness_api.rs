@@ -623,14 +623,12 @@ fn resolve_context(
 }
 
 fn resolve_provider_messages(
-    workspace_root: &std::path::Path,
+    _workspace_root: &std::path::Path,
     runtime: &AgentRuntime,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
-    let mut messages = resolve_context(workspace_root)?
-        .references
-        .into_iter()
-        .map(|reference| ProviderMessage::system(reference.text))
-        .collect::<Vec<_>>();
+    // Instructions and tool schemas are selected lazily by ContextOptimizer
+    // immediately before each provider call. Durable history stays raw here.
+    let mut messages = Vec::new();
     let mut pending_assistant = String::new();
     let mut has_user_intent = false;
     for event in runtime.events()? {

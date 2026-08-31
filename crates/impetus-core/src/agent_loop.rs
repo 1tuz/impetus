@@ -5,8 +5,9 @@
 //! observation feeding back into the next model turn.
 
 use crate::{
-    AgentRuntime, BudgetError, EventPayload, ModelProvider, PolicyEngine, ProviderError,
-    ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, ToolOrchestrator,
+    AgentRuntime, BudgetError, ContextOptimizer, ContextOptimizerError, ContextRunState,
+    EventPayload, ModelProvider, PolicyEngine, ProviderError, ProviderMessage, RetryEvent,
+    RuntimeError, RuntimeStatus, ToolObservation, ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -35,6 +36,8 @@ pub enum AgentLoopError {
     Orchestrator(#[from] crate::OrchestratorError),
     #[error(transparent)]
     Budget(#[from] BudgetError),
+    #[error(transparent)]
+    Context(#[from] ContextOptimizerError),
     #[error("agent loop exceeded maximum iterations ({MAX_ITERATIONS})")]
     MaxIterationsExceeded,
     #[error("agent loop cancelled")]
@@ -55,6 +58,7 @@ pub struct AgentLoop {
     runtime: Arc<AgentRuntime>,
     policy: PolicyEngine,
     tool_orchestrator: ToolOrchestrator,
+    context_optimizer: std::sync::Mutex<ContextOptimizer>,
 }
 
 impl AgentLoop {
@@ -75,8 +79,12 @@ impl AgentLoop {
         Self {
             runtime,
             policy: policy.clone(),
-            tool_orchestrator: ToolOrchestrator::new(policy, workspace_root)
+            tool_orchestrator: ToolOrchestrator::new(policy, workspace_root.clone())
                 .with_web_research(Arc::new(web_research)),
+            context_optimizer: std::sync::Mutex::new(
+                ContextOptimizer::new(workspace_root)
+                    .expect("daemon-owned context optimizer store must open"),
+            ),
         }
     }
 
@@ -96,6 +104,7 @@ impl AgentLoop {
     ) -> Result<(), AgentLoopError> {
         let mut messages = initial_messages;
         let mut iteration = 0;
+        let mut context_state = ContextRunState::default();
 
         loop {
             if cancellation.is_cancelled() {
@@ -110,7 +119,13 @@ impl AgentLoop {
 
             // Phase 1: Model inference with retry logic
             let model_response = self
-                .call_model_with_retry(run_id, &provider, &messages, &cancellation)
+                .call_model_with_retry(
+                    run_id,
+                    &provider,
+                    &messages,
+                    &cancellation,
+                    &mut context_state,
+                )
                 .await?;
 
             // Phase 2: Extract tool calls from response
@@ -122,16 +137,36 @@ impl AgentLoop {
                 return Ok(());
             }
 
-            // Phase 3: Tool Orchestrator processes each tool request
-            let observations = self
-                .tool_orchestrator
-                .process_tool_calls(run_id, tool_calls, &self.runtime)
-                .await?;
-
-            // Phase 4: Add observations to message history for next turn
-            // Note: Using 'user' role for observations as assistant/tool_result
-            // roles are not yet implemented in ProviderMessage
             messages.push(ProviderMessage::assistant(model_response));
+            let mut action_calls = Vec::new();
+            let mut observations = Vec::new();
+            {
+                let mut optimizer = self.context_optimizer.lock().map_err(|_| {
+                    ContextOptimizerError::Artifacts("context lock poisoned".into())
+                })?;
+                let task = current_task(&messages);
+                for call in tool_calls {
+                    if let Some(observation) =
+                        optimizer.handle_control_call(&call, &messages, task, &mut context_state)
+                    {
+                        self.record_context_observation(&observation)?;
+                        observations.push(observation);
+                    } else {
+                        action_calls.push(call);
+                    }
+                }
+            }
+
+            // Phase 3: Tool Orchestrator processes capability-bearing requests.
+            if !action_calls.is_empty() {
+                observations.extend(
+                    self.tool_orchestrator
+                        .process_tool_calls(run_id, action_calls, &self.runtime)
+                        .await?,
+                );
+            }
+
+            // Phase 4: Add bounded observations to delta context for next turn.
             for observation in observations {
                 messages.push(ProviderMessage::tool(
                     serde_json::to_string(&observation)
@@ -147,6 +182,7 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
+        context_state: &mut ContextRunState,
     ) -> Result<String, AgentLoopError> {
         let mut attempt = 0;
 
@@ -154,7 +190,7 @@ impl AgentLoop {
             attempt += 1;
 
             match self
-                .call_model(run_id, provider, messages, cancellation)
+                .call_model(run_id, provider, messages, cancellation, context_state)
                 .await
             {
                 Ok(response) => {
@@ -215,14 +251,36 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
+        context_state: &mut ContextRunState,
     ) -> Result<String, AgentLoopError> {
         // Check runtime status before calling model
         if !matches!(self.runtime.status(), Ok(RuntimeStatus::Running)) {
             return Err(AgentLoopError::Runtime(RuntimeError::InactiveRun(run_id)));
         }
 
-        // Budget enforcement: check before model call
-        let estimated_tokens = self.estimate_request_tokens(messages);
+        let events = self.runtime.events()?;
+        let (plan, approvals) = crate::context_optimizer::summarize_pending_approvals(&events);
+        context_state.set_active_plan(plan);
+        context_state.set_pending_approvals(approvals);
+        let prompt_budget = self.runtime.budget().as_ref().and_then(|budget| {
+            budget
+                .lock()
+                .ok()
+                .and_then(|guard| guard.config().context_limit)
+        });
+        let optimized = self
+            .context_optimizer
+            .lock()
+            .map_err(|_| ContextOptimizerError::Artifacts("context lock poisoned".into()))?
+            .optimize(
+                messages,
+                current_task(messages),
+                context_state,
+                prompt_budget,
+            )?;
+
+        // Budget enforcement checks the actual optimized prompt, not durable history.
+        let estimated_tokens = self.estimate_request_tokens(&optimized.messages);
         if let Err(budget_error) = self.runtime.check_budget(estimated_tokens) {
             self.emit_budget_limit_event(&budget_error)?;
             return Err(AgentLoopError::Budget(budget_error));
@@ -247,9 +305,14 @@ impl AgentLoop {
         ));
         let accumulated_clone = accumulated.clone();
 
+        self.runtime
+            .record_event(EventPayload::Notice(crate::NoticeEvent::Runtime {
+                message: crate::context_optimizer::context_notice(&optimized.telemetry),
+            }))?;
+
         provider
             .stream_messages(
-                messages,
+                &optimized.messages,
                 None, // credential resolution handled at provider level
                 cancellation.clone(),
                 Box::new(move |chunk| {
@@ -268,6 +331,8 @@ impl AgentLoop {
                 }),
             )
             .await?;
+
+        context_state.commit(&optimized);
 
         let result = accumulated.lock().unwrap().clone();
 
@@ -304,6 +369,23 @@ impl AgentLoop {
         }
 
         Ok(result)
+    }
+
+    fn record_context_observation(
+        &self,
+        observation: &ToolObservation,
+    ) -> Result<(), RuntimeError> {
+        self.runtime
+            .record_event(EventPayload::Tool(crate::ToolEvent::Observed {
+                tool_call_id: observation.tool_call_id.clone(),
+                tool_name: observation.tool_name.clone(),
+                arguments_summary: observation.arguments_summary.clone(),
+                outcome: observation.outcome.clone(),
+                preview: observation.preview.clone(),
+                artifact: observation.artifact.clone(),
+                error: observation.error.clone(),
+            }))?;
+        Ok(())
     }
 
     fn extract_tool_calls(&self, response: &str) -> Vec<ToolCall> {
@@ -438,6 +520,15 @@ impl AgentLoop {
 
         Ok(())
     }
+}
+
+fn current_task(messages: &[ProviderMessage]) -> &str {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role() == "user")
+        .map(ProviderMessage::content)
+        .unwrap_or("continue current task")
 }
 
 /// A tool invocation request extracted from model response.
