@@ -27,3 +27,4 @@ __pycache__/
 /site/dist/
 /site/node_modules/
 /docs/superpowers/
+*.zip

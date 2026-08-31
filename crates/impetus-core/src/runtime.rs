@@ -180,6 +180,13 @@ impl AgentRuntime {
         self.budget.clone()
     }
 
+    /// Get the current budget configuration if budget is set
+    pub fn budget_config(&self) -> Option<BudgetConfig> {
+        self.budget
+            .as_ref()
+            .map(|checker| checker.lock().unwrap().config().clone())
+    }
+
     /// Check if budget allows this request
     pub fn check_budget(&self, estimated_tokens: u64) -> Result<(), crate::budget::BudgetError> {
         if let Some(ref checker) = self.budget {
@@ -403,6 +410,12 @@ impl AgentRuntime {
 
     pub fn events(&self) -> Result<Vec<Event>, RuntimeError> {
         Ok(self.store.list(self.session_id)?)
+    }
+
+    /// Append an event to the session event log
+    pub fn append_event(&self, payload: EventPayload) -> Result<(), RuntimeError> {
+        self.store.append_next(self.session_id, payload)?;
+        Ok(())
     }
 
     pub fn status(&self) -> Result<RuntimeStatus, RuntimeError> {

@@ -130,6 +130,7 @@ pub struct ModelRouterConfig {
 }
 
 /// Model router for intelligent model selection
+#[derive(Clone)]
 pub struct ModelRouter {
     config: ModelRouterConfig,
 }
