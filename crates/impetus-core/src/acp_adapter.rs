@@ -3,11 +3,16 @@
 //! Связывает external coding-agent через AcpGatewayV2 с harness ModelProvider.
 //! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
-use crate::{ModelProvider, ProviderError, ProviderHealth, ProviderMessage};
+use crate::{
+    Action, ActionKind, ActionOrigin, ModelProvider, ProviderError, ProviderHealth,
+    ProviderMessage,
+};
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
-use impetus_acp_gateway::{AcpGatewayV2, GatewayState, PermissionDecision, StreamUpdate};
-use std::path::PathBuf;
+use impetus_acp_gateway::{
+    AcpGatewayV2, GatewayState, PermissionDecision, PermissionKind, PermissionRequest, StreamUpdate,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -24,11 +29,12 @@ pub struct AcpAdapter {
 impl AcpAdapter {
     pub fn new(
         config: AcpAgentConfig,
+        auth_method_id: Option<String>,
         provider_id: String,
         model_id: String,
         workspace_dir: PathBuf,
     ) -> Self {
-        let gateway = AcpGatewayV2::new(config);
+        let gateway = AcpGatewayV2::new(config).with_auth_method(auth_method_id);
 
         Self {
             gateway: Arc::new(gateway),
@@ -37,6 +43,34 @@ impl AcpAdapter {
             workspace_dir,
         }
     }
+}
+
+fn action_for_permission(request: &PermissionRequest, workspace: &Path) -> Option<Action> {
+    let kind = match request.kind {
+        PermissionKind::Read | PermissionKind::Search => ActionKind::ReadFile,
+        PermissionKind::Edit | PermissionKind::Delete | PermissionKind::Move => {
+            ActionKind::WriteFile
+        }
+        PermissionKind::Execute => ActionKind::SpawnProcess,
+        PermissionKind::Fetch => ActionKind::NetworkConnect,
+        PermissionKind::Think | PermissionKind::SwitchMode | PermissionKind::Other => return None,
+    };
+    let target = match kind {
+        ActionKind::ReadFile | ActionKind::WriteFile => request
+            .target
+            .as_ref()
+            .map(|target| target.to_string_lossy().into_owned()),
+        ActionKind::SpawnProcess | ActionKind::NetworkConnect => {
+            Some(workspace.to_string_lossy().into_owned())
+        }
+        _ => None,
+    };
+    Some(Action {
+        origin: ActionOrigin::Agent,
+        kind,
+        summary: request.description.clone(),
+        target,
+    })
 }
 
 #[async_trait]
@@ -93,6 +127,11 @@ impl ModelProvider for AcpAdapter {
             tokio::select! {
                 _ = cancel.cancelled() => {
                     warn!("ACP session cancelled");
+                    if let Err(error) = self.gateway.cancel_active_session().await {
+                        debug!("ACP cancellation notification was not acknowledged: {}", error);
+                    }
+                    session_handle.abort();
+                    let _ = session_handle.await;
                     return Err(ProviderError::Cancelled);
                 }
 
@@ -114,7 +153,6 @@ impl ModelProvider for AcpAdapter {
                         }
                         Some(StreamUpdate::Completed { stop_reason }) => {
                             info!("Session completed: {:?}", stop_reason);
-                            break;
                         }
                         Some(StreamUpdate::Error(err)) => {
                             error!("Agent error: {}", err);
@@ -170,5 +208,46 @@ impl ModelProvider for AcpAdapter {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use impetus_acp_gateway::{
+        PermissionChoiceKind, PermissionKind, PermissionOption, PermissionRequest,
+    };
+
+    #[test]
+    fn edit_permission_is_normalized_as_agent_write_action() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let target = workspace.path().join("file.txt");
+        let request = PermissionRequest {
+            request_id: "permission-1".into(),
+            description: "Edit file".into(),
+            kind: PermissionKind::Edit,
+            target: Some(target.clone()),
+            options: vec![PermissionOption {
+                option_id: "allow-once".into(),
+                description: "Allow once".into(),
+                kind: PermissionChoiceKind::AllowOnce,
+            }],
+        };
+
+        let action = action_for_permission(&request, workspace.path()).expect("known action");
+
+        assert_eq!(action.origin, crate::ActionOrigin::Agent);
+        assert_eq!(action.kind, crate::ActionKind::WriteFile);
+        assert_eq!(action.target.as_deref(), target.to_str());
+    }
+
+    #[tokio::test]
+    async fn approval_broker_resumes_the_waiting_acp_permission() {
+        let broker = AcpApprovalBroker::default();
+        let approval_id = uuid::Uuid::new_v4();
+        let resolution = broker.register(approval_id);
+
+        assert!(broker.resolve(approval_id, true));
+        assert!(resolution.await.expect("broker sender alive"));
     }
 }

@@ -251,6 +251,7 @@ impl AgentLoop {
             .stream_messages(
                 messages,
                 None, // credential resolution handled at provider level
+                Some(self.runtime.clone()),
                 cancellation.clone(),
                 Box::new(move |chunk| {
                     let id = {

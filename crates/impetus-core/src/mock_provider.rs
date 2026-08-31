@@ -94,6 +94,7 @@ impl ModelProvider for MockProvider {
         &self,
         messages: &[ProviderMessage],
         _credential: Option<&str>,
+        _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
         mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {

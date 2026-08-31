@@ -89,14 +89,15 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
                 .context("acp profile must contain only the documented non-secret fields")?;
             profile.validate().context("invalid acp profile")?;
 
-            // Create ACP agent config from profile
-            // TODO: pass profile.args when SDK supports it
-            let config = agent_client_protocol::AcpAgentConfig::new(&profile.command);
+            let config = profile
+                .to_agent_config()
+                .context("invalid acp launch config")?;
 
             Ok(Harness::with_acp_gateway(
                 store,
                 impetus_core::harness_api::policy(),
                 config,
+                profile.auth_method_id,
                 profile.id,
                 profile.display_name,
             ))
