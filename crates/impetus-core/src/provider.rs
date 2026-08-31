@@ -217,6 +217,8 @@ pub enum ProviderError {
     Timeout,
     #[error("model unavailable: {0}")]
     ModelUnavailable(String),
+    #[error("malformed tool call: {0}")]
+    MalformedToolCall(String),
 }
 
 impl ProviderError {
