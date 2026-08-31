@@ -53,6 +53,31 @@ fn process_spawn_denied_when_sandbox_unavailable() {
 }
 
 #[test]
+fn process_working_directory_outside_workspace_is_denied() {
+    let root = temp_workspace();
+    let outside = root
+        .parent()
+        .expect("workspace parent")
+        .join(Uuid::new_v4().to_string());
+    std::fs::create_dir(&outside).expect("outside directory");
+    let seam = EffectSeam::workspace_full(&root);
+    let effect = NormalizedEffect::process_spawn(
+        ActionOrigin::Agent,
+        "spawn outside workspace",
+        outside.display().to_string(),
+    );
+
+    let outcome = seam
+        .execute(&effect, || -> Result<(), ()> {
+            panic!("out-of-scope process must not execute")
+        })
+        .expect("denial");
+
+    assert!(matches!(outcome, EffectExecution::Denied { .. }));
+    std::fs::remove_dir_all(outside).expect("remove outside directory");
+}
+
+#[test]
 fn write_outside_workspace_denied_by_sandbox() {
     let root = temp_workspace();
     let seam = EffectSeam::workspace_full(&root);

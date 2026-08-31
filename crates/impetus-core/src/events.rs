@@ -175,6 +175,9 @@ pub enum NoticeEvent {
     PolicyDenied {
         reason: String,
     },
+    SandboxDecision {
+        decision: crate::SandboxDecision,
+    },
     Runtime {
         message: String,
     },

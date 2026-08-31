@@ -756,11 +756,23 @@ fn gather_subsystem_health(
     };
 
     // Sandbox (capability check)
-    let sandbox = if cfg!(target_os = "macos") {
-        SubsystemStatus::ok("Seatbelt available (macOS)")
-            .with_details(serde_json::json!({ "platform": "macos", "fail_closed": true }))
-    } else {
-        SubsystemStatus::unavailable("Seatbelt not available (non-macOS)")
+    let sandbox_provider = crate::production_sandbox_provider();
+    let sandbox = match sandbox_provider.probe() {
+        Ok(()) => {
+            SubsystemStatus::ok("Production OS sandbox available").with_details(serde_json::json!({
+                "backend": sandbox_provider.backend_name(),
+                "fail_closed": true,
+                "network_default": "deny",
+                "environment": "cleared"
+            }))
+        }
+        Err(error) => SubsystemStatus::unavailable("Required OS sandbox unavailable").with_details(
+            serde_json::json!({
+                "backend": sandbox_provider.backend_name(),
+                "fail_closed": true,
+                "reason_code": error.reason_code()
+            }),
+        ),
     };
 
     // Credential Store (platform keychain)

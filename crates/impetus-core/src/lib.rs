@@ -84,9 +84,11 @@ pub use events::{
     ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
-    ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
-    PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
-    PtySessionStore, PtySessionStoreError, SqlitePtySessionStore,
+    MacosSeatbeltSandbox, PreparedSandboxCommand, ProcessExecution, ProcessExecutionError,
+    ProcessExecutionRequest, ProcessOutput, PtySession, PtySessionError, PtySessionId,
+    PtySessionManager, PtySessionRecord, PtySessionState, PtySessionStore, PtySessionStoreError,
+    SandboxCommandRequest, SandboxDecision, SandboxDecisionState, SandboxError, SandboxProvider,
+    SqlitePtySessionStore, UnavailableSandboxProvider, production_sandbox_provider,
 };
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
 pub use extension_compat::{

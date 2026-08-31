@@ -72,7 +72,7 @@
 - **PolicyEngine**: `Action → Deny | Allow | NeedsApproval`
 - **ApprovalResolver**: human-in-the-loop decisions
 - **EventStore**: durable SQLite WAL log with cursor backfill
-- **Sandbox integration**: macOS Seatbelt enforcement
+- **Sandbox integration**: replaceable backend with production macOS Seatbelt enforcement
 
 ### Agent Loop
 - **ModelProvider**: OpenAI-compatible, local, cloud
@@ -106,6 +106,11 @@
 4. **Secret isolation**: Keychain API only, redacted in logs/events
 5. **Approval flow**: typed approvals for destructive/sensitive operations
 
+Agent-controlled local processes are spawned only by the production sandbox
+backend. It canonicalizes workspace scope, clears the environment, denies
+network by default, bounds output, and terminates the complete process group on
+timeout or cancellation. See [docs/MACOS_SANDBOX.md](docs/MACOS_SANDBOX.md).
+
 ## Development Phases
 
 - **Phase 0**: Foundation (done) — IPC, policy, events, sandbox
@@ -131,6 +136,6 @@
 
 ## References
 
-- macOS Sandbox: [docs/MACOS_SANDBOX_SPIKE.md](docs/MACOS_SANDBOX_SPIKE.md)
+- macOS process sandbox: [docs/MACOS_SANDBOX.md](docs/MACOS_SANDBOX.md)
 - TUI design: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
 - Development guide: [docs/development.md](docs/development.md)

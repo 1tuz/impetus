@@ -678,6 +678,7 @@ impl ToolOrchestrator {
         )
         .with_working_dir(workspace.clone());
         let seam = EffectSeam::with_sandbox(runtime.policy(), Sandbox::workspace(&workspace));
+        let sandbox_provider = crate::production_sandbox_provider();
         let execution = seam
             .execute_after_approval_with_admission(
                 crate::DeferredEffect::from_durable(effect, request.clone()),
@@ -691,7 +692,24 @@ impl ToolOrchestrator {
                                     .enable_all()
                                     .build()
                                     .map_err(crate::ProcessExecutionError::Io)?
-                                    .block_on(process.execute(admission))
+                                    .block_on(process.execute_with_provider_and_cancellation(
+                                        admission,
+                                        sandbox_provider.as_ref(),
+                                        tokio_util::sync::CancellationToken::new(),
+                                        |decision| {
+                                            runtime
+                                                .record_event(crate::EventPayload::Notice(
+                                                    crate::NoticeEvent::SandboxDecision {
+                                                        decision: decision.clone(),
+                                                    },
+                                                ))
+                                                .map_err(|_| {
+                                                    crate::ProcessExecutionError::ExecutionFailed(
+                                                        "cannot persist sandbox decision".into(),
+                                                    )
+                                                })
+                                        },
+                                    ))
                             })
                             .join()
                             .map_err(|_| {
@@ -953,6 +971,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn bash_executes_only_after_exact_user_approval() {
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -999,6 +1018,16 @@ mod tests {
                 .expect("approved shell execution");
         assert_eq!(observation.outcome, ToolOutcomeStatus::Success);
         assert!(observation.preview.contains("verified"));
+        assert!(runtime.events().unwrap().iter().any(|event| {
+            matches!(
+                &event.payload,
+                crate::EventPayload::Notice(crate::NoticeEvent::SandboxDecision { decision })
+                    if decision.state == crate::SandboxDecisionState::Prepared
+                        && decision.backend == "macos_seatbelt"
+                        && !decision.network_allowed
+                        && decision.reason_code.is_none()
+            )
+        }));
     }
 
     #[tokio::test]

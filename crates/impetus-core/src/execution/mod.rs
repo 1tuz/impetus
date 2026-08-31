@@ -9,10 +9,16 @@
 
 mod process;
 mod pty;
+mod sandbox;
 mod storage;
 
 pub use process::{
     ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput,
 };
 pub use pty::{PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionState};
+pub use sandbox::{
+    MacosSeatbeltSandbox, PreparedSandboxCommand, SandboxCommandRequest, SandboxDecision,
+    SandboxDecisionState, SandboxError, SandboxProvider, UnavailableSandboxProvider,
+    production_sandbox_provider,
+};
 pub use storage::{PtySessionRecord, PtySessionStore, PtySessionStoreError, SqlitePtySessionStore};

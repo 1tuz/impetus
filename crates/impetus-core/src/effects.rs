@@ -171,14 +171,20 @@ impl DeferredEffect {
 pub struct AdmittedOperation {
     effect: NormalizedEffect,
     intent_revision: u64,
+    sandbox_scope: SandboxScope,
 }
 
 impl AdmittedOperation {
     /// Create an admitted operation token. This is harness-internal only.
-    pub(crate) fn new(effect: NormalizedEffect, intent_revision: u64) -> Self {
+    pub(crate) fn new(
+        effect: NormalizedEffect,
+        intent_revision: u64,
+        sandbox_scope: SandboxScope,
+    ) -> Self {
         Self {
             effect,
             intent_revision,
+            sandbox_scope,
         }
     }
 
@@ -188,6 +194,10 @@ impl AdmittedOperation {
 
     pub fn intent_revision(&self) -> u64 {
         self.intent_revision
+    }
+
+    pub fn sandbox_scope(&self) -> &SandboxScope {
+        &self.sandbox_scope
     }
 }
 
@@ -266,7 +276,12 @@ impl Sandbox {
                 if effect.action.kind != ActionKind::SpawnProcess {
                     return Err("ProcessSpawn capability requires SpawnProcess action".into());
                 }
-                // Process spawn allowed within workspace scope
+                if !scope.contains(Path::new(target)) {
+                    return Err(
+                        "sandbox cannot prove process working directory is inside workspace scope"
+                            .into(),
+                    );
+                }
             }
             EffectCapability::NetworkConnect => {
                 if effect.action.kind != ActionKind::NetworkConnect
@@ -352,9 +367,11 @@ impl EffectSeam {
 
         match self.policy_decision(&effect.action) {
             PolicyDecision::Deny { reason } => EffectAdmission::Deny { reason },
-            PolicyDecision::Allow => {
-                EffectAdmission::Allow(AdmittedOperation::new(effect, intent_revision))
-            }
+            PolicyDecision::Allow => EffectAdmission::Allow(AdmittedOperation::new(
+                effect,
+                intent_revision,
+                self.provisioned_scope(),
+            )),
             PolicyDecision::NeedsApproval { reason } => {
                 EffectAdmission::NeedsApproval(DeferredEffect {
                     approval: ApprovalRequest::pending_with_version(
@@ -430,8 +447,11 @@ impl EffectSeam {
         Ok(match self.policy_decision(&deferred.effect.action) {
             PolicyDecision::NeedsApproval { .. } => match self.sandbox.admit(&deferred.effect) {
                 Ok(()) => {
-                    let admission =
-                        AdmittedOperation::new(deferred.effect.clone(), current_intent_revision);
+                    let admission = AdmittedOperation::new(
+                        deferred.effect.clone(),
+                        current_intent_revision,
+                        self.provisioned_scope(),
+                    );
                     EffectExecution::Executed(execution(&admission)?)
                 }
                 Err(reason) => EffectExecution::Denied { reason },
@@ -451,6 +471,15 @@ impl EffectSeam {
             };
         }
         self.policy.evaluate(action)
+    }
+
+    fn provisioned_scope(&self) -> SandboxScope {
+        match &self.sandbox {
+            Sandbox::Provisioned { scope } => scope.clone(),
+            Sandbox::Unavailable { .. } => {
+                unreachable!("an unavailable sandbox cannot produce admission")
+            }
+        }
     }
 
     #[cfg(test)]
@@ -585,8 +614,11 @@ mod tests {
     fn process_spawn_capability_requires_approval_for_agent() {
         let root = workspace();
         let seam = EffectSeam::workspace_full(&root);
-        let effect =
-            NormalizedEffect::process_spawn(ActionOrigin::Agent, "run formatter", "cargo fmt");
+        let effect = NormalizedEffect::process_spawn(
+            ActionOrigin::Agent,
+            "run formatter",
+            root.display().to_string(),
+        );
         let outcome = seam
             .execute(&effect, || Ok::<_, ()>("executed"))
             .expect("spawn effect");
@@ -645,8 +677,11 @@ mod tests {
     fn agent_origin_requires_approval_for_process_spawn() {
         let root = workspace();
         let seam = EffectSeam::workspace_full(&root);
-        let effect =
-            NormalizedEffect::process_spawn(ActionOrigin::Agent, "run formatter", "cargo fmt");
+        let effect = NormalizedEffect::process_spawn(
+            ActionOrigin::Agent,
+            "run formatter",
+            root.display().to_string(),
+        );
         let admission = seam.request(effect, 1);
         assert!(
             matches!(admission, EffectAdmission::NeedsApproval(_)),

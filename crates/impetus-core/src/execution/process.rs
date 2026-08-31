@@ -1,14 +1,18 @@
 //! Process execution with bounded output and artifact capture.
 
-use crate::{Action, ActionKind, ActionOrigin, EffectAdmission, EffectSeam, NormalizedEffect};
+use crate::{
+    Action, ActionKind, ActionOrigin, EffectAdmission, EffectCapability, EffectSeam,
+    NormalizedEffect, SandboxCommandRequest, SandboxDecision, SandboxError, SandboxProvider,
+    production_sandbox_provider,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::AsyncReadExt;
+use tokio::process::Child;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 /// Maximum bytes captured from stdout/stderr before truncation.
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -24,8 +28,14 @@ pub enum ProcessExecutionError {
     ApprovalRequired,
     #[error("process execution failed: {0}")]
     ExecutionFailed(String),
+    #[error("required OS sandbox is unavailable")]
+    SandboxUnavailable,
+    #[error("OS sandbox denied execution: {reason_code}")]
+    SandboxDenied { reason_code: String },
     #[error("process timed out after {0:?}")]
     Timeout(Duration),
+    #[error("process execution was cancelled")]
+    Cancelled,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -111,27 +121,68 @@ impl ProcessExecutionRequest {
     /// Requires AdmittedOperation token proving the effect passed admission.
     pub async fn execute(
         &self,
-        _admission: &crate::AdmittedOperation,
+        admission: &crate::AdmittedOperation,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
+        let provider = production_sandbox_provider();
+        self.execute_with_provider(admission, provider.as_ref())
+            .await
+    }
+
+    pub async fn execute_with_provider(
+        &self,
+        admission: &crate::AdmittedOperation,
+        provider: &dyn SandboxProvider,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
+        self.execute_with_provider_and_cancellation(
+            admission,
+            provider,
+            CancellationToken::new(),
+            |_| Ok(()),
+        )
+        .await
+    }
+
+    /// Execute through an injected OS backend and report a secret-free sandbox
+    /// decision before the child can start.
+    pub async fn execute_with_provider_and_cancellation(
+        &self,
+        admission: &crate::AdmittedOperation,
+        provider: &dyn SandboxProvider,
+        cancellation: CancellationToken,
+        observe: impl FnOnce(&SandboxDecision) -> Result<(), ProcessExecutionError>,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let start = std::time::Instant::now();
+        self.validate_admission(admission)?;
+        let working_dir =
+            self.working_dir
+                .as_deref()
+                .ok_or_else(|| ProcessExecutionError::SandboxDenied {
+                    reason_code: "missing_working_directory".into(),
+                })?;
+        let sandbox_request = SandboxCommandRequest {
+            executable: &self.command,
+            args: &self.args,
+            workspace_root: &admission.sandbox_scope().workspace_root,
+            working_dir,
+            explicit_env: &self.env,
+            allow_network: false,
+        };
+        let mut prepared = match provider.prepare(&sandbox_request) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let decision =
+                    SandboxDecision::denied(provider.backend_name(), &sandbox_request, &error);
+                observe(&decision)?;
+                return Err(map_sandbox_error(error));
+            }
+        };
+        observe(prepared.decision())?;
 
-        let mut cmd = Command::new(&self.command);
-        cmd.args(&self.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Some(dir) = &self.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        for (key, value) in &self.env {
-            cmd.env(key, value);
-        }
-
-        let mut child = cmd
+        let mut child = prepared
+            .command_mut()
             .spawn()
             .map_err(|e| ProcessExecutionError::ExecutionFailed(e.to_string()))?;
+        let process_group = child.id();
 
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -139,17 +190,36 @@ impl ProcessExecutionRequest {
         let stdout_task = tokio::spawn(capture_stream(stdout, MAX_PROCESS_OUTPUT_BYTES));
         let stderr_task = tokio::spawn(capture_stream(stderr, MAX_PROCESS_OUTPUT_BYTES));
 
-        let wait_result = timeout(self.timeout, child.wait()).await;
+        enum WaitOutcome {
+            Exited(std::io::Result<std::process::ExitStatus>),
+            TimedOut,
+            Cancelled,
+        }
+        let wait_result = tokio::select! {
+            result = child.wait() => WaitOutcome::Exited(result),
+            _ = tokio::time::sleep(self.timeout) => WaitOutcome::TimedOut,
+            _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+        };
 
         let exit_status = match wait_result {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
-                return Err(ProcessExecutionError::ExecutionFailed(e.to_string()));
+            WaitOutcome::Exited(Ok(status)) => {
+                terminate_remaining_process_group(process_group).await;
+                status
             }
-            Err(_) => {
-                // Timeout: kill the process
-                let _ = child.kill().await;
+            WaitOutcome::Exited(Err(error)) => {
+                terminate_process_tree(&mut child, process_group).await;
+                drain_capture_tasks(stdout_task, stderr_task).await?;
+                return Err(ProcessExecutionError::ExecutionFailed(error.to_string()));
+            }
+            WaitOutcome::TimedOut => {
+                terminate_process_tree(&mut child, process_group).await;
+                drain_capture_tasks(stdout_task, stderr_task).await?;
                 return Err(ProcessExecutionError::Timeout(self.timeout));
+            }
+            WaitOutcome::Cancelled => {
+                terminate_process_tree(&mut child, process_group).await;
+                drain_capture_tasks(stdout_task, stderr_task).await?;
+                return Err(ProcessExecutionError::Cancelled);
             }
         };
 
@@ -170,36 +240,120 @@ impl ProcessExecutionRequest {
             duration_ms,
         })
     }
+
+    fn validate_admission(
+        &self,
+        admission: &crate::AdmittedOperation,
+    ) -> Result<(), ProcessExecutionError> {
+        let target = self
+            .working_dir
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| ".".into());
+        let effect = admission.effect();
+        if effect.capability != EffectCapability::ProcessSpawn
+            || effect.action.kind != ActionKind::SpawnProcess
+            || effect.origin != self.origin
+            || effect.action.origin != self.origin
+            || effect.action.target.as_deref() != Some(target.as_str())
+            || admission.intent_revision() != self.intent_revision
+        {
+            return Err(ProcessExecutionError::SandboxDenied {
+                reason_code: "admission_mismatch".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Capture stream output up to max_bytes, returning (content, truncated).
 async fn capture_stream(
-    stream: impl tokio::io::AsyncRead + Unpin,
+    mut stream: impl tokio::io::AsyncRead + Unpin,
     max_bytes: usize,
 ) -> (String, bool) {
-    let mut reader = BufReader::new(stream);
-    let mut buffer = Vec::with_capacity(8192);
-    let mut total_bytes = 0;
+    let mut buffer = Vec::with_capacity(max_bytes.min(8192));
+    let mut chunk = [0_u8; 8192];
     let mut truncated = false;
 
     loop {
-        let chunk_size = reader.read_until(b'\n', &mut buffer).await.unwrap_or(0);
-
-        if chunk_size == 0 {
+        let read = stream.read(&mut chunk).await.unwrap_or(0);
+        if read == 0 {
             break;
         }
-
-        total_bytes += chunk_size;
-
-        if total_bytes > max_bytes {
+        let remaining = max_bytes.saturating_sub(buffer.len());
+        let retained = remaining.min(read);
+        buffer.extend_from_slice(&chunk[..retained]);
+        if retained < read {
             truncated = true;
-            buffer.truncate(max_bytes);
-            break;
         }
     }
 
     let content = String::from_utf8_lossy(&buffer).into_owned();
     (content, truncated)
+}
+
+fn map_sandbox_error(error: SandboxError) -> ProcessExecutionError {
+    match error {
+        SandboxError::Unavailable => ProcessExecutionError::SandboxUnavailable,
+        other => ProcessExecutionError::SandboxDenied {
+            reason_code: other.reason_code().into(),
+        },
+    }
+}
+
+async fn drain_capture_tasks(
+    stdout_task: tokio::task::JoinHandle<(String, bool)>,
+    stderr_task: tokio::task::JoinHandle<(String, bool)>,
+) -> Result<(), ProcessExecutionError> {
+    stdout_task
+        .await
+        .map_err(|error| ProcessExecutionError::ExecutionFailed(error.to_string()))?;
+    stderr_task
+        .await
+        .map_err(|error| ProcessExecutionError::ExecutionFailed(error.to_string()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn terminate_process_tree(child: &mut Child, process_group: Option<u32>) {
+    signal_process_group(process_group, 15);
+    if timeout(Duration::from_millis(500), child.wait())
+        .await
+        .is_err()
+    {
+        signal_process_group(process_group, 9);
+        let _ = child.wait().await;
+    }
+    signal_process_group(process_group, 9);
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_tree(child: &mut Child, _process_group: Option<u32>) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(unix)]
+async fn terminate_remaining_process_group(process_group: Option<u32>) {
+    signal_process_group(process_group, 15);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    signal_process_group(process_group, 9);
+}
+
+#[cfg(not(unix))]
+async fn terminate_remaining_process_group(_process_group: Option<u32>) {}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: Option<u32>, signal: i32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Some(process_group) = process_group.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // The child starts a fresh process group. A negative pid addresses the
+    // complete group, including descendants that outlive the shell process.
+    let _ = unsafe { kill(-process_group, signal) };
 }
 
 /// ProcessExecution wraps the request/execute lifecycle.
@@ -270,11 +424,13 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn process_execution_captures_output() {
         let seam = test_seam();
         let request =
-            ProcessExecutionRequest::new("echo", vec!["hello".into()], ActionOrigin::User, 1);
+            ProcessExecutionRequest::new("/bin/echo", vec!["hello".into()], ActionOrigin::User, 1)
+                .with_working_dir(std::env::temp_dir());
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -291,10 +447,12 @@ mod tests {
         assert!(!output.truncated);
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn process_execution_handles_failure() {
         let seam = test_seam();
-        let request = ProcessExecutionRequest::new("false", vec![], ActionOrigin::User, 1);
+        let request = ProcessExecutionRequest::new("/usr/bin/false", vec![], ActionOrigin::User, 1)
+            .with_working_dir(std::env::temp_dir());
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -309,11 +467,13 @@ mod tests {
         assert_ne!(output.exit_code, Some(0));
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn process_execution_respects_timeout() {
         let seam = test_seam();
         let request =
-            ProcessExecutionRequest::new("sleep", vec!["10".into()], ActionOrigin::User, 1)
+            ProcessExecutionRequest::new("/bin/sleep", vec!["10".into()], ActionOrigin::User, 1)
+                .with_working_dir(std::env::temp_dir())
                 .with_timeout(Duration::from_millis(100));
 
         let admission = request.request(&seam).unwrap();
