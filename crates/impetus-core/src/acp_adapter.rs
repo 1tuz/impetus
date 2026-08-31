@@ -5,7 +5,7 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, ModelProvider, PolicyDecision, PolicyEngine, ProviderError,
-    ProviderHealth, ProviderMessage,
+    ProviderHealth, ProviderMessage, StreamEvent,
 };
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
@@ -98,7 +98,7 @@ impl ModelProvider for AcpAdapter {
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
-        mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         // Проверяем состояние
         let state = self.gateway.state().await;
@@ -143,8 +143,8 @@ impl ModelProvider for AcpAdapter {
                     match update {
                         Some(StreamUpdate::Text(text)) => {
                             debug!("Received text chunk: {} chars", text.len());
-                            on_chunk(text).map_err(|e| {
-                                error!("Chunk callback failed: {:?}", e);
+                            on_event(StreamEvent::TextDelta { delta: text }).map_err(|e| {
+                                error!("Event callback failed: {:?}", e);
                                 e
                             })?;
                         }

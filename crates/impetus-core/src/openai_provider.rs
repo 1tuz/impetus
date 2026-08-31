@@ -3,7 +3,9 @@
 //! Streams chat completions through an OpenAI-compatible endpoint with
 //! retry logic and health tracking.
 
-use crate::{ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile};
+use crate::{
+    ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, StreamEvent,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -79,7 +81,7 @@ impl OpenAiProvider {
         credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
-        on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let url = self.chat_completions_url()?;
         let mut attempt = 0u8;
@@ -103,7 +105,7 @@ impl OpenAiProvider {
             match request.send().await {
                 Ok(response) if response.status().is_success() => {
                     self.update_health(ProviderHealth::Healthy);
-                    return self.consume_sse_stream(response, cancel, on_chunk).await;
+                    return self.consume_sse_stream(response, cancel, on_event).await;
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -134,7 +136,7 @@ impl OpenAiProvider {
         &self,
         response: reqwest::Response,
         cancel: CancellationToken,
-        mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
@@ -164,7 +166,9 @@ impl OpenAiProvider {
                             && let Some(delta) = parsed.choices.first()
                             && let Some(content) = &delta.delta.content
                         {
-                            on_chunk(content.clone())?;
+                            on_event(StreamEvent::TextDelta {
+                                delta: content.clone(),
+                            })?;
                         }
                     }
                 }
@@ -200,9 +204,9 @@ impl ModelProvider for OpenAiProvider {
         credential: Option<&str>,
         runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
-        on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        self.stream_with_retry(messages, credential, runtime, cancel, on_chunk)
+        self.stream_with_retry(messages, credential, runtime, cancel, on_event)
             .await
     }
 }
