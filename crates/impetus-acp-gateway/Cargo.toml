@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 agent-client-protocol.workspace = true
 anyhow.workspace = true
+futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -20,3 +21,6 @@ uuid.workspace = true
 [[example]]
 name = "mock_agent_bin"
 path = "examples/mock_agent_bin.rs"
+
+[dev-dependencies]
+which = "7.0"

@@ -1,67 +1,40 @@
 //! ACP adapter для ModelProvider trait.
 //!
-//! Связывает external coding-agent через AcpGateway с harness ModelProvider.
-//! Один gateway инстанс на profile; все session requests идут через него.
+//! Связывает external coding-agent через AcpGatewayV2 с harness ModelProvider.
+//! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
 use crate::{ModelProvider, ProviderError, ProviderHealth, ProviderMessage};
+use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
-use impetus_acp_gateway::{AcpGateway, AgentStatus};
+use impetus_acp_gateway::{AcpGatewayV2, GatewayState, PermissionDecision, StreamUpdate};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
-/// Adapter для ACP gateway как ModelProvider.
+/// Adapter для ACP gateway V2 как ModelProvider.
 #[derive(Debug)]
 pub struct AcpAdapter {
-    gateway: Arc<Mutex<AcpGateway>>,
+    gateway: Arc<AcpGatewayV2>,
     provider_id: String,
     model_id: String,
+    workspace_dir: PathBuf,
 }
 
 impl AcpAdapter {
-    pub fn new(gateway: AcpGateway) -> Self {
-        let provider_id = gateway.profile().id.clone();
-        let model_id = gateway.profile().display_name.clone();
+    pub fn new(
+        config: AcpAgentConfig,
+        provider_id: String,
+        model_id: String,
+        workspace_dir: PathBuf,
+    ) -> Self {
+        let gateway = AcpGatewayV2::new(config);
 
         Self {
-            gateway: Arc::new(Mutex::new(gateway)),
+            gateway: Arc::new(gateway),
             provider_id,
             model_id,
-        }
-    }
-
-    /// Запускает gateway если ещё не запущен.
-    async fn ensure_started(&self) -> Result<(), ProviderError> {
-        let mut gateway = self.gateway.lock().await;
-
-        match gateway.status() {
-            AgentStatus::NotStarted => {
-                debug!("Starting ACP agent: {}", self.provider_id);
-                gateway.start().await.map_err(|e| {
-                    error!("Failed to start ACP agent: {}", e);
-                    ProviderError::RequestFailed(format!("agent start failed: {}", e))
-                })?;
-
-                // Initialize ACP protocol
-                gateway.initialize().await.map_err(|e| {
-                    error!("Failed to initialize ACP agent: {}", e);
-                    ProviderError::RequestFailed(format!("agent init failed: {}", e))
-                })?;
-
-                debug!("ACP agent initialized: {}", self.provider_id);
-                Ok(())
-            }
-            AgentStatus::Connected => Ok(()),
-            AgentStatus::Initializing => {
-                // Ждём завершения инициализации
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                Ok(())
-            }
-            status => Err(ProviderError::RequestFailed(format!(
-                "agent in unexpected state: {:?}",
-                status
-            ))),
+            workspace_dir,
         }
     }
 }
@@ -77,21 +50,9 @@ impl ModelProvider for AcpAdapter {
     }
 
     fn health(&self) -> ProviderHealth {
-        // Блокирующая проверка статуса
-        let gateway = match self.gateway.try_lock() {
-            Ok(g) => g,
-            Err(_) => return ProviderHealth::Unknown,
-        };
-
-        match gateway.status() {
-            AgentStatus::Connected => ProviderHealth::Healthy,
-            AgentStatus::NotStarted | AgentStatus::Initializing => ProviderHealth::Unknown,
-            AgentStatus::Unavailable | AgentStatus::Incompatible | AgentStatus::Crashed => {
-                ProviderHealth::Unavailable {
-                    last_error_redacted: "agent unavailable".into(),
-                }
-            }
-        }
+        // Блокирующая проверка невозможна с async state, возвращаем Unknown
+        // Реальный health check делается через отдельный monitoring механизм
+        ProviderHealth::Unknown
     }
 
     async fn stream_messages(
@@ -101,61 +62,112 @@ impl ModelProvider for AcpAdapter {
         cancel: CancellationToken,
         mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        self.ensure_started().await?;
-
-        // Конвертируем messages в ACP format
-        let acp_messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|msg| {
-                serde_json::json!({
-                    "role": msg.role(),
-                    "content": msg.content(),
-                })
-            })
-            .collect();
-
-        let params = serde_json::json!({
-            "messages": acp_messages,
-        });
-
-        let mut gateway = self.gateway.lock().await;
-
-        // Отправляем chat/completions request
-        let response = tokio::select! {
-            result = gateway.send_request("chat/completions", Some(params)) => {
-                result.map_err(|e| {
-                    error!("ACP request failed: {}", e);
-                    ProviderError::RequestFailed(format!("acp error: {}", e))
-                })?
-            }
-            _ = cancel.cancelled() => {
-                warn!("ACP request cancelled");
-                return Err(ProviderError::Cancelled);
-            }
-        };
-
-        if let Some(error) = response.error {
+        // Проверяем состояние
+        let state = self.gateway.state().await;
+        if state == GatewayState::Crashed || state == GatewayState::Incompatible {
             return Err(ProviderError::RequestFailed(format!(
-                "agent error: {}",
-                error.message
+                "agent in bad state: {:?}",
+                state
             )));
         }
 
-        let result = response
-            .result
-            .ok_or_else(|| ProviderError::RequestFailed("no result from agent".into()))?;
+        // Формируем prompt из messages
+        let prompt = messages
+            .iter()
+            .map(|msg| format!("{}: {}", msg.role(), msg.content()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
-        // Извлекаем content из ответа
-        let content = result
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| ProviderError::RequestFailed("invalid response format".into()))?;
+        info!("Starting ACP session with prompt length: {}", prompt.len());
 
-        // Передаём chunks (можно разбить на token-based chunks)
-        on_chunk(content.to_string())?;
+        // Клонируем Arc для spawned task
+        let gateway = Arc::clone(&self.gateway);
+        let workspace = self.workspace_dir.clone();
+
+        // Запускаем session в отдельной задаче
+        let mut session_handle =
+            tokio::spawn(async move { gateway.start_session(workspace, prompt).await });
+
+        // Обрабатываем updates и permission requests
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    warn!("ACP session cancelled");
+                    return Err(ProviderError::Cancelled);
+                }
+
+                update = self.gateway.recv_update() => {
+                    match update {
+                        Some(StreamUpdate::Text(text)) => {
+                            debug!("Received text chunk: {} chars", text.len());
+                            on_chunk(text).map_err(|e| {
+                                error!("Chunk callback failed: {:?}", e);
+                                e
+                            })?;
+                        }
+                        Some(StreamUpdate::ToolUse { tool_name, status }) => {
+                            debug!("Tool use: {} - {}", tool_name, status);
+                            // Можно отправить как chunk или пропустить
+                        }
+                        Some(StreamUpdate::Status(status)) => {
+                            debug!("Status update: {}", status);
+                        }
+                        Some(StreamUpdate::Completed { stop_reason }) => {
+                            info!("Session completed: {:?}", stop_reason);
+                            break;
+                        }
+                        Some(StreamUpdate::Error(err)) => {
+                            error!("Agent error: {}", err);
+                            return Err(ProviderError::RequestFailed(err));
+                        }
+                        None => {
+                            // Channel closed
+                            break;
+                        }
+                    }
+                }
+
+                perm_req = self.gateway.recv_permission_request() => {
+                    match perm_req {
+                        Some((request, response_tx)) => {
+                            warn!(
+                                "Permission request received: {} - {}",
+                                request.request_id, request.description
+                            );
+
+                            // TODO: route через Policy
+                            // Пока всё отклоняем — требуется approval flow
+                            let decision = PermissionDecision::Deny;
+
+                            if response_tx.send(decision).is_err() {
+                                error!("Failed to send permission decision");
+                            }
+                        }
+                        None => {
+                            // Channel closed
+                            break;
+                        }
+                    }
+                }
+
+                session_result = &mut session_handle => {
+                    match session_result {
+                        Ok(Ok(session_id)) => {
+                            info!("Session completed: {:?}", session_id);
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            error!("Session failed: {}", e);
+                            return Err(ProviderError::RequestFailed(format!("session error: {}", e)));
+                        }
+                        Err(e) => {
+                            error!("Session task panicked: {}", e);
+                            return Err(ProviderError::RequestFailed(format!("task panic: {}", e)));
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
