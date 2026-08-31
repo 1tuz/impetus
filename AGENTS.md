@@ -52,26 +52,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 `task verify` является коротким эквивалентом четырёх обязательных Rust-команд. `task setup` проверяет окружение и подключает repository-owned hooks.
 
-## GitLab CI
+## CI и проверка
 
-- `.gitlab-ci.yml` — versioned contract проверки. При изменении Rust-пакетов, test/verify команд, toolchain, dependencies или CI-образа сверить затронутые jobs и актуализировать pipeline в том же изменении.
-- До handoff Rust/CI-изменения выполнить `task verify` (локально). Для проверки CI: `gitlab-ci-local --stage verify` (займёт ~3-4 минуты с Docker overhead).
+- До handoff Rust-изменения выполнить `task verify` (локально).
 - **CI test scope:** `cargo test --lib --bins` (unit tests только). Integration tests из `crates/*/tests/` исключены — они требуют macOS Seatbelt, нативного окружения и долго компилируются в Docker. Локально запускать полный `task verify` с integration tests.
 - При изменении `Cargo.toml` или `Cargo.lock` выполнить `task security`; RustSec/CVE, license/source/bans findings не игнорировать без versioned записи в `deny.toml` с конкретной причиной.
-- Если `gitlab-ci-local` зависает >5 минут — проверить `timeout` в job definition и scope тестов (возможно, добавлены новые долгие integration tests).
 
 ## Git и коммиты
 
 ### Feature branch workflow (строго обязательно)
 
-**НИКОГДА НЕ ПУШИТЬ НАПРЯМУЮ В `main`.** Любой push в main без MR — нарушение workflow.
+**НИКОГДА НЕ ПУШИТЬ НАПРЯМУЮ В `main`.** Любой push в main без PR — нарушение workflow.
 
 **Проверка текущей ветки:** перед началом работы всегда выполнить `git branch --show-current` и убедиться, что не на `main`. Задачи из TODO.md берутся последовательно; каждая задача = один issue + одна feature branch.
 
 #### Перед началом работы
 
 1. **Проверить текущую ветку:** `git branch --show-current` — если `main`, остановиться и создать feature branch
-2. **Проверить открытые issue:** `glab issue list` — выбрать следующую задачу из TODO.md
+2. **Проверить открытые issue:** `gh issue list` — выбрать следующую задачу из TODO.md
 3. **Создать issue,** если не существует (каждая задача из TODO.md = issue)
 4. **Создать feature branch от актуального main:**
    ```bash
@@ -90,28 +88,29 @@ cargo clippy --workspace --all-targets -- -D warnings
    ```bash
    git push -u origin feature/issue-42-short-description
    ```
-5. **Создать MR через CLI:**
+5. **Создать PR через CLI:**
    ```bash
-   glab mr create --fill --remove-source-branch
+   gh pr create --fill
    ```
-   Или через GitLab Web UI с галочкой «Delete source branch after merge»
-6. **Включить auto-merge** в MR: «Set to auto-merge» после создания
-7. CI проходит (fmt, test, check, clippy) → **GitLab автоматически мерджит в main**
+   Или через GitHub Web UI
+6. **Включить auto-merge** в PR: `gh pr merge --auto --squash` после создания
+7. CI проходит (fmt, test, check, clippy) → **GitHub автоматически мерджит в main**
 8. После мерджа: `git checkout main && git pull` для следующей задачи
 
 #### Auto-merge настройка (один раз на проект)
 
-В GitLab Project Settings → Merge Requests:
-- ✓ «Pipelines must succeed» (требовать проходящий CI)
-- ✓ «All threads must be resolved» (опционально)
-- Approvals: 0 (разрешить auto-merge без review)
+В GitHub Repository Settings → General → Pull Requests:
+- ✓ «Allow auto-merge»
+- ✓ «Automatically delete head branches»
 
-В каждом MR нажать кнопку **«Set to auto-merge»** — мердж произойдёт после успешного pipeline.
+В Branch protection rules для `main`:
+- ✓ «Require status checks to pass before merging»
+- Можно включить auto-merge для каждого PR через `gh pr merge --auto --squash`
 
 ### Commit правила
 
 - Делить работу на атомарные коммиты по одной причине изменения; не смешивать tooling, продуктовый код и независимую документацию без необходимости.
-- До commit выполнить `task verify`. Для Rust/CI-изменения при наличии `.gitlab-ci.yml` также выполнить `task ci:list` и relevant local job либо `task ci:local`; при изменении job/toolchain/dependency policy актуализировать pipeline в том же commit. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
+- До commit выполнить `task verify`. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
 - **Commit message на английском языке.** Формат: `type: Brief summary (closes #N)` или `type(scope): Summary (refs #N)`
 - Разрешённые типы: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
 - Subject <= 72 символа, начинается с lowercase (после `type:`), без точки в конце
