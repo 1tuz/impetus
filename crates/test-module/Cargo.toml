@@ -1,0 +1,15 @@
+[package]
+name = "test-module"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "test-module"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
