@@ -13,6 +13,7 @@ use crate::{
     MockProvider, NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider,
     PolicyEngine, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
     ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
+    model_router::{ModelRouter, ModelRouterConfig},
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -52,6 +53,7 @@ pub struct Harness {
     policy: PolicyEngine,
     provider_registry: ProviderRegistry,
     default_provider_id: String,
+    model_router: ModelRouter,
     credential_resolver: Arc<dyn CredentialResolver>,
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
     workspace_root: PathBuf,
@@ -68,11 +70,14 @@ impl Harness {
         registry
             .register(mock)
             .expect("failed to register mock provider");
+        let router_config = ModelRouterConfig::default();
+        let model_router = ModelRouter::new(router_config);
         Self {
             store,
             policy,
             provider_registry: registry,
             default_provider_id: "mock".to_string(),
+            model_router,
             credential_resolver: Arc::new(NoCredentialResolver),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
@@ -93,11 +98,14 @@ impl Harness {
         registry
             .register(provider)
             .expect("failed to register test provider");
+        let router_config = ModelRouterConfig::default();
+        let model_router = ModelRouter::new(router_config);
         Self {
             store,
             policy,
             provider_registry: registry,
             default_provider_id,
+            model_router,
             credential_resolver: Arc::new(NoCredentialResolver),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
@@ -148,11 +156,15 @@ impl Harness {
             .register(adapter)
             .expect("failed to register openai provider");
 
+        let router_config = ModelRouterConfig::default();
+        let model_router = ModelRouter::new(router_config);
+
         Self {
             store,
             policy,
             provider_registry: registry,
             default_provider_id: provider_id,
+            model_router,
             credential_resolver,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
@@ -193,11 +205,15 @@ impl Harness {
             .register(adapter)
             .expect("failed to register acp gateway");
 
+        let router_config = ModelRouterConfig::default();
+        let model_router = ModelRouter::new(router_config);
+
         Self {
             store,
             policy,
             provider_registry: registry,
             default_provider_id: provider_id,
+            model_router,
             credential_resolver: Arc::new(NoCredentialResolver),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
@@ -228,6 +244,7 @@ impl Harness {
             self.policy.clone(),
             self.provider_registry.clone(),
             self.default_provider_id.clone(),
+            self.model_router.clone(),
             self.credential_resolver.clone(),
             self.cancellations.clone(),
             self.workspace_root.clone(),
@@ -244,6 +261,7 @@ fn handle_request(
     policy: PolicyEngine,
     provider_registry: ProviderRegistry,
     default_provider_id: String,
+    model_router: ModelRouter,
     credential_resolver: Arc<dyn CredentialResolver>,
     cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
     workspace_root: PathBuf,
@@ -337,6 +355,38 @@ fn handle_request(
                         )]
                     });
                 let runtime_session_id = runtime.session_id();
+
+                // Select model through router
+                let requirements = crate::model_router::CapabilityRequirements {
+                    tools: true,
+                    ..Default::default()
+                };
+                let budget = runtime.budget_config().unwrap_or_default();
+                let selected = model_router.select_model(&requirements, &budget);
+
+                let selected_provider_id = selected
+                    .as_ref()
+                    .map(|s| s.provider_id.clone())
+                    .unwrap_or_else(|| default_provider_id.clone());
+
+                // Record selection decision
+                let selection_message = if let Some(ref selection) = selected {
+                    format!(
+                        "ModelRouter selected {}/{}: {}",
+                        selection.provider_id, selection.model_id, selection.reasoning
+                    )
+                } else {
+                    format!(
+                        "ModelRouter fallback to default provider: {}",
+                        selected_provider_id
+                    )
+                };
+                let _ = runtime.append_event(crate::EventPayload::Notice(
+                    crate::NoticeEvent::Runtime {
+                        message: selection_message,
+                    },
+                ));
+
                 let task_runtime = runtime.clone();
                 let cancellation = CancellationToken::new();
                 if let Ok(mut active) = cancellations.lock() {
@@ -344,14 +394,13 @@ fn handle_request(
                 }
                 let task_cancellations = cancellations.clone();
                 let task_provider_registry = provider_registry.clone();
-                let task_default_provider_id = default_provider_id.clone();
                 let task_credential_resolver = credential_resolver.clone();
                 tokio::spawn(async move {
                     run_agent_loop(
                         task_runtime,
                         run_id,
                         task_provider_registry,
-                        task_default_provider_id,
+                        selected_provider_id,
                         task_credential_resolver,
                         provider_messages,
                         cancellation,
