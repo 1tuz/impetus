@@ -204,7 +204,7 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 The baseline vertical is working. The remaining items harden and extend it.
 
-- [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing
+- [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing (PR #84: typed StreamEvent foundation, native protocol parsing pending)
 - [x] Wire Tool Orchestrator to real tool execution through policy/sandbox path
 - [x] Durable observations from executed tools (not stub responses)
 - [x] Large read output uses durable content-addressed artifacts and bounded event previews
@@ -219,6 +219,9 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Parallel tool execution where safe (read_only/idempotent only)
 - [x] Cross-session state isolation and cleanup
 - [x] Audit log with redacted tool arguments
+- [ ] Provider-native tool call protocol parsing (OpenAI, Anthropic) - Issue #83, partial in PR #84
+- [ ] Measured vs estimated token usage tracking in budget events
+- [ ] Tool call argument validation (reject malformed before execution)
 
 ---
 
