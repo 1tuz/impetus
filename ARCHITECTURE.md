@@ -93,7 +93,12 @@
 - **ExtensionRegistry**: multi-source module registration
 
 ### Storage
-- **EventStore**: SQLite WAL, schema migrations, event replay
+- **EventStore**: SQLite WAL, schema migrations, event replay, and append-only
+  session branches. A branch stores parent/fork metadata plus its local suffix;
+  logical replay reads the immutable shared prefix and suffix without copying
+  prefix rows.
+- **Session checkpoints**: durable named sequence references. Restore/revert
+  creates a new branch head and never deletes or rewrites historical events.
 - **ArtifactStore**: bounded ephemeral/in-memory backing (durable planned)
 - **ReferenceStore**: YAML-based partitioned storage for long-term agent reference data (Tempo worklogs, past decisions, project patterns)
 - **Keychain**: macOS-native secret storage, never in SQLite

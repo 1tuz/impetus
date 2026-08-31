@@ -227,11 +227,11 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [ ] Lazy module/tool/MCP description loading in Context Optimizer
 - [ ] HOT/WARM/COLD context tiers
 - [ ] Token-budgeted module/tool selection for prompt
-- [ ] Session fork/checkpoint without full event duplication (shared prefix)
-- [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions
+- [ ] Session fork/checkpoint without full event duplication (implementation and tests present; full verification gate pending)
+- [ ] Session DAG: parent/fork, restore/revert, branch-aware sessions (implementation and tests present; full verification gate pending)
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
-- [x] Session fork/checkpoint (with full event duplication; shared prefix not yet implemented)
+- [x] Legacy copied-history fork/checkpoint baseline (superseded by shared-prefix implementation)
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget

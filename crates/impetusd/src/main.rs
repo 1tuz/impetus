@@ -251,6 +251,10 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::CreateSession { .. } => "session_create",
         IpcRequest::Attach { .. } => "session_attach",
         IpcRequest::ListSessions => "session_list",
+        IpcRequest::ListSessionBranches | IpcRequest::ForkSession { .. } => "session_branch",
+        IpcRequest::CreateCheckpoint { .. }
+        | IpcRequest::ListCheckpoints { .. }
+        | IpcRequest::RestoreCheckpoint { .. } => "session_checkpoint",
         IpcRequest::Stream { .. } => "event_stream",
         IpcRequest::Prompt { .. } => "prompt",
         IpcRequest::Context { .. } => "context",

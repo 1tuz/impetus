@@ -10,7 +10,9 @@ executable tasks are in [TODO.md](../TODO.md).
 - Versioned local IPC, `HarnessClient`.
 - Safety, capability, sandbox, approval, secret-reference base.
 - `ModelProvider` and `ProviderRegistry` foundations.
-- Basic copied-event fork and compaction/budget primitives.
+- Shared-prefix session branches with durable ancestry, named checkpoints, and
+  append-only restore/revert branches. Full repository verification remains a
+  release gate.
 - Attachment/diff/detail DTOs with bounded **ephemeral/in-memory** backing (not durable `ArtifactStore`).
 - Agent Loop / Tool Orchestrator vertical slice: read tools execute through
   policy and sandbox; writes and shell commands require exact user approval,
@@ -176,10 +178,15 @@ context, lazy LSP.
 
 ### Session DAG and checkpoints
 
-**Current:** basic fork with copied history.
+**Current:** branches persist `parent_session_id` and an inclusive fork
+sequence, store only their local suffix, and reconstruct logical history with a
+bounded recursive query. Named checkpoints and restore/revert-as-new-branch are
+available through versioned IPC and `HarnessClient`. Existing copied-history
+databases remain readable as independent root sessions.
 
 **Target:** parent/fork, shared prefix, checkpoints, restore/revert, branch-aware
-sessions.
+sessions. Before release, run the full repository verification gate and measure
+the included shared-prefix storage/query microbenchmark on representative data.
 
 ### Interrupt, pause, resume
 

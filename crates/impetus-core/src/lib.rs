@@ -148,7 +148,9 @@ pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
 };
-pub use storage::{EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError};
+pub use storage::{
+    EventStore, MemoryEventStore, SessionCheckpoint, SessionInfo, SqliteEventStore, StoreError,
+};
 pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tempo_importer::{TempoImporter, TempoImporterConfig, TempoWorklog};
 pub use tool_orchestrator::{

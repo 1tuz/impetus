@@ -143,14 +143,19 @@ impl AgentRuntime {
         up_to_sequence: u64,
     ) -> Result<Self, RuntimeError> {
         let new_session_id = store.fork_session(source_session_id, up_to_sequence)?;
-        Ok(Self {
-            session_id: new_session_id,
-            store,
-            workspace_root: policy.scope().workspace_root.clone(),
-            policy,
-            budget: None,
-            deferred_effects: Arc::new(Mutex::new(HashMap::new())),
-        })
+        Self::attach(store, policy, new_session_id)
+    }
+
+    pub fn fork_named(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        source_session_id: Uuid,
+        up_to_sequence: u64,
+        branch_name: Option<String>,
+    ) -> Result<Self, RuntimeError> {
+        let new_session_id =
+            store.fork_session_named(source_session_id, up_to_sequence, branch_name)?;
+        Self::attach(store, policy, new_session_id)
     }
 
     pub fn session_id(&self) -> Uuid {

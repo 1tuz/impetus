@@ -1,3 +1,4 @@
+use impetus_client::protocol::SessionInfo;
 use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -59,11 +60,20 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    pub fn bare(id: Uuid) -> Self {
+    pub fn from_branch(session: SessionInfo) -> Self {
+        let label = session
+            .branch_name
+            .unwrap_or_else(|| format!("session {}", short_id(session.id)));
+        let status = match (session.parent_session_id, session.fork_sequence) {
+            (Some(parent), Some(sequence)) => {
+                format!("branch of {} at {sequence}", short_id(parent))
+            }
+            _ => "saved".to_owned(),
+        };
         Self {
-            id,
-            label: format!("session {}", short_id(id)),
-            status: "saved".to_owned(),
+            id: session.id,
+            label,
+            status,
             workspace: None,
         }
     }

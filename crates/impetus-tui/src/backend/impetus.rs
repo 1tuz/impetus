@@ -57,10 +57,10 @@ impl UiBackend for ImpetusBackend {
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         Ok(self
             .client
-            .list_sessions()
+            .list_session_branches()
             .await?
             .into_iter()
-            .map(SessionSummary::bare)
+            .map(SessionSummary::from_branch)
             .collect())
     }
 

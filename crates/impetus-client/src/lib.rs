@@ -76,6 +76,90 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// List branch-aware durable session metadata without exposing storage.
+    async fn list_session_branches(&self) -> Result<Vec<impetus_core::SessionInfo>> {
+        match self.request(IpcRequest::ListSessionBranches).await? {
+            IpcResponse::SessionBranches { sessions } => Ok(sessions),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Create a cheap branch that shares immutable history through `up_to_sequence`.
+    async fn fork_session(
+        &self,
+        session_id: uuid::Uuid,
+        up_to_sequence: u64,
+        branch_name: Option<String>,
+    ) -> Result<impetus_core::SessionInfo> {
+        match self
+            .request(IpcRequest::ForkSession {
+                session_id,
+                up_to_sequence,
+                branch_name,
+            })
+            .await?
+        {
+            IpcResponse::SessionBranch { session } => Ok(session),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Persist a named checkpoint at an explicit sequence or the current head.
+    async fn create_checkpoint(
+        &self,
+        session_id: uuid::Uuid,
+        name: String,
+        sequence: Option<u64>,
+    ) -> Result<impetus_core::SessionCheckpoint> {
+        match self
+            .request(IpcRequest::CreateCheckpoint {
+                session_id,
+                name,
+                sequence,
+            })
+            .await?
+        {
+            IpcResponse::Checkpoint { checkpoint } => Ok(checkpoint),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    async fn list_checkpoints(
+        &self,
+        session_id: uuid::Uuid,
+    ) -> Result<Vec<impetus_core::SessionCheckpoint>> {
+        match self
+            .request(IpcRequest::ListCheckpoints { session_id })
+            .await?
+        {
+            IpcResponse::Checkpoints { checkpoints, .. } => Ok(checkpoints),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Restore/revert by creating a new branch; existing history remains intact.
+    async fn restore_checkpoint(
+        &self,
+        checkpoint_id: uuid::Uuid,
+        branch_name: Option<String>,
+    ) -> Result<impetus_core::SessionInfo> {
+        match self
+            .request(IpcRequest::RestoreCheckpoint {
+                checkpoint_id,
+                branch_name,
+            })
+            .await?
+        {
+            IpcResponse::SessionBranch { session } => Ok(session),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Submit a user message. The harness, not the client, starts the run.
     async fn send_message(
         &self,

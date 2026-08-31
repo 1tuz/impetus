@@ -6,5 +6,6 @@
 
 pub use impetus_core::{
     AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, Event, EventPayload,
-    IpcRequest, IpcResponse, NoticeEvent, RetryEvent, RunEvent, SessionEvent, ToolEvent,
+    IpcRequest, IpcResponse, NoticeEvent, RetryEvent, RunEvent, SessionCheckpoint, SessionEvent,
+    SessionInfo, ToolEvent,
 };

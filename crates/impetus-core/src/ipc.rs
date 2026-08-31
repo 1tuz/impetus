@@ -2,11 +2,13 @@ use crate::RuntimeStatus;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 3;
+pub const IPC_VERSION: u16 = 4;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
     "session_list",
+    "session_branch",
+    "session_checkpoint",
     "event_stream",
     "prompt",
     "cancel",
@@ -33,6 +35,24 @@ pub enum IpcRequest {
         session_id: Uuid,
     },
     ListSessions,
+    ListSessionBranches,
+    ForkSession {
+        session_id: Uuid,
+        up_to_sequence: u64,
+        branch_name: Option<String>,
+    },
+    CreateCheckpoint {
+        session_id: Uuid,
+        name: String,
+        sequence: Option<u64>,
+    },
+    ListCheckpoints {
+        session_id: Uuid,
+    },
+    RestoreCheckpoint {
+        checkpoint_id: Uuid,
+        branch_name: Option<String>,
+    },
     Stream {
         session_id: Uuid,
         after_sequence: u64,
@@ -86,6 +106,19 @@ pub enum IpcResponse {
     },
     Sessions {
         sessions: Vec<Uuid>,
+    },
+    SessionBranch {
+        session: crate::SessionInfo,
+    },
+    SessionBranches {
+        sessions: Vec<crate::SessionInfo>,
+    },
+    Checkpoint {
+        checkpoint: crate::SessionCheckpoint,
+    },
+    Checkpoints {
+        session_id: Uuid,
+        checkpoints: Vec<crate::SessionCheckpoint>,
     },
     Events {
         session_id: Uuid,
@@ -172,5 +205,35 @@ mod tests {
             serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn session_branch_and_checkpoint_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        let requests = [
+            IpcRequest::ForkSession {
+                session_id,
+                up_to_sequence: 12,
+                branch_name: Some("experiment".into()),
+            },
+            IpcRequest::CreateCheckpoint {
+                session_id,
+                name: "before refactor".into(),
+                sequence: Some(12),
+            },
+            IpcRequest::ListCheckpoints { session_id },
+            IpcRequest::RestoreCheckpoint {
+                checkpoint_id: Uuid::new_v4(),
+                branch_name: Some("retry".into()),
+            },
+            IpcRequest::ListSessionBranches,
+        ];
+        for request in requests {
+            assert_eq!(
+                serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap())
+                    .unwrap(),
+                request
+            );
+        }
     }
 }

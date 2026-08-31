@@ -78,6 +78,30 @@ enum Commands {
     },
     /// List all sessions
     List,
+    /// List sessions with branch ancestry metadata
+    Branches,
+    /// Fork a session at an inclusive event sequence
+    Fork {
+        session_id: Uuid,
+        up_to_sequence: u64,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Create a durable named checkpoint
+    Checkpoint {
+        session_id: Uuid,
+        name: String,
+        #[arg(long)]
+        sequence: Option<u64>,
+    },
+    /// List durable checkpoints for a session
+    Checkpoints { session_id: Uuid },
+    /// Restore/revert a checkpoint as a new branch
+    Restore {
+        checkpoint_id: Uuid,
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 async fn show_components(action: ComponentsAction) -> Result<()> {
@@ -272,6 +296,68 @@ async fn main() -> Result<()> {
                 }
                 other => bail!("Unexpected response: {other:?}"),
             }
+        }
+        Commands::Branches => {
+            let sessions = client.list_session_branches().await?;
+            if sessions.is_empty() {
+                println!("No sessions found.");
+            }
+            for session in sessions {
+                println!(
+                    "{} head={} parent={} fork={} name={}",
+                    session.id,
+                    session.head_sequence,
+                    session
+                        .parent_session_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    session
+                        .fork_sequence
+                        .map(|sequence| sequence.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    session.branch_name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        Commands::Fork {
+            session_id,
+            up_to_sequence,
+            name,
+        } => {
+            let branch = client
+                .fork_session(session_id, up_to_sequence, name)
+                .await?;
+            println!("Created branch: {}", branch.id);
+        }
+        Commands::Checkpoint {
+            session_id,
+            name,
+            sequence,
+        } => {
+            let checkpoint = client.create_checkpoint(session_id, name, sequence).await?;
+            println!(
+                "Created checkpoint: {} at sequence {}",
+                checkpoint.id, checkpoint.sequence
+            );
+        }
+        Commands::Checkpoints { session_id } => {
+            let checkpoints = client.list_checkpoints(session_id).await?;
+            if checkpoints.is_empty() {
+                println!("No checkpoints found.");
+            }
+            for checkpoint in checkpoints {
+                println!(
+                    "{} sequence={} name={}",
+                    checkpoint.id, checkpoint.sequence, checkpoint.name
+                );
+            }
+        }
+        Commands::Restore {
+            checkpoint_id,
+            name,
+        } => {
+            let branch = client.restore_checkpoint(checkpoint_id, name).await?;
+            println!("Restored checkpoint as branch: {}", branch.id);
         }
     }
 

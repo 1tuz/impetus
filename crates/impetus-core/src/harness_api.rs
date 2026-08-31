@@ -294,10 +294,47 @@ fn handle_request(
             Ok(sessions) => IpcResponse::Sessions {
                 sessions: sessions.into_iter().map(|session| session.id).collect(),
             },
-            Err(error) => IpcResponse::Error {
-                code: IpcErrorCode::Internal,
-                message: error.to_string(),
+            Err(error) => store_error(error),
+        },
+        IpcRequest::ListSessionBranches => match store.list_sessions() {
+            Ok(sessions) => IpcResponse::SessionBranches { sessions },
+            Err(error) => store_error(error),
+        },
+        IpcRequest::ForkSession {
+            session_id,
+            up_to_sequence,
+            branch_name,
+        } => match store
+            .fork_session_named(session_id, up_to_sequence, branch_name)
+            .and_then(|new_session_id| store.session_info(new_session_id))
+        {
+            Ok(session) => IpcResponse::SessionBranch { session },
+            Err(error) => store_error(error),
+        },
+        IpcRequest::CreateCheckpoint {
+            session_id,
+            name,
+            sequence,
+        } => match store.create_checkpoint(session_id, &name, sequence) {
+            Ok(checkpoint) => IpcResponse::Checkpoint { checkpoint },
+            Err(error) => store_error(error),
+        },
+        IpcRequest::ListCheckpoints { session_id } => match store.list_checkpoints(session_id) {
+            Ok(checkpoints) => IpcResponse::Checkpoints {
+                session_id,
+                checkpoints,
             },
+            Err(error) => store_error(error),
+        },
+        IpcRequest::RestoreCheckpoint {
+            checkpoint_id,
+            branch_name,
+        } => match store
+            .restore_checkpoint(checkpoint_id, branch_name)
+            .and_then(|new_session_id| store.session_info(new_session_id))
+        {
+            Ok(session) => IpcResponse::SessionBranch { session },
+            Err(error) => store_error(error),
         },
         IpcRequest::Stream {
             session_id,
@@ -709,7 +746,27 @@ pub fn redact_tool_outcome(mut outcome: ToolOutcome) -> ToolOutcome {
 fn runtime_error(error: RuntimeError) -> IpcResponse {
     let code = match &error {
         RuntimeError::MissingSession(_) => IpcErrorCode::MissingSession,
+        RuntimeError::Store(crate::StoreError::MissingSession(_)) => IpcErrorCode::MissingSession,
         RuntimeError::ActiveRun(_) => IpcErrorCode::Conflict,
+        _ => IpcErrorCode::Internal,
+    };
+    IpcResponse::Error {
+        code,
+        message: error.to_string(),
+    }
+}
+
+fn store_error(error: crate::StoreError) -> IpcResponse {
+    let code = match &error {
+        crate::StoreError::MissingSession(_) | crate::StoreError::MissingCheckpoint(_) => {
+            IpcErrorCode::MissingSession
+        }
+        crate::StoreError::InvalidForkSequence { .. } | crate::StoreError::InvalidName { .. } => {
+            IpcErrorCode::InvalidRequest
+        }
+        crate::StoreError::SequenceConflict { .. }
+        | crate::StoreError::SessionHasChildren(_)
+        | crate::StoreError::NameConflict { .. } => IpcErrorCode::Conflict,
         _ => IpcErrorCode::Internal,
     };
     IpcResponse::Error {
@@ -1772,6 +1829,53 @@ mod tests {
                 EventPayload::Agent(crate::AgentEvent::Final { .. })
             )
         }));
+    }
+
+    #[test]
+    fn ipc_exposes_typed_branches_checkpoints_and_restore() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("session creation")
+        };
+
+        let IpcResponse::Checkpoint { checkpoint } = harness.handle(IpcRequest::CreateCheckpoint {
+            session_id,
+            name: "baseline".into(),
+            sequence: None,
+        }) else {
+            panic!("checkpoint creation")
+        };
+        let IpcResponse::SessionBranch { session: branch } =
+            harness.handle(IpcRequest::RestoreCheckpoint {
+                checkpoint_id: checkpoint.id,
+                branch_name: Some("retry".into()),
+            })
+        else {
+            panic!("checkpoint restore")
+        };
+        assert_eq!(branch.parent_session_id, Some(session_id));
+        assert_eq!(branch.fork_sequence, Some(checkpoint.sequence));
+        assert_eq!(branch.branch_name.as_deref(), Some("retry"));
+
+        let IpcResponse::SessionBranches { sessions } =
+            harness.handle(IpcRequest::ListSessionBranches)
+        else {
+            panic!("branch list")
+        };
+        assert!(sessions.iter().any(|session| session.id == branch.id));
+        let IpcResponse::Checkpoints { checkpoints, .. } =
+            harness.handle(IpcRequest::ListCheckpoints { session_id })
+        else {
+            panic!("checkpoint list")
+        };
+        assert_eq!(checkpoints, vec![checkpoint]);
     }
 
     #[test]
