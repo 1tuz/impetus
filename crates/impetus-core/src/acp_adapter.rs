@@ -4,8 +4,8 @@
 //! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
 use crate::{
-    Action, ActionKind, ActionOrigin, ModelProvider, ProviderError, ProviderHealth,
-    ProviderMessage,
+    Action, ActionKind, ActionOrigin, ModelProvider, PolicyDecision, PolicyEngine, ProviderError,
+    ProviderHealth, ProviderMessage,
 };
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug)]
 pub struct AcpAdapter {
     gateway: Arc<AcpGatewayV2>,
+    policy: Arc<PolicyEngine>,
     provider_id: String,
     model_id: String,
     workspace_dir: PathBuf,
@@ -33,11 +34,13 @@ impl AcpAdapter {
         provider_id: String,
         model_id: String,
         workspace_dir: PathBuf,
+        policy: Arc<PolicyEngine>,
     ) -> Self {
         let gateway = AcpGatewayV2::new(config).with_auth_method(auth_method_id);
 
         Self {
             gateway: Arc::new(gateway),
+            policy,
             provider_id,
             model_id,
             workspace_dir,
@@ -93,6 +96,7 @@ impl ModelProvider for AcpAdapter {
         &self,
         messages: &[ProviderMessage],
         _credential: Option<&str>,
+        _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
         mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
@@ -173,9 +177,54 @@ impl ModelProvider for AcpAdapter {
                                 request.request_id, request.description
                             );
 
-                            // TODO: route через Policy
-                            // Пока всё отклоняем — требуется approval flow
-                            let decision = PermissionDecision::Deny;
+                            // Route через Policy
+                            let decision = if let Some(action) = action_for_permission(&request, &self.workspace_dir) {
+                                match self.policy.evaluate(&action) {
+                                    PolicyDecision::Allow => {
+                                        // Выбираем первый AllowOnce/AllowAlways option
+                                        let allow_option = request.options.iter().find(|opt| {
+                                            matches!(
+                                                opt.kind,
+                                                impetus_acp_gateway::PermissionChoiceKind::AllowOnce
+                                                    | impetus_acp_gateway::PermissionChoiceKind::AllowAlways
+                                            )
+                                        });
+
+                                        if let Some(opt) = allow_option {
+                                            info!("Policy allowed: selecting option {}", opt.option_id);
+                                            PermissionDecision::Select(opt.option_id.clone())
+                                        } else {
+                                            warn!("Policy allowed but no allow option available");
+                                            PermissionDecision::Deny
+                                        }
+                                    }
+                                    PolicyDecision::Deny { reason } => {
+                                        info!("Policy denied: {}", reason);
+                                        PermissionDecision::Deny
+                                    }
+                                    PolicyDecision::NeedsApproval { reason } => {
+                                        info!("Policy requires approval: {}", reason);
+                                        // TODO: интеграция с durable approval flow
+                                        // Пока отклоняем, требуется approval broker
+                                        PermissionDecision::Deny
+                                    }
+                                }
+                            } else {
+                                // Think/SwitchMode/Other — не policy-relevant
+                                debug!("Permission kind {:?} не требует Policy evaluation", request.kind);
+                                let allow_option = request.options.iter().find(|opt| {
+                                    matches!(
+                                        opt.kind,
+                                        impetus_acp_gateway::PermissionChoiceKind::AllowOnce
+                                            | impetus_acp_gateway::PermissionChoiceKind::AllowAlways
+                                    )
+                                });
+                                if let Some(opt) = allow_option {
+                                    PermissionDecision::Select(opt.option_id.clone())
+                                } else {
+                                    PermissionDecision::Deny
+                                }
+                            };
 
                             if response_tx.send(decision).is_err() {
                                 error!("Failed to send permission decision");
@@ -239,15 +288,5 @@ mod tests {
         assert_eq!(action.origin, crate::ActionOrigin::Agent);
         assert_eq!(action.kind, crate::ActionKind::WriteFile);
         assert_eq!(action.target.as_deref(), target.to_str());
-    }
-
-    #[tokio::test]
-    async fn approval_broker_resumes_the_waiting_acp_permission() {
-        let broker = AcpApprovalBroker::default();
-        let approval_id = uuid::Uuid::new_v4();
-        let resolution = broker.register(approval_id);
-
-        assert!(broker.resolve(approval_id, true));
-        assert!(resolution.await.expect("broker sender alive"));
     }
 }

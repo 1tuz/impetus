@@ -187,6 +187,7 @@ impl Harness {
             provider_id.clone(),
             model_id,
             workspace_root.clone(),
+            Arc::new(policy.clone()),
         ));
         registry
             .register(adapter)

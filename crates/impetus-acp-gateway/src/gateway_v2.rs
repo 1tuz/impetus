@@ -6,8 +6,8 @@
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AuthMethod, AuthMethodId, AuthenticateRequest, CancelNotification, ContentBlock,
-    InitializeRequest, NewSessionRequest, PermissionOptionId, PromptRequest,
-    PermissionOptionKind as SdkPermissionOptionKind, RequestPermissionOutcome,
+    InitializeRequest, NewSessionRequest, PermissionOptionId,
+    PermissionOptionKind as SdkPermissionOptionKind, PromptRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate, StopReason, TextContent, ToolKind,
 };
@@ -267,9 +267,9 @@ impl AcpGatewayV2 {
                 // Send prompt
                 info!("Sending prompt");
                 let prompt_request = connection.send_request(PromptRequest::new(
-                        sid.clone(),
-                        vec![ContentBlock::Text(TextContent::new(prompt))],
-                    ));
+                    sid.clone(),
+                    vec![ContentBlock::Text(TextContent::new(prompt))],
+                ));
                 let prompt_future = prompt_request.block_task();
                 tokio::pin!(prompt_future);
                 let prompt_response = tokio::select! {

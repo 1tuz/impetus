@@ -198,10 +198,11 @@ impl ModelProvider for OpenAiProvider {
         &self,
         messages: &[ProviderMessage],
         credential: Option<&str>,
+        runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
         on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        self.stream_with_retry(messages, credential, cancel, on_chunk)
+        self.stream_with_retry(messages, credential, runtime, cancel, on_chunk)
             .await
     }
 }
