@@ -54,6 +54,7 @@ impl ModelProvider for OpenAiCompatibleAdapter {
         &self,
         messages: &[ProviderMessage],
         _credential: Option<&str>,
+        _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
         on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {

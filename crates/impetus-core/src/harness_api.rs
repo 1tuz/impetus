@@ -167,6 +167,7 @@ impl Harness {
         store: Arc<dyn EventStore>,
         policy: PolicyEngine,
         config: agent_client_protocol::AcpAgentConfig,
+        auth_method_id: Option<String>,
         provider_id: String,
         model_id: String,
     ) -> Self {
@@ -182,9 +183,11 @@ impl Harness {
         // Register ACP adapter V2
         let adapter = Arc::new(crate::AcpAdapter::new(
             config,
+            auth_method_id,
             provider_id.clone(),
             model_id,
             workspace_root.clone(),
+            Arc::new(policy.clone()),
         ));
         registry
             .register(adapter)

@@ -4,9 +4,10 @@
 //! (Mock, OpenAI-compatible, and future providers). The registry owns
 //! provider instances and routes requests by provider_id.
 
-use crate::{ProviderError, ProviderHealth, ProviderMessage};
+use crate::{AgentRuntime, ProviderError, ProviderHealth, ProviderMessage};
 use async_trait::async_trait;
 use std::fmt::Debug;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Unified interface for streaming chat completion providers.
@@ -34,6 +35,7 @@ pub trait ModelProvider: Send + Sync + Debug {
         &self,
         messages: &[ProviderMessage],
         credential: Option<&str>,
+        runtime: Option<Arc<AgentRuntime>>,
         cancel: CancellationToken,
         on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError>;
