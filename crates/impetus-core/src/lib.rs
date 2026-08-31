@@ -125,7 +125,7 @@ pub use provider::{
     ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, RetryBudget,
 };
 pub use provider_registry::ProviderRegistry;
-pub use provider_trait::ModelProvider;
+pub use provider_trait::{FinishReason, ModelProvider, StreamEvent};
 pub use reference_store::{
     DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,
     RecordProvenance, RecordSource, ReferenceRecord, ReferenceService, SearchFilters, SearchResult,

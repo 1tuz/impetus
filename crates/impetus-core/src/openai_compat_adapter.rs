@@ -2,7 +2,7 @@
 
 use crate::{
     CredentialResolver, ModelProvider, OpenAiCompatibleProvider, ProviderError, ProviderHealth,
-    ProviderMessage,
+    ProviderMessage, StreamEvent,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ impl ModelProvider for OpenAiCompatibleAdapter {
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
-        on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let credential = self
             .credential_resolver
@@ -64,7 +64,12 @@ impl ModelProvider for OpenAiCompatibleAdapter {
             .map_err(|_| ProviderError::MissingCredential)?;
 
         self.provider
-            .stream_messages(messages, credential.as_deref(), cancel, on_chunk)
+            .stream_messages(
+                messages,
+                credential.as_deref(),
+                cancel,
+                Box::new(move |text| on_event(StreamEvent::TextDelta { delta: text })),
+            )
             .await
     }
 }

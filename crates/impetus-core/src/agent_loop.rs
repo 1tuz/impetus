@@ -5,8 +5,9 @@
 //! observation feeding back into the next model turn.
 
 use crate::{
-    AgentRuntime, BudgetError, EventPayload, ModelProvider, PolicyEngine, ProviderError,
-    ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, ToolOrchestrator,
+    AgentRuntime, BudgetError, EventPayload, FinishReason, ModelProvider, PolicyEngine,
+    ProviderError, ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, StreamEvent,
+    ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -109,16 +110,16 @@ impl AgentLoop {
             iteration += 1;
 
             // Phase 1: Model inference with retry logic
-            let model_response = self
+            let turn_result = self
                 .call_model_with_retry(run_id, &provider, &messages, &cancellation)
                 .await?;
 
-            // Phase 2: Extract tool calls from response
-            let tool_calls = self.extract_tool_calls(&model_response);
+            // Phase 2: Tool calls are already extracted from StreamEvents
+            let tool_calls = turn_result.tool_calls;
 
             if tool_calls.is_empty() {
                 // No more tool calls — agent loop complete
-                self.runtime.record_agent_final(run_id, model_response)?;
+                self.runtime.record_agent_final(run_id, turn_result.text)?;
                 return Ok(());
             }
 
@@ -131,7 +132,7 @@ impl AgentLoop {
             // Phase 4: Add observations to message history for next turn
             // Note: Using 'user' role for observations as assistant/tool_result
             // roles are not yet implemented in ProviderMessage
-            messages.push(ProviderMessage::assistant(model_response));
+            messages.push(ProviderMessage::assistant(turn_result.text));
             for observation in observations {
                 messages.push(ProviderMessage::tool(
                     serde_json::to_string(&observation)
@@ -147,7 +148,7 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
-    ) -> Result<String, AgentLoopError> {
+    ) -> Result<ModelTurnResult, AgentLoopError> {
         let mut attempt = 0;
 
         loop {
@@ -215,7 +216,7 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
-    ) -> Result<String, AgentLoopError> {
+    ) -> Result<ModelTurnResult, AgentLoopError> {
         // Check runtime status before calling model
         if !matches!(self.runtime.status(), Ok(RuntimeStatus::Running)) {
             return Err(AgentLoopError::Runtime(RuntimeError::InactiveRun(run_id)));
@@ -228,7 +229,7 @@ impl AgentLoop {
             return Err(AgentLoopError::Budget(budget_error));
         }
 
-        let accumulated = Arc::new(std::sync::Mutex::new(String::new()));
+        let accumulator = Arc::new(std::sync::Mutex::new(TurnAccumulator::default()));
         let runtime = self.runtime.clone();
         let chunk_id = Arc::new(std::sync::Mutex::new(
             self.runtime
@@ -245,7 +246,7 @@ impl AgentLoop {
                 })
                 .unwrap_or(1),
         ));
-        let accumulated_clone = accumulated.clone();
+        let accumulator_clone = accumulator.clone();
 
         provider
             .stream_messages(
@@ -253,28 +254,68 @@ impl AgentLoop {
                 None, // credential resolution handled at provider level
                 Some(self.runtime.clone()),
                 cancellation.clone(),
-                Box::new(move |chunk| {
-                    let id = {
-                        let mut counter = chunk_id.lock().unwrap();
-                        let id = *counter;
-                        *counter += 1;
-                        id
-                    };
-                    runtime
-                        .record_agent_chunk(run_id, id, chunk.clone())
-                        .map(|_| ())
-                        .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
-                    accumulated_clone.lock().unwrap().push_str(&chunk);
+                Box::new(move |event| {
+                    match event {
+                        StreamEvent::TextDelta { delta } => {
+                            let id = {
+                                let mut counter = chunk_id.lock().unwrap();
+                                let id = *counter;
+                                *counter += 1;
+                                id
+                            };
+                            runtime
+                                .record_agent_chunk(run_id, id, delta.clone())
+                                .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+                            // Lock only for mutation
+                            accumulator_clone.lock().unwrap().text.push_str(&delta);
+                        }
+                        StreamEvent::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } => {
+                            accumulator_clone.lock().unwrap().tool_calls.push(ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            });
+                        }
+                        StreamEvent::Usage {
+                            prompt_tokens,
+                            completion_tokens,
+                            measured,
+                        } => {
+                            accumulator_clone.lock().unwrap().usage =
+                                Some((prompt_tokens, completion_tokens, measured));
+                        }
+                        StreamEvent::Finish { reason } => {
+                            accumulator_clone.lock().unwrap().finish_reason = Some(reason);
+                        }
+                        StreamEvent::Reasoning { .. } => {
+                            // Future: record reasoning traces
+                        }
+                    }
                     Ok(())
                 }),
             )
             .await?;
 
-        let result = accumulated.lock().unwrap().clone();
+        let acc = accumulator.lock().unwrap();
+        let text = acc.text.clone();
+        let tool_calls = acc.tool_calls.clone();
+        let measured_usage = acc
+            .usage
+            .filter(|(_, _, measured)| *measured)
+            .map(|(p, c, _)| (p, c));
 
-        // Record turn completion with actual token usage
-        let actual_tokens = self.estimate_response_tokens(&result);
-        self.runtime.record_turn(estimated_tokens + actual_tokens)?;
+        // Record turn completion with token usage
+        let tokens_used = if let Some((prompt, completion)) = measured_usage {
+            prompt + completion
+        } else {
+            // Fallback to estimation if provider didn't send usage
+            estimated_tokens + self.estimate_response_tokens(&text)
+        };
+        self.runtime.record_turn(tokens_used)?;
 
         // Emit budget update event
         if let Some(state) = self.runtime.budget_state() {
@@ -304,73 +345,14 @@ impl AgentLoop {
             }
         }
 
-        Ok(result)
+        Ok(ModelTurnResult {
+            text,
+            tool_calls,
+            measured_usage,
+        })
     }
 
-    fn extract_tool_calls(&self, response: &str) -> Vec<ToolCall> {
-        // Simple XML-style tool call parser for Anthropic/Claude format:
-        // <tool_use>
-        // <tool_name>name</tool_name>
-        // <parameters>{...}</parameters>
-        // </tool_use>
-        //
-        // This is a minimal parser, not a full XML implementation.
-        let mut calls = Vec::new();
-        let mut pos = 0;
-
-        while let Some(start) = response[pos..].find("<tool_use>") {
-            let abs_start = pos + start;
-            let search_from = abs_start + "<tool_use>".len();
-
-            if let Some(end_offset) = response[search_from..].find("</tool_use>") {
-                let abs_end = search_from + end_offset;
-                let block = &response[search_from..abs_end];
-
-                // Extract tool_name
-                let tool_name = if let Some(name_start) = block.find("<tool_name>") {
-                    let name_content_start = name_start + "<tool_name>".len();
-                    if let Some(name_end) = block[name_content_start..].find("</tool_name>") {
-                        block[name_content_start..name_content_start + name_end]
-                            .trim()
-                            .to_string()
-                    } else {
-                        pos = abs_end + "</tool_use>".len();
-                        continue;
-                    }
-                } else {
-                    pos = abs_end + "</tool_use>".len();
-                    continue;
-                };
-
-                // Extract parameters
-                let arguments = if let Some(params_start) = block.find("<parameters>") {
-                    let params_content_start = params_start + "<parameters>".len();
-                    if let Some(params_end) = block[params_content_start..].find("</parameters>") {
-                        let params_str =
-                            block[params_content_start..params_content_start + params_end].trim();
-                        // Try to parse as JSON, fallback to empty object
-                        serde_json::from_str(params_str).unwrap_or(serde_json::json!({}))
-                    } else {
-                        serde_json::json!({})
-                    }
-                } else {
-                    serde_json::json!({})
-                };
-
-                calls.push(ToolCall {
-                    id: format!("tool_{}", calls.len() + 1),
-                    name: tool_name,
-                    arguments,
-                });
-
-                pos = abs_end + "</tool_use>".len();
-            } else {
-                break;
-            }
-        }
-
-        calls
-    }
+    // extract_tool_calls removed: tool calls now come directly from StreamEvent::ToolCall
 
     /// Estimate request tokens (rough heuristic: 4 chars per token)
     fn estimate_request_tokens(&self, messages: &[ProviderMessage]) -> u64 {
@@ -449,6 +431,24 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// Accumulates typed stream events into a complete model turn.
+#[derive(Debug, Default)]
+struct TurnAccumulator {
+    text: String,
+    tool_calls: Vec<ToolCall>,
+    usage: Option<(u64, u64, bool)>, // (prompt, completion, measured)
+    finish_reason: Option<FinishReason>,
+}
+
+/// Result of a model turn with structured data.
+#[derive(Debug)]
+struct ModelTurnResult {
+    text: String,
+    tool_calls: Vec<ToolCall>,
+    #[allow(dead_code)] // Used for future usage tracking
+    measured_usage: Option<(u64, u64)>, // (prompt_tokens, completion_tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,137 +462,7 @@ mod tests {
         const { assert!(MAX_ITERATIONS <= 100) };
     }
 
-    #[test]
-    fn extract_tool_calls_single_call() {
-        let response = r#"
-Some reasoning text here.
-<tool_use>
-<tool_name>bash</tool_name>
-<parameters>{"command": "ls -la"}</parameters>
-</tool_use>
-More text after.
-"#;
-
-        let store = Arc::new(crate::MemoryEventStore::default());
-        let workspace = std::env::temp_dir();
-        let scope = crate::SandboxScope {
-            workspace_root: workspace.clone(),
-            allow_network: false,
-            allowed_hosts: vec![],
-        };
-        let policy = PolicyEngine::new(scope);
-        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime);
-
-        let calls = agent_loop.extract_tool_calls(response);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "bash");
-        assert_eq!(calls[0].arguments["command"], "ls -la");
-    }
-
-    #[test]
-    fn extract_tool_calls_multiple_calls() {
-        let response = r#"
-<tool_use>
-<tool_name>read_file</tool_name>
-<parameters>{"path": "src/main.rs"}</parameters>
-</tool_use>
-
-<tool_use>
-<tool_name>bash</tool_name>
-<parameters>{"command": "cargo test"}</parameters>
-</tool_use>
-"#;
-
-        let store = Arc::new(crate::MemoryEventStore::default());
-        let workspace = std::env::temp_dir();
-        let scope = crate::SandboxScope {
-            workspace_root: workspace.clone(),
-            allow_network: false,
-            allowed_hosts: vec![],
-        };
-        let policy = PolicyEngine::new(scope);
-        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime);
-
-        let calls = agent_loop.extract_tool_calls(response);
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].name, "read_file");
-        assert_eq!(calls[1].name, "bash");
-    }
-
-    #[test]
-    fn extract_tool_calls_no_calls() {
-        let response = "Just a plain text response with no tool calls.";
-
-        let store = Arc::new(crate::MemoryEventStore::default());
-        let workspace = std::env::temp_dir();
-        let scope = crate::SandboxScope {
-            workspace_root: workspace.clone(),
-            allow_network: false,
-            allowed_hosts: vec![],
-        };
-        let policy = PolicyEngine::new(scope);
-        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime);
-
-        let calls = agent_loop.extract_tool_calls(response);
-        assert_eq!(calls.len(), 0);
-    }
-
-    #[test]
-    fn extract_tool_calls_malformed_skips() {
-        let response = r#"
-<tool_use>
-<tool_name>valid_tool</tool_name>
-<parameters>{"a": 1}</parameters>
-</tool_use>
-
-<tool_use>
-<tool_name>broken_tool
-</tool_use>
-"#;
-
-        let store = Arc::new(crate::MemoryEventStore::default());
-        let workspace = std::env::temp_dir();
-        let scope = crate::SandboxScope {
-            workspace_root: workspace.clone(),
-            allow_network: false,
-            allowed_hosts: vec![],
-        };
-        let policy = PolicyEngine::new(scope);
-        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime);
-
-        let calls = agent_loop.extract_tool_calls(response);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "valid_tool");
-    }
-
-    #[test]
-    fn extract_tool_calls_empty_parameters() {
-        let response = r#"
-<tool_use>
-<tool_name>no_params_tool</tool_name>
-</tool_use>
-"#;
-
-        let store = Arc::new(crate::MemoryEventStore::default());
-        let workspace = std::env::temp_dir();
-        let scope = crate::SandboxScope {
-            workspace_root: workspace.clone(),
-            allow_network: false,
-            allowed_hosts: vec![],
-        };
-        let policy = PolicyEngine::new(scope);
-        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
-        let agent_loop = AgentLoop::new(runtime);
-
-        let calls = agent_loop.extract_tool_calls(response);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "no_params_tool");
-        assert_eq!(calls[0].arguments, serde_json::json!({}));
-    }
+    // extract_tool_calls tests removed: tool calls now come from StreamEvent::ToolCall
 
     #[tokio::test]
     async fn read_observation_is_returned_to_the_next_model_turn() {
@@ -614,9 +484,10 @@ More text after.
             "scripted",
             "test",
             [
-                vec![MockStreamItem::Chunk {
-                    chunk_id: 1,
-                    text: "<tool_use><tool_name>read_file</tool_name><parameters>{\"path\":\"evidence.txt\"}</parameters></tool_use>".into(),
+                vec![MockStreamItem::ToolCall {
+                    id: "call_1".to_string(),
+                    tool: "read_file".to_string(),
+                    arguments: r#"{"path":"evidence.txt"}"#.to_string(),
                 }],
                 vec![MockStreamItem::Chunk {
                     chunk_id: 2,

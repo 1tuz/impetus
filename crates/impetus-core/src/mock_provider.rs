@@ -2,7 +2,9 @@
 //!
 //! Returns pre-configured streaming responses without network calls.
 
-use crate::{ModelProvider, ProviderError, ProviderHealth, ProviderMessage};
+use crate::{
+    FinishReason, ModelProvider, ProviderError, ProviderHealth, ProviderMessage, StreamEvent,
+};
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -10,11 +12,31 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockStreamItem {
-    Chunk { chunk_id: u32, text: String },
-    ToolCall { tool: String, arguments: String },
-    Error { message: String },
-    TransientError { message: String },
-    PermanentError { message: String },
+    Chunk {
+        chunk_id: u32,
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        tool: String,
+        arguments: String,
+    },
+    Usage {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    },
+    Finish {
+        reason: FinishReason,
+    },
+    Error {
+        message: String,
+    },
+    TransientError {
+        message: String,
+    },
+    PermanentError {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +118,7 @@ impl ModelProvider for MockProvider {
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
-        mut on_chunk: Box<dyn FnMut(String) -> Result<(), ProviderError> + Send>,
+        mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         if let Ok(mut received) = self.received_messages.lock() {
             received.push(messages.to_vec());
@@ -114,11 +136,36 @@ impl ModelProvider for MockProvider {
 
             match item {
                 MockStreamItem::Chunk { text, .. } => {
-                    on_chunk(text.clone())?;
+                    on_event(StreamEvent::TextDelta {
+                        delta: text.clone(),
+                    })?;
                 }
-                MockStreamItem::ToolCall { .. } => {
-                    // Tool calls will be handled in future implementation
-                    continue;
+                MockStreamItem::ToolCall {
+                    id,
+                    tool,
+                    arguments,
+                } => {
+                    // Parse arguments as JSON, fail if invalid
+                    let args = serde_json::from_str(arguments)
+                        .map_err(|_| ProviderError::MalformedStream)?;
+                    on_event(StreamEvent::ToolCall {
+                        id: id.clone(),
+                        name: tool.clone(),
+                        arguments: args,
+                    })?;
+                }
+                MockStreamItem::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
+                    on_event(StreamEvent::Usage {
+                        prompt_tokens: *prompt_tokens,
+                        completion_tokens: *completion_tokens,
+                        measured: true,
+                    })?;
+                }
+                MockStreamItem::Finish { reason } => {
+                    on_event(StreamEvent::Finish { reason: *reason })?;
                 }
                 MockStreamItem::Error { message } => {
                     return Err(ProviderError::RequestFailed(message.clone()));
