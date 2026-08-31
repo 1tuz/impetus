@@ -16,6 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
 
+/// Accumulates streaming tool call chunks from OpenAI SSE.
+#[derive(Debug, Default)]
+struct ToolCallAccumulator {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryBudget {
     pub max_attempts: u8,
@@ -140,6 +148,8 @@ impl OpenAiProvider {
     ) -> Result<(), ProviderError> {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
+        let mut tool_call_accumulators: std::collections::HashMap<usize, ToolCallAccumulator> =
+            std::collections::HashMap::new();
 
         while let Some(chunk_result) = stream.next().await {
             if cancel.is_cancelled() {
@@ -162,16 +172,81 @@ impl OpenAiProvider {
                         if data.trim() == "[DONE]" {
                             return Ok(());
                         }
-                        if let Ok(parsed) = serde_json::from_str::<SseData>(data)
-                            && let Some(delta) = parsed.choices.first()
-                            && let Some(content) = &delta.delta.content
-                        {
-                            on_event(StreamEvent::TextDelta {
-                                delta: content.clone(),
-                            })?;
+                        if let Ok(parsed) = serde_json::from_str::<SseData>(data) {
+                            if let Some(delta_choice) = parsed.choices.first() {
+                                // Emit text delta
+                                if let Some(content) = &delta_choice.delta.content {
+                                    on_event(StreamEvent::TextDelta {
+                                        delta: content.clone(),
+                                    })?;
+                                }
+
+                                // Accumulate tool calls
+                                if let Some(tool_calls) = &delta_choice.delta.tool_calls {
+                                    for tc in tool_calls {
+                                        let acc =
+                                            tool_call_accumulators.entry(tc.index).or_default();
+
+                                        if let Some(id) = &tc.id {
+                                            acc.id = Some(id.clone());
+                                        }
+                                        if let Some(func) = &tc.function {
+                                            if let Some(name) = &func.name {
+                                                acc.name = Some(name.clone());
+                                            }
+                                            if let Some(args) = &func.arguments {
+                                                acc.arguments.push_str(args);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Emit finish reason
+                                if let Some(reason) = &delta_choice.finish_reason {
+                                    let finish_reason = match reason.as_str() {
+                                        "stop" => crate::FinishReason::Stop,
+                                        "length" => crate::FinishReason::Length,
+                                        "tool_calls" => crate::FinishReason::ToolCalls,
+                                        "content_filter" => crate::FinishReason::ContentFilter,
+                                        _ => crate::FinishReason::Other,
+                                    };
+                                    on_event(StreamEvent::Finish {
+                                        reason: finish_reason,
+                                    })?;
+                                }
+                            }
+
+                            // Emit usage
+                            if let Some(usage) = parsed.usage {
+                                on_event(StreamEvent::Usage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    measured: true,
+                                })?;
+                            }
                         }
                     }
                 }
+            }
+        }
+
+        // Emit accumulated tool calls
+        for (_index, acc) in tool_call_accumulators {
+            if let (Some(id), Some(name)) = (acc.id, acc.name) {
+                let arguments = if acc.arguments.is_empty() {
+                    serde_json::Value::Object(serde_json::Map::new())
+                } else {
+                    serde_json::from_str(&acc.arguments).map_err(|_| {
+                        ProviderError::MalformedToolCall(format!(
+                            "invalid JSON in tool call arguments for {name}"
+                        ))
+                    })?
+                };
+                on_event(StreamEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                })?;
             }
         }
 
@@ -214,14 +289,36 @@ impl ModelProvider for OpenAiProvider {
 #[derive(Deserialize)]
 struct SseData {
     choices: Vec<SseChoice>,
+    usage: Option<SseUsage>,
 }
 
 #[derive(Deserialize)]
 struct SseChoice {
     delta: SseDelta,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SseDelta {
     content: Option<String>,
+    tool_calls: Option<Vec<SseToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct SseToolCall {
+    index: usize,
+    id: Option<String>,
+    function: Option<SseFunction>,
+}
+
+#[derive(Deserialize)]
+struct SseFunction {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SseUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
 }
