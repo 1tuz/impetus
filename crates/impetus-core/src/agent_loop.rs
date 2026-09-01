@@ -336,6 +336,9 @@ impl AgentLoop {
                     tokens_used: state.tokens_used,
                     compaction_count: state.compaction_count,
                     context_used_percent: context_percent,
+                    usage_source: measured_usage
+                        .map(|_| crate::UsageSource::Measured)
+                        .or(Some(crate::UsageSource::Estimated)),
                 }))?;
 
             // Emit approaching warnings

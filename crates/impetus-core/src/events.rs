@@ -149,6 +149,8 @@ pub enum BudgetEvent {
         tokens_used: u64,
         compaction_count: u32,
         context_used_percent: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage_source: Option<UsageSource>,
     },
     CompactionRequired {
         threshold: u64,
@@ -166,6 +168,16 @@ pub enum BudgetEvent {
         limit: u64,
         used: u64,
     },
+}
+
+/// Source of token usage measurement.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    /// Measured by provider (accurate).
+    Measured,
+    /// Heuristic estimate (approximate).
+    Estimated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -456,6 +468,7 @@ mod tests {
                 tokens_used: 1000,
                 compaction_count: 1,
                 context_used_percent: 50,
+                usage_source: Some(UsageSource::Measured),
             },
             BudgetEvent::CompactionRequired {
                 threshold: 10000,
@@ -610,6 +623,7 @@ mod tests {
                 tokens_used: 500,
                 compaction_count: 0,
                 context_used_percent: 25,
+                usage_source: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
