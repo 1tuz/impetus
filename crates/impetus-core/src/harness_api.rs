@@ -1034,6 +1034,18 @@ fn compute_approval_detail(
         ActionKind::TmuxAttach => {
             estimated_scope = Some(ScopeEstimate::Operations(1));
         }
+        ActionKind::WebSearch
+        | ActionKind::WebFetch
+        | ActionKind::WebDownload
+        | ActionKind::WebBrowser
+        | ActionKind::WebSubmit
+        | ActionKind::WebUpload => {
+            // Web operations: note target URL
+            if let Some(target) = &request.action.target {
+                affected_files.push(target.clone());
+                estimated_scope = Some(ScopeEstimate::Operations(1));
+            }
+        }
     }
 
     Ok(crate::ApprovalDetail {

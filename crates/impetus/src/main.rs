@@ -34,6 +34,9 @@ enum Commands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Perform live network probes (web search backends, internet access)
+        #[arg(long)]
+        probe_network: bool,
     },
     /// Inspect registered components and modules
     Components {
@@ -127,8 +130,11 @@ async fn main() -> Result<()> {
     let socket_path = daemon::discover_socket_path();
 
     match cli.command {
-        Commands::Doctor { json } => {
-            doctor::run_diagnostics(&socket_path, json).await?;
+        Commands::Doctor {
+            json,
+            probe_network,
+        } => {
+            doctor::run_diagnostics(&socket_path, json, probe_network).await?;
             return Ok(());
         }
         Commands::Components { action } => {
