@@ -4,6 +4,7 @@ mod doctor;
 mod duckduckgo;
 mod html;
 mod http;
+mod research_loop;
 mod searxng;
 mod security;
 mod service;
@@ -21,6 +22,7 @@ pub use http::{
     DnsResolver, HttpTransport, PreparedGet, PreparedPostForm, RawHttpResponse, ReqwestTransport,
     SecureHttpClient, SecureHttpResponse, SystemDnsResolver,
 };
+pub use research_loop::{ResearchConfig, ResearchResult, research};
 pub use searxng::SearxngSearchBackend;
 pub use security::{AddressClass, EgressPolicy};
 pub use service::{
