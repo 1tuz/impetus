@@ -19,15 +19,15 @@ executable tasks are in [TODO.md](../TODO.md).
 
 ## MODULE RUNTIME / EXTENSIBILITY FOUNDATION
 
-Ранняя архитектурная фаза — **до** массового внедрения конкретных integrations.
+Early architectural phase — **before** mass adoption of specific integrations.
 
 **Gate:**
 
-- typed service contracts (не hard deps loop/scheduling → concrete backends);
+- typed service contracts (not hard deps loop/scheduling → concrete backends);
 - replaceable `AgentLoopStrategy` / `AgentScheduler` behind contracts (Kernel safety/durability pipeline unchanged);
 - `ServiceRegistry` / `ModuleRegistry`;
 - `ModuleDescriptor` shape;
-- capability negotiation и probing (не только version compare);
+- capability negotiation and probing (not only version compare);
 - lifecycle: discover, probe, start, health, stop;
 - compatibility matrix (harness protocol, contracts, platforms);
 - permissions model;
@@ -38,16 +38,16 @@ executable tasks are in [TODO.md](../TODO.md).
 - Extension Compatibility Adapter foundation + canonical internal types;
 - partial import (`SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE`).
 
-**Не в gate:** marketplace, plugin manager UI, arbitrary dynamic library ABI.
+**Not in gate:** marketplace, plugin manager UI, arbitrary dynamic library ABI.
 
 ## BINARY TOPOLOGY & DIAGNOSTICS
 
 **Target:**
 
-- однозначные роли: `impetus` = CLI/TUI client, `impetusd` = daemon;
-- release/install ship оба binary;
+- unambiguous roles: `impetus` = CLI/TUI client, `impetusd` = daemon;
+- release/install ship both binaries;
 - client auto-discovers / safely spawns `impetusd`;
-- `impetus doctor` и `impetus doctor --json` (typed, redacted, remediation);
+- `impetus doctor` and `impetus doctor --json` (typed, redacted, remediation);
 - `impetus components` introspection (list/status/health; update later).
 
 ## AGENT RUNTIME
@@ -67,7 +67,7 @@ Model → Tool Orchestrator → Tool request → Effect normalization
       → Safety / Policy / Sandbox → Execution → Observation → Model
 ```
 
-Отдельная подсистема, не деталь provider implementation.
+Separate subsystem, not a detail of provider implementation.
 
 ### Tool Orchestrator
 
@@ -85,7 +85,7 @@ remaining tool families.
 **Target:** route by capability, health, cost, latency, privacy,
 context, prompt cache, budget, reasoning. Policies: `local-first`, `free-first`,
 `balanced`, `quality-first`. Technical fallback between providers when unavailable.
-Sensitive repo context не уходит в облако по умолчанию.
+Sensitive repo context does not go to cloud by default.
 
 ### Durable budgets
 
@@ -119,9 +119,9 @@ WebFetch: bounded HTTP → extract → WebObservation → ArtifactRef if large
 - `doctor` web section with per-backend health and degraded fallback semantics;
 - JCode audit: websearch, webfetch, browser tool, Browser Provider Protocol.
 
-**Не в base gate:** Chromium/Playwright/Node in core; mandatory Tavily/Exa/etc.
+**Not in base gate:** Chromium/Playwright/Node in core; mandatory Tavily/Exa/etc.
 
-Исполнимые пункты — [TODO.md](../TODO.md) § WEB / INTERNET RESEARCH.
+Executable items — [TODO.md](../TODO.md) § WEB / INTERNET RESEARCH.
 
 ## OUTPUT OPTIMIZATION
 
@@ -135,7 +135,7 @@ Execution → Raw Observation → Output Optimization
   └─ bounded raw + ArtifactRef
 ```
 
-RTK не обязателен; removable без изменения Agent Loop.
+RTK is not mandatory; removable without changing Agent Loop.
 
 ## CONTEXT INTELLIGENCE
 
@@ -144,14 +144,14 @@ RTK не обязателен; removable без изменения Agent Loop.
 **Target:** stable prefix, prompt cache, shared fork/subagent prefix, delta
 context, deterministic reducers, **durable** artifact store (current attachment
 backing is ephemeral/in-memory only), HOT/WARM/COLD, lazy
-tools/MCP/instructions, telemetry. Large paste → `ArtifactRef`, не giant IPC JSON.
+tools/MCP/instructions, telemetry. Large paste → `ArtifactRef`, not giant IPC JSON.
 
 ### Instruction model
 
 **Current:** scoped deterministic instruction resolution.
 
 **Target:** task-aware lazy instruction/skill selection. SOUL, AGENTS,
-conventions, guides, skills — без расширения permissions.
+conventions, guides, skills — without expanding permissions.
 
 ### Reference Store
 
@@ -246,5 +246,5 @@ only — never raw secrets on any OS.
 
 ## Readiness rule
 
-Feature ready только с proportionate tests, runtime smoke where applicable,
+Feature ready only with proportionate tests, runtime smoke where applicable,
 documented trust boundary, explicit evidence gate is met.

@@ -27,17 +27,17 @@ Stubs and placeholder responses do not count as done.
 
 ## Phase 1 — Binary topology & diagnostics (early)
 
-Целевая роль имён: `impetus` = user client, `impetusd` = daemon. Crate split
-есть; миграция имён/ролей в docs и dev-tooling не завершена.
+Target name roles: `impetus` = user client, `impetusd` = daemon. Crate split
+exists; migration of names/roles in docs and dev-tooling is not yet complete.
 
 ### Binary topology
 
-- [x] Зафиксировать target roles во всех user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
-- [x] `task daemon` → `cargo run -p impetusd` (не `harness`)
-- [x] `task client` → `cargo run -p impetus` (не `cli`)
+- [x] Lock target roles in all user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
+- [x] `task daemon` → `cargo run -p impetusd` (not `harness`)
+- [x] `task client` → `cargo run -p impetus` (not `cli`)
 - [x] `task harness` / `task cli` deprecated aliases
-- [x] Release artifact: оба binary с явными ролями в install script help
-- [x] `impetus` auto-discovers socket и safely spawns `impetusd` if needed
+- [x] Release artifact: both binaries with explicit roles in install script help
+- [x] `impetus` auto-discovers socket and safely spawns `impetusd` if needed
 - [x] Install/uninstall docs: `impetusd` daemon vs `impetus` client
 
 ### Doctor
@@ -72,7 +72,7 @@ Stubs and placeholder responses do not count as done.
 
 ## Phase 2 — Module Runtime / extensibility foundation
 
-Gate до массовых integrations. См. ROADMAP § MODULE RUNTIME.
+Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 
 - [x] Typed service contracts (decouple loop/scheduling from concrete backends)
 - [x] Replaceable `AgentLoopStrategy` and `AgentScheduler` behind contracts (Kernel pipeline unchanged)
