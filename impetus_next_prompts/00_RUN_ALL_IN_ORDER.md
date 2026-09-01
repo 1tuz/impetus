@@ -1,21 +1,21 @@
-# Impetus: последовательное продолжение разработки
+# Impetus: sequential development continuation
 
-Цель: пройти оставшиеся архитектурные слабые места Impetus **по одному независимому slice за раз**.
+Goal: address remaining Impetus architectural weak spots **one independent slice at a time**.
 
-Исполняй файлы в этом каталоге по порядку номеров. Каждый prompt — отдельный GitHub Issue/branch/PR и должен быть merged до начала следующего, кроме случая, когда соответствующая работа уже полностью существует в свежем `main`.
+Execute files in this directory in numerical order. Each prompt is a separate GitHub Issue/branch/PR and must be merged before starting the next, except when the corresponding work already fully exists in fresh `main`.
 
-Приоритет:
-1. убрать устаревшую концепцию из роутинга и документации;
-2. безопасность исполнения;
-3. контекст и сессии;
+Priority:
+1. remove outdated concept from routing and documentation;
+2. execution security;
+3. context and sessions;
 4. ACP;
-5. реальные runtime-интеграции;
+5. real runtime integrations;
 6. web/TUI/reference/auth;
-7. архитектурная уборка, миграции и документационная правда.
+7. architectural cleanup, migrations, and documentation truth.
 
-Не создавай пачку веток одновременно. После каждого merge заново подтягивай `main`, потому что следующий prompt должен оцениваться относительно уже изменённого дерева.
+Do not create a batch of branches simultaneously. After each merge, pull `main` again, because the next prompt must be evaluated against the already changed tree.
 
-Файлы:
+Files:
 - `01_REMOVE_LOCAL_CLOUD_RESEARCH_ESCALATION.md`
 - `02_PRODUCTION_MACOS_SANDBOX.md`
 - `03_CONTEXT_OPTIMIZER.md`
@@ -31,4 +31,4 @@
 - `13_CLIENT_BOUNDARIES_AND_CORE_DECOMPOSITION.md`
 - `14_SECURITY_E2E_MIGRATIONS_AND_DOC_TRUTH.md`
 
-Для каждого файла действует workflow, описанный внутри него.
+For each file, the workflow described inside it applies.
