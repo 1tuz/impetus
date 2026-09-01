@@ -133,7 +133,7 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
 - [x] `WebFetchService` (separate from search)
 - [x] `BrowserService` + `BrowserProvider` contract (optional module)
 - [x] Agent Loop integration via contracts only (no direct DuckDuckGo/Bing deps)
-- [ ] Research loop: search → select → fetch → follow links → compare → cite
+- [x] Research loop: search → select → fetch → follow links → compare → cite
 
 ### WebSearch backends
 
@@ -160,7 +160,7 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
 
 ### Safety & policy
 
-- [ ] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
+- [x] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
 - [ ] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
 - [x] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
 - [x] Validate initial URL, DNS resolution, redirect chain, final destination
@@ -184,8 +184,8 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 ### Doctor
 
 - [x] Internet access enabled/disabled
-- [ ] WebFetch / per-SearchBackend / BrowserProvider health in `impetus doctor`
-- [ ] `DEGRADED — web search fallback available` when fallback path works
+- [x] WebFetch / per-SearchBackend / BrowserProvider health in `impetus doctor`
+- [x] `DEGRADED — web search fallback available` when fallback path works
 
 ---
 

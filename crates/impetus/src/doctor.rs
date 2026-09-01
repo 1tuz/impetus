@@ -110,7 +110,7 @@ impl DoctorReport {
     }
 }
 
-pub async fn run_diagnostics(socket_path: &str, json: bool) -> Result<()> {
+pub async fn run_diagnostics(socket_path: &str, json: bool, probe_network: bool) -> Result<()> {
     let mut report = DoctorReport::new();
 
     // Probe: impetus/impetusd versions
@@ -120,7 +120,7 @@ pub async fn run_diagnostics(socket_path: &str, json: bool) -> Result<()> {
     probe_socket(&mut report, socket_path);
 
     // Probe: daemon connection and protocol compatibility
-    probe_daemon_connection(&mut report, socket_path).await;
+    probe_daemon_connection(&mut report, socket_path, probe_network).await;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -196,7 +196,11 @@ fn probe_socket(report: &mut DoctorReport, socket_path: &str) {
     }
 }
 
-async fn probe_daemon_connection(report: &mut DoctorReport, socket_path: &str) {
+async fn probe_daemon_connection(
+    report: &mut DoctorReport,
+    socket_path: &str,
+    probe_network: bool,
+) {
     match impetus_client::UnixSocketTransport::connect(socket_path).await {
         Ok(client) => {
             report.add(ProbeResult::ok(
@@ -286,6 +290,11 @@ async fn probe_daemon_connection(report: &mut DoctorReport, socket_path: &str) {
             match client.request(impetus_core::IpcRequest::Diagnostics).await {
                 Ok(impetus_core::IpcResponse::Diagnostics { subsystems }) => {
                     add_subsystem_probes(report, *subsystems);
+
+                    // Live network probe if requested
+                    if probe_network {
+                        probe_web_research_live(report).await;
+                    }
                 }
                 Ok(other) => {
                     report.add(ProbeResult::warn(
@@ -352,6 +361,72 @@ fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::Sub
     ));
     report.add(status_to_probe("disk_runtime", subsystems.disk_runtime));
     report.add(status_to_probe("web_research", subsystems.web_research));
+}
+
+async fn probe_web_research_live(report: &mut DoctorReport) {
+    use impetus_core::web_research::{EgressPolicy, WebDoctor, WebResearchEngine};
+
+    let engine = WebResearchEngine::production(EgressPolicy::default());
+    let web_report = WebDoctor::probe_engine(&engine).await;
+
+    // Add per-backend probes
+    for backend in &web_report.search_backends {
+        let (status, message, remediation) = match &backend.status {
+            impetus_core::web_research::doctor::BackendDoctorStatus::BuiltIn => (
+                ProbeStatus::Ok,
+                "Built-in backend available".to_string(),
+                None,
+            ),
+            impetus_core::web_research::doctor::BackendDoctorStatus::Configured => (
+                ProbeStatus::Ok,
+                "External backend configured".to_string(),
+                None,
+            ),
+            impetus_core::web_research::doctor::BackendDoctorStatus::Reachable => (
+                ProbeStatus::Ok,
+                "Search backend reachable".to_string(),
+                None,
+            ),
+            impetus_core::web_research::doctor::BackendDoctorStatus::Unavailable { reason } => (
+                ProbeStatus::Unavailable,
+                format!("Backend unavailable: {}", reason),
+                Some("Check network policy or firewall settings".to_string()),
+            ),
+            impetus_core::web_research::doctor::BackendDoctorStatus::Misconfigured { reason } => (
+                ProbeStatus::Error,
+                format!("Backend misconfigured: {}", reason),
+                Some("Check backend configuration".to_string()),
+            ),
+            impetus_core::web_research::doctor::BackendDoctorStatus::Failed { reason } => (
+                ProbeStatus::Error,
+                format!("Backend probe failed: {}", reason),
+                Some("Check network connectivity and backend availability".to_string()),
+            ),
+        };
+
+        let probe = ProbeResult {
+            name: format!("web_backend_{}", backend.id),
+            status,
+            message,
+            remediation,
+            details: None,
+        };
+
+        report.add(probe);
+    }
+
+    // Add summary notes
+    if !web_report.notes.is_empty() {
+        for note in &web_report.notes {
+            if note.contains("DEGRADED") {
+                report.add(ProbeResult::warn(
+                    "web_research_status",
+                    note.clone(),
+                    "Primary backend unavailable, fallback active",
+                ));
+            }
+        }
+    }
 }
 
 fn print_compatibility_matrix() {

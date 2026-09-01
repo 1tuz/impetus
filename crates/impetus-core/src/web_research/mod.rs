@@ -1,6 +1,6 @@
 mod bing;
 mod browser;
-mod doctor;
+pub mod doctor;
 mod duckduckgo;
 mod html;
 mod http;

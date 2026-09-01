@@ -48,6 +48,12 @@ pub enum ActionKind {
     SshConnect,
     SftpTransfer,
     TmuxAttach,
+    WebSearch,
+    WebFetch,
+    WebDownload,
+    WebBrowser,
+    WebSubmit,
+    WebUpload,
 }
 
 impl ActionKind {
@@ -62,6 +68,12 @@ impl ActionKind {
             ActionKind::SshConnect => ExecutionSemantics::NonReplayable,
             ActionKind::SftpTransfer => ExecutionSemantics::Mutating,
             ActionKind::TmuxAttach => ExecutionSemantics::NonReplayable,
+            ActionKind::WebSearch => ExecutionSemantics::Idempotent,
+            ActionKind::WebFetch => ExecutionSemantics::ReadOnly,
+            ActionKind::WebDownload => ExecutionSemantics::Mutating,
+            ActionKind::WebBrowser => ExecutionSemantics::NonReplayable,
+            ActionKind::WebSubmit => ExecutionSemantics::Mutating,
+            ActionKind::WebUpload => ExecutionSemantics::Mutating,
         }
     }
 
@@ -216,6 +228,30 @@ impl PolicyEngine {
                 } else {
                     PolicyDecision::NeedsApproval {
                         reason: "opens a network connection".into(),
+                    }
+                }
+            }
+            ActionKind::WebSearch | ActionKind::WebFetch => {
+                if !self.scope.allow_network {
+                    PolicyDecision::Deny {
+                        reason: "network is disabled in this workspace scope".into(),
+                    }
+                } else {
+                    PolicyDecision::Allow
+                }
+            }
+            ActionKind::WebDownload
+            | ActionKind::WebBrowser
+            | ActionKind::WebSubmit
+            | ActionKind::WebUpload => {
+                if !self.scope.allow_network {
+                    PolicyDecision::Deny {
+                        reason: "network is disabled in this workspace scope".into(),
+                    }
+                } else {
+                    PolicyDecision::NeedsApproval {
+                        reason: "performs web operation that may change state or transfer data"
+                            .into(),
                     }
                 }
             }
