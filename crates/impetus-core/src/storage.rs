@@ -607,6 +607,8 @@ impl EventStore for SqliteEventStore {
             Ok(BudgetState {
                 turns_used: turns_used as u32,
                 tokens_used: tokens_used as u64,
+                measured_tokens: 0,  // Not persisted yet
+                estimated_tokens: 0, // Not persisted yet
                 compaction_count: compaction_count as u32,
                 started_at,
             })

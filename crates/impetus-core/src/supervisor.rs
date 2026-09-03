@@ -144,6 +144,7 @@ impl SessionSupervisor {
                 .record_event(EventPayload::Budget(BudgetEvent::Updated {
                     turns_used: state.turns_used,
                     tokens_used: state.tokens_used,
+                    measured: state.measured_tokens > 0,
                     compaction_count: state.compaction_count,
                     context_used_percent,
                 }));

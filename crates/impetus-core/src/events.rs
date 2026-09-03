@@ -147,6 +147,8 @@ pub enum BudgetEvent {
     Updated {
         turns_used: u32,
         tokens_used: u64,
+        /// True if tokens_used is from provider-reported usage.
+        measured: bool,
         compaction_count: u32,
         context_used_percent: u8,
     },
@@ -454,6 +456,7 @@ mod tests {
             BudgetEvent::Updated {
                 turns_used: 5,
                 tokens_used: 1000,
+                measured: true,
                 compaction_count: 1,
                 context_used_percent: 50,
             },
@@ -608,6 +611,7 @@ mod tests {
             EventPayload::Budget(BudgetEvent::Updated {
                 turns_used: 3,
                 tokens_used: 500,
+                measured: false,
                 compaction_count: 0,
                 context_used_percent: 25,
             }),

@@ -101,6 +101,10 @@ impl Default for CompactionPolicy {
 pub struct BudgetState {
     pub turns_used: u32,
     pub tokens_used: u64,
+    /// Tokens from provider-reported usage (measured).
+    pub measured_tokens: u64,
+    /// Tokens from heuristic estimation.
+    pub estimated_tokens: u64,
     pub started_at: Instant,
     pub compaction_count: u32,
 }
@@ -110,6 +114,8 @@ impl BudgetState {
         Self {
             turns_used: 0,
             tokens_used: 0,
+            measured_tokens: 0,
+            estimated_tokens: 0,
             started_at: Instant::now(),
             compaction_count: 0,
         }
@@ -249,6 +255,20 @@ impl BudgetChecker {
         self.state.tokens_used += tokens_used;
     }
 
+    /// Record token usage with measurement source.
+    ///
+    /// When `measured` is true, tokens are from provider-reported usage.
+    /// When false, tokens are from heuristic estimation.
+    /// Total `tokens_used` is always updated; separate counters track the source.
+    pub fn record_usage(&mut self, tokens: u64, measured: bool) {
+        self.state.tokens_used += tokens;
+        if measured {
+            self.state.measured_tokens += tokens;
+        } else {
+            self.state.estimated_tokens += tokens;
+        }
+    }
+
     pub fn record_compaction(&mut self, compacted_tokens: u64) {
         self.state.compaction_count += 1;
         self.state.tokens_used = compacted_tokens;
@@ -337,6 +357,30 @@ mod tests {
 
         state.tokens_used = 15000;
         assert_eq!(state.context_used_percent(10000), 100);
+    }
+
+    #[test]
+    fn record_usage_tracks_measured_and_estimated() {
+        let config = BudgetConfig::default();
+        let mut checker = BudgetChecker::new(config);
+
+        // Record measured usage
+        checker.record_usage(100, true);
+        assert_eq!(checker.state().tokens_used, 100);
+        assert_eq!(checker.state().measured_tokens, 100);
+        assert_eq!(checker.state().estimated_tokens, 0);
+
+        // Record estimated usage
+        checker.record_usage(50, false);
+        assert_eq!(checker.state().tokens_used, 150);
+        assert_eq!(checker.state().measured_tokens, 100);
+        assert_eq!(checker.state().estimated_tokens, 50);
+
+        // Record more measured usage
+        checker.record_usage(200, true);
+        assert_eq!(checker.state().tokens_used, 350);
+        assert_eq!(checker.state().measured_tokens, 300);
+        assert_eq!(checker.state().estimated_tokens, 50);
     }
 
     #[test]
