@@ -55,7 +55,9 @@ For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/r
 ## CI and Verification
 
 - Before handoff of Rust changes, execute `task verify` (locally).
-- **CI test scope:** `cargo test --lib --bins` (unit tests only). Integration tests from `crates/*/tests/` excluded — they require macOS Seatbelt, native environment, and compile slowly in Docker. Locally run full `task verify` with integration tests.
+- **PR Rust CI:** one macOS job runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --lib --bins`; Clippy replaces a separate CI `cargo check`. Rust CI runs only for Rust/workflow changes and does not rerun on `main` after a merged PR.
+- **Integration CI:** `cargo test --workspace` runs only from the manual/nightly macOS workflow. Integration tests from `crates/*/tests/` stay outside the PR path because they require macOS Seatbelt and compile slowly in Docker. Locally run full `task verify` with integration tests.
+- **Dependency security CI:** `cargo audit` and `cargo deny` run only when `Cargo.toml`, `Cargo.lock`, `deny.toml`, or their workflow changes. Pages runs only for `site/**` changes.
 - On `Cargo.toml` or `Cargo.lock` changes, execute `task security`; do not ignore RustSec/CVE, license/source/bans findings without versioned entry in `deny.toml` with specific reason.
 
 ## Git and Commits
@@ -94,7 +96,7 @@ For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/r
    ```
    Or via GitHub Web UI
 6. **Enable auto-merge** in PR: `gh pr merge --auto --squash` after creation
-7. CI passes (fmt, test, check, clippy) → **GitHub auto-merges to main**
+7. Required PR CI passes → **GitHub auto-merges to main**
 8. After merge: `git checkout main && git pull` for next task
 
 #### Auto-merge Setup (once per project)
