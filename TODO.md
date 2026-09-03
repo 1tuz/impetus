@@ -95,7 +95,7 @@ Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 - [x] Extension Compatibility Adapter layer (types exist; no working adapters yet)
 - [x] Canonical types (defined but not used in real imports)
 - [x] Import capability matrix (all entries Unsupported; no real capability detection)
-- [x] Agent Skills adapter (upstream spec audit first)
+- [x] Agent Skills adapter (SKILL.md parser, CLI `impetus skills list/import/show`, integration tests)
 - [ ] MCP adapter
 - [ ] Agent Plugins adapter
 - [ ] Claude Code extensions/plugins adapter
