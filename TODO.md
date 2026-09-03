@@ -219,9 +219,9 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Parallel tool execution where safe (read_only/idempotent only)
 - [x] Cross-session state isolation and cleanup
 - [x] Audit log with redacted tool arguments
-- [ ] Provider-native tool call protocol parsing (OpenAI, Anthropic) - Issue #83, partial in PR #84
-- [ ] Measured vs estimated token usage tracking in budget events
-- [ ] Tool call argument validation (reject malformed before execution)
+- [x] Provider-native tool call protocol parsing (OpenAI, Anthropic) - Issue #83, partial in PR #84
+- [x] Measured vs estimated token usage tracking in budget events
+- [x] Tool call argument validation (reject malformed before execution)
 
 ---
 
