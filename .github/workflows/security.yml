@@ -28,7 +28,9 @@ jobs:
         with:
           cache-targets: "false"
       - name: Install dependency security tools
-        run: cargo install cargo-audit --locked && cargo install cargo-deny --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
       - name: Audit dependencies
         run: cargo audit
       - name: Check dependency policy
