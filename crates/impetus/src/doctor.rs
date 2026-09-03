@@ -466,9 +466,23 @@ fn print_compatibility_matrix() {
             println!("  ✗ Not supported");
         }
 
+        // Per-capability breakdown
+        let mut caps: Vec<_> = matrix.capabilities.iter().collect();
+        caps.sort_by_key(|(name, _)| name.as_str());
+
+        for (cap_name, status) in &caps {
+            let icon = match status {
+                impetus_core::ImportCapability::Supported => "✓",
+                impetus_core::ImportCapability::Partial => "⚠",
+                impetus_core::ImportCapability::Unsupported => "○",
+                impetus_core::ImportCapability::Incompatible => "✗",
+            };
+            println!("    {} {} — {:?}", icon, cap_name, status);
+        }
+
         if !matrix.notes.is_empty() {
             for note in &matrix.notes {
-                println!("    {}", note);
+                println!("    Note: {}", note);
             }
         }
     }
