@@ -6,6 +6,7 @@
 pub mod acp_adapter;
 pub mod agent_loop;
 pub mod agent_skills_adapter;
+pub mod anthropic_provider;
 pub mod approval;
 pub mod attachments;
 pub mod audit_log;

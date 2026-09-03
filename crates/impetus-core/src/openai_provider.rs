@@ -322,3 +322,61 @@ struct SseUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_sse_data_deserialize_text_delta() {
+        let json = r#"{"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#;
+        let data: SseData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.choices.len(), 1);
+        assert_eq!(data.choices[0].delta.content, Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn openai_sse_data_deserialize_tool_call() {
+        let json = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"get_weather","arguments":"{\"city\":"}}]},"finish_reason":null}]}"#;
+        let data: SseData = serde_json::from_str(json).unwrap();
+        let tc = &data.choices[0].delta.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(tc.index, 0);
+        assert_eq!(tc.id, Some("call_abc".to_string()));
+        assert_eq!(
+            tc.function.as_ref().unwrap().name,
+            Some("get_weather".to_string())
+        );
+    }
+
+    #[test]
+    fn openai_sse_data_deserialize_usage() {
+        let json = r#"{"choices":[],"usage":{"prompt_tokens":25,"completion_tokens":15}}"#;
+        let data: SseData = serde_json::from_str(json).unwrap();
+        let usage = data.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 25);
+        assert_eq!(usage.completion_tokens, 15);
+    }
+
+    #[test]
+    fn openai_sse_data_deserialize_finish_reason() {
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
+        let data: SseData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.choices[0].finish_reason, Some("stop".to_string()));
+    }
+
+    #[test]
+    fn tool_call_accumulator_default() {
+        let acc = ToolCallAccumulator::default();
+        assert!(acc.id.is_none());
+        assert!(acc.name.is_none());
+        assert!(acc.arguments.is_empty());
+    }
+
+    #[test]
+    fn retry_budget_default() {
+        let budget = RetryBudget::default();
+        assert_eq!(budget.max_attempts, 2);
+        assert_eq!(budget.retry_delay, Duration::from_millis(100));
+        assert_eq!(budget.request_timeout, Duration::from_secs(30));
+    }
+}
