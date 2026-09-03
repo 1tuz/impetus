@@ -146,6 +146,7 @@ impl SessionSupervisor {
                     tokens_used: state.tokens_used,
                     compaction_count: state.compaction_count,
                     context_used_percent,
+                    usage_source: None,
                 }));
         }
     }

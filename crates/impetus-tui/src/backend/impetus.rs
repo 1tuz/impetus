@@ -303,6 +303,7 @@ fn map_event(event: Event) -> UiEvent {
             tokens_used,
             compaction_count,
             context_used_percent,
+            usage_source: _,
         }) => UiEventKind::BudgetUpdated(BudgetState {
             turns_used,
             tokens_used,
