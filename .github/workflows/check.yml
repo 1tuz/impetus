@@ -2,8 +2,11 @@ name: Rust CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - '.github/workflows/check.yml'
   workflow_dispatch:
 
 permissions:
@@ -14,69 +17,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  fmt:
-    name: Format
-    runs-on: macos-14
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  test:
-    name: Test
-    runs-on: macos-14
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            macos-rust-1.98-
-      - run: cargo test --workspace
-
-  check:
-    name: Check
-    runs-on: macos-14
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            macos-rust-1.98-
-      - run: cargo check --workspace
-
-  clippy:
-    name: Clippy
+  rust:
+    name: Rust checks
     runs-on: macos-14
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
-          components: clippy
-      - uses: actions/cache@v6
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            macos-rust-1.98-
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+          cache-targets: "false"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run unit tests
+        run: cargo test --workspace --lib --bins

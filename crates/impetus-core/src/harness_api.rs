@@ -1604,13 +1604,15 @@ mod tests {
             "scripted",
             "test-model",
             [
-                vec![MockStreamItem::Chunk {
-                    chunk_id: 1,
-                    text: "<tool_use><tool_name>read_file</tool_name><parameters>{\"path\":\"evidence.txt\"}</parameters></tool_use>".into(),
+                vec![MockStreamItem::ToolCall {
+                    id: "read-evidence".into(),
+                    tool: "read_file".into(),
+                    arguments: r#"{"path":"evidence.txt"}"#.into(),
                 }],
-                vec![MockStreamItem::Chunk {
-                    chunk_id: 1,
-                    text: "<tool_use><tool_name>write_file</tool_name><parameters>{\"path\":\"result.txt\",\"content\":\"approved result\"}</parameters></tool_use>".into(),
+                vec![MockStreamItem::ToolCall {
+                    id: "write-result".into(),
+                    tool: "write_file".into(),
+                    arguments: r#"{"path":"result.txt","content":"approved result"}"#.into(),
                 }],
                 vec![MockStreamItem::Chunk {
                     chunk_id: 1,
@@ -1713,9 +1715,10 @@ mod tests {
             "scripted-rejection",
             "test-model",
             [
-                vec![MockStreamItem::Chunk {
-                    chunk_id: 1,
-                    text: "<tool_use><tool_name>write_file</tool_name><parameters>{\"path\":\"blocked.txt\",\"content\":\"must not write\"}</parameters></tool_use>".into(),
+                vec![MockStreamItem::ToolCall {
+                    id: "write-blocked".into(),
+                    tool: "write_file".into(),
+                    arguments: r#"{"path":"blocked.txt","content":"must not write"}"#.into(),
                 }],
                 vec![MockStreamItem::Chunk {
                     chunk_id: 1,
@@ -1737,23 +1740,26 @@ mod tests {
             session_id,
             text: "try the write".into(),
         });
-        let approval_id = loop {
+        let mut approval_id = None;
+        for _ in 0..100 {
             let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
                 session_id,
                 after_sequence: 0,
             }) else {
                 panic!("event stream")
             };
-            if let Some(approval_id) = events.iter().find_map(|event| match &event.payload {
+            approval_id = events.iter().find_map(|event| match &event.payload {
                 EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
                     Some(request.id)
                 }
                 _ => None,
-            }) {
-                break approval_id;
+            });
+            if approval_id.is_some() {
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        };
+        }
+        let approval_id = approval_id.expect("write approval");
         assert!(matches!(
             harness.handle(IpcRequest::ResolveApproval {
                 session_id,
