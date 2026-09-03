@@ -6,7 +6,7 @@ Start the daemon before the CLI client or Zap adapter:
 
 ```zsh
 task daemon
-# или после установки:
+# or after installation:
 impetusd
 ```
 

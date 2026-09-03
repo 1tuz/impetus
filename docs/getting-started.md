@@ -1,7 +1,7 @@
 # Getting started
 
-Developer checkout: daemon `impetusd` + CLI client `impetus`. Нет packaged
-installer в этом guide — см. [README](../README.md) для curl install.
+Developer checkout: daemon `impetusd` + CLI client `impetus`. No packaged
+installer in this guide — see [README](../README.md) for curl install.
 
 ## Prerequisites
 
@@ -20,22 +20,22 @@ Terminal 1 — daemon:
 
 ```zsh
 task daemon
-# или напрямую:
+# or directly:
 cargo run -p impetusd
 ```
 
-Создаёт data dir `~/Library/Application Support/Impetus` (или `IMPETUS_DATA_DIR`).
-Без аргументов — mock streaming provider.
+Creates data dir `~/Library/Application Support/Impetus` (or `IMPETUS_DATA_DIR`).
+Without arguments — mock streaming provider.
 
 Terminal 2 — CLI client:
 
 ```zsh
 task client -- create
-# или напрямую:
+# or directly:
 cargo run -p impetus -- create
 ```
 
-UUID из вывода — для последующих команд:
+UUID from output — for subsequent commands:
 
 ```zsh
 task client -- prompt <session-id> "Summarize this repository"
@@ -43,18 +43,18 @@ task client -- stream <session-id>
 task client -- --help
 ```
 
-`stream` печатает stored events; это не interactive TUI.
+`stream` prints stored events; this is not an interactive TUI.
 
 ## Provider profile
 
-Пример — loopback OpenAI-compatible endpoint без credential:
+Example — loopback OpenAI-compatible endpoint without credential:
 
 ```zsh
 cp config/provider-profile.example.json /tmp/my-provider.json
 cargo run -p impetusd -- /tmp/my-provider.json
 ```
 
-См. [configuration](configuration.md).
+See [configuration](configuration.md).
 
 ## Roles
 

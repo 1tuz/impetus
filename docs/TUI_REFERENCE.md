@@ -4,16 +4,16 @@
 > table only. Decisions are **not locked** until a real source audit of
 > [1jehuang/jcode](https://github.com/1jehuang/jcode) is completed.
 
-Impetus не fork JCode и не импортирует его application/runtime layer.
+Impetus is not a fork of JCode and does not import its application/runtime layer.
 
-**Принцип (target):**
+**Principle (target):**
 
 ```text
 JCode   → reference implementation / UX patterns (after audit)
-Impetus → собственный thin TUI client (Ratatui + Crossterm baseline)
+Impetus → own thin TUI client (Ratatui + Crossterm baseline)
 ```
 
-**Codex** — secondary reference для composer, large paste, doctor/diagnostics,
+**Codex** — secondary reference for composer, large paste, doctor/diagnostics,
 approval UX, errors/remediation.
 
 **Baseline stack (planned evaluation):** Ratatui, Crossterm.
@@ -24,11 +24,11 @@ approval UX, errors/remediation.
 
 Before treating any row below as final:
 
-- [ ] Clone/check out актуальный `https://github.com/1jehuang/jcode`
-- [ ] Зафиксировать audited **commit SHA** в этом файле
-- [ ] Перечислить конкретные **файлы/модули** presentation layer (paths in repo)
-- [ ] Для каждого component — решение `ADAPT | REIMPLEMENT | SKIP` с reason по коду, не по памяти
-- [ ] Отметить gaps: что в JCode отсутствует и берётся только из Codex/terminal spec
+- [ ] Clone/check out current `https://github.com/1jehuang/jcode`
+- [ ] Lock audited **commit SHA** in this file
+- [ ] List specific presentation layer **files/modules** (paths in repo)
+- [ ] For each component — decision `ADAPT | REIMPLEMENT | SKIP` with reason based on code, not memory
+- [ ] Mark gaps: what is absent in JCode and taken only from Codex/terminal spec
 
 **Audited commit:** _TBD_
 
@@ -40,9 +40,9 @@ Before treating any row below as final:
 
 | Decision | Meaning |
 | --- | --- |
-| `ADAPT` | Перенести presentation-идею/pattern, собственная реализация на Ratatui |
-| `REIMPLEMENT` | Тот же UX contract, чистая Impetus-реализация без копирования кода |
-| `SKIP` | Не в scope standalone TUI или покрыто другим client (Zap) |
+| `ADAPT` | Transfer presentation idea/pattern, own implementation on Ratatui |
+| `REIMPLEMENT` | Same UX contract, pure Impetus implementation without copying code |
+| `SKIP` | Not in scope of standalone TUI or covered by another client (Zap) |
 
 ---
 

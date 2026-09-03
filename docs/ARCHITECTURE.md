@@ -1,7 +1,7 @@
 # Architecture reader guide
 
-[ARCHITECTURE.md](../ARCHITECTURE.md) — canonical architecture. Эта страница —
-компактный guide к CURRENT/TARGET.
+[ARCHITECTURE.md](../ARCHITECTURE.md) — canonical architecture. This page —
+compact guide to CURRENT/TARGET.
 
 ## Binary topology (target)
 
@@ -34,8 +34,8 @@ work is not reported as completed.
 `ModelProvider` / `ProviderRegistry` — implemented foundations. Copied-event fork
 ≠ Session DAG. Module Runtime, TUI, doctor, extension adapters — not implemented.
 
-**Migration note:** часть older docs и `task harness` ещё отражают эпоху, когда
-daemon назывался `impetus`. Target и crates — см. [TODO.md](../TODO.md) Phase 1.
+**Migration note:** some older docs and `task harness` still reflect the era when
+daemon was named `impetus`. Target and crates — see [TODO.md](../TODO.md) Phase 1.
 
 ## TARGET clients
 
