@@ -1,45 +1,45 @@
-# Правила для coding-агентов
+# Rules for Coding Agents
 
-Стиль (caveman), YAGNI/ponytail, **RTK** и снижение токенов — в Codewhale constitution / `~/.codewhale/RTK.md`:
+Style (caveman), YAGNI/ponytail, **RTK**, and token reduction — see Codewhale constitution / `~/.codewhale/RTK.md`:
 
-- глобально: `~/.codewhale/constitution.json` + `append_system_prompt` (RTK каждый shell)
-- репо: `.codewhale/constitution.json`
-- **каждый `bash`:** только через `rtk …` (`rtk cargo`, `rtk git`, `rtk rg`, …)
+- Global: `~/.codewhale/constitution.json` + `append_system_prompt` (RTK on every shell)
+- Repo: `.codewhale/constitution.json`
+- **Every `bash`:** only through `rtk …` (`rtk cargo`, `rtk git`, `rtk rg`, …)
 
-**Субагенты (CodeWhale):** только по явному запросу или явной выгоде; cap ≤5, **не более 2 builder одновременно**. На spawn сразу: `worktree: true`, полный `write_roots` (если трогаешь `Cargo.toml`/tests — включи корень crate, не только `src/…`), один узкий slice на child. **`task verify` — один раз parent'ом**, не в каждом child. При `wall_time_budget` / API error — checkpoint + re-dispatch одного worker, не пачка из 5.
+**Subagents (CodeWhale):** only on explicit request or clear benefit; cap ≤5, **no more than 2 builders simultaneously**. On spawn immediately: `worktree: true`, full `write_roots` (if touching `Cargo.toml`/tests — include crate root, not just `src/…`), one narrow slice per child. **`task verify` — once by parent**, not in every child. On `wall_time_budget` / API error — checkpoint + re-dispatch one worker, not a batch of 5.
 
-Здесь только продуктовые границы и проверка этого репо.
+This file covers product boundaries and verification for this repo only.
 
-## Неподвижные границы
+## Immovable Boundaries
 
-- Harness-first: текущий этап — standalone Rust runtime и CLI. Standalone TUI — first-class planned client; не начинать собственный PTY/ANSI terminal emulator без зафиксированного неудовлетворённого требования.
-- Zap использует собственный UI и подключает Impetus как agent backend; отдельный adapter или личный fork допустимы. Не копировать Zap/Warp client internals внутрь harness core.
-- `impetus-core` и headless runtime не зависят от terminal renderer, native GUI или конкретного клиента.
-- Клиент не владеет SQLite connection, секретами, SSH transport или policy. Он отправляет typed request и отображает durable events/approvals harness-а.
-- Каждый typed action имеет `origin=user|agent` и проходит `Policy → Deny | Allow | NeedsApproval`; только `Allow` либо принятое человеком approval продолжаются через `Sandbox → Capability → Execution`. Модель не может выдать себе `origin=user` или approval.
-- Секреты хранятся только в macOS Keychain. В SQLite, JSONL, tracing, typed payloads и тестах — лишь reference-метки, никогда token/private key/passphrase.
-- Не использовать `latest` и непинованные git dependency.
+- Harness-first: current stage — standalone Rust runtime and CLI. Standalone TUI — first-class planned client; do not start a custom PTY/ANSI terminal emulator without a documented unmet requirement.
+- Zap uses its own UI and connects Impetus as agent backend; separate adapter or personal fork are acceptable. Do not copy Zap/Warp client internals into harness core.
+- `impetus-core` and headless runtime do not depend on terminal renderer, native GUI, or specific client.
+- Client does not own SQLite connection, secrets, SSH transport, or policy. It sends typed requests and displays durable events/approvals from harness.
+- Every typed action has `origin=user|agent` and goes through `Policy → Deny | Allow | NeedsApproval`; only `Allow` or user-accepted approval continues through `Sandbox → Capability → Execution`. Model cannot grant itself `origin=user` or approval.
+- Secrets stored only in macOS Keychain. In SQLite, JSONL, tracing, typed payloads, and tests — only reference labels, never token/private key/passphrase.
+- Do not use `latest` and unpinned git dependencies.
 
-## Harness и клиентский протокол
+## Harness and Client Protocol
 
-- Controlled shell/process/PTY — capability исполнения. ANSI parser, tabs, scrollback и terminal renderer — клиентская функция; эти понятия не смешивать.
-- Versioned local IPC обязан поддерживать capability negotiation, prompt/stream/status/cancel, typed approvals/diffs и явный `Incompatible` state.
-- Disconnect или crash клиента не должен уничтожать durable session либо выдавать неизвестный outcome за `Completed`.
-- Базовый Zap path — собственный UI Zap с подключённым Impetus backend. Structured integration строится отдельным adapter/fork; OSC/notification hooks не заменяют typed protocol.
-- Local HTTP UI, Electron/WebView и Node runtime не добавлять в harness. Состав отдельного личного Zap fork не расширяет dependency/trust boundary harness-а.
+- Controlled shell/process/PTY — execution capability. ANSI parser, tabs, scrollback, and terminal renderer — client function; do not mix these concepts.
+- Versioned local IPC must support capability negotiation, prompt/stream/status/cancel, typed approvals/diffs, and explicit `Incompatible` state.
+- Client disconnect or crash must not destroy durable session or report unknown outcome as `Completed`.
+- Basic Zap path — Zap's own UI with connected Impetus backend. Structured integration built as separate adapter/fork; OSC/notification hooks do not replace typed protocol.
+- Do not add local HTTP UI, Electron/WebView, or Node runtime to harness. Composition of separate personal Zap fork does not expand harness dependency/trust boundary.
 
-## ACP и модели
+## ACP and Models
 
-- ACP — протокол между клиентом и внешним coding-agent, а не универсальный provider API и не хранилище авторизации.
-- Для ACP backend авторизация принадлежит выбранному agent CLI; приложение запускает его только после явного user action и отображает его профиль/статус.
-- `agent-client-protocol = 2.x` означает major Rust SDK crate; draft protocol v2 feature не включать без отдельного RFC и compatibility tests.
-- Для direct provider auth использовать ровно один из вариантов: Keychain API-key reference, system-browser OAuth или local/no-secret. Никакого поля raw token в клиенте и никакой передачи секрета модели.
-- URL-mode OAuth открывается только с подтверждением пользователя в системном браузере; URL виден целиком. Не использовать WebView.
-- Поддерживаемость конкретного Codex/Claude/Cursor/Gemini/Qwen backend определяется установленной версией и ACP registry/discovery, не предположением о CLI-флаге.
+- ACP — protocol between client and external coding-agent, not universal provider API or authorization storage.
+- For ACP backend, authorization belongs to selected agent CLI; application launches it only after explicit user action and displays its profile/status.
+- `agent-client-protocol = 2.x` means major Rust SDK crate; do not enable draft protocol v2 features without separate RFC and compatibility tests.
+- For direct provider auth use exactly one variant: Keychain API-key reference, system-browser OAuth, or local/no-secret. No raw token field in client and no secret passed to model.
+- URL-mode OAuth opens only with user confirmation in system browser; URL visible in full. Do not use WebView.
+- Support for specific Codex/Claude/Cursor/Gemini/Qwen backend determined by installed version and ACP registry/discovery, not assumption about CLI flag.
 
-## Проверка
+## Verification
 
-После Rust-изменения обязательно выполнить:
+After Rust changes, must execute:
 
 ```zsh
 cargo fmt --all -- --check
@@ -48,90 +48,90 @@ cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Для изменений harness/provider/ACP/auth добавить тест без секрета: stream/cancel/restart, profile validation, policy decision и redaction/export.
+For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/restart, profile validation, policy decision, and redaction/export.
 
-`task verify` является коротким эквивалентом четырёх обязательных Rust-команд. `task setup` проверяет окружение и подключает repository-owned hooks.
+`task verify` is short equivalent of four required Rust commands. `task setup` checks environment and installs repository-owned hooks.
 
-## CI и проверка
+## CI and Verification
 
-- До handoff Rust-изменения выполнить `task verify` (локально).
-- **CI test scope:** `cargo test --lib --bins` (unit tests только). Integration tests из `crates/*/tests/` исключены — они требуют macOS Seatbelt, нативного окружения и долго компилируются в Docker. Локально запускать полный `task verify` с integration tests.
-- При изменении `Cargo.toml` или `Cargo.lock` выполнить `task security`; RustSec/CVE, license/source/bans findings не игнорировать без versioned записи в `deny.toml` с конкретной причиной.
+- Before handoff of Rust changes, execute `task verify` (locally).
+- **CI test scope:** `cargo test --lib --bins` (unit tests only). Integration tests from `crates/*/tests/` excluded — they require macOS Seatbelt, native environment, and compile slowly in Docker. Locally run full `task verify` with integration tests.
+- On `Cargo.toml` or `Cargo.lock` changes, execute `task security`; do not ignore RustSec/CVE, license/source/bans findings without versioned entry in `deny.toml` with specific reason.
 
-## Git и коммиты
+## Git and Commits
 
-### Feature branch workflow (строго обязательно)
+### Feature Branch Workflow (strictly required)
 
-**НИКОГДА НЕ ПУШИТЬ НАПРЯМУЮ В `main`.** Любой push в main без PR — нарушение workflow.
+**NEVER PUSH DIRECTLY TO `main`.** Any push to main without PR is workflow violation.
 
-**Проверка текущей ветки:** перед началом работы всегда выполнить `git branch --show-current` и убедиться, что не на `main`. Задачи из TODO.md берутся последовательно; каждая задача = один issue + одна feature branch.
+**Check current branch:** before starting work, always execute `git branch --show-current` and verify not on `main`. Tasks from TODO.md taken sequentially; each task = one issue + one feature branch.
 
-#### Перед началом работы
+#### Before Starting Work
 
-1. **Проверить текущую ветку:** `git branch --show-current` — если `main`, остановиться и создать feature branch
-2. **Проверить открытые issue:** `gh issue list` — выбрать следующую задачу из TODO.md
-3. **Создать issue,** если не существует (каждая задача из TODO.md = issue)
-4. **Создать feature branch от актуального main:**
+1. **Check current branch:** `git branch --show-current` — if `main`, stop and create feature branch
+2. **Check open issues:** `gh issue list` — select next task from TODO.md
+3. **Create issue** if does not exist (each task from TODO.md = issue)
+4. **Create feature branch from current main:**
    ```bash
    git checkout main
    git pull origin main
    git checkout -b feature/issue-42-short-description
    ```
-   Шаблон: `feature/issue-N-description` или `fix/issue-N-bug-name`
+   Template: `feature/issue-N-description` or `fix/issue-N-bug-name`
 
 #### Workflow
 
-1. Работа в feature branch (никогда не в `main`)
-2. Атомарные коммиты: каждый с `closes #N`, `fixes #N` или `refs #N`
-3. **До push:** обязательно `task verify` (fmt, test, check, clippy)
-4. **Push в feature branch:**
+1. Work in feature branch (never in `main`)
+2. Atomic commits: each with `closes #N`, `fixes #N`, or `refs #N`
+3. **Before push:** mandatory `task verify` (fmt, test, check, clippy)
+4. **Push to feature branch:**
    ```bash
    git push -u origin feature/issue-42-short-description
    ```
-5. **Создать PR через CLI:**
+5. **Create PR via CLI:**
    ```bash
    gh pr create --fill
    ```
-   Или через GitHub Web UI
-6. **Включить auto-merge** в PR: `gh pr merge --auto --squash` после создания
-7. CI проходит (fmt, test, check, clippy) → **GitHub автоматически мерджит в main**
-8. После мерджа: `git checkout main && git pull` для следующей задачи
+   Or via GitHub Web UI
+6. **Enable auto-merge** in PR: `gh pr merge --auto --squash` after creation
+7. CI passes (fmt, test, check, clippy) → **GitHub auto-merges to main**
+8. After merge: `git checkout main && git pull` for next task
 
-#### Auto-merge настройка (один раз на проект)
+#### Auto-merge Setup (once per project)
 
-В GitHub Repository Settings → General → Pull Requests:
-- ✓ «Allow auto-merge»
-- ✓ «Automatically delete head branches»
+In GitHub Repository Settings → General → Pull Requests:
+- ✓ "Allow auto-merge"
+- ✓ "Automatically delete head branches"
 
-В Branch protection rules для `main`:
-- ✓ «Require status checks to pass before merging»
-- Можно включить auto-merge для каждого PR через `gh pr merge --auto --squash`
+In Branch protection rules for `main`:
+- ✓ "Require status checks to pass before merging"
+- Can enable auto-merge for each PR via `gh pr merge --auto --squash`
 
-### Commit правила
+### Commit Rules
 
-- Делить работу на атомарные коммиты по одной причине изменения; не смешивать tooling, продуктовый код и независимую документацию без необходимости.
-- До commit выполнить `task verify`. Для docs-only изменения дополнительно проверить ссылки/диаграммы применимым локальным validator-ом.
-- **Commit message на английском языке.** Формат: `type: Brief summary (closes #N)` или `type(scope): Summary (refs #N)`
-- Разрешённые типы: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-- Subject <= 72 символа, начинается с lowercase (после `type:`), без точки в конце
-- **Issue-driven workflow (строго обязательно):** каждый commit должен ссылаться на issue через `closes #N`, `fixes #N` или `refs #N`. Если issue нет — **остановиться и создать issue сначала**. Работа без issue запрещена.
-- Body (опционально) описывает «что» и «почему», не «как». Wrap на 72 символа.
-- Примеры:
+- Divide work into atomic commits by single reason for change; do not mix tooling, product code, and independent documentation without necessity.
+- Before commit, execute `task verify`. For docs-only changes, additionally check links/diagrams with applicable local validator.
+- **Commit message in English.** Format: `type: Brief summary (closes #N)` or `type(scope): Summary (refs #N)`
+- Allowed types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+- Subject <= 72 characters, starts with lowercase (after `type:`), no trailing period
+- **Issue-driven workflow (strictly required):** each commit must reference issue via `closes #N`, `fixes #N`, or `refs #N`. If no issue — **stop and create issue first**. Work without issue is forbidden.
+- Body (optional) describes "what" and "why", not "how". Wrap at 72 characters.
+- Examples:
   - `feat: add subsystem health probes to doctor (closes #42)`
   - `fix(ipc): handle large enum variants with Box (refs #38)`
   - `docs: update implementation history for phase 2 (refs #15)`
-- Не использовать `--no-verify`, не коммитить secrets, `.env`, локальные БД, provider credentials, browser caches, `target/` и generated runtime state.
-- Не делать amend/rebase/force-push и не настраивать remote без прямого указания пользователя.
+- Do not use `--no-verify`, do not commit secrets, `.env`, local DBs, provider credentials, browser caches, `target/`, and generated runtime state.
+- Do not amend/rebase/force-push or configure remote without explicit user instruction.
 
-## Запрещённые файлы и директории в репозитории
+## Forbidden Files and Directories in Repository
 
-Следующие категории файлов и директорий **запрещены** в коммитах и должны быть в `.gitignore`:
+Following categories of files and directories **forbidden** in commits and must be in `.gitignore`:
 
-- **Build artifacts:** `target/`, `**/target/`, любые compiled binaries и intermediate build outputs
-- **Temporary configs:** `config/` с example/template конфигами (допустимы только versioned `.example` файлы в `docs/` или корне)
-- **Archived/obsolete docs:** `docs/archived/`, `docs/superpowers/`, historical audits/spikes/roadmaps (актуальные: `ARCHITECTURE.md`, `ROADMAP.md`)
-- **Generated HTML/diagrams:** `*.html` в корне или `docs/` (кроме явно versioned reference docs)
+- **Build artifacts:** `target/`, `**/target/`, any compiled binaries and intermediate build outputs
+- **Temporary configs:** `config/` with example/template configs (only versioned `.example` files in `docs/` or root allowed)
+- **Archived/obsolete docs:** `docs/archived/`, `docs/superpowers/`, historical audits/spikes/roadmaps (current: `ARCHITECTURE.md`, `ROADMAP.md`)
+- **Generated HTML/diagrams:** `*.html` in root or `docs/` (except explicitly versioned reference docs)
 - **IDE/tool artifacts:** `opencode.json`, `.DS_Store`, `__pycache__/`, `*.pyc`
 - **Runtime state:** `*.db`, `*.db-shm`, `*.db-wal`, session logs, trace dumps
 
-Перед коммитом проверять `git status` и `git diff --cached`. Если случайно staged запрещённый файл — `git reset HEAD <file>` и добавить в `.gitignore`.
+Before commit, check `git status` and `git diff --cached`. If accidentally staged forbidden file — `git reset HEAD <file>` and add to `.gitignore`.
