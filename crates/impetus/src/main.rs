@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 mod daemon;
 mod doctor;
+mod skills;
 mod tui;
 
 #[derive(Parser)]
@@ -28,6 +29,22 @@ enum ComponentsAction {
 }
 
 #[derive(Subcommand)]
+enum SkillsAction {
+    /// List all discovered skills
+    List,
+    /// Import and display a skill from path
+    Import {
+        /// Path to skill directory or SKILL.md file
+        path: String,
+    },
+    /// Show details of a named skill
+    Show {
+        /// Skill name (directory name under ~/.agents/skills/)
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Run diagnostics and health checks
     Doctor {
@@ -42,6 +59,11 @@ enum Commands {
     Components {
         #[command(subcommand)]
         action: ComponentsAction,
+    },
+    /// Manage Agent Skills extensions
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
     },
     /// Launch interactive TUI (MVP UI)
     Ui,
@@ -142,6 +164,20 @@ async fn main() -> Result<()> {
             show_components(action).await?;
             return Ok(());
         }
+        Commands::Skills { ref action } => {
+            match action {
+                SkillsAction::List => {
+                    skills::list_skills().await?;
+                }
+                SkillsAction::Import { path } => {
+                    skills::import_skill(std::path::Path::new(path)).await?;
+                }
+                SkillsAction::Show { name } => {
+                    skills::show_skill(name).await?;
+                }
+            }
+            return Ok(());
+        }
         Commands::Ui => {
             daemon::ensure_daemon_running(&socket_path).await?;
             tui::run(&socket_path).await?;
@@ -160,6 +196,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Doctor { .. } => unreachable!("handled above"),
         Commands::Components { .. } => unreachable!("handled above"),
+        Commands::Skills { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let workspace_root = std::env::current_dir()?.canonicalize()?;
