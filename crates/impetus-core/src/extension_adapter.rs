@@ -1,7 +1,9 @@
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
+    McpModule,
 };
+use crate::mcp_adapter::McpAdapter;
 use anyhow::Result;
 use std::path::Path;
 
@@ -88,6 +90,43 @@ impl ExtensionAdapter {
                     }),
                     Err(e) => {
                         errors.push(format!("Failed to parse SKILL.md: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            ExtensionSource::Mcp => {
+                if !path.is_file() {
+                    warnings.push(format!("MCP config not found at {:?}", path));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+                match std::fs::read(path) {
+                    Ok(bytes) => match serde_json::from_slice::<McpModule>(&bytes) {
+                        Ok(module) => Ok(McpAdapter::import(&module).await),
+                        Err(e) => {
+                            errors.push(format!("Failed to parse MCP config: {}", e));
+                            Ok(ImportResult {
+                                source,
+                                capability: ImportCapability::Incompatible,
+                                canonical: None,
+                                warnings,
+                                errors,
+                            })
+                        }
+                    },
+                    Err(e) => {
+                        errors.push(format!("Failed to read MCP config: {}", e));
                         Ok(ImportResult {
                             source,
                             capability: ImportCapability::Incompatible,
@@ -368,6 +407,18 @@ mod tests {
         let adapter = ExtensionAdapter::new();
         let result = adapter
             .import(ExtensionSource::AgentSkills, Path::new("/tmp/test"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Unsupported);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn import_mcp_missing_config_warns() {
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::Mcp, Path::new("/tmp/nonexistent-mcp.json"))
             .await
             .unwrap();
 

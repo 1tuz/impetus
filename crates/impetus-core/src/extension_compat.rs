@@ -228,16 +228,16 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for MCP
     pub fn mcp() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("stdio".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("stdio".to_string(), ImportCapability::Supported);
         capabilities.insert("http".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("tools".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("resources".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("prompts".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("tools".to_string(), ImportCapability::Supported);
+        capabilities.insert("resources".to_string(), ImportCapability::Supported);
+        capabilities.insert("prompts".to_string(), ImportCapability::Supported);
 
         Self {
             source: ExtensionSource::Mcp,
             capabilities,
-            notes: vec!["MCP adapter planned".to_string()],
+            notes: vec!["MCP stdio adapter implemented".to_string()],
         }
     }
 
