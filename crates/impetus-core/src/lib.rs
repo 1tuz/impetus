@@ -24,6 +24,7 @@ pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
+pub mod mcp_adapter;
 pub mod mock_provider;
 pub mod model_router;
 pub mod module;
@@ -106,6 +107,7 @@ pub use instructions::{
     InstructionScope, InstructionTokenEstimate, ResolveRequest, ResolvedInstructions,
 };
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
+pub use mcp_adapter::McpAdapter;
 pub use mock_provider::{MockProvider, MockStreamItem as MockProviderItem};
 pub use observations::{
     DiffHunk, DiffObservation, DiffSource, PipelineJob, PipelineObservation, SearchMatch,
