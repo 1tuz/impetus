@@ -5,6 +5,7 @@
 
 pub mod acp_adapter;
 pub mod agent_loop;
+pub mod agent_plugins_adapter;
 pub mod agent_skills_adapter;
 pub mod anthropic_provider;
 pub mod approval;
@@ -59,6 +60,7 @@ pub mod web_research;
 
 pub use acp_adapter::AcpAdapter;
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
+pub use agent_plugins_adapter::{AgentPluginsAdapter, PluginCommandEntry};
 pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,

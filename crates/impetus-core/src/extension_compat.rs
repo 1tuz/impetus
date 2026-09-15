@@ -244,13 +244,13 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for Agent Plugins
     pub fn agent_plugins() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("skills".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
         capabilities.insert("mcp_servers".to_string(), ImportCapability::Unsupported);
 
         Self {
             source: ExtensionSource::AgentPlugins,
             capabilities,
-            notes: vec!["Agent Plugins adapter planned".to_string()],
+            notes: vec!["Agent Plugins adapter: manifest + commands + CLAUDE.md skill".to_string()],
         }
     }
 
