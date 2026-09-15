@@ -97,7 +97,7 @@ Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 - [x] Import capability matrix (all entries Unsupported; no real capability detection)
 - [x] Agent Skills adapter (SKILL.md parser, CLI `impetus skills list/import/show`, integration tests)
 - [x] MCP adapter
-- [ ] Agent Plugins adapter
+- [x] Agent Plugins adapter
 - [ ] Claude Code extensions/plugins adapter
 - [ ] Codex extensions/plugins/skills adapter
 - [ ] Cursor plugins/rules/skills/agents/commands adapter

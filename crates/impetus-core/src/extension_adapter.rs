@@ -1,3 +1,4 @@
+use crate::agent_plugins_adapter::AgentPluginsAdapter;
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
@@ -127,6 +128,38 @@ impl ExtensionAdapter {
                     },
                     Err(e) => {
                         errors.push(format!("Failed to read MCP config: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            ExtensionSource::AgentPlugins => {
+                if !path.exists() {
+                    warnings.push(format!("Plugin path not found at {:?}", path));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+
+                match AgentPluginsAdapter::import(path).await {
+                    Ok(spec) => Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Supported,
+                        canonical: Some(spec),
+                        warnings,
+                        errors,
+                    }),
+                    Err(e) => {
+                        errors.push(format!("Failed to import plugin: {}", e));
                         Ok(ImportResult {
                             source,
                             capability: ImportCapability::Incompatible,
@@ -419,6 +452,51 @@ mod tests {
         let adapter = ExtensionAdapter::new();
         let result = adapter
             .import(ExtensionSource::Mcp, Path::new("/tmp/nonexistent-mcp.json"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Unsupported);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn import_agent_plugins_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin/plugin.json"),
+            r#"{"name": "test-plugin", "commands": ["commands/run.md"]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("commands")).unwrap();
+        std::fs::write(
+            dir.path().join("commands/run.md"),
+            "---\nname: run\n---\necho hi\n",
+        )
+        .unwrap();
+
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::AgentPlugins, dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Supported);
+        assert!(result.errors.is_empty());
+        let spec = result.canonical.unwrap();
+        assert_eq!(spec.id, "test-plugin");
+        assert_eq!(spec.source, ExtensionSource::AgentPlugins);
+        assert!(spec.capabilities.contains(&"commands".to_string()));
+    }
+
+    #[tokio::test]
+    async fn import_agent_plugins_missing_path_warns() {
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(
+                ExtensionSource::AgentPlugins,
+                Path::new("/nonexistent/plugin"),
+            )
             .await
             .unwrap();
 
