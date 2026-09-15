@@ -238,8 +238,8 @@ impl AgentPluginsAdapter {
     }
 }
 
-/// Slugify a plugin id (kebab-case).
-fn slugify(name: &str) -> String {
+/// Slugify a plugin id (kebab-case). Shared with the Claude Code adapter.
+pub(crate) fn slugify(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = true;
     for c in name.trim().to_lowercase().chars() {
@@ -258,7 +258,7 @@ fn slugify(name: &str) -> String {
 }
 
 /// Normalize a manifest-declared path (strip leading `./`).
-fn normalize_path(p: &str) -> String {
+pub(crate) fn normalize_path(p: &str) -> String {
     if p.starts_with("./") {
         p.replacen("./", "", 1)
     } else {
@@ -269,7 +269,7 @@ fn normalize_path(p: &str) -> String {
 /// Build a command entry for a markdown file, preferring frontmatter
 /// name/description with a file-stem fallback for the name. Sync by design:
 /// discovery runs in a hot loop over a small local tree.
-fn plugin_command_entry(rel: &str, path: &Path) -> PluginCommandEntry {
+pub(crate) fn plugin_command_entry(rel: &str, path: &Path) -> PluginCommandEntry {
     let fallback = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -295,7 +295,7 @@ fn plugin_command_entry(rel: &str, path: &Path) -> PluginCommandEntry {
 }
 
 /// Parse the YAML frontmatter at the top of a markdown file, if present.
-fn parse_frontmatter(content: &str) -> Option<serde_yaml::Value> {
+pub(crate) fn parse_frontmatter(content: &str) -> Option<serde_yaml::Value> {
     let lines: Vec<&str> = content.lines().collect();
     let end = parse_frontmatter_end(&lines)?;
     serde_yaml::from_str(&lines[1..end].join("\n")).ok()
@@ -322,7 +322,7 @@ fn parse_frontmatter_end(lines: &[&str]) -> Option<usize> {
 }
 
 /// Collect markdown files under a directory, recursively.
-fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -337,7 +337,7 @@ fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Read the plugin skill name from CLAUDE.md: frontmatter `name` when
 /// present, otherwise the first markdown H1 heading.
-async fn read_skill_name(path: &Path) -> Option<String> {
+pub(crate) async fn read_skill_name(path: &Path) -> Option<String> {
     let content = tokio::fs::read_to_string(path).await.ok()?;
 
     if let Some(name) = parse_frontmatter(&content)
