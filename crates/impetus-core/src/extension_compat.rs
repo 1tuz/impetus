@@ -257,13 +257,19 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for Claude Code
     pub fn claude_code() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("extensions".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("plugins".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("extensions".to_string(), ImportCapability::Supported);
+        capabilities.insert("plugins".to_string(), ImportCapability::Supported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
+        capabilities.insert("hooks".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("mcp_servers".to_string(), ImportCapability::Unsupported);
 
         Self {
             source: ExtensionSource::ClaudeCode,
             capabilities,
-            notes: vec!["Claude Code adapter planned".to_string()],
+            notes: vec![
+                "Claude Code adapter: commands + agents + skills + CLAUDE.md".to_string(),
+                "settings.json hooks and .mcp.json not imported".to_string(),
+            ],
         }
     }
 
