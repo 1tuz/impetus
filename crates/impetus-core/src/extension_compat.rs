@@ -306,12 +306,15 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for DeepSeek Harness
     pub fn deepseek_harness() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("process_adapter".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("process_adapter".to_string(), ImportCapability::Supported);
 
         Self {
             source: ExtensionSource::DeepSeekHarness,
             capabilities,
-            notes: vec!["Process adapter planned, no TS in daemon".to_string()],
+            notes: vec![
+                "DeepSeek Harness / Cordis via out-of-process bridge manifest only".to_string(),
+                "No TypeScript/Cordis runtime inside impetusd".to_string(),
+            ],
         }
     }
 

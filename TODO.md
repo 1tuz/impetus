@@ -101,7 +101,7 @@ Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 - [x] Claude Code extensions/plugins adapter
 - [ ] Codex extensions/plugins/skills adapter
 - [ ] Cursor plugins/rules/skills/agents/commands adapter
-- [ ] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
+- [x] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
 - [x] `doctor` reports per-package partial compatibility
 
 ---

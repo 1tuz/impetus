@@ -1,6 +1,7 @@
 use crate::agent_plugins_adapter::AgentPluginsAdapter;
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::claude_code_adapter::ClaudeCodeAdapter;
+use crate::deepseek_harness_adapter::DeepSeekHarnessAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
     McpModule,
@@ -193,6 +194,41 @@ impl ExtensionAdapter {
                     }),
                     Err(e) => {
                         errors.push(format!("Failed to import Claude Code extension: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            ExtensionSource::DeepSeekHarness => {
+                if !path.is_file() {
+                    warnings.push(format!(
+                        "DeepSeek Harness bridge manifest not found at {:?}",
+                        path
+                    ));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+
+                match DeepSeekHarnessAdapter::import(path).await {
+                    Ok(spec) => Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Supported,
+                        canonical: Some(spec),
+                        warnings,
+                        errors,
+                    }),
+                    Err(e) => {
+                        errors.push(format!("Failed to import DeepSeek Harness bridge: {}", e));
                         Ok(ImportResult {
                             source,
                             capability: ImportCapability::Incompatible,
@@ -567,6 +603,49 @@ mod tests {
             .import(
                 ExtensionSource::ClaudeCode,
                 Path::new("/nonexistent/claude-code"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Unsupported);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn import_deepseek_harness_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("bridge.json");
+        std::fs::write(
+            &manifest,
+            r#"{
+                "name": "deepseek-harness",
+                "command": "node",
+                "args": ["bridge.js"],
+                "protocol": "impetus-module-ipc-v1"
+            }"#,
+        )
+        .unwrap();
+
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::DeepSeekHarness, &manifest)
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Supported);
+        assert!(result.errors.is_empty());
+        let spec = result.canonical.unwrap();
+        assert_eq!(spec.source, ExtensionSource::DeepSeekHarness);
+        assert_eq!(spec.capabilities, vec!["process_adapter"]);
+    }
+
+    #[tokio::test]
+    async fn import_deepseek_harness_missing_path_warns() {
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(
+                ExtensionSource::DeepSeekHarness,
+                Path::new("/nonexistent/deepseek-bridge.json"),
             )
             .await
             .unwrap();
