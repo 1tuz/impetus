@@ -276,14 +276,20 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for Codex
     pub fn codex() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("extensions".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("plugins".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("skills".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("extensions".to_string(), ImportCapability::Supported);
+        capabilities.insert("plugins".to_string(), ImportCapability::Supported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
+        capabilities.insert("hooks".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("mcp_servers".to_string(), ImportCapability::Unsupported);
 
         Self {
             source: ExtensionSource::Codex,
             capabilities,
-            notes: vec!["Codex adapter planned".to_string()],
+            notes: vec![
+                "Codex adapter: AGENTS.md + .agents/skills + optional .codex-plugin/plugin.json"
+                    .to_string(),
+                "MCP servers and hooks are not imported".to_string(),
+            ],
         }
     }
 
