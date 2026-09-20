@@ -15,6 +15,7 @@ pub mod budget;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod cost_estimation;
+pub mod cursor_adapter;
 pub mod diagnostics;
 pub mod durable_artifacts;
 pub mod effects;
@@ -75,6 +76,7 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
+pub use cursor_adapter::CursorAdapter;
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
 pub use durable_artifacts::{
     ArtifactMeta as DurableArtifactMeta, ArtifactRef as DurableArtifactRef, DurableArtifactStore,

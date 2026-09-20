@@ -291,15 +291,19 @@ impl CompatibilityMatrix {
     pub fn cursor() -> Self {
         let mut capabilities = HashMap::new();
         capabilities.insert("plugins".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("rules".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("skills".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("agents".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("commands".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("rules".to_string(), ImportCapability::Supported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
+        capabilities.insert("agents".to_string(), ImportCapability::Supported);
+        capabilities.insert("commands".to_string(), ImportCapability::Supported);
 
         Self {
             source: ExtensionSource::Cursor,
             capabilities,
-            notes: vec!["Cursor adapter planned".to_string()],
+            notes: vec![
+                "Cursor adapter: .cursor/rules + commands + agents + skills (.cursor/skills and .agents/skills)".to_string(),
+                "Rules discovered as .md/.mdc under .cursor/rules".to_string(),
+                "No stable project-local plugins layout; marketplace/global plugins not imported".to_string(),
+            ],
         }
     }
 
