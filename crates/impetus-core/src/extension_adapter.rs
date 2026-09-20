@@ -2,6 +2,7 @@ use crate::agent_plugins_adapter::AgentPluginsAdapter;
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::claude_code_adapter::ClaudeCodeAdapter;
 use crate::codex_adapter::CodexAdapter;
+use crate::cursor_adapter::CursorAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
     McpModule,
@@ -226,6 +227,38 @@ impl ExtensionAdapter {
                     }),
                     Err(e) => {
                         errors.push(format!("Failed to import Codex extension: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            ExtensionSource::Cursor => {
+                if !path.exists() {
+                    warnings.push(format!("Cursor path not found at {:?}", path));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+
+                match CursorAdapter::import(path).await {
+                    Ok(spec) => Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Supported,
+                        canonical: Some(spec),
+                        warnings,
+                        errors,
+                    }),
+                    Err(e) => {
+                        errors.push(format!("Failed to import Cursor extension: {}", e));
                         Ok(ImportResult {
                             source,
                             capability: ImportCapability::Incompatible,
@@ -631,5 +664,40 @@ mod tests {
         assert_eq!(spec.source, ExtensionSource::Codex);
         assert!(spec.capabilities.contains(&"instructions".to_string()));
         assert!(spec.capabilities.contains(&"skills".to_string()));
+    }
+
+    #[tokio::test]
+    async fn import_cursor_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cursor/commands")).unwrap();
+        std::fs::write(
+            dir.path().join(".cursor/commands/review.md"),
+            "---\nname: review\ndescription: Review code\n---\nrun review\n",
+        )
+        .unwrap();
+
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::Cursor, dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Supported);
+        assert!(result.errors.is_empty());
+        let spec = result.canonical.unwrap();
+        assert_eq!(spec.source, ExtensionSource::Cursor);
+        assert!(spec.capabilities.contains(&"commands".to_string()));
+    }
+
+    #[tokio::test]
+    async fn import_cursor_missing_path_warns() {
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::Cursor, Path::new("/nonexistent/cursor"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Unsupported);
+        assert!(!result.warnings.is_empty());
     }
 }
