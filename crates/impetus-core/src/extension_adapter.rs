@@ -1,6 +1,7 @@
 use crate::agent_plugins_adapter::AgentPluginsAdapter;
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::claude_code_adapter::ClaudeCodeAdapter;
+use crate::codex_adapter::CodexAdapter;
 use crate::cursor_adapter::CursorAdapter;
 use crate::extension_compat::{
     CanonicalModuleSpec, CompatibilityMatrix, ExtensionSource, ImportCapability, ImportResult,
@@ -194,6 +195,38 @@ impl ExtensionAdapter {
                     }),
                     Err(e) => {
                         errors.push(format!("Failed to import Claude Code extension: {}", e));
+                        Ok(ImportResult {
+                            source,
+                            capability: ImportCapability::Incompatible,
+                            canonical: None,
+                            warnings,
+                            errors,
+                        })
+                    }
+                }
+            }
+            ExtensionSource::Codex => {
+                if !path.exists() {
+                    warnings.push(format!("Codex path not found at {:?}", path));
+                    return Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Unsupported,
+                        canonical: None,
+                        warnings,
+                        errors,
+                    });
+                }
+
+                match CodexAdapter::import(path).await {
+                    Ok(spec) => Ok(ImportResult {
+                        source,
+                        capability: ImportCapability::Supported,
+                        canonical: Some(spec),
+                        warnings,
+                        errors,
+                    }),
+                    Err(e) => {
+                        errors.push(format!("Failed to import Codex extension: {}", e));
                         Ok(ImportResult {
                             source,
                             capability: ImportCapability::Incompatible,
@@ -606,6 +639,31 @@ mod tests {
 
         assert_eq!(result.capability, ImportCapability::Unsupported);
         assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn import_codex_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Project\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/demo")).unwrap();
+        std::fs::write(
+            dir.path().join(".agents/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: Demo skill\n---\n# Demo\n",
+        )
+        .unwrap();
+
+        let adapter = ExtensionAdapter::new();
+        let result = adapter
+            .import(ExtensionSource::Codex, dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(result.capability, ImportCapability::Supported);
+        assert!(result.errors.is_empty());
+        let spec = result.canonical.unwrap();
+        assert_eq!(spec.source, ExtensionSource::Codex);
+        assert!(spec.capabilities.contains(&"instructions".to_string()));
+        assert!(spec.capabilities.contains(&"skills".to_string()));
     }
 
     #[tokio::test]

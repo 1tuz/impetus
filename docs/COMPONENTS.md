@@ -7,6 +7,10 @@ Components in Impetus include:
 - **External modules** (Phase 2+) — optional extensions loaded via Module Runtime
 - **Compatibility adapters** (Phase 3+) — bridges to external formats (MCP, Agent Plugins, etc.)
 
+**CLI note:** `impetus components list|status` prints the static built-in tool
+catalog only. It does not query `impetusd` or the live module registry. Use
+`impetus doctor` for runtime/subsystem health.
+
 ## Component Versioning and Reproducibility
 
 ### Version/Digest Lock Concept
@@ -119,8 +123,8 @@ Components in Impetus include:
 ### Phase 1 Status
 
 **Implemented:**
-- `impetus components list` — shows built-in tools and registry state
-- `impetus components status [id]` — health and metadata
+- `impetus components list` — static built-in tool catalog (not live IPC)
+- `impetus components status [id]` — catalog entry lookup; live health via `doctor`
 
 **Deferred to Phase 2+ (Module Runtime):**
 - External module registration, loading, isolation

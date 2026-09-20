@@ -12,21 +12,24 @@ Target roles of the two Rust binaries in this repository.
 
 ## `impetus` — client
 
-- CLI on top of `impetus-client::HarnessClient` (Unix socket transport).
+- CLI / TUI on top of `impetus-client::HarnessClient` (Unix socket transport).
 - Does not open SQLite, does not store secrets, does not run sandbox directly —
   only typed IPC requests to `impetusd`.
 - Connects to the same `IMPETUS_SOCKET` as daemon.
-- Launch: `cargo run -p impetus -- <subcommand>` (`task cli -- <subcommand>`).
+- Launch: `cargo run -p impetus -- <subcommand>`.
+- Includes `impetus doctor` / `impetus doctor --json`, `impetus ui` (Ratatui),
+  and `impetus components` (static built-in tool catalog; not a live module
+  registry browser).
 
-## Deprecated
+## Dual CLI
 
-`impetus-cli` — previous name of reference CLI before role separation
-(`ATM-001`). Replaced with `impetus` in user-facing docs and `Taskfile.yml`.
-Crate remains in workspace until separate decision on removal/migration.
+`impetus-cli` — earlier reference CLI before role separation (`ATM-001`). Both
+CLIs exist and remain supported: `impetus` is the fuller surface (doctor, ui,
+skills, …); `impetus-cli` stays available for its existing workflows. Dual CLI
+is intentional.
 
-## Open (Phase 1, not implemented)
+## Status
 
-- Release artifact with both binaries and explicit roles in install script help.
-- `impetus` auto-discovery of socket and safe spawn of `impetusd` if absent.
-- `impetus doctor` / `impetus doctor --json`.
-- `impetus components list` / `impetus components status`.
+- Release artifact ships both binaries with explicit roles in install script help.
+- `impetus` auto-discovers the socket and can safely spawn `impetusd` when needed
+  (see getting-started / troubleshooting).

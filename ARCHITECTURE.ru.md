@@ -111,9 +111,10 @@ impetus/
 ├── crates/
 │   ├── impetus-core/          durable domain/runtime foundation
 │   ├── impetusd/              headless daemon + Unix socket server
-│   ├── impetus/               user-facing CLI (target: CLI/TUI)
+│   ├── impetus/               user-facing CLI / TUI (`impetus ui`)
+│   ├── impetus-tui/           Ratatui TUI library
 │   ├── impetus-client/        HarnessClient + local transports
-│   ├── impetus-cli/           legacy reference client (deprecated)
+│   ├── impetus-cli/           second CLI (supported; `impetus` is fuller surface)
 │   ├── impetus-zap-adapter/   experimental historical integration baseline
 │   └── impetus-acp-gateway/   ACP gateway library
 ├── config/                    capability and provider configuration
@@ -129,16 +130,14 @@ Zap adapter ──HarnessClient──┘
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol,
 `HarnessClient`, provider registry foundation, copied-event forks, command/JSON
-client, attachment/diff/detail DTOs with **bounded ephemeral/in-memory** backing.
-Agent Loop / Tool Orchestrator — **skeleton only** (`extract_tool_calls()` and
-tool execution still placeholder). Zap adapter — experimental baseline, не target
-integration architecture.
+client, `impetus doctor`, `impetus ui` (Ratatui), Module Runtime foundations,
+attachment/diff/detail DTOs with **bounded ephemeral/in-memory** backing.
+Zap adapter — experimental baseline, не target integration architecture.
+`impetus components` — static built-in tool catalog (не live registry через IPC).
 
-**Не реализовано:** durable `ArtifactStore`, working autonomous agent loop,
-Web / Internet Research subsystem, standalone TUI, `impetus doctor`, Module Runtime,
-полный Session DAG, model router, remote agent flow end-to-end, extension
-compatibility layer, `impetus components`.
-
+**Не реализовано / thin:** durable `ArtifactStore`, полный Session DAG, model
+router, remote agent flow end-to-end, полный extension compatibility layer,
+live module/registry browser.
 ## Harness Kernel — неподвижные инварианты
 
 Даже при высокой модульности нельзя позволять заменить или обойти:
@@ -686,11 +685,12 @@ update, disable. Optional component update без полного релиза Im
 | Provider | `ModelProvider`, registry foundation | router + escalation |
 | Context | copied forks, compaction primitives | Session DAG, lazy modules |
 | Attachments | bounded ephemeral/in-memory DTO backing | durable `ArtifactStore` |
-| Agent loop | skeleton; placeholder tool path | full orchestrator + research loop |
-| Web research | not implemented | native search/fetch; optional browser |
-| TUI | none | thin Ratatui client |
-| Module Runtime | not implemented | registry, contracts, probing |
-| Extensions | not implemented | adapters + canonical model |
+| Agent loop | present; keep hardening | full orchestrator + research loop |
+| Web research | foundations + doctor probes | native search/fetch; optional browser |
+| TUI | `impetus ui` (Ratatui MVP) | richer UX / polish |
+| Doctor | `impetus doctor` / `--json` | unchanged role |
+| Module Runtime | foundations present | richer registry UX / probing |
+| Extensions | partial compatibility | adapters + canonical model |
 | RTK | dev convention (CodeWhale) | optional output optimizer module |
 | Remote | models/stubs | controlled E2E flow |
 
