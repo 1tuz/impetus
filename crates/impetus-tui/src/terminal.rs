@@ -7,8 +7,14 @@ use crossterm::{
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 use std::io::{Stdout, stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::RunOptions;
+
+/// Set while a `TerminalSession` owns raw/alternate-screen modes.
+/// Panic hook and `restore()` race on this flag so only one path restores.
+static RESTORE_PENDING: AtomicBool = AtomicBool::new(false);
+static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 pub struct TerminalSession {
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -19,7 +25,10 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn enter(options: &RunOptions) -> Result<Self> {
+        ensure_panic_hook();
         enable_raw_mode().context("enable terminal raw mode")?;
+        // Armed before alternate-screen setup so a panic mid-enter still restores.
+        arm_restore();
         match create_terminal(options) {
             Ok(terminal) => Ok(Self {
                 terminal,
@@ -28,9 +37,8 @@ impl TerminalSession {
                 restored: false,
             }),
             Err(error) => {
-                // `create_terminal` may already have entered the alternate screen
-                // or enabled bracketed paste before a later step failed. Restore
-                // every mode we may own before returning the original error.
+                // Disarm panic hook ownership; this path restores itself.
+                let _ = claim_restore();
                 let mut output = stdout();
                 if options.mouse {
                     let _ = execute!(output, DisableMouseCapture);
@@ -61,6 +69,11 @@ impl TerminalSession {
 
         // Mark first so Drop never loops through a partially failed restore.
         self.restored = true;
+        if !claim_restore() {
+            // Panic hook already restored the terminal.
+            return Ok(());
+        }
+
         let mut first_error = None;
         let backend = self.terminal.backend_mut();
 
@@ -129,8 +142,62 @@ fn create_terminal(options: &RunOptions) -> Result<Terminal<CrosstermBackend<Std
     Ok(terminal)
 }
 
+fn arm_restore() {
+    RESTORE_PENDING.store(true, Ordering::SeqCst);
+}
+
+fn claim_restore() -> bool {
+    RESTORE_PENDING.swap(false, Ordering::SeqCst)
+}
+
+fn ensure_panic_hook() {
+    if PANIC_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        emergency_restore();
+        previous(info);
+    }));
+}
+
+/// Best-effort restore used by the panic hook (no `TerminalSession` available).
+fn emergency_restore() {
+    if !claim_restore() {
+        return;
+    }
+    let mut output = stdout();
+    let _ = execute!(
+        output,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        Show
+    );
+    let _ = disable_raw_mode();
+}
+
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.restore();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_restore_is_single_winner() {
+        arm_restore();
+        assert!(claim_restore());
+        assert!(!claim_restore());
+    }
+
+    #[test]
+    fn emergency_restore_is_noop_when_disarmed() {
+        let _ = claim_restore();
+        emergency_restore();
+        assert!(!claim_restore());
     }
 }

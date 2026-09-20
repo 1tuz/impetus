@@ -21,7 +21,7 @@ runtime/state — harness.
 **Модель.**
 
 ```text
-impetus   → пользовательский CLI (будущий TUI)
+impetus   → пользовательский CLI / TUI (`impetus ui`)
 impetusd  → local-first daemon (authoritative runtime)
 ```
 
@@ -29,8 +29,10 @@ impetusd  → local-first daemon (authoritative runtime)
 credential references. Клиенты не владеют authoritative state.
 
 **CURRENT.** `impetusd` + CLI `impetus` через Unix-socket IPC и `HarnessClient`,
-provider registry foundation, экспериментальный Zap adapter. TUI, `doctor`, Module
-Runtime — не реализованы.
+provider registry foundation, экспериментальный Zap adapter. Также доступны:
+`impetus doctor`, `impetus ui` (Ratatui TUI) и foundations Module Runtime.
+Второй CLI `impetus-cli` остаётся поддерживаемым для своих workflow; `impetus` —
+более полный surface (doctor, ui, skills, …). Dual CLI намеренно.
 
 **TARGET.** Модульный harness: `impetus` — first-class CLI/TUI; Zap — ещё один
 `HarnessClient` consumer. См. [Architecture](ARCHITECTURE.md).

@@ -19,9 +19,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum ComponentsAction {
-    /// List all registered components
+    /// List the static built-in tool catalog
     List,
-    /// Show component status and health
+    /// Show status for a catalog entry (static; not live IPC health)
     Status {
         /// Component ID to inspect (optional, shows all if omitted)
         component_id: Option<String>,
@@ -55,7 +55,7 @@ enum Commands {
         #[arg(long)]
         probe_network: bool,
     },
-    /// Inspect registered components and modules
+    /// Show the static built-in tool catalog (not a live module registry)
     Components {
         #[command(subcommand)]
         action: ComponentsAction,
@@ -106,39 +106,48 @@ enum Commands {
 }
 
 async fn show_components(action: ComponentsAction) -> Result<()> {
+    // Static catalog only — no live IPC query of the daemon module registry.
+    const BUILTIN: &[(&str, &str)] = &[
+        ("bash", "Shell command execution"),
+        ("read", "File reading"),
+        ("write", "File writing"),
+        ("edit", "File editing"),
+        ("search", "Repository search"),
+    ];
+
     match action {
         ComponentsAction::List => {
-            println!("Registered Components:\n");
-            println!("Built-in components:");
-            println!("  • bash - Shell command execution");
-            println!("  • read - File reading");
-            println!("  • write - File writing");
-            println!("  • edit - File editing");
-            println!("  • search - Repository search");
-            println!("\nModule registry: available (no modules loaded)");
-            println!("\nNote: External module loading planned for Phase 2");
+            println!("Built-in tool catalog (static; not a live registry via IPC):\n");
+            for (id, description) in BUILTIN {
+                println!("  • {id} - {description}");
+            }
+            println!("\nNote: This command does not query impetusd or loaded modules.");
+            println!("Use `impetus doctor` for runtime/subsystem diagnostics.");
         }
         ComponentsAction::Status { component_id } => {
             if let Some(id) = component_id {
-                match id.as_str() {
-                    "bash" | "read" | "write" | "edit" | "search" => {
-                        println!("Component: {}", id);
-                        println!("Status: Available");
-                        println!("Type: Built-in tool");
-                        println!("Source: impetus-core");
-                        println!("Health: OK");
-                    }
-                    _ => {
-                        println!("Component '{}' not found", id);
-                        println!("\nUse 'impetus components list' to see available components");
-                    }
+                if let Some((_, description)) = BUILTIN.iter().find(|(name, _)| *name == id) {
+                    println!("Component: {id}");
+                    println!("Description: {description}");
+                    println!("Source: static built-in catalog (impetus-core tool names)");
+                    println!("Live health: not queried (no IPC)");
+                } else {
+                    println!("Component '{id}' not in the static built-in catalog");
+                    println!("\nUse 'impetus components list' to see the catalog");
                 }
             } else {
-                println!("Component Status Summary:\n");
-                println!("Built-in tools: 5 available (bash, read, write, edit, search)");
-                println!("Module registry: available");
-                println!("Loaded modules: 0");
-                println!("\nAll built-in components: OK");
+                println!("Built-in tool catalog summary (static; not live IPC):\n");
+                println!(
+                    "Catalog entries: {} ({})",
+                    BUILTIN.len(),
+                    BUILTIN
+                        .iter()
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                println!("Loaded modules / registry: not queried by this command");
+                println!("\nUse `impetus doctor` for runtime/subsystem diagnostics.");
             }
         }
     }
@@ -160,7 +169,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Commands::Components { action } => {
-            // Components doesn't need daemon - show built-in registry
+            // Offline static catalog — does not talk to the daemon.
             show_components(action).await?;
             return Ok(());
         }
