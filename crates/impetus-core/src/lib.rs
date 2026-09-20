@@ -14,6 +14,7 @@ pub mod audit_log;
 pub mod budget;
 pub mod ci;
 pub mod claude_code_adapter;
+pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod diagnostics;
 pub mod durable_artifacts;
@@ -75,6 +76,9 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
+pub use context_optimizer::{
+    BuiltinContextOptimizer, ContextCatalogEntry, DescriptionSource, MemoryDescriptionSource,
+};
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
 pub use durable_artifacts::{
     ArtifactMeta as DurableArtifactMeta, ArtifactRef as DurableArtifactRef, DurableArtifactStore,
