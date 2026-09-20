@@ -227,7 +227,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 
 ## Phase 6 — Context & sessions
 
-- [ ] Lazy module/tool/MCP description loading in Context Optimizer
+- [x] Lazy module/tool/MCP description loading in Context Optimizer
 - [ ] HOT/WARM/COLD context tiers
 - [ ] Token-budgeted module/tool selection for prompt
 - [ ] Session fork/checkpoint without full event duplication (shared prefix)
