@@ -63,8 +63,8 @@ exists; migration of names/roles in docs and dev-tooling is not yet complete.
 
 ### Components (introspection)
 
-- [x] `impetus components list`
-- [x] `impetus components status` (health, version, compatibility, source)
+- [x] `impetus components list` (static built-in tool catalog; not live IPC registry)
+- [x] `impetus components status` (catalog entry lookup; live health via `doctor`)
 - [x] Concept: component version/digest lock for reproducibility
 - [x] Update/disable flows (design; no marketplace)
 

@@ -6,7 +6,7 @@ compact guide to CURRENT/TARGET.
 ## Binary topology (target)
 
 ```text
-impetus       → user-facing CLI / future TUI
+impetus       → user-facing CLI / TUI (`impetus ui`)
 impetusd      → authoritative daemon
 impetus-core  → libraries (no binary)
 ```
@@ -21,9 +21,10 @@ impetus ──HarnessClient──► impetusd ──► impetus-core
 | --- | --- | --- |
 | Core | `crates/impetus-core` | Events, session runtime, policy, approvals, effects, providers, tools, IPC types. |
 | Daemon | `crates/impetusd` | Unix-socket server, provider profile, macOS Keychain resolver. |
-| CLI client | `crates/impetus` | User-facing commands via `HarnessClient` (target: CLI/TUI). |
+| CLI client | `crates/impetus` | User-facing commands via `HarnessClient`, including `doctor` and `ui`. |
+| TUI | `crates/impetus-tui` | Ratatui client library used by `impetus ui`. |
 | Client contract | `crates/impetus-client` | `HarnessClient`, in-memory and Unix transports. |
-| Legacy CLI | `crates/impetus-cli` | Deprecated reference client. |
+| Second CLI | `crates/impetus-cli` | Supported for its workflows; `impetus` is the fuller surface. |
 | Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental baseline. |
 | ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. |
 
@@ -32,7 +33,9 @@ authoritative session state. Client disconnect preserves durable history; unknow
 work is not reported as completed.
 
 `ModelProvider` / `ProviderRegistry` — implemented foundations. Copied-event fork
-≠ Session DAG. Module Runtime, TUI, doctor, extension adapters — not implemented.
+≠ Session DAG. Module Runtime foundations, TUI (`impetus ui`), and `impetus doctor`
+are present; extension adapters and a live components/registry browser remain thin
+or stubbed in places.
 
 **Migration note:** some older docs and `task harness` still reflect the era when
 daemon was named `impetus`. Target and crates — see [TODO.md](../TODO.md) Phase 1.

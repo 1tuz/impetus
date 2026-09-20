@@ -27,7 +27,7 @@ SQLite, policy, model/tool runtime, credentials, or session authority.
 **Product model.**
 
 ```text
-impetus   → user-facing CLI (future TUI)
+impetus   → user-facing CLI / TUI (`impetus ui`)
 impetusd  → local-first harness daemon (authoritative runtime)
 ```
 
@@ -37,8 +37,10 @@ own authoritative state.
 
 **Current.** The workspace ships `impetusd` and an `impetus` CLI client over
 versioned Unix-socket IPC and `HarnessClient`, plus provider registry foundations
-and an experimental Zap adapter. Command/JSON oriented; no TUI, `doctor`, or
-Module Runtime yet.
+and an experimental Zap adapter. Also available: `impetus doctor` (diagnostics),
+`impetus ui` (Ratatui TUI), and Module Runtime foundations. A second CLI,
+`impetus-cli`, remains supported for its existing workflows; `impetus` is the
+fuller surface (doctor, ui, skills, …).
 
 **Target.** Modular, extensible harness: `impetus` becomes first-class CLI/TUI;
 Zap keeps its own UI as another `HarnessClient` consumer. See
@@ -153,8 +155,9 @@ See [Design references](docs/REFERENCES.md).
 | --- | --- |
 | `crates/impetus-core` | Durable events, runtime, policy, effects, providers, tools, and IPC types. |
 | `crates/impetusd` | Headless Unix-socket daemon and macOS Keychain resolver. |
-| `crates/impetus` | User-facing command-line client. |
-| `crates/impetus-cli` | Legacy reference client (deprecated, use `impetus`). |
+| `crates/impetus` | User-facing CLI / TUI client (`doctor`, `ui`, …). |
+| `crates/impetus-cli` | Supported second CLI for its workflows; `impetus` is the fuller surface. |
+| `crates/impetus-tui` | Ratatui TUI library used by `impetus ui`. |
 | `crates/impetus-client` | `HarnessClient` contract and local transports. |
 | `crates/impetus-zap-adapter` | Historical/experimental Zap integration baseline. |
 | `crates/impetus-acp-gateway` | ACP profile and gateway library. |
