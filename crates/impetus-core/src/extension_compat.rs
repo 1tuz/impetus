@@ -276,14 +276,20 @@ impl CompatibilityMatrix {
     /// Get compatibility matrix for Codex
     pub fn codex() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("extensions".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("plugins".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("skills".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("extensions".to_string(), ImportCapability::Supported);
+        capabilities.insert("plugins".to_string(), ImportCapability::Supported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
+        capabilities.insert("hooks".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("mcp_servers".to_string(), ImportCapability::Unsupported);
 
         Self {
             source: ExtensionSource::Codex,
             capabilities,
-            notes: vec!["Codex adapter planned".to_string()],
+            notes: vec![
+                "Codex adapter: AGENTS.md + .agents/skills + optional .codex-plugin/plugin.json"
+                    .to_string(),
+                "MCP servers and hooks are not imported".to_string(),
+            ],
         }
     }
 
@@ -291,27 +297,34 @@ impl CompatibilityMatrix {
     pub fn cursor() -> Self {
         let mut capabilities = HashMap::new();
         capabilities.insert("plugins".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("rules".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("skills".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("agents".to_string(), ImportCapability::Unsupported);
-        capabilities.insert("commands".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("rules".to_string(), ImportCapability::Supported);
+        capabilities.insert("skills".to_string(), ImportCapability::Supported);
+        capabilities.insert("agents".to_string(), ImportCapability::Supported);
+        capabilities.insert("commands".to_string(), ImportCapability::Supported);
 
         Self {
             source: ExtensionSource::Cursor,
             capabilities,
-            notes: vec!["Cursor adapter planned".to_string()],
+            notes: vec![
+                "Cursor adapter: .cursor/rules + commands + agents + skills (.cursor/skills and .agents/skills)".to_string(),
+                "Rules discovered as .md/.mdc under .cursor/rules".to_string(),
+                "No stable project-local plugins layout; marketplace/global plugins not imported".to_string(),
+            ],
         }
     }
 
     /// Get compatibility matrix for DeepSeek Harness
     pub fn deepseek_harness() -> Self {
         let mut capabilities = HashMap::new();
-        capabilities.insert("process_adapter".to_string(), ImportCapability::Unsupported);
+        capabilities.insert("process_adapter".to_string(), ImportCapability::Supported);
 
         Self {
             source: ExtensionSource::DeepSeekHarness,
             capabilities,
-            notes: vec!["Process adapter planned, no TS in daemon".to_string()],
+            notes: vec![
+                "DeepSeek Harness / Cordis via out-of-process bridge manifest only".to_string(),
+                "No TypeScript/Cordis runtime inside impetusd".to_string(),
+            ],
         }
     }
 

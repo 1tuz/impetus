@@ -99,9 +99,9 @@ Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 - [x] MCP adapter
 - [x] Agent Plugins adapter
 - [x] Claude Code extensions/plugins adapter
-- [ ] Codex extensions/plugins/skills adapter
-- [ ] Cursor plugins/rules/skills/agents/commands adapter
-- [ ] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
+- [x] Codex extensions/plugins/skills adapter
+- [x] Cursor plugins/rules/skills/agents/commands adapter
+- [x] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
 - [x] `doctor` reports per-package partial compatibility
 
 ---
