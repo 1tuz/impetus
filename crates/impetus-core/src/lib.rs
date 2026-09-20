@@ -14,7 +14,9 @@ pub mod audit_log;
 pub mod budget;
 pub mod ci;
 pub mod claude_code_adapter;
+pub mod codex_adapter;
 pub mod cost_estimation;
+pub mod cursor_adapter;
 pub mod deepseek_harness_adapter;
 pub mod diagnostics;
 pub mod durable_artifacts;
@@ -76,6 +78,8 @@ pub use ci::{
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
+pub use codex_adapter::CodexAdapter;
+pub use cursor_adapter::CursorAdapter;
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
 };
