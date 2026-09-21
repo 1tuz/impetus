@@ -36,6 +36,7 @@ async fn model_router_selects_provider_on_prompt() {
         session_id,
         text: "test prompt".to_string(),
         artifact: None,
+        intent: Default::default(),
     });
     assert!(matches!(response, IpcResponse::Status { .. }));
 
@@ -83,6 +84,7 @@ async fn model_router_falls_back_to_default_when_no_models_configured() {
         session_id,
         text: "test prompt".to_string(),
         artifact: None,
+        intent: Default::default(),
     });
 
     // Should not fail even with empty router

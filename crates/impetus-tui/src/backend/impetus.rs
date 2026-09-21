@@ -84,11 +84,17 @@ impl UiBackend for ImpetusBackend {
         ))
     }
 
-    async fn send_message(&self, session_id: Uuid, text: String) -> Result<String> {
+    async fn send_message(
+        &self,
+        session_id: Uuid,
+        text: String,
+        intent: impetus_client::protocol::UserPromptIntent,
+    ) -> Result<String> {
         let request = IpcRequest::Prompt {
             session_id,
             text,
             artifact: None,
+            intent,
         };
         let encoded_len = serde_json::to_vec(&request)?.len().saturating_add(1);
         if encoded_len > MAX_IPC_LINE_BYTES {
@@ -108,6 +114,7 @@ impl UiBackend for ImpetusBackend {
         session_id: Uuid,
         label: String,
         body: Vec<u8>,
+        intent: impetus_client::protocol::UserPromptIntent,
     ) -> Result<String> {
         let hello = self.client.hello().await?;
         let supports_upload = match &hello {
@@ -143,7 +150,7 @@ impl UiBackend for ImpetusBackend {
 
         match self
             .client
-            .send_message_with_artifact(session_id, label, Some(artifact))
+            .send_message_with_intent(session_id, label, Some(artifact), intent)
             .await
         {
             Ok(status) => Ok(format!("{status:?}")),

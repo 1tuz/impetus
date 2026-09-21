@@ -276,7 +276,13 @@ Do **not** invent a new hard-coded agent type per workflow.
       - FollowUp → enqueue after current (OK when session exists)
       - Prompt → baseline when session exists
       - Neither Steer nor FollowUp rewrites `ActionOrigin` or bypasses Policy
-- [ ] Full TUI/IPC wiring, LLM prompt rewrite, WorkflowEngine cancel/replace race
+- [x] TUI/IPC wiring for intent discriminant — Partial (#263)
+      - `IpcRequest::Prompt.intent` + `IntentEvent.intent` (serde default Prompt)
+      - Harness routes via `UserIntentRouter` (Steer/FollowUp: durable event only)
+      - TUI: `/prompt` · `/steer` · `/follow-up` set composer intent
+- [ ] LLM prompt rewrite for Steer
+- [ ] WorkflowEngine cancel/replace race / follow-up drain on run complete
+- [ ] Multi-session fanout
 
 ### 9. Hooks (only if needed; performance-first)
 

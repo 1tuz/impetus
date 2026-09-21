@@ -185,10 +185,20 @@ enum Effect {
     RefreshSessions,
     CreateSession,
     ActivateSession(Uuid),
-    SendMessage(String),
-    SendLargePaste { label: String, body: String },
+    SendMessage {
+        text: String,
+        intent: impetus_client::protocol::UserPromptIntent,
+    },
+    SendLargePaste {
+        label: String,
+        body: String,
+        intent: impetus_client::protocol::UserPromptIntent,
+    },
     Cancel,
-    ResolveApproval { approval_id: Uuid, accepted: bool },
+    ResolveApproval {
+        approval_id: Uuid,
+        accepted: bool,
+    },
     LoadApprovalDetail(Uuid),
     Diagnostics,
 }
@@ -342,20 +352,20 @@ fn execute_effect(
             });
             tasks.replace_subscription(handle);
         }
-        Effect::SendMessage(text) => {
+        Effect::SendMessage { text, intent } => {
             let Some(session_id) = app.active_session else {
                 app.show_toast("No active session. Create or resume one first.", true);
                 return;
             };
             app.run_state = RunState::Working;
-            app.status_message = "submitting task".to_owned();
+            app.status_message = format!("submitting · {}", intent.label());
             app.dirty = true;
             let generation = app.subscription_generation;
             let backend = backend.clone();
             let tx = tx.clone();
             spawn_detached(async move {
                 let result = backend
-                    .send_message(session_id, text)
+                    .send_message(session_id, text, intent)
                     .await
                     .map_err(|error| error.to_string());
                 let _ = tx
@@ -367,7 +377,11 @@ fn execute_effect(
                     .await;
             });
         }
-        Effect::SendLargePaste { label, body } => {
+        Effect::SendLargePaste {
+            label,
+            body,
+            intent,
+        } => {
             let Some(session_id) = app.active_session else {
                 app.show_toast("No active session. Create or resume one first.", true);
                 return;
@@ -381,14 +395,14 @@ fn execute_effect(
                 return;
             }
             app.run_state = RunState::Working;
-            app.status_message = "uploading paste".to_owned();
+            app.status_message = format!("uploading paste · {}", intent.label());
             app.dirty = true;
             let generation = app.subscription_generation;
             let backend = backend.clone();
             let tx = tx.clone();
             spawn_detached(async move {
                 let result = backend
-                    .send_large_paste(session_id, label, body.into_bytes())
+                    .send_large_paste(session_id, label, body.into_bytes(), intent)
                     .await
                     .map_err(|error| error.to_string());
                 let _ = tx
@@ -1005,7 +1019,12 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     app.composer.clear();
                     (
                         Overlay::None,
-                        vec![send_large_paste_effect(app.mode, label, body)],
+                        vec![send_large_paste_effect(
+                            app.mode,
+                            app.prompt_intent,
+                            label,
+                            body,
+                        )],
                     )
                 }
             },
@@ -1111,7 +1130,12 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 } else {
                     text
                 };
-                return vec![send_large_paste_effect(app.mode, label, body)];
+                return vec![send_large_paste_effect(
+                    app.mode,
+                    app.prompt_intent,
+                    label,
+                    body,
+                )];
             }
             if text.len() > MAX_PASTE_UPLOAD_BYTES {
                 app.show_toast(
@@ -1128,9 +1152,14 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             if text.len() > LARGE_PASTE_BYTES {
                 let label = format_paste_placeholder(text.len(), paste_line_count(&text));
-                return vec![send_large_paste_effect(app.mode, label, text)];
+                return vec![send_large_paste_effect(
+                    app.mode,
+                    app.prompt_intent,
+                    label,
+                    text,
+                )];
             }
-            return vec![send_effect(app.mode, text)];
+            return vec![send_effect(app.mode, app.prompt_intent, text)];
         }
         KeyCode::Backspace => app.composer.backspace(),
         KeyCode::Delete => app.composer.delete(),
@@ -1190,6 +1219,17 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
             }
             vec![]
         }
+        CommandAction::SetPromptIntent(intent) => {
+            app.prompt_intent = intent;
+            app.show_toast(
+                format!(
+                    "Composer intent: {} (/prompt · /steer · /follow-up)",
+                    intent.label()
+                ),
+                false,
+            );
+            vec![]
+        }
         CommandAction::ShowDiff => show_selected_detail(app),
         CommandAction::ToggleInspector => {
             app.show_inspector = !app.show_inspector;
@@ -1230,20 +1270,36 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
     }
 }
 
-fn send_effect(mode: ExecutionMode, text: String) -> Effect {
+fn send_effect(
+    mode: ExecutionMode,
+    intent: impetus_client::protocol::UserPromptIntent,
+    text: String,
+) -> Effect {
     let payload = mode
         .prompt_prefix()
         .map(|prefix| format!("{prefix}{text}"))
         .unwrap_or(text);
-    Effect::SendMessage(payload)
+    Effect::SendMessage {
+        text: payload,
+        intent,
+    }
 }
 
-fn send_large_paste_effect(mode: ExecutionMode, label: String, body: String) -> Effect {
+fn send_large_paste_effect(
+    mode: ExecutionMode,
+    intent: impetus_client::protocol::UserPromptIntent,
+    label: String,
+    body: String,
+) -> Effect {
     let label = mode
         .prompt_prefix()
         .map(|prefix| format!("{prefix}{label}"))
         .unwrap_or(label);
-    Effect::SendLargePaste { label, body }
+    Effect::SendLargePaste {
+        label,
+        body,
+        intent,
+    }
 }
 
 fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
@@ -1875,9 +1931,11 @@ mod tests {
         assert!(matches!(app.overlay, Overlay::None));
         assert!(matches!(
             effects.as_slice(),
-            [Effect::SendLargePaste { label, body: effect_body }]
-                if effect_body == &body
-                    && is_paste_placeholder(label)
+            [Effect::SendLargePaste {
+                label,
+                body: effect_body,
+                intent: _
+            }] if effect_body == &body && is_paste_placeholder(label)
         ));
     }
 

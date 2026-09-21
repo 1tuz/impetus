@@ -413,10 +413,18 @@ impl AgentRuntime {
         text: impl Into<String>,
         artifact: Option<crate::DurableArtifactRef>,
     ) -> Result<(), RuntimeError> {
-        self.record(EventPayload::Intent(IntentEvent {
-            text: text.into(),
-            artifact,
-        }))
+        self.submit_intent_with_artifact_and_kind(text, artifact, crate::UserPromptIntent::Prompt)
+    }
+
+    pub fn submit_intent_with_artifact_and_kind(
+        &self,
+        text: impl Into<String>,
+        artifact: Option<crate::DurableArtifactRef>,
+        intent: crate::UserPromptIntent,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Intent(IntentEvent::with_intent(
+            text, intent, artifact,
+        )))
     }
 
     pub fn submit_intent_and_start_run(

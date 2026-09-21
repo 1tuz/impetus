@@ -15,25 +15,40 @@
 //! self-grant `origin=user` or approval. This module only validates routing
 //! state (session / active run / queue) — Policy evaluation stays upstream.
 //!
-//! Out of scope for this slice: full TUI/IPC wiring, LLM prompt rewriting,
-//! WorkflowEngine cancel/replace races (session_id may be shared later).
+//! Out of scope for this slice: LLM prompt rewriting, WorkflowEngine
+//! cancel/replace races, multi-session fanout (session_id may be shared later).
+//! IPC + minimal TUI selection land in #263.
 
 use std::collections::{HashMap, VecDeque};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::policy::ActionOrigin;
 
 /// Distinct client intents for user-authored text (not collapsed into Prompt).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UserPromptIntent {
     /// Normal baseline user message.
+    #[default]
     Prompt,
     /// Nudge / steer an active run.
     Steer,
     /// Enqueue after the current run finishes.
     FollowUp,
+}
+
+impl UserPromptIntent {
+    /// Short label for TUI composer / status (stable ASCII).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Steer => "steer",
+            Self::FollowUp => "follow-up",
+        }
+    }
 }
 
 /// One typed submission. `origin` is preserved for Policy — never rewritten here.
@@ -82,8 +97,9 @@ struct SessionIntentState {
 
 /// Boring in-memory router for typed Prompt / Steer / FollowUp.
 ///
-/// ponytail: single-process HashMap only; durable IPC / WorkflowEngine coupling
-/// stays for a later slice.
+/// ponytail: single-process HashMap only; WorkflowEngine cancel/replace and
+/// follow-up drain on run complete stay for a later slice. Harness syncs
+/// `active_run_id` from the durable projection before each submit.
 #[derive(Debug, Default, Clone)]
 pub struct UserIntentRouter {
     sessions: HashMap<Uuid, SessionIntentState>,

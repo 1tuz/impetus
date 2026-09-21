@@ -376,8 +376,9 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) 
         }
     };
     let title = format!(
-        " task · {} · {} · Enter send · {newline_hint} ",
+        " task · {} · {} · {} · Enter send · {newline_hint} ",
         app.mode.label(),
+        app.prompt_intent.label(),
         mode.label()
     );
     let block = panel_block(title, focus, theme);
@@ -527,6 +528,7 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  Ctrl+A/E          line start/end",
         "  Ctrl+W            delete previous word",
         "  Ctrl+P            command palette",
+        "  /prompt /steer /follow-up   composer intent",
         "",
         "HARNESS",
         "  F2 sessions       attach durable session",

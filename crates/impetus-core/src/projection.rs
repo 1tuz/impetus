@@ -172,6 +172,7 @@ mod tests {
             EventPayload::Intent(IntentEvent {
                 text: "explain repo".into(),
                 artifact: None,
+                intent: crate::UserPromptIntent::Prompt,
             }),
         )];
         assert_eq!(
