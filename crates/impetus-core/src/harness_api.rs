@@ -11,9 +11,9 @@ use crate::{
     AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventStore,
     IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
     MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
-    ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
-    ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget, ToolOutcome,
-    UserIntentRouter, UserIntentSubmission, UserPromptIntent,
+    ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind,
+    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget,
+    ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
@@ -26,6 +26,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tokio_util::sync::CancellationToken;
+
+/// Per-session cancel handle keyed by run so a drained follow-up cannot be
+/// cleared by the previous loop's cleanup (cancel/replace race).
+#[derive(Clone)]
+struct ActiveCancellation {
+    run_id: uuid::Uuid,
+    token: CancellationToken,
+}
 
 #[derive(Clone, Default)]
 struct SessionCoordinator {
@@ -61,7 +69,7 @@ pub struct Harness {
     default_provider_id: String,
     model_router: ModelRouter,
     credential_resolver: Arc<dyn CredentialResolver>,
-    cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, ActiveCancellation>>>,
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
@@ -300,7 +308,7 @@ fn handle_request(
     default_provider_id: String,
     model_router: ModelRouter,
     credential_resolver: Arc<dyn CredentialResolver>,
-    cancellations: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>>,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, ActiveCancellation>>>,
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
@@ -443,112 +451,77 @@ fn handle_request(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let artifact_root = uploads.artifact_root().to_path_buf();
-            match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-                let runtime = Arc::new(runtime);
+            match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
+                |runtime| {
+                    let runtime = Arc::new(runtime);
 
-                // Sync projection → router, then validate typed intent (no origin/policy bypass).
-                let accepted = {
-                    let mut router = intent_router
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    router.open_session(session_id);
-                    let active = runtime.active_run_id()?;
-                    router
-                        .set_active_run(session_id, active)
-                        .map_err(user_intent_to_runtime)?;
-                    router
-                        .submit(UserIntentSubmission {
-                            session_id,
-                            intent,
-                            text: text.clone(),
-                            origin: ActionOrigin::User,
-                        })
-                        .map_err(user_intent_to_runtime)?
-                };
+                    // Sync projection → router, then validate typed intent (no origin/policy bypass).
+                    let accepted = {
+                        let mut router = intent_router
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        router.open_session(session_id);
+                        let active = runtime.active_run_id()?;
+                        router
+                            .set_active_run(session_id, active)
+                            .map_err(user_intent_to_runtime)?;
+                        router
+                            .submit(UserIntentSubmission {
+                                session_id,
+                                intent,
+                                text: text.clone(),
+                                origin: ActionOrigin::User,
+                            })
+                            .map_err(user_intent_to_runtime)?
+                    };
 
-                // Steer / FollowUp: durable Intent event only (no new run / LLM rewrite).
-                if matches!(
-                    accepted.intent,
-                    UserPromptIntent::Steer | UserPromptIntent::FollowUp
-                ) {
-                    runtime.submit_intent_with_artifact_and_kind(
-                        accepted.text,
-                        artifact,
+                    // Steer / FollowUp: durable Intent event only (no new run / LLM rewrite).
+                    if matches!(
                         accepted.intent,
-                    )?;
-                    return runtime.status();
-                }
-
-                let run_id = runtime.submit_intent_and_start_run_with_artifact(text, artifact)?;
-                if let Ok(mut router) = intent_router.lock() {
-                    let _ = router.set_active_run(session_id, Some(run_id));
-                }
-                let session_workspace = runtime.workspace_root()?;
-                let provider_messages =
-                    resolve_provider_messages(&session_workspace, &runtime, Some(&artifact_root))
-                        .unwrap_or_else(|_| {
-                            vec![ProviderMessage::user(
-                                runtime_intent(&runtime).unwrap_or_default(),
-                            )]
-                        });
-                let runtime_session_id = runtime.session_id();
-
-                // Select model through router
-                let requirements = crate::model_router::CapabilityRequirements {
-                    tools: true,
-                    ..Default::default()
-                };
-                let budget = runtime.budget_config().unwrap_or_default();
-                let selected = model_router.select_model(&requirements, &budget);
-
-                let selected_provider_id = selected
-                    .as_ref()
-                    .map(|s| s.provider_id.clone())
-                    .unwrap_or_else(|| default_provider_id.clone());
-
-                // Record selection decision
-                let selection_message = if let Some(ref selection) = selected {
-                    format!(
-                        "ModelRouter selected {}/{}: {}",
-                        selection.provider_id, selection.model_id, selection.reasoning
-                    )
-                } else {
-                    format!(
-                        "ModelRouter fallback to default provider: {}",
-                        selected_provider_id
-                    )
-                };
-                let _ = runtime.append_event(crate::EventPayload::Notice(
-                    crate::NoticeEvent::Runtime {
-                        message: selection_message,
-                    },
-                ));
-
-                let task_runtime = runtime.clone();
-                let cancellation = CancellationToken::new();
-                if let Ok(mut active) = cancellations.lock() {
-                    active.insert(runtime_session_id, cancellation.clone());
-                }
-                let task_cancellations = cancellations.clone();
-                let task_provider_registry = provider_registry.clone();
-                let task_credential_resolver = credential_resolver.clone();
-                tokio::spawn(async move {
-                    run_agent_loop(
-                        task_runtime,
-                        run_id,
-                        task_provider_registry,
-                        selected_provider_id,
-                        task_credential_resolver,
-                        provider_messages,
-                        cancellation,
-                    )
-                    .await;
-                    if let Ok(mut active) = task_cancellations.lock() {
-                        active.remove(&runtime_session_id);
+                        UserPromptIntent::Steer | UserPromptIntent::FollowUp
+                    ) {
+                        runtime.submit_intent_with_artifact_and_kind(
+                            accepted.text,
+                            artifact,
+                            accepted.intent,
+                        )?;
+                        return runtime.status();
                     }
-                });
-                runtime.status()
-            }) {
+
+                    let run_id =
+                        runtime.submit_intent_and_start_run_with_artifact(text, artifact)?;
+                    if let Ok(mut router) = intent_router.lock() {
+                        let _ = router.set_active_run(session_id, Some(run_id));
+                    }
+                    let session_workspace = runtime.workspace_root()?;
+                    let provider_messages = resolve_provider_messages(
+                        &session_workspace,
+                        &runtime,
+                        Some(&artifact_root),
+                    )
+                    .unwrap_or_else(|_| {
+                        vec![ProviderMessage::user(
+                            runtime_intent(&runtime).unwrap_or_default(),
+                        )]
+                    });
+                    launch_agent_run(
+                        runtime.clone(),
+                        run_id,
+                        provider_messages,
+                        &provider_registry,
+                        &default_provider_id,
+                        &model_router,
+                        credential_resolver.clone(),
+                        cancellations.clone(),
+                        intent_router.clone(),
+                        store.clone(),
+                        policy.clone(),
+                        session_coordinator.clone(),
+                        artifact_root,
+                    )?;
+                    runtime.status()
+                },
+            ) {
                 Ok(status) => IpcResponse::Status { session_id, status },
                 Err(error) => runtime_error(error),
             }
@@ -576,15 +549,38 @@ fn handle_request(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Ok(active) = cancellations.lock()
-                && let Some(cancellation) = active.get(&session_id)
+                && let Some(handle) = active.get(&session_id)
             {
                 // A session has at most one active run; cancellation is kept
                 // outside durable events so no handle leaks through SQLite.
-                cancellation.cancel();
+                handle.token.cancel();
             }
-            match AgentRuntime::attach(store, policy, session_id)
-                .and_then(|runtime| runtime.cancel())
-            {
+            match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
+                |runtime| {
+                    let finished_run_id = runtime.active_run_id()?;
+                    let _ = runtime.cancel()?;
+                    if let Some(run_id) = finished_run_id {
+                        // Cancel owns drain; loop exit for same run is a no-op.
+                        // Session lock already held — do not re-enter the mutex.
+                        start_drained_follow_up_if_any(
+                            store.clone(),
+                            policy.clone(),
+                            provider_registry.clone(),
+                            default_provider_id.clone(),
+                            model_router.clone(),
+                            credential_resolver.clone(),
+                            cancellations.clone(),
+                            intent_router.clone(),
+                            session_coordinator.clone(),
+                            uploads.artifact_root().to_path_buf(),
+                            session_id,
+                            run_id,
+                            false,
+                        );
+                    }
+                    runtime.status()
+                },
+            ) {
                 Ok(status) => IpcResponse::Status { session_id, status },
                 Err(error) => runtime_error(error),
             }
@@ -650,79 +646,72 @@ fn handle_request(
             session_id,
             approval_id,
             accepted,
-        } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-            let runtime = Arc::new(runtime);
-            let request = runtime
-                .pending_approval(approval_id)?
-                .ok_or(RuntimeError::MissingApproval(approval_id))?;
-            let deferred = runtime.deferred_tool(approval_id)?;
-            let resolution = crate::ApprovalResolution {
-                id: approval_id,
-                resolver: crate::ApprovalResolver::User,
-                action_fingerprint: request.action_fingerprint.clone(),
-                intent_revision: request.intent_revision,
-                accepted,
-            };
-            runtime.resolve_approval(resolution.clone())?;
-            if let Some(deferred) = deferred {
-                if accepted {
-                    match deferred.1.as_str() {
-                        "write_file" | "edit_file" => {
-                            crate::ToolOrchestrator::execute_approved_write(
-                                &runtime, request, resolution, deferred,
-                            )
+        } => match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
+            |runtime| {
+                let runtime = Arc::new(runtime);
+                let request = runtime
+                    .pending_approval(approval_id)?
+                    .ok_or(RuntimeError::MissingApproval(approval_id))?;
+                let deferred = runtime.deferred_tool(approval_id)?;
+                let resolution = crate::ApprovalResolution {
+                    id: approval_id,
+                    resolver: crate::ApprovalResolver::User,
+                    action_fingerprint: request.action_fingerprint.clone(),
+                    intent_revision: request.intent_revision,
+                    accepted,
+                };
+                runtime.resolve_approval(resolution.clone())?;
+                if let Some(deferred) = deferred {
+                    if accepted {
+                        match deferred.1.as_str() {
+                            "write_file" | "edit_file" => {
+                                crate::ToolOrchestrator::execute_approved_write(
+                                    &runtime, request, resolution, deferred,
+                                )
+                            }
+                            "bash" | "shell" | "exec" => {
+                                crate::ToolOrchestrator::execute_approved_bash_with_artifacts(
+                                    &runtime,
+                                    request,
+                                    resolution,
+                                    deferred,
+                                    uploads.artifact_root(),
+                                )
+                            }
+                            name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
                         }
-                        "bash" | "shell" | "exec" => {
-                            crate::ToolOrchestrator::execute_approved_bash_with_artifacts(
-                                &runtime,
-                                request,
-                                resolution,
-                                deferred,
-                                uploads.artifact_root(),
-                            )
-                        }
-                        name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
+                        .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                    } else {
+                        crate::ToolOrchestrator::record_approval_rejection(&runtime, deferred);
                     }
-                    .map_err(|error| RuntimeError::Denied(error.to_string()))?;
-                } else {
-                    crate::ToolOrchestrator::record_approval_rejection(&runtime, deferred);
                 }
-            }
-            if let Some(run_id) = runtime.active_run_id()? {
-                let workspace_root = runtime.workspace_root()?;
-                let messages = resolve_provider_messages(
-                    &workspace_root,
-                    &runtime,
-                    Some(uploads.artifact_root()),
-                )
-                .map_err(|error| RuntimeError::Denied(error.to_string()))?;
-                let cancellation = CancellationToken::new();
-                if let Ok(mut active) = cancellations.lock() {
-                    active.insert(session_id, cancellation.clone());
-                }
-                let task_runtime = runtime.clone();
-                let task_registry = provider_registry.clone();
-                let task_provider_id = default_provider_id.clone();
-                let task_resolver = credential_resolver.clone();
-                let task_cancellations = cancellations.clone();
-                tokio::spawn(async move {
-                    run_agent_loop(
-                        task_runtime,
-                        run_id,
-                        task_registry,
-                        task_provider_id,
-                        task_resolver,
-                        messages,
-                        cancellation,
+                if let Some(run_id) = runtime.active_run_id()? {
+                    let workspace_root = runtime.workspace_root()?;
+                    let messages = resolve_provider_messages(
+                        &workspace_root,
+                        &runtime,
+                        Some(uploads.artifact_root()),
                     )
-                    .await;
-                    if let Ok(mut active) = task_cancellations.lock() {
-                        active.remove(&session_id);
-                    }
-                });
-            }
-            Ok(session_id)
-        }) {
+                    .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                    launch_agent_run(
+                        runtime.clone(),
+                        run_id,
+                        messages,
+                        &provider_registry,
+                        &default_provider_id,
+                        &model_router,
+                        credential_resolver.clone(),
+                        cancellations.clone(),
+                        intent_router.clone(),
+                        store.clone(),
+                        policy.clone(),
+                        session_coordinator.clone(),
+                        uploads.artifact_root().to_path_buf(),
+                    )?;
+                }
+                Ok(session_id)
+            },
+        ) {
             Ok(session_id) => IpcResponse::ApprovalResolved {
                 session_id,
                 approval_id,
@@ -867,7 +856,7 @@ async fn run_agent_loop(
     _credential_resolver: Arc<dyn CredentialResolver>,
     messages: Vec<ProviderMessage>,
     cancellation: CancellationToken,
-) {
+) -> bool {
     let provider = match provider_registry.get(&provider_id) {
         Ok(p) => p,
         Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
@@ -875,9 +864,9 @@ async fn run_agent_loop(
                 run_id,
                 reason: format!("provider not found: {error}"),
             });
-            return;
+            return false;
         }
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     let result = AgentLoop::new(runtime.clone())
@@ -887,16 +876,200 @@ async fn run_agent_loop(
     match result {
         Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
+            true
         }
-        Err(_) if cancellation.is_cancelled() => {}
+        Err(_) if cancellation.is_cancelled() => {
+            // Cancel IPC already finished the run and owns follow-up drain.
+            false
+        }
         Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Failed {
                 run_id,
                 reason: format!("provider stream failed: {error}"),
             });
+            false
         }
-        _ => {}
+        _ => false,
     }
+}
+
+/// Record model selection notice and spawn the agent loop; on Completed drain
+/// the next FollowUp into a Prompt turn.
+#[allow(clippy::too_many_arguments)]
+fn launch_agent_run(
+    runtime: Arc<AgentRuntime>,
+    run_id: uuid::Uuid,
+    provider_messages: Vec<ProviderMessage>,
+    provider_registry: &ProviderRegistry,
+    default_provider_id: &str,
+    model_router: &ModelRouter,
+    credential_resolver: Arc<dyn CredentialResolver>,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, ActiveCancellation>>>,
+    intent_router: Arc<Mutex<UserIntentRouter>>,
+    store: Arc<dyn EventStore>,
+    policy: PolicyEngine,
+    session_coordinator: SessionCoordinator,
+    artifact_root: PathBuf,
+) -> Result<(), RuntimeError> {
+    let runtime_session_id = runtime.session_id();
+    let requirements = crate::model_router::CapabilityRequirements {
+        tools: true,
+        ..Default::default()
+    };
+    let budget = runtime.budget_config().unwrap_or_default();
+    let selected = model_router.select_model(&requirements, &budget);
+    let selected_provider_id = selected
+        .as_ref()
+        .map(|s| s.provider_id.clone())
+        .unwrap_or_else(|| default_provider_id.to_owned());
+
+    let selection_message = if let Some(ref selection) = selected {
+        format!(
+            "ModelRouter selected {}/{}: {}",
+            selection.provider_id, selection.model_id, selection.reasoning
+        )
+    } else {
+        format!("ModelRouter fallback to default provider: {selected_provider_id}")
+    };
+    let _ = runtime.append_event(crate::EventPayload::Notice(crate::NoticeEvent::Runtime {
+        message: selection_message,
+    }));
+
+    let cancellation = CancellationToken::new();
+    if let Ok(mut active) = cancellations.lock() {
+        active.insert(
+            runtime_session_id,
+            ActiveCancellation {
+                run_id,
+                token: cancellation.clone(),
+            },
+        );
+    }
+
+    let task_runtime = runtime;
+    let task_cancellations = cancellations.clone();
+    let task_provider_registry = provider_registry.clone();
+    let task_credential_resolver = credential_resolver;
+    let task_intent_router = intent_router;
+    let task_store = store;
+    let task_policy = policy;
+    let task_session_coordinator = session_coordinator;
+    let task_default_provider_id = default_provider_id.to_owned();
+    let task_model_router = model_router.clone();
+    let task_artifact_root = artifact_root;
+
+    tokio::spawn(async move {
+        let completed = run_agent_loop(
+            task_runtime,
+            run_id,
+            task_provider_registry.clone(),
+            selected_provider_id.clone(),
+            task_credential_resolver.clone(),
+            provider_messages,
+            cancellation,
+        )
+        .await;
+        if let Ok(mut active) = task_cancellations.lock()
+            && active
+                .get(&runtime_session_id)
+                .is_some_and(|handle| handle.run_id == run_id)
+        {
+            active.remove(&runtime_session_id);
+        }
+        if completed {
+            start_drained_follow_up_if_any(
+                task_store,
+                task_policy,
+                task_provider_registry,
+                task_default_provider_id,
+                task_model_router,
+                task_credential_resolver,
+                task_cancellations,
+                task_intent_router,
+                task_session_coordinator,
+                task_artifact_root,
+                runtime_session_id,
+                run_id,
+                true,
+            );
+        }
+    });
+    Ok(())
+}
+
+/// Dequeue one FollowUp after Completed/Cancelled and start it as Prompt.
+/// No-op when queue empty or another caller already drained this run.
+#[allow(clippy::too_many_arguments)]
+fn start_drained_follow_up_if_any(
+    store: Arc<dyn EventStore>,
+    policy: PolicyEngine,
+    provider_registry: ProviderRegistry,
+    default_provider_id: String,
+    model_router: ModelRouter,
+    credential_resolver: Arc<dyn CredentialResolver>,
+    cancellations: Arc<Mutex<HashMap<uuid::Uuid, ActiveCancellation>>>,
+    intent_router: Arc<Mutex<UserIntentRouter>>,
+    session_coordinator: SessionCoordinator,
+    artifact_root: PathBuf,
+    session_id: uuid::Uuid,
+    finished_run_id: uuid::Uuid,
+    acquire_session_lock: bool,
+) {
+    let Some(queued) = (|| -> Option<QueuedFollowUp> {
+        let mut router = intent_router.lock().ok()?;
+        router
+            .take_follow_up_on_run_terminal(session_id, finished_run_id)
+            .ok()
+            .flatten()
+    })() else {
+        return;
+    };
+
+    // queued.origin preserved on QueuedFollowUp for Policy; turn starts as Prompt.
+    let session_lock = if acquire_session_lock {
+        Some(session_coordinator.lock_for(session_id))
+    } else {
+        None
+    };
+    let _session_guard = session_lock
+        .as_ref()
+        .map(|lock| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+
+    let Ok(runtime) = AgentRuntime::attach(store.clone(), policy.clone(), session_id) else {
+        return;
+    };
+    let runtime = Arc::new(runtime);
+    let Ok(run_id) = runtime.submit_intent_and_start_run(queued.text) else {
+        return;
+    };
+    if let Ok(mut router) = intent_router.lock() {
+        let _ = router.set_active_run(session_id, Some(run_id));
+    }
+    let Ok(session_workspace) = runtime.workspace_root() else {
+        return;
+    };
+    let provider_messages =
+        resolve_provider_messages(&session_workspace, &runtime, Some(&artifact_root))
+            .unwrap_or_else(|_| {
+                vec![ProviderMessage::user(
+                    runtime_intent(&runtime).unwrap_or_default(),
+                )]
+            });
+    let _ = launch_agent_run(
+        runtime,
+        run_id,
+        provider_messages,
+        &provider_registry,
+        &default_provider_id,
+        &model_router,
+        credential_resolver,
+        cancellations,
+        intent_router,
+        store,
+        policy,
+        session_coordinator,
+        artifact_root,
+    );
 }
 
 fn resolve_context(
@@ -2710,6 +2883,191 @@ mod tests {
         let encoded = serde_json::to_string(&events).expect("encode");
         assert!(!encoded.contains("sk-"));
         assert!(!encoded.contains("Bearer "));
+    }
+
+    #[tokio::test]
+    async fn follow_up_drains_into_prompt_after_run_completes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "first turn".into(),
+                artifact: None,
+                intent: UserPromptIntent::Prompt,
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "queued next".into(),
+                artifact: None,
+                intent: UserPromptIntent::FollowUp,
+            }),
+            IpcResponse::Status { .. }
+        ));
+
+        // Wait until drained Prompt turn finishes (two Completed runs).
+        let mut completed_runs = 0usize;
+        for _ in 0..50 {
+            let events = store.list(session_id).expect("events");
+            completed_runs = events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.payload,
+                        EventPayload::Run(crate::RunEvent::Completed { .. })
+                    )
+                })
+                .count();
+            if completed_runs >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            completed_runs >= 2,
+            "expected drained follow-up to complete a second run, got {completed_runs}"
+        );
+
+        let events = store.list(session_id).expect("events");
+        let prompt_texts: Vec<_> = events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Intent(intent) if intent.intent == UserPromptIntent::Prompt => {
+                    Some(intent.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            prompt_texts.contains(&"first turn"),
+            "missing first prompt: {prompt_texts:?}"
+        );
+        assert!(
+            prompt_texts.contains(&"queued next"),
+            "drained follow-up must land as Prompt: {prompt_texts:?}"
+        );
+        assert!(events.iter().any(|e| {
+            matches!(
+                &e.payload,
+                EventPayload::Intent(intent) if intent.intent == UserPromptIntent::FollowUp
+                    && intent.text == "queued next"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn follow_up_drains_after_cancel() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let provider = Arc::new(MockProvider::scripted(
+            "slow-scripted",
+            "test-model",
+            [
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "still running ".repeat(200),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "drained turn".into(),
+                }],
+            ],
+        ));
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::with_test_provider(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider,
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("session creation")
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "long task".into(),
+                artifact: None,
+                intent: UserPromptIntent::Prompt,
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "after cancel".into(),
+                artifact: None,
+                intent: UserPromptIntent::FollowUp,
+            }),
+            IpcResponse::Status { .. }
+        ));
+
+        let cancel = harness.handle(IpcRequest::Cancel { session_id });
+        assert!(
+            matches!(
+                cancel,
+                IpcResponse::Status {
+                    status: RuntimeStatus::Running | RuntimeStatus::Cancelled,
+                    ..
+                }
+            ),
+            "cancel should finish first run and may start drained follow-up: {cancel:?}"
+        );
+
+        let mut saw_drained_prompt = false;
+        for _ in 0..50 {
+            let events = store.list(session_id).expect("events");
+            saw_drained_prompt = events.iter().any(|e| {
+                matches!(
+                    &e.payload,
+                    EventPayload::Intent(intent)
+                        if intent.intent == UserPromptIntent::Prompt
+                            && intent.text == "after cancel"
+                )
+            });
+            if saw_drained_prompt
+                && events.iter().any(|e| {
+                    matches!(
+                        e.payload,
+                        EventPayload::Run(crate::RunEvent::Cancelled { .. })
+                    )
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            saw_drained_prompt,
+            "cancel path must drain follow-up as Prompt"
+        );
+        let events = store.list(session_id).expect("events");
+        assert!(events.iter().any(|e| {
+            matches!(
+                e.payload,
+                EventPayload::Run(crate::RunEvent::Cancelled { .. })
+            )
+        }));
     }
 
     #[test]

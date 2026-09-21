@@ -7,6 +7,8 @@
 //!   active run exists for that session.
 //! - [`UserPromptIntent::FollowUp`] — enqueue text to run after the current
 //!   turn completes; accepted when the session exists (even with no active run).
+//!   Does **not** start a run while one is active (or when idle) — drain only
+//!   on run Completed/Cancelled via [`UserIntentRouter::take_follow_up_on_run_terminal`].
 //!
 //! # Policy / origin
 //!
@@ -14,13 +16,20 @@
 //! Clients still carry `origin=user|agent` separately; the model cannot
 //! self-grant `origin=user` or approval. This module only validates routing
 //! state (session / active run / queue) — Policy evaluation stays upstream.
+//! Queued follow-ups keep their submitted origin for the drained Prompt turn.
+//!
+//! # Cancel / replace race (session-run)
+//!
+//! [`take_follow_up_on_run_terminal`] clears `active_run_id` and dequeues at most
+//! once per matching terminal run. A second caller (Cancel IPC vs loop exit)
+//! sees a cleared/mismatched active run and returns `Ok(None)` — no double-fire.
+//! Full WorkflowEngine cancel/replace remains open.
 //!
 //! Multi-session fanout: explicit `session_ids` via [`UserIntentRouter::fanout`]
 //! — not broadcast-by-accident; each target routes independently; partial
 //! failure returns a per-session ok/err map.
 //!
-//! Still out of scope: LLM prompt rewriting, WorkflowEngine cancel/replace
-//! races / follow-up drain on run complete.
+//! Still out of scope: LLM prompt rewriting.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -115,10 +124,11 @@ struct SessionIntentState {
 
 /// Boring in-memory router for typed Prompt / Steer / FollowUp.
 ///
-/// ponytail: single-process HashMap only; WorkflowEngine cancel/replace and
-/// follow-up drain on run complete stay for a later slice. Fanout is local
-/// only (no cross-machine). Harness syncs `active_run_id` from the durable
-/// projection before each submit.
+/// ponytail: single-process HashMap only; WorkflowEngine-level cancel/replace
+/// stays open. Session-run follow-up drain is
+/// [`Self::take_follow_up_on_run_terminal`]. Fanout is local only (no
+/// cross-machine). Harness syncs `active_run_id` from the durable projection
+/// before each submit.
 #[derive(Debug, Default, Clone)]
 pub struct UserIntentRouter {
     sessions: HashMap<Uuid, SessionIntentState>,
@@ -191,6 +201,30 @@ impl UserIntentRouter {
             .ok_or(UserIntentError::UnknownSession(session_id))?
             .follow_ups
             .pop_front())
+    }
+
+    /// On run Completed/Cancelled: clear matching active run and dequeue one
+    /// follow-up to start as a Prompt turn (caller owns Policy / spawn).
+    ///
+    /// Empty queue → `Ok(None)`. If `active_run_id` is already cleared or
+    /// points at a different run (cancel raced with loop exit, or replace),
+    /// returns `Ok(None)` without popping — prevents double-fire.
+    pub fn take_follow_up_on_run_terminal(
+        &mut self,
+        session_id: Uuid,
+        finished_run_id: Uuid,
+    ) -> Result<Option<QueuedFollowUp>, UserIntentError> {
+        let state = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or(UserIntentError::UnknownSession(session_id))?;
+        match state.active_run_id {
+            Some(active) if active == finished_run_id => {
+                state.active_run_id = None;
+                Ok(state.follow_ups.pop_front())
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Fan out one intent to an explicit session id list.
@@ -520,5 +554,114 @@ mod tests {
                 ActionOrigin::Agent
             );
         }
+    }
+
+    #[test]
+    fn enqueue_during_run_drains_after_complete() {
+        let (mut router, sid) = session_router();
+        let run = Uuid::new_v4();
+        router.set_active_run(sid, Some(run)).unwrap();
+        router
+            .submit(UserIntentSubmission {
+                session_id: sid,
+                intent: UserPromptIntent::FollowUp,
+                text: "next turn".into(),
+                origin: ActionOrigin::User,
+            })
+            .expect("enqueue");
+        assert_eq!(router.follow_up_len(sid).unwrap(), 1);
+
+        let drained = router
+            .take_follow_up_on_run_terminal(sid, run)
+            .expect("drain");
+        let drained = drained.expect("queued item");
+        assert_eq!(drained.text, "next turn");
+        assert_eq!(drained.origin, ActionOrigin::User);
+        assert_eq!(router.follow_up_len(sid).unwrap(), 0);
+        assert_eq!(router.active_run_id(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn empty_queue_terminal_is_noop() {
+        let (mut router, sid) = session_router();
+        let run = Uuid::new_v4();
+        router.set_active_run(sid, Some(run)).unwrap();
+        assert!(
+            router
+                .take_follow_up_on_run_terminal(sid, run)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(router.active_run_id(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn cancel_path_drains_once_second_caller_noop() {
+        let (mut router, sid) = session_router();
+        let run = Uuid::new_v4();
+        router.set_active_run(sid, Some(run)).unwrap();
+        router
+            .submit(UserIntentSubmission {
+                session_id: sid,
+                intent: UserPromptIntent::FollowUp,
+                text: "after cancel".into(),
+                origin: ActionOrigin::User,
+            })
+            .unwrap();
+
+        let first = router
+            .take_follow_up_on_run_terminal(sid, run)
+            .unwrap()
+            .expect("cancel drain");
+        assert_eq!(first.text, "after cancel");
+
+        assert!(
+            router
+                .take_follow_up_on_run_terminal(sid, run)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(router.follow_up_len(sid).unwrap(), 0);
+    }
+
+    #[test]
+    fn mismatched_run_id_does_not_drain() {
+        let (mut router, sid) = session_router();
+        let active = Uuid::new_v4();
+        let stale = Uuid::new_v4();
+        router.set_active_run(sid, Some(active)).unwrap();
+        router
+            .submit(UserIntentSubmission {
+                session_id: sid,
+                intent: UserPromptIntent::FollowUp,
+                text: "keep queued".into(),
+                origin: ActionOrigin::User,
+            })
+            .unwrap();
+
+        assert!(
+            router
+                .take_follow_up_on_run_terminal(sid, stale)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(router.active_run_id(sid).unwrap(), Some(active));
+        assert_eq!(router.follow_up_len(sid).unwrap(), 1);
+    }
+
+    #[test]
+    fn steer_does_not_enqueue() {
+        let (mut router, sid) = session_router();
+        let run = Uuid::new_v4();
+        router.set_active_run(sid, Some(run)).unwrap();
+        router
+            .submit(UserIntentSubmission {
+                session_id: sid,
+                intent: UserPromptIntent::Steer,
+                text: "nudge only".into(),
+                origin: ActionOrigin::User,
+            })
+            .unwrap();
+        assert_eq!(router.follow_up_len(sid).unwrap(), 0);
     }
 }
