@@ -140,7 +140,7 @@ impetusd  — authoritative daemon
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Default daemon / CI use `NoCredentialResolver`. `CI` / `IMPETUS_NONINTERACTIVE` fail closed without Keychain GUI (#308). |
-| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Partial | Daemon IPC v6 `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI selects/displays via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). |
+| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Implemented | Daemon IPC `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI Shift+Tab/F4/slash via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
