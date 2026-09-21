@@ -15,9 +15,12 @@
 //! self-grant `origin=user` or approval. This module only validates routing
 //! state (session / active run / queue) — Policy evaluation stays upstream.
 //!
-//! Out of scope for this slice: LLM prompt rewriting, WorkflowEngine
-//! cancel/replace races, multi-session fanout (session_id may be shared later).
-//! IPC + minimal TUI selection land in #263.
+//! Multi-session fanout: explicit `session_ids` via [`UserIntentRouter::fanout`]
+//! — not broadcast-by-accident; each target routes independently; partial
+//! failure returns a per-session ok/err map.
+//!
+//! Still out of scope: LLM prompt rewriting, WorkflowEngine cancel/replace
+//! races / follow-up drain on run complete.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -87,7 +90,22 @@ pub enum UserIntentError {
     UnknownSession(Uuid),
     #[error("steer rejected: session {0} has no active run")]
     NoActiveRun(Uuid),
+    /// Fanout requires an explicit non-empty session id list.
+    #[error("fanout rejected: empty session id list")]
+    EmptyFanout,
 }
+
+/// Shared intent payload for [`UserIntentRouter::fanout`] (no session id —
+/// targets come from the explicit list).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserIntentFanout {
+    pub intent: UserPromptIntent,
+    pub text: String,
+    pub origin: ActionOrigin,
+}
+
+/// Per-session outcomes from [`UserIntentRouter::fanout`].
+pub type FanoutResults = HashMap<Uuid, Result<UserIntentAccepted, UserIntentError>>;
 
 #[derive(Debug, Clone, Default)]
 struct SessionIntentState {
@@ -98,8 +116,9 @@ struct SessionIntentState {
 /// Boring in-memory router for typed Prompt / Steer / FollowUp.
 ///
 /// ponytail: single-process HashMap only; WorkflowEngine cancel/replace and
-/// follow-up drain on run complete stay for a later slice. Harness syncs
-/// `active_run_id` from the durable projection before each submit.
+/// follow-up drain on run complete stay for a later slice. Fanout is local
+/// only (no cross-machine). Harness syncs `active_run_id` from the durable
+/// projection before each submit.
 #[derive(Debug, Default, Clone)]
 pub struct UserIntentRouter {
     sessions: HashMap<Uuid, SessionIntentState>,
@@ -172,6 +191,32 @@ impl UserIntentRouter {
             .ok_or(UserIntentError::UnknownSession(session_id))?
             .follow_ups
             .pop_front())
+    }
+
+    /// Fan out one intent to an explicit session id list.
+    ///
+    /// Rejects an empty list with [`UserIntentError::EmptyFanout`]. Each
+    /// target is routed through [`Self::submit`] independently — one session's
+    /// error does not abort the others. Policy / origin stay per submission.
+    pub fn fanout(
+        &mut self,
+        fanout: UserIntentFanout,
+        session_ids: &[Uuid],
+    ) -> Result<FanoutResults, UserIntentError> {
+        if session_ids.is_empty() {
+            return Err(UserIntentError::EmptyFanout);
+        }
+        let mut results = FanoutResults::with_capacity(session_ids.len());
+        for &session_id in session_ids {
+            let outcome = self.submit(UserIntentSubmission {
+                session_id,
+                intent: fanout.intent,
+                text: fanout.text.clone(),
+                origin: fanout.origin,
+            });
+            results.insert(session_id, outcome);
+        }
+        Ok(results)
     }
 
     /// Validate and apply a typed intent.
@@ -372,5 +417,108 @@ mod tests {
             router.follow_ups(sid).unwrap().front().unwrap().origin,
             ActionOrigin::Agent
         );
+    }
+
+    #[test]
+    fn fanout_rejects_empty_session_list() {
+        let mut router = UserIntentRouter::new();
+        let err = router
+            .fanout(
+                UserIntentFanout {
+                    intent: UserPromptIntent::Prompt,
+                    text: "hi".into(),
+                    origin: ActionOrigin::User,
+                },
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(err, UserIntentError::EmptyFanout);
+    }
+
+    #[test]
+    fn fanout_routes_each_session_independently() {
+        let mut router = UserIntentRouter::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        router.open_session(a);
+        router.open_session(b);
+        let run = Uuid::new_v4();
+        router.set_active_run(a, Some(run)).unwrap();
+        // b has no active run — Steer must fail only for b.
+
+        let results = router
+            .fanout(
+                UserIntentFanout {
+                    intent: UserPromptIntent::Steer,
+                    text: "nudge all".into(),
+                    origin: ActionOrigin::User,
+                },
+                &[a, b],
+            )
+            .expect("non-empty fanout");
+
+        assert_eq!(
+            results.get(&a).unwrap().as_ref().unwrap().active_run_id,
+            Some(run)
+        );
+        assert_eq!(
+            results.get(&b).unwrap().as_ref().unwrap_err(),
+            &UserIntentError::NoActiveRun(b)
+        );
+    }
+
+    #[test]
+    fn fanout_partial_failure_does_not_abort_others() {
+        let mut router = UserIntentRouter::new();
+        let known = Uuid::new_v4();
+        let unknown = Uuid::new_v4();
+        router.open_session(known);
+
+        let results = router
+            .fanout(
+                UserIntentFanout {
+                    intent: UserPromptIntent::FollowUp,
+                    text: "later".into(),
+                    origin: ActionOrigin::User,
+                },
+                &[unknown, known],
+            )
+            .expect("non-empty fanout");
+
+        assert_eq!(
+            results.get(&unknown).unwrap().as_ref().unwrap_err(),
+            &UserIntentError::UnknownSession(unknown)
+        );
+        let accepted = results.get(&known).unwrap().as_ref().unwrap();
+        assert_eq!(accepted.intent, UserPromptIntent::FollowUp);
+        assert_eq!(accepted.follow_up_position, Some(0));
+        assert_eq!(router.follow_up_len(known).unwrap(), 1);
+    }
+
+    #[test]
+    fn fanout_prompt_preserves_origin_per_session() {
+        let mut router = UserIntentRouter::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        router.open_session(a);
+        router.open_session(b);
+
+        let results = router
+            .fanout(
+                UserIntentFanout {
+                    intent: UserPromptIntent::Prompt,
+                    text: "hello".into(),
+                    origin: ActionOrigin::Agent,
+                },
+                &[a, b],
+            )
+            .unwrap();
+
+        for sid in [a, b] {
+            assert_eq!(
+                results.get(&sid).unwrap().as_ref().unwrap().origin,
+                ActionOrigin::Agent
+            );
+        }
     }
 }
