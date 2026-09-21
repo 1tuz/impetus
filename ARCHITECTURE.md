@@ -42,6 +42,8 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
 - **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
   recovery.
+- **ToolOrchestrator** — JSON Schema arg validation (`tool_schema`) before
+  policy/sandbox/exec; provider HTTP `tools` field not wired yet (prompt catalog).
 
 Security decisions stay in the kernel, not in ordinary plugins.
 
@@ -71,13 +73,14 @@ impetusd  — authoritative daemon
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
-| Process stdout/stderr → durable artifacts | Missing | `execution/process.rs` (memory-bounded only) |
+| Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
 | AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests |
 | Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
 | Native Anthropic Messages tool-call SSE | Partial | `anthropic_provider.rs` exported; not default daemon path |
 | OpenAI Responses API | Missing | No `/v1/responses` client |
 | Legacy OpenAI-compatible text stream | Implemented | `openai_compat_adapter.rs` (still in tree; not default) |
-| Provider `tools` / JSON Schema arg validation | Missing | Catalog stubs in context optimizer only |
+| JSON Schema tool-arg validation (before policy) | Implemented | `tool_schema.rs` + ToolOrchestrator gate |
+| Provider HTTP `tools` field | Planned | Prompt-only catalog today |
 | Measured usage → budget accounting | Implemented | `record_turn_with_usage` in agent loop |
 | Context HOT/WARM/COLD + lazy descriptions | Implemented | `context_optimizer.rs`, wired in `harness_api` |
 | ContextBuilder (chunked artifact summarize) | Implemented | `context_builder.rs` |

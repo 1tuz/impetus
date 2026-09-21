@@ -34,16 +34,20 @@ Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.
 
 ### 2. Mandatory tool argument validation
 
-- [ ] Validate model tool args against tool JSON Schema **before** policy/execution
-- [ ] Reject malformed args without reaching executor (`{}` silent fallback banned)
-- [ ] Send provider `tools` schemas where the protocol supports them (or document prompt-only catalog honestly)
+- [x] Validate model tool args against tool JSON Schema **before** policy/execution
+      (`tool_schema::validate_tool_arguments` in `ToolOrchestrator::normalize_tool_call`)
+- [x] Reject malformed args without reaching executor (typed `ToolArgError` /
+      `OrchestratorError::InvalidArguments`; no silent coercion at the schema gate)
+- [ ] Provider HTTP `tools` schemas — Planned; today prompt-only catalog +
+      `builtin_tool_schemas()` for a future wire-up
 
 ### 3. Single durable ArtifactStore semantics
 
 - [x] Doctor text: distinguish path-scope sandbox vs Seatbelt process wrap
 - [x] Wire measured provider usage into `BudgetChecker::record_usage` via
       `record_turn_with_usage`
-- [ ] Process/shell stdout/stderr → durable artifact when large
+- [x] Process/shell stdout/stderr → durable artifact when large
+      (`ProcessExecutionRequest::execute` + preview/`ArtifactRef` on bash path)
 - [x] Ephemeral `AttachmentStore` for approval previews (keep; document as non-durable)
 - [x] `DurableArtifactStore` for truncated tool/web/paste bodies
 
