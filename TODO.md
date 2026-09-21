@@ -295,7 +295,10 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 ### 10. Anti-sprawl
 
-- [ ] Keep built-in agent/skill/command set small; detect unused/duplicates
+- [x] Keep built-in agent/skill/command set small; detect unused/duplicates
+      (`builtin_ids`: shipped inventory = 4 `SubagentRole` agents; no first-party
+      skills/commands in core; `find_duplicate_ids` + doctor `builtin_ids` probe;
+      unused cross-ref stub always empty — Planned) (#260)
 - [ ] No features solely for vendor parity or feature-count optics
 
 ### 11. LSP

@@ -116,6 +116,9 @@ pub async fn run_diagnostics(socket_path: &str, json: bool, probe_network: bool)
     // Probe: impetus/impetusd versions
     probe_versions(&mut report);
 
+    // Offline built-in agent/skill/command id hygiene (anti-sprawl).
+    probe_builtin_ids(&mut report);
+
     // Offline capability matrix (ARCHITECTURE-aligned); refreshed after daemon diagnostics.
     probe_capability_truth(&mut report, &[]);
 
@@ -199,6 +202,37 @@ fn probe_versions(report: &mut DoctorReport) {
         "impetusd_version",
         "Requires daemon connection",
     ));
+}
+
+fn probe_builtin_ids(report: &mut DoctorReport) {
+    let audit = impetus_core::audit_shipped_builtin_ids();
+    let details = serde_json::to_value(&audit).unwrap_or_default();
+    if audit.ok() {
+        report.add(
+            ProbeResult::ok(
+                "builtin_ids",
+                format!(
+                    "Shipped built-in ids unique ({} entries; unused-detect stub empty)",
+                    audit.entries.len()
+                ),
+            )
+            .with_details(details),
+        );
+    } else {
+        let ids: Vec<_> = audit
+            .duplicates
+            .iter()
+            .map(|d| format!("{}:{}", d.kind.as_str(), d.id))
+            .collect();
+        report.add(
+            ProbeResult::error(
+                "builtin_ids",
+                format!("Duplicate built-in id(s): {}", ids.join(", ")),
+                "Remove duplicate registrations from shipped_builtin_ids / sources",
+            )
+            .with_details(details),
+        );
+    }
 }
 
 fn probe_socket(report: &mut DoctorReport, socket_path: &str) {
@@ -739,6 +773,26 @@ mod tests {
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));
         assert!(!blob.to_lowercase().contains("password"));
+    }
+
+    #[test]
+    fn doctor_json_includes_builtin_ids_probe() {
+        let mut report = DoctorReport::new();
+        probe_builtin_ids(&mut report);
+
+        let json = serde_json::to_value(&report).expect("serialize");
+        let probes = json["probes"].as_array().expect("probes");
+        let builtin = probes
+            .iter()
+            .find(|probe| probe["name"] == "builtin_ids")
+            .expect("builtin_ids probe");
+        assert_eq!(builtin["status"], "OK");
+        assert_eq!(builtin["details"]["duplicates"], serde_json::json!([]));
+        assert_eq!(builtin["details"]["unused_stub"], serde_json::json!([]));
+        let entries = builtin["details"]["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 4);
+        let blob = json.to_string();
+        assert!(!blob.contains("sk-"));
     }
 
     #[test]
