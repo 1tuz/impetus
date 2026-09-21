@@ -35,6 +35,39 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   → ExtensionGateway
 ```
 
+### Orchestration stack (P1)
+
+In-memory orchestration today — recipes, role schedule handles, and worktree
+lifecycle. Not a live multi-process swarm.
+
+```mermaid
+flowchart TB
+  subgraph replaceable [Replaceable orchestration]
+    WE["WorkflowEngine<br/>recipes Feature/Bug/Refactor"]
+    AS["InMemoryAgentScheduler<br/>role schedule id / result slot"]
+    WT["WorktreeManager<br/>create/resume/stop/diff/merge"]
+  end
+  WE -->|"begin_step_with_scheduler<br/>complete_step_with_scheduler"| AS
+  WE -.->|"Build-role binding<br/>(create_for_role)"| WT
+  AS -.->|"Planned: live spawn"| Spawn["Child process / PTY"]
+  WT -->|"enforce_write → SandboxScope"| SB["Sandbox admit"]
+```
+
+Module links:
+
+- [`workflow_engine.rs`](crates/impetus-core/src/workflow_engine.rs) —
+  step order, budgets, retry stub, checkpoints; scheduler hooks on begin/complete
+- [`agent_scheduler.rs`](crates/impetus-core/src/agent_scheduler.rs) —
+  `InMemoryAgentScheduler` (#253)
+- [`worktree_manager.rs`](crates/impetus-core/src/worktree_manager.rs) —
+  durable ownership + Build-role sandbox binding
+- Supporting: [`subagent_metadata.rs`](crates/impetus-core/src/subagent_metadata.rs),
+  [`child_concurrency.rs`](crates/impetus-core/src/child_concurrency.rs),
+  [`child_result_store.rs`](crates/impetus-core/src/child_result_store.rs)
+
+**Still Planned / open on this stack:** live agent process spawn; WorkflowEngine
+cancel/replace wired to session-run intents; cross-machine orchestration.
+
 - **AgentScheduler** — schedules agent **roles** (Explore / Research / Build / Review)
   with structured metadata and concurrency caps. Role enum +
   [`ChildRunMetadata`](crates/impetus-core/src/subagent_metadata.rs) validation
@@ -131,18 +164,45 @@ impetusd  — authoritative daemon
 
 ## Request path
 
-```text
-Client request
-  → IPC negotiate
-  → Typed user intent (Prompt | Steer | FollowUp) — routing only; no origin/policy bypass
-  → Policy (origin + ActionKind)
-  → NeedsApproval? → typed approval IPC
-  → Sandbox admit (path/network scope)
-  → Capability / EffectSeam
-  → Execution
-  → Durable observation (+ ArtifactRef when large)
-  → Model / client events
+Typed intent routes first; mutating work still hits the kernel gate. Intent
+routing never rewrites `origin` or skips Policy.
+
+```mermaid
+flowchart TD
+  Client["Client / TUI / adapter"] --> IPC["IPC negotiate"]
+  IPC --> Intent{"UserPromptIntent<br/>Prompt | Steer | FollowUp"}
+  Intent -->|"Prompt: start / continue"| Gate
+  Intent -->|"Steer: needs active run"| Gate
+  Intent -->|"FollowUp: enqueue"| Q["Follow-up queue<br/>per session"]
+  Q -->|"drain on Completed/Cancelled<br/>at-most-once"| PromptTurn["Prompt turn<br/>origin preserved"]
+  PromptTurn --> Gate
+  Fan["fanout: explicit session_ids"] -->|"per-session ok/err map"| Intent
+  subgraph gate [Policy → Approval → Sandbox]
+    Gate["PolicyEngine<br/>origin + ActionKind"]
+    Gate -->|Deny| Stop["Fail closed"]
+    Gate -->|Allow| SB
+    Gate -->|NeedsApproval| Appr["Approval IPC<br/>ApprovalDetail v1"]
+    Appr -->|user accept| SB["Sandbox admit<br/>path / network scope"]
+    Appr -->|reject| Stop
+  end
+  SB --> Cap["Capability / EffectSeam"]
+  Cap --> Exec["Execution"]
+  Exec --> Obs["Durable observation<br/>+ ArtifactRef when large"]
+  Obs --> Events["Model / client events"]
 ```
+
+Module links:
+
+- [`user_intent.rs`](crates/impetus-core/src/user_intent.rs) —
+  `UserPromptIntent`, `UserIntentRouter`, follow-up drain, `fanout`
+- [`steer_rewrite.rs`](crates/impetus-core/src/steer_rewrite.rs) —
+  `SteerRewrite` seam (Partial, #285 — passthrough + mock; no live provider)
+- [`policy.rs`](crates/impetus-core/src/policy.rs) —
+  `PolicyEngine` / `PolicyDecision` (`Deny` | `Allow` | `NeedsApproval`)
+- [`policy_config.rs`](crates/impetus-core/src/policy_config.rs) —
+  JSON overrides (Partial — see [Policy customization](#policy-customization-and-approval-ui-contracts-9))
+- [`approval.rs`](crates/impetus-core/src/approval.rs) —
+  `ApprovalDetail` IPC UI contract (`impetus.approval_detail.v1`)
 
 Steer targets an active run; FollowUp enqueues after the current turn. In-memory
 router lives in `user_intent`; IPC `Prompt.intent` + durable `IntentEvent.intent`
@@ -152,8 +212,11 @@ Completed/Cancelled, harness drains one queued FollowUp into a Prompt turn
 takes an explicit `session_ids` list through `UserIntentRouter::fanout` (#275) —
 empty list rejected; each target routes independently with a per-session ok/err
 map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
-(`SteerRewrite` / passthrough + mock; harness hook on accept) is Partial (#285);
-live provider wire and WorkflowEngine cancel/replace remain open.
+(`SteerRewrite` / passthrough + mock; harness hook on accept) is Partial (#285).
+
+**Still Planned / open on this path:** live provider wire for Steer rewrite;
+WorkflowEngine cancel/replace on intent; fanout over IPC / cross-machine;
+Seatbelt wired into process exec (spike only today).
 
 ## Storage
 
