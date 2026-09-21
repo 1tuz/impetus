@@ -235,7 +235,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [ ] Large paste: bracketed paste in TUI
 - [ ] Large paste: detection threshold + compact composer display
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
-- [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
+- [x] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [ ] Context Builder: read large artifact in parts, summarize within token budget
 
 ---

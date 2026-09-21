@@ -270,6 +270,10 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::ResolveApproval { .. } => "resolve_approval",
         IpcRequest::GetAttachment { .. } => "get_attachment",
         IpcRequest::GetApprovalDetail { .. } => "get_approval_detail",
+        IpcRequest::BeginArtifactUpload { .. }
+        | IpcRequest::AppendArtifactChunk { .. }
+        | IpcRequest::FinishArtifactUpload { .. }
+        | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
         IpcRequest::Diagnostics => "diagnostics",
     }
 }

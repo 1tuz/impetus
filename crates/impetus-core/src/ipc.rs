@@ -3,7 +3,7 @@ use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 4;
+pub const IPC_VERSION: u16 = 5;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
@@ -20,6 +20,7 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "get_approval_detail",
     "context",
     "diagnostics",
+    "artifact_upload",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +90,27 @@ pub enum IpcRequest {
         session_id: Uuid,
         approval_id: Uuid,
     },
+    /// Start a chunked upload into the durable artifact store.
+    BeginArtifactUpload {
+        session_id: Uuid,
+        /// Optional declared total size; rejected early if over the hard cap.
+        declared_bytes: Option<usize>,
+        content_type: Option<String>,
+    },
+    /// Append one base64-encoded chunk. `seq` must be 0, 1, 2, …
+    AppendArtifactChunk {
+        upload_id: Uuid,
+        seq: u64,
+        data_b64: String,
+    },
+    /// Commit assembled bytes into `ArtifactStore` and return `ArtifactRef`.
+    FinishArtifactUpload {
+        upload_id: Uuid,
+    },
+    /// Drop a pending upload without storing.
+    AbortArtifactUpload {
+        upload_id: Uuid,
+    },
     Diagnostics,
 }
 
@@ -147,6 +169,23 @@ pub enum IpcResponse {
     },
     Diagnostics {
         subsystems: Box<crate::SubsystemHealth>,
+    },
+    ArtifactUploadBegun {
+        upload_id: Uuid,
+        max_bytes: usize,
+        max_chunk_bytes: usize,
+    },
+    ArtifactChunkAccepted {
+        upload_id: Uuid,
+        bytes_received: usize,
+        next_seq: u64,
+    },
+    /// Durable content-addressed reference; body never enters this response.
+    ArtifactStored {
+        artifact: crate::DurableArtifactRef,
+    },
+    ArtifactUploadAborted {
+        upload_id: Uuid,
     },
     Incompatible {
         supported_version: u16,
@@ -218,6 +257,40 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<IpcRequest>(&serde_json::to_string(&create).unwrap()).unwrap(),
             create
+        );
+    }
+
+    #[test]
+    fn artifact_upload_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        let upload_id = Uuid::new_v4();
+        let begin = IpcRequest::BeginArtifactUpload {
+            session_id,
+            declared_bytes: Some(1024),
+            content_type: Some("text/plain".into()),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&begin).unwrap()).unwrap(),
+            begin
+        );
+        let append = IpcRequest::AppendArtifactChunk {
+            upload_id,
+            seq: 0,
+            data_b64: "aGVsbG8=".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&append).unwrap()).unwrap(),
+            append
+        );
+        let stored = IpcResponse::ArtifactStored {
+            artifact: crate::DurableArtifactRef {
+                id: "abc".into(),
+                byte_count: 5,
+            },
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&stored).unwrap()).unwrap(),
+            stored
         );
     }
 }
