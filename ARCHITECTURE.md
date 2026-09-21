@@ -157,7 +157,7 @@ impetusd  — authoritative daemon
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
-| ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
+| ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | PR: fmt/clippy/`--lib --bins` on macOS; integration = nightly/manual |
@@ -326,7 +326,6 @@ Honest list (no new runtime in this docs slice):
 
 Docs index for the shipped contracts: this section (#286).
 
-
 ## Zap path vs standalone CLI/TUI (#5)
 
 Classic issue #5: standalone CLI/TUI and Zap integration. This section indexes
@@ -384,6 +383,84 @@ Completed.
 
 Docs index for Zap honesty: this section (#290).
 
+## ACP production hardening checklist (#66)
+
+Classic issue #66: production-ready ACP path for external coding agents via the
+official Rust SDK. This section indexes honesty only — no new runtime in this
+docs slice (#294).
+
+**Boundary (AGENTS.md):** ACP is the protocol between Impetus and an external
+coding-agent CLI, not a universal provider API and not authorization storage.
+Agent owns login; Impetus owns Policy, durable session, and orchestration.
+`agent-client-protocol = 2.x` is the **SDK crate major**. Initialize uses
+stable ACP **protocol v1** (`ProtocolVersion::V1`). Draft ACP protocol v2
+features are **out of scope** until a separate RFC and compatibility tests
+exist — do not enable them because the SDK crate is 2.x.
+
+### Current path
+
+```text
+impetusd --acp-profile PATH
+  → AcpProfile (agent-owned auth only)
+  → AcpAgentConfig (command + args + non-secret env)
+  → Harness::with_acp_gateway
+  → AcpAdapter (ModelProvider)
+  → AcpGatewayV2 (official SDK: initialize → authenticate → session/new
+       → prompt → session/update stream → request_permission → cancel)
+```
+
+Pointers:
+
+- Crate: [`crates/impetus-acp-gateway`](crates/impetus-acp-gateway/)
+  (`gateway_v2.rs`, `profile.rs`; legacy custom JSON-RPC `gateway.rs` still
+  in tree, not the production path)
+- Adapter: [`crates/impetus-core/src/acp_adapter.rs`](crates/impetus-core/src/acp_adapter.rs)
+- Daemon flag: `impetusd --acp-profile PATH` in
+  [`crates/impetusd/src/main.rs`](crates/impetusd/src/main.rs)
+- Deterministic (no secrets / no external binary): unit tests in
+  `gateway_v2.rs` + `profile.rs`; crate tests
+  [`tests/deterministic_mock_test.rs`](crates/impetus-acp-gateway/tests/deterministic_mock_test.rs)
+- Live smoke (ignored, needs installed agent + agent-owned creds):
+  [`tests/acp_v2_smoke.rs`](crates/impetus-acp-gateway/tests/acp_v2_smoke.rs)
+- Manual mock binary notes: [`TESTING.md`](crates/impetus-acp-gateway/TESTING.md)
+
+### Checklist: Implemented vs Partial vs Planned
+
+| Item | Status | Evidence / gap |
+| --- | --- | --- |
+| Official SDK primitives (`AcpAgent`, `Client`, `ConnectionTo`, `AcpAgentConfig`) | Implemented | `AcpGatewayV2` on `agent-client-protocol` 2.0.0 |
+| Stable ACP protocol v1 initialize | Implemented | `InitializeRequest::new(ProtocolVersion::V1)` |
+| Profile: absolute `command` + `args` + allow-listed non-secret `env` | Implemented | `AcpProfile::validate` / `to_agent_config` |
+| Agent-owned auth only (no Keychain/OAuth/raw token on ACP profile) | Implemented | `CredentialStrategy::AgentOwned` required; secret env names rejected |
+| Explicit `auth_method_id` (never `auth_methods.first()`) | Implemented | `select_auth_method`; missing/unsupported → `Incompatible` / error |
+| `--acp-profile` daemon wiring → `ModelProvider` | Implemented | `Harness::with_acp_gateway` + `AcpAdapter` |
+| Stream via `session/update` → harness `StreamEvent` | Partial | Text deltas wired; tool-use / status mostly logged, not full tool orchestration |
+| Cancel via ACP `session/cancel` | Partial | `cancel_active_session` + adapter cancel path; restart/reconnect semantics thin |
+| Permission → Policy → ACP option | Partial | Allow/Deny mapped; `NeedsApproval` still hard-denies (no durable approval broker yet) |
+| Explicit `GatewayState::Incompatible` | Implemented | Auth / protocol mismatch sets incompatible; not a silent continue |
+| Deterministic mock / CI tests (no secrets) | Partial | Profile/auth/cancel unit coverage; deterministic integration is type/state-level, not full spawned mock agent |
+| Live smoke (Codex ACP / Grok Build / peers) | Partial | `acp_v2_smoke` ignored; depends on installed CLI + agent-owned auth |
+| ACP registry / discovery / version probing | Planned | Backends chosen by installed version + discovery — not assumed CLI flags |
+| Health / status surface for ACP backend | Planned | `AcpAdapter::health` returns `Unknown` |
+| Durable approval broker for ACP `NeedsApproval` | Planned | Adapter TODO; must stay on Policy → approval IPC, never self-approve |
+| Redaction / export guarantees specific to ACP payloads | Planned | Kernel redaction exists; ACP-specific export audit still open |
+| Drop or quarantine legacy custom JSON-RPC gateway | Planned | `gateway.rs` + older mock path remain; V2 is the intended path |
+| Draft ACP **protocol** v2 features | Out of scope | Requires RFC + compatibility tests; SDK 2.x ≠ protocol v2 |
+
+### Remaining gaps for #66 (honest)
+
+- Wire ACP `NeedsApproval` through durable approval IPC (not Deny shortcut)
+- Richer stream mapping (tool-use into ToolOrchestrator / durable events)
+- Restart / disconnect: durable session preserved; never report unknown as
+  `Completed`
+- Registry/discovery so Codex/Claude/Cursor/Gemini/Qwen support tracks
+  installed agent capability, not hard-coded flags
+- Stronger deterministic mock agent process tests in CI
+- Ubuntu / live smoke slices tracked separately (e.g. #293) — not this docs PR
+
+Docs index for the checklist: this section (#294). Runtime hardening code
+remains under classic #66.
+
 ## Canonical schema registry
 
 Shared module [`schema`](crates/impetus-core/src/schema.rs):
@@ -412,6 +489,7 @@ Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of sco
 - Short phase narrative: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Kernel invariants: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
 - Agent rules: [AGENTS.md](AGENTS.md)
+- ACP hardening checklist (#66): [this file § ACP](#acp-production-hardening-checklist-66)
 - TUI notes: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
 - Zap path honesty (#5): § Zap path vs standalone CLI/TUI above
 - Design references (principles, not copy claims): [docs/REFERENCES.md](docs/REFERENCES.md)

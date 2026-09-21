@@ -26,7 +26,7 @@ impetus ──HarnessClient──► impetusd ──► impetus-core
 | Client contract | `crates/impetus-client` | `HarnessClient`, in-memory and Unix transports. |
 | Second CLI | `crates/impetus-cli` | Supported for its workflows; `impetus` is the fuller surface. |
 | Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental baseline. |
-| ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. |
+| ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. Honesty checklist: [ACP production hardening (#66)](../ARCHITECTURE.md#acp-production-hardening-checklist-66). |
 
 Harness (`impetusd`) owns SQLite, policy, Keychain lookup, execution authority,
 authoritative session state. Client disconnect preserves durable history; unknown
@@ -70,5 +70,8 @@ and approval UI contracts (#9)** in [ARCHITECTURE.md](../ARCHITECTURE.md)
 | Topic | Document |
 | --- | --- |
 | Module Runtime, invariants | [ARCHITECTURE.md](../ARCHITECTURE.md) |
+| ACP Implemented / Partial / Planned | [ARCHITECTURE.md § ACP checklist (#66)](../ARCHITECTURE.md#acp-production-hardening-checklist-66) |
+| Zap path vs CLI/TUI | [ARCHITECTURE.md § Zap path (#5)](../ARCHITECTURE.md#zap-path-vs-standalone-clitui-5) |
+| PolicyConfig + ApprovalDetail | [ARCHITECTURE.md § Policy customization (#9)](../ARCHITECTURE.md#policy-customization-and-approval-ui-contracts-9) |
 | Phases and gates | [ROADMAP.md](ROADMAP.md) |
 | Executable tasks | [TODO.md](../TODO.md) |
