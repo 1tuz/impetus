@@ -167,7 +167,7 @@ See [Design references](docs/REFERENCES.md).
 - [Architecture](ARCHITECTURE.md) — kernel invariants, module model, client/daemon split.
 - [Roadmap](docs/ROADMAP.md) — phases and gates.
 - [TODO](TODO.md) — executable task list.
-- [TUI reference audit](docs/TUI_REFERENCE.md) — JCode/Codex UX decisions (planned).
+- [TUI reference audit](docs/TUI_REFERENCE.md) — JCode/Codex UX decisions (audited; SHA pinned).
 - [References](docs/REFERENCES.md) — design lineage, protocols, and libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks and CI.

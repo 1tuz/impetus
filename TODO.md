@@ -242,9 +242,9 @@ The baseline vertical is working. The remaining items harden and extend it.
 
 ## Phase 7 — TUI (standalone `impetus`)
 
-Reference audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (audit not started). JCode = UX reference only.
+Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SHA; decisions locked). JCode = UX reference only; TUI uses `HarnessClient` only.
 
-- [ ] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
+- [x] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
 - [ ] Ratatui + Crossterm spike / evaluation
 - [ ] TUI shell: `HarnessClient` only, no core imports
 - [ ] Composer (single-line + multiline mode)

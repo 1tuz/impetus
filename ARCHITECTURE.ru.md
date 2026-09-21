@@ -464,9 +464,9 @@ concern.
 ### TUI strategy
 
 JCode ([1jehuang/jcode](https://github.com/1jehuang/jcode)) — primary **UX
-reference** для standalone TUI после source audit; не runtime dependency и не
-fork source. Audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
-(**not started**).
+reference** для standalone TUI; не runtime dependency и не fork source.
+Source audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (SHA pinned;
+`ADAPT | REIMPLEMENT | SKIP` locked). TUI → только `HarnessClient`.
 
 ```text
 JCode  → reference / UX patterns
