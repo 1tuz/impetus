@@ -191,6 +191,7 @@ impl CapabilityTruthReport {
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "mcp_live_tools_in_loop": true,
+                        "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": false,
                     })),
                 ),

@@ -30,6 +30,7 @@ pub mod events;
 pub mod execution;
 pub mod extension_adapter;
 pub mod extension_compat;
+pub mod extension_lifecycle;
 pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
@@ -148,6 +149,9 @@ pub use extension_compat::{
     CommandArgument, CommandHandler, CompatibilityMatrix, ExtensionSource, ImportCapability,
     ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities, McpModule,
     McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
+};
+pub use extension_lifecycle::{
+    ExtensionInstallIntent, InstallPlan, PlanError, ResolutionPlan, plan_install,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{

@@ -141,7 +141,9 @@ Lifecycle:
 Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
 ```
 
-- [ ] Dry-run plan before filesystem mutations where practical
+- [x] Dry-run plan before filesystem mutations where practical
+      (`extension_lifecycle::plan_install`: ResolutionPlan + InstallPlan for
+      Skill / MCP config intents; no write; create vs modify classification)
 - [ ] CLI/IPC equivalents: `extension plan | install | doctor | repair | remove`
 - [ ] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
