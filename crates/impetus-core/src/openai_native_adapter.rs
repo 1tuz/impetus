@@ -1,4 +1,5 @@
-//! Credential-resolving adapter for native [`OpenAiProvider`] (Chat Completions SSE).
+//! Credential-resolving adapter for native [`OpenAiProvider`]
+//! (Chat Completions by default; Responses when profile opts in).
 
 use crate::{
     CredentialResolver, ModelProvider, OpenAiProvider, ProviderError, ProviderHealth,

@@ -29,10 +29,12 @@ Gate before P1 product features.
 - [x] Explicit `ProviderProtocolAdapter` trait boundary (shared assembler)
       (`provider_protocol_adapter.rs`: trait + `ToolCallAssembler`; used by
       `openai_provider.rs` + `anthropic_provider.rs`)
-- [ ] OpenAI Responses API (`/v1/responses`) — Planned (after Chat Completions production)
+- [x] OpenAI Responses API (`/v1/responses`) — Partial (opt-in via profile
+      `openai_http_api=responses`; Chat Completions remains default; shared
+      `ToolCallAssembler`; fixture SSE unit tests)
 
-Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.rs`,
-`provider_protocol_adapter.rs`, `impetusd` `--provider-profile`.
+Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `openai_responses.rs`,
+`anthropic_provider.rs`, `provider_protocol_adapter.rs`, `impetusd` `--provider-profile`.
 
 ### 2. Mandatory tool argument validation
 

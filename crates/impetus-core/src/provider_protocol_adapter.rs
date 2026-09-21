@@ -3,7 +3,8 @@
 //! Target shape from ARCHITECTURE: `ProviderProtocolAdapter` → `StreamEvent`
 //! → tool-call assembler → schema validation → policy → execution.
 //!
-//! Out of scope here: OpenAI Responses API (`/v1/responses`) — separate item.
+//! OpenAI Responses API (`/v1/responses`) plugs in via the same assembler
+//! (`openai_responses.rs` + opt-in `OpenAiHttpApi::Responses`).
 
 use crate::{ModelProvider, ProviderError, StreamEvent};
 use std::collections::HashMap;

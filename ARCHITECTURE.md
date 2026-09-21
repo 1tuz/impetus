@@ -78,7 +78,7 @@ impetusd  — authoritative daemon
 | AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests |
 | Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
 | Native Anthropic Messages tool-call SSE | Partial | `anthropic_provider.rs` exported; not default daemon path |
-| OpenAI Responses API | Missing | No `/v1/responses` client |
+| OpenAI Responses API | Partial | Opt-in `openai_http_api=responses` SSE subset; not production default |
 | Legacy OpenAI-compatible text stream | Implemented | `openai_compat_adapter.rs` (still in tree; not default) |
 | JSON Schema tool-arg validation (before policy) | Implemented | `tool_schema.rs` + ToolOrchestrator gate |
 | Provider HTTP `tools` field | Implemented | OpenAI + Anthropic from `builtin_tool_schemas()` |
@@ -132,7 +132,8 @@ Production daemon defaults to Mock, or `--provider-profile` → **native** OpenA
 Chat Completions SSE (`OpenAiProvider` + Keychain resolver) with tool-call
 assembly. Legacy text-only OpenAI-compatible adapter remains in-tree for
 compatibility but is not the default daemon wiring. Anthropic Messages parser
-is exported; Responses API is Planned.
+is exported. Responses API is Partial (opt-in profile field
+`openai_http_api=responses`; Chat Completions stays default).
 
 Target shape:
 

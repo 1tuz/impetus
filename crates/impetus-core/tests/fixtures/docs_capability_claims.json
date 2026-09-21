@@ -49,6 +49,15 @@
       }
     },
     {
+      "id": "openai_responses_api",
+      "level": "PARTIAL",
+      "details": {
+        "production_default": false,
+        "daemon_default": "chat_completions",
+        "opt_in": "openai_http_api=responses"
+      }
+    },
+    {
       "id": "extension_runtime",
       "level": "PARTIAL",
       "details": {

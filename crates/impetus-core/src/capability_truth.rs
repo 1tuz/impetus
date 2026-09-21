@@ -149,6 +149,17 @@ impl CapabilityTruthReport {
                     })),
                 ),
                 entry(
+                    "openai_responses_api",
+                    CapabilityLevel::Partial,
+                    "OpenAI Responses SSE path exists (opt-in openai_http_api=responses); Chat Completions remains daemon default",
+                    Some(serde_json::json!({
+                        "library": "openai_responses + openai_provider",
+                        "daemon_default": "chat_completions",
+                        "opt_in": "openai_http_api=responses",
+                        "production_default": false,
+                    })),
+                ),
+                entry(
                     "extension_import",
                     CapabilityLevel::Implemented,
                     "Import adapters for Skills/MCP/Claude/Codex/Cursor/Plugins",
@@ -215,6 +226,15 @@ mod tests {
             .expect("openai native");
         assert_eq!(native.level, CapabilityLevel::Partial);
 
+        let responses = report
+            .entry("openai_responses_api")
+            .expect("openai responses");
+        assert_eq!(responses.level, CapabilityLevel::Partial);
+        assert_eq!(
+            responses.details.as_ref().unwrap()["production_default"],
+            false
+        );
+
         let ext_rt = report.entry("extension_runtime").expect("ext runtime");
         assert_eq!(ext_rt.level, CapabilityLevel::Partial);
         assert_eq!(
@@ -224,7 +244,7 @@ mod tests {
 
         let json = serde_json::to_value(&report).expect("serialize");
         assert_eq!(json["schema_version"], 1);
-        assert!(json["capabilities"].as_array().unwrap().len() >= 8);
+        assert!(json["capabilities"].as_array().unwrap().len() >= 9);
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));
         assert!(!blob.contains("Bearer "));
