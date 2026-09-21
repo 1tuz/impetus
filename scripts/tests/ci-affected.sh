@@ -42,7 +42,7 @@ contains() {
 }
 
 # --- docs-only ---
-out="$(scope $'docs/development.md\nREADME.md')"
+out="$(scope $'docs/guides/development.md\nREADME.md')"
 expect docs rust false "$out"
 expect docs docs_only true "$out"
 expect docs security false "$out"

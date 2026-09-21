@@ -48,7 +48,7 @@ work is still on the roadmap. Do not treat these as a complete public API yet.
 
 `impetus doctor` and `impetus doctor --json` will report versions, socket, IPC
 compatibility, store health, providers, modules, and remediation hints. Not
-implemented yet — see [TODO.md](../TODO.md) Phase 1.
+implemented yet — see [TODO.md](../../TODO.md).
 
 ## CI behaves differently from `task verify`
 

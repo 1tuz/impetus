@@ -1,7 +1,7 @@
 # Getting started
 
 Developer checkout: daemon `impetusd` + CLI client `impetus`. No packaged
-installer in this guide — see [README](../README.md) for curl install.
+installer in this guide — see [README](../../README.md) for curl install.
 
 ## Prerequisites
 

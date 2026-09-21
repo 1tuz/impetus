@@ -139,7 +139,9 @@ Following categories of files and directories **forbidden** in commits and must 
 
 - **Build artifacts:** `target/`, `**/target/`, any compiled binaries and intermediate build outputs
 - **Temporary configs:** `config/` with example/template configs (only versioned `.example` files in `docs/` or root allowed)
-- **Archived/obsolete docs:** `docs/archived/`, `docs/superpowers/`, historical audits/spikes/roadmaps (current: `ARCHITECTURE.md`, `ROADMAP.md`)
+- **Archived/obsolete docs:** do not reintroduce `docs/superpowers/` or loose
+  historical audits outside `docs/archive/`; current truth is root
+  `ARCHITECTURE.md` + `docs/architecture/roadmap.md` + `TODO.md`
 - **Generated HTML/diagrams:** `*.html` in root or `docs/` (except explicitly versioned reference docs)
 - **IDE/tool artifacts:** `opencode.json`, `.DS_Store`, `__pycache__/`, `*.pyc`
 - **Runtime state:** `*.db`, `*.db-shm`, `*.db-wal`, session logs, trace dumps

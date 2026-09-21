@@ -134,7 +134,7 @@ impetus approve <session-id> <approval-id>
 impetus approve <session-id> <approval-id> --reject
 ```
 
-For provider configuration, see [configuration docs](docs/configuration.md).
+For provider configuration, see [configuration docs](docs/guides/configuration.md).
 
 ## Uninstall
 
@@ -152,7 +152,7 @@ rm -rf ~/Library/Application\ Support/Impetus  # macOS
 
 Remove credentials from macOS Keychain via **Keychain Access.app** or `security delete-generic-password`.
 
-For detailed cleanup steps, see [getting started](docs/getting-started.md#uninstall).
+For detailed cleanup steps, see [getting started](docs/guides/getting-started.md#uninstall).
 
 ## Design stance
 
@@ -160,7 +160,7 @@ Impetus is not a port or fork of another coding agent. It keeps a small trusted
 kernel (events, artifacts, policy, approval, sandbox, executor) and replaceable
 layers above it. Engineering principles (durable events, fail-closed admission,
 explicit approvals, opaque secret references) matter more than feature parity
-lists. Optional protocol/UX notes: [Design references](docs/REFERENCES.md).
+lists. Optional protocol/UX notes: [Design references](docs/reference/design-references.md).
 
 ## Project layout
 
@@ -177,13 +177,14 @@ lists. Optional protocol/UX notes: [Design references](docs/REFERENCES.md).
 
 ## Documentation
 
+- [Docs map](docs/README.md) — guides, architecture, reference, archive.
 - [Architecture](ARCHITECTURE.md) — kernel + capability matrix (code-backed).
-- [TODO](TODO.md) — P0/P1/P2 executable roadmap.
-- [Roadmap](docs/ROADMAP.md) — short priority narrative.
-- [TUI notes](docs/TUI_REFERENCE.md) — client UX constraints and audit notes.
-- [References](docs/REFERENCES.md) — protocols and libraries.
-- [Getting started](docs/getting-started.md) — source-checkout setup.
-- [Development](docs/development.md) — workspace checks and CI.
+- [TODO](TODO.md) — Now / Next / Later backlog.
+- [Roadmap](docs/architecture/roadmap.md) — short priority narrative.
+- [TUI notes](docs/reference/tui-ux-audit.md) — client UX constraints and audit.
+- [References](docs/reference/design-references.md) — protocols and libraries.
+- [Getting started](docs/guides/getting-started.md) — source-checkout setup.
+- [Development](docs/guides/development.md) — workspace checks and CI.
 
 ## Development
 

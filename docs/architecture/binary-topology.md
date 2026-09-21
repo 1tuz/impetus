@@ -34,4 +34,5 @@ during migration.
 
 - Release artifact ships both binaries with explicit roles in install script help.
 - `impetus` auto-discovers the socket and can safely spawn `impetusd` when needed
-  (see getting-started / troubleshooting).
+  (see [getting-started](../guides/getting-started.md) /
+  [troubleshooting](../guides/troubleshooting.md)).

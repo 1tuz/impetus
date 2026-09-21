@@ -89,7 +89,7 @@ pub enum SandboxProfile {
 ```
 
 **Invariant:** Custom modules cannot escape sandbox boundaries or elevate privileges.
-Seatbelt wiring is a P0/P1 hardening target; docs must not claim it is already
+Seatbelt wiring is a Now/Next hardening target; docs must not claim it is already
 the live executor boundary.
 
 ### 5. Durable Outcome
@@ -184,6 +184,6 @@ If a custom module attempts to bypass kernel invariants:
 
 ## References
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md)
-- [VimTrap Implementation Plan](VimTrap_Implementation_Plan.md)
+- [ARCHITECTURE.md](../../ARCHITECTURE.md)
+- [VimTrap Implementation Plan](../archive/vimtrap-implementation-plan.md)
 - Issue #63

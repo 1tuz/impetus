@@ -109,7 +109,7 @@ show_post_install() {
   info "  rm -f ~/.local/bin/{impetus,impetusd}"
   info "  rm -rf ~/Library/Application\\ Support/Impetus  # macOS data"
   info ""
-  info "Документация: https://github.com/$REPO/blob/main/docs/getting-started.md"
+  info "Документация: https://github.com/$REPO/blob/main/docs/guides/getting-started.md"
 }
 
 main() {

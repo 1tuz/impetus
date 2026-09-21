@@ -10,7 +10,7 @@
 //! - `harness_api::cancellation_stops_an_active_agent_run_without_a_final_answer`
 //! - `runtime::attach_recovers_pending_approval_and_next_sequence`
 //!
-//! Evidence map: `docs/development.md` § Full request-flow coverage (#15).
+//! Evidence map: `docs/guides/development.md` § Full request-flow coverage (#15).
 
 use crate::module::ExecutionSemantics;
 use crate::module_fallback::{OperationOutcome, UnknownOutcomePolicy};
