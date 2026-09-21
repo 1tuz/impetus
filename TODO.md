@@ -195,7 +195,9 @@ Runtime State ≠ Memory ≠ Policy
 - [x] Derived indexes disposable/rebuildable; no unsafe symlink traversal
       (`MemoryDerivedIndex` / `rebuild_index` / `persist_derived_index`;
       `resolve_index_path` refuses `..` and symlink escape; unit tests)
-- [ ] Human-readable source format where useful
+- [x] Human-readable source format where useful
+      (`export_jsonl` / `export_markdown` / `import_*` / `from_*`;
+      labels only; import via create-only `remember` + redaction; unit tests)
 
 ### 5. WorktreeManager
 
