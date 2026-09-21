@@ -16,7 +16,8 @@ use crate::command::{self, CommandAction};
 use crate::model::{
     AppState, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES, MAX_PASTE_UPLOAD_BYTES, Overlay,
     RunOptions, RunState, SessionSummary, TimelineItem, UiEvent, UiEventKind, bounded,
-    format_paste_placeholder, is_paste_placeholder, normalize_paste, paste_line_count,
+    drain_stream_frame, format_paste_placeholder, ingest_stream_chunk, is_paste_placeholder,
+    normalize_paste, paste_line_count,
 };
 use crate::render::{filtered_sessions, render};
 use crate::terminal::TerminalSession;
@@ -95,6 +96,7 @@ pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()>
                 }
             }
             _ = ticker.tick() => {
+                drain_stream_frame(&mut app);
                 app.expire_transients();
             }
         }
@@ -232,6 +234,7 @@ fn execute_effect(
             app.subscription_generation = app.subscription_generation.wrapping_add(1);
             let generation = app.subscription_generation;
             app.active_session = Some(session_id);
+            app.clear_stream();
             app.timeline.clear();
             app.selected_item = None;
             app.approval_queue.clear();
@@ -550,6 +553,8 @@ fn apply_message(app: &mut AppState, message: AppMessage) -> Vec<Effect> {
                     }
                 }
                 Err(error) => {
+                    // Do not leave paced backlog or streaming card wedged on disconnect.
+                    app.flush_stream_to_timeline();
                     app.status_message = "reconnecting".to_owned();
                     app.show_toast(error, true);
                 }
@@ -586,10 +591,12 @@ fn apply_message(app: &mut AppState, message: AppMessage) -> Vec<Effect> {
             }
             match result {
                 Ok(status) => {
+                    app.flush_stream_to_timeline();
                     app.status_message = format!("cancel · {status}");
                     app.show_toast("Cancellation forwarded to the daemon.", false);
                 }
                 Err(error) => {
+                    app.flush_stream_to_timeline();
                     app.run_state = RunState::Unknown;
                     app.show_toast(format!("cancel failed: {error}"), true);
                 }
@@ -1052,6 +1059,7 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 }
             }
             KeyCode::Char('l') => {
+                app.clear_stream();
                 app.timeline.clear();
                 app.selected_item = None;
                 app.show_toast(
@@ -1193,6 +1201,7 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
         CommandAction::Diagnostics => vec![Effect::Diagnostics],
         CommandAction::Cancel => vec![Effect::Cancel],
         CommandAction::ClearViewport => {
+            app.clear_stream();
             app.timeline.clear();
             app.selected_item = None;
             app.show_toast(
@@ -1315,6 +1324,7 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             );
         }
         UiEventKind::RunCompleted { run_id } => {
+            app.flush_stream_to_timeline();
             app.run_state = RunState::Idle;
             set_active_session_status(app, "ready");
             app.status_message = "complete".to_owned();
@@ -1324,6 +1334,7 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             );
         }
         UiEventKind::RunFailed { run_id, reason } => {
+            app.flush_stream_to_timeline();
             app.run_state = RunState::Failed;
             set_active_session_status(app, "failed");
             app.status_message = "failed".to_owned();
@@ -1334,6 +1345,7 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             );
         }
         UiEventKind::RunCancelled { run_id } => {
+            app.flush_stream_to_timeline();
             app.run_state = RunState::Idle;
             set_active_session_status(app, "cancelled");
             app.status_message = "cancelled".to_owned();
@@ -1343,6 +1355,7 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             );
         }
         UiEventKind::RunUnknown { run_id } => {
+            app.flush_stream_to_timeline();
             app.run_state = RunState::Unknown;
             set_active_session_status(app, "unknown");
             app.status_message = "unknown outcome".to_owned();
@@ -1357,30 +1370,15 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             chunk_id,
             text,
         } => {
-            let key = run_id.to_string();
-            if let Some(item) = app
-                .timeline
-                .iter_mut()
-                .rev()
-                .find(|item| item.streaming_key.as_deref() == Some(key.as_str()))
-            {
-                item.body.push_str(&text);
-                item.body = bounded(std::mem::take(&mut item.body), crate::model::MAX_BODY_CHARS);
-                item.sequence = sequence;
-                item.at_unix_ms = at;
-                item.details = format!("run_id: {run_id}\nlast_chunk_id: {chunk_id}");
-                app.last_sequence = sequence;
-                app.dirty = true;
-            } else {
-                let mut item = TimelineItem::new(sequence, at, ItemKind::Assistant, "assistant")
-                    .with_body(text)
-                    .with_details(format!("run_id: {run_id}\nchunk_id: {chunk_id}"));
-                item.streaming_key = Some(key);
-                app.push_item(item);
-            }
+            ingest_stream_chunk(app, run_id, sequence, at, chunk_id, text);
         }
         UiEventKind::AgentFinal { run_id, text } => {
             let key = run_id.to_string();
+            if app.stream_run_id == Some(run_id) {
+                let pending = app.stream_buffer.flush();
+                crate::model::append_stream_body(app, &key, &pending);
+                app.stream_run_id = None;
+            }
             if let Some(item) = app
                 .timeline
                 .iter_mut()
@@ -1680,7 +1678,82 @@ mod tests {
             },
         );
         assert_eq!(app.timeline.len(), 1);
+        assert_eq!(app.stream_run_id, Some(run_id));
+        // Paced buffer holds text until tick/flush — flush paints full coalesce.
+        app.flush_stream_to_timeline();
         assert_eq!(app.timeline[0].body, "hello world");
+        assert!(app.timeline[0].streaming_key.is_none());
+        assert!(app.stream_run_id.is_none());
+    }
+
+    #[test]
+    fn cancel_flushes_stream_without_wedging() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let run_id = Uuid::new_v4();
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 1,
+                at_unix_ms: 1,
+                kind: UiEventKind::AgentChunk {
+                    run_id,
+                    chunk_id: 1,
+                    text: "partial".to_owned(),
+                },
+            },
+        );
+        assert!(app.stream_run_id.is_some());
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 2,
+                at_unix_ms: 2,
+                kind: UiEventKind::RunCancelled { run_id },
+            },
+        );
+        assert!(app.stream_run_id.is_none());
+        assert!(app.stream_buffer.is_empty());
+        assert_eq!(app.run_state, RunState::Idle);
+        let assistant = app
+            .timeline
+            .iter()
+            .find(|item| item.kind == ItemKind::Assistant)
+            .expect("assistant card");
+        assert_eq!(assistant.body, "partial");
+        assert!(assistant.streaming_key.is_none());
+    }
+
+    #[test]
+    fn agent_final_replaces_paced_body() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let run_id = Uuid::new_v4();
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 1,
+                at_unix_ms: 1,
+                kind: UiEventKind::AgentChunk {
+                    run_id,
+                    chunk_id: 1,
+                    text: "draft".to_owned(),
+                },
+            },
+        );
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 2,
+                at_unix_ms: 2,
+                kind: UiEventKind::AgentFinal {
+                    run_id,
+                    text: "final answer".to_owned(),
+                },
+            },
+        );
+        assert!(app.stream_run_id.is_none());
+        assert_eq!(app.timeline.len(), 1);
+        assert_eq!(app.timeline[0].body, "final answer");
+        assert!(app.timeline[0].streaming_key.is_none());
     }
 
     #[test]

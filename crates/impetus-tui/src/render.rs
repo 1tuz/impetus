@@ -246,11 +246,17 @@ fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                if item.collapsed { "  [collapsed]" } else { "" },
+                if item.streaming_key.is_some() {
+                    "  …"
+                } else if item.collapsed {
+                    "  [collapsed]"
+                } else {
+                    ""
+                },
                 Style::default().fg(theme.muted),
             ),
         ]));
-        if !item.collapsed && !item.body.is_empty() {
+        if !item.collapsed && (!item.body.is_empty() || item.streaming_key.is_some()) {
             let body_width = width.saturating_sub(3);
             let body_lines = match item.kind {
                 ItemKind::Assistant | ItemKind::User | ItemKind::Plan => {

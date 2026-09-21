@@ -250,7 +250,7 @@ Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SH
 - [x] Composer (single-line + multiline mode)
 - [x] Bracketed paste support
 - [x] Large paste UX (`[Pasted text · N KB · M lines]`)
-- [ ] Streaming output rendering
+- [x] Streaming output rendering
 - [ ] Markdown rendering (bounded)
 - [ ] Diff view
 - [ ] Approval UI (typed approvals from harness)

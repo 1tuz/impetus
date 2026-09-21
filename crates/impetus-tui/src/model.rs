@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::composer::Composer;
+use crate::stream_buffer::StreamBuffer;
 
 pub const MAX_TIMELINE_ITEMS: usize = 1_000;
 pub const MAX_BODY_CHARS: usize = 40_000;
@@ -432,6 +433,9 @@ pub struct AppState {
     pub toast: Option<Toast>,
     pub status_message: String,
     pub subscription_generation: u64,
+    /// Paced assistant stream (arrival ≠ paint). Keyed by active `run_id`.
+    pub stream_run_id: Option<Uuid>,
+    pub stream_buffer: StreamBuffer,
 }
 
 impl AppState {
@@ -460,6 +464,8 @@ impl AppState {
             toast: None,
             status_message: "ready".to_owned(),
             subscription_generation: 0,
+            stream_run_id: None,
+            stream_buffer: StreamBuffer::new(),
         }
     }
 
@@ -502,6 +508,116 @@ impl AppState {
             self.dirty = true;
         }
     }
+
+    /// Drop paced backlog without painting (session switch / local clear).
+    pub fn clear_stream(&mut self) {
+        self.stream_buffer.clear();
+        self.stream_run_id = None;
+    }
+
+    /// Flush paced backlog into the open assistant item and clear stream state.
+    pub fn flush_stream_to_timeline(&mut self) {
+        let Some(run_id) = self.stream_run_id else {
+            self.stream_buffer.clear();
+            return;
+        };
+        let pending = self.stream_buffer.flush();
+        if !pending.is_empty() {
+            append_stream_body(self, &run_id.to_string(), &pending);
+        }
+        finalize_stream_item(self, &run_id.to_string());
+        self.stream_run_id = None;
+        self.dirty = true;
+    }
+}
+
+pub(crate) fn append_stream_body(app: &mut AppState, key: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(item) = app
+        .timeline
+        .iter_mut()
+        .rev()
+        .find(|item| item.streaming_key.as_deref() == Some(key))
+    {
+        item.body.push_str(text);
+        item.body = bounded(std::mem::take(&mut item.body), MAX_BODY_CHARS);
+        if app.follow_tail {
+            app.line_scroll_from_bottom = 0;
+        }
+        app.dirty = true;
+    }
+}
+
+pub(crate) fn finalize_stream_item(app: &mut AppState, key: &str) {
+    if let Some(item) = app
+        .timeline
+        .iter_mut()
+        .rev()
+        .find(|item| item.streaming_key.as_deref() == Some(key))
+    {
+        item.streaming_key = None;
+    }
+}
+
+/// Ensure an open assistant card exists for `run_id`, then pace `text` into it.
+pub(crate) fn ingest_stream_chunk(
+    app: &mut AppState,
+    run_id: Uuid,
+    sequence: u64,
+    at: u64,
+    chunk_id: u64,
+    text: String,
+) {
+    let key = run_id.to_string();
+    if app.stream_run_id != Some(run_id) {
+        if app.stream_run_id.is_some() {
+            app.flush_stream_to_timeline();
+        }
+        app.stream_run_id = Some(run_id);
+    }
+
+    let has_item = app
+        .timeline
+        .iter()
+        .rev()
+        .any(|item| item.streaming_key.as_deref() == Some(key.as_str()));
+    if !has_item {
+        let mut item = TimelineItem::new(sequence, at, ItemKind::Assistant, "assistant")
+            .with_details(format!("run_id: {run_id}\nchunk_id: {chunk_id}"));
+        item.streaming_key = Some(key.clone());
+        app.push_item(item);
+    } else if let Some(item) = app
+        .timeline
+        .iter_mut()
+        .rev()
+        .find(|item| item.streaming_key.as_deref() == Some(key.as_str()))
+    {
+        item.sequence = sequence;
+        item.at_unix_ms = at;
+        item.details = format!("run_id: {run_id}\nlast_chunk_id: {chunk_id}");
+        app.last_sequence = sequence;
+    }
+
+    let revealed = app.stream_buffer.push_text(&text);
+    append_stream_body(app, &key, &revealed);
+    app.dirty = true;
+}
+
+/// Drain one paced frame into the open streaming assistant card.
+pub(crate) fn drain_stream_frame(app: &mut AppState) {
+    let Some(run_id) = app.stream_run_id else {
+        return;
+    };
+    if app.stream_buffer.is_empty() {
+        return;
+    }
+    let revealed = app.stream_buffer.flush_smooth_frame();
+    if revealed.is_empty() {
+        return;
+    }
+    append_stream_body(app, &run_id.to_string(), &revealed);
 }
 
 pub fn short_id(id: Uuid) -> String {

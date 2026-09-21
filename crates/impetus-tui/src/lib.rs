@@ -16,6 +16,7 @@ mod markdown;
 mod model;
 mod render;
 pub mod spike;
+mod stream_buffer;
 mod terminal;
 mod theme;
 
