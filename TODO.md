@@ -185,7 +185,8 @@ Managed resource lifecycle (persist + recover after daemon restart):
 create → resume → pause → stop → diff → review → merge-ready → conflict →
 stale → close → salvage
 
-- [ ] Create/resume/stop/close with durable session ↔ worktree binding
+- [x] Create/resume/stop/close with durable session ↔ worktree binding
+      (`WorktreeManager` + SQLite bindings; git CLI; temp-dir tests)
 - [ ] Diff / merge-ready / conflict checks before merge attempts
 - [ ] Safe cleanup + abandoned/stale detection
 - [ ] Salvage path for recoverable abandoned worktrees
