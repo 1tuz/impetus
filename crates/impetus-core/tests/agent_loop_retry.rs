@@ -16,6 +16,7 @@ async fn transient_error_triggers_retry_with_backoff() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let runtime = AgentRuntime::new(store.clone(), policy.clone());
@@ -100,6 +101,7 @@ async fn permanent_error_fails_immediately() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let runtime = AgentRuntime::new(store.clone(), policy.clone());
@@ -154,6 +156,7 @@ async fn retry_exhaustion_emits_exhausted_event() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let runtime = AgentRuntime::new(store.clone(), policy.clone());

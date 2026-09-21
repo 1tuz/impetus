@@ -191,7 +191,12 @@ impl ToolOrchestrator {
 
         if matches!(
             action.kind,
-            ActionKind::WriteFile | ActionKind::SpawnProcess
+            ActionKind::WriteFile
+                | ActionKind::SpawnProcess
+                | ActionKind::WebDownload
+                | ActionKind::WebBrowser
+                | ActionKind::WebSubmit
+                | ActionKind::WebUpload
         ) {
             if contains_sensitive_value(&tool_call.arguments) {
                 return Self::record_observation(
@@ -204,7 +209,26 @@ impl ToolOrchestrator {
                     Some("mutating tool arguments contain sensitive material".into()),
                 );
             }
+            let outbound_web = matches!(
+                action.kind,
+                ActionKind::WebDownload
+                    | ActionKind::WebBrowser
+                    | ActionKind::WebSubmit
+                    | ActionKind::WebUpload
+            );
             let outcome = match runtime.request_action_with_capability_version(action, Some(1)) {
+                Ok(crate::RuntimeStatus::Idle) if outbound_web => {
+                    // Session granted outbound web, but no executor is wired yet.
+                    return Self::record_observation(
+                        runtime,
+                        tool_call,
+                        arguments_summary,
+                        ToolOutcomeStatus::Error,
+                        String::new(),
+                        None,
+                        Some("outbound web tool is not available in this build".into()),
+                    );
+                }
                 Ok(_) => {
                     if let Some(approval_id) = runtime.events().ok().and_then(|events| {
                         events.iter().rev().find_map(|event| match &event.payload {
@@ -333,7 +357,12 @@ impl ToolOrchestrator {
         // Map tool names to ActionKind
         let kind = match tool_call.name.as_str() {
             "list_files" | "read_file" | "search" => ActionKind::ReadFile,
-            "web_search" | "web_fetch" => ActionKind::NetworkConnect,
+            "web_search" => ActionKind::WebSearch,
+            "web_fetch" => ActionKind::WebFetch,
+            "web_download" => ActionKind::WebDownload,
+            "web_browser" => ActionKind::WebBrowser,
+            "web_submit" => ActionKind::WebSubmit,
+            "web_upload" => ActionKind::WebUpload,
             "write_file" | "edit_file" => ActionKind::WriteFile,
             "bash" | "shell" | "exec" => ActionKind::SpawnProcess,
             name => {
@@ -836,6 +865,78 @@ mod tests {
         let action = orchestrator.normalize_tool_call(&tool_call).unwrap();
         assert_eq!(action.kind, ActionKind::ReadFile);
         assert_eq!(action.target, Some("test.txt".to_string()));
+    }
+
+    #[test]
+    fn normalize_web_tools_use_fine_grained_action_kinds() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let orchestrator = ToolOrchestrator::new(policy, PathBuf::from("."));
+
+        let search = orchestrator
+            .normalize_tool_call(&crate::ToolCall {
+                id: "s".into(),
+                name: "web_search".into(),
+                arguments: serde_json::json!({"query": "rust"}),
+            })
+            .unwrap();
+        assert_eq!(search.kind, ActionKind::WebSearch);
+        assert_eq!(search.target.as_deref(), Some("web-search:auto"));
+
+        let fetch = orchestrator
+            .normalize_tool_call(&crate::ToolCall {
+                id: "f".into(),
+                name: "web_fetch".into(),
+                arguments: serde_json::json!({"url": "https://example.com/page"}),
+            })
+            .unwrap();
+        assert_eq!(fetch.kind, ActionKind::WebFetch);
+        assert_eq!(fetch.target.as_deref(), Some("example.com"));
+
+        let submit = orchestrator
+            .normalize_tool_call(&crate::ToolCall {
+                id: "u".into(),
+                name: "web_submit".into(),
+                arguments: serde_json::json!({"url": "https://example.com/form"}),
+            })
+            .unwrap();
+        assert_eq!(submit.kind, ActionKind::WebSubmit);
+    }
+
+    #[tokio::test]
+    async fn web_submit_requires_approval_when_network_allowed_without_outbound() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut scope = SandboxScope::local_workspace(workspace.path());
+        scope.allow_network = true;
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        runtime.submit_intent("submit form").expect("intent");
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "submit-1".into(),
+                    name: "web_submit".into(),
+                    arguments: serde_json::json!({"url": "https://example.com/form"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("tool orchestration");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::ApprovalRequired);
+        assert!(runtime.events().expect("events").iter().any(|event| {
+            matches!(
+                &event.payload,
+                crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request })
+                    if request.action.kind == ActionKind::WebSubmit
+                        && !request.reason.contains("sk-")
+            )
+        }));
     }
 
     #[test]

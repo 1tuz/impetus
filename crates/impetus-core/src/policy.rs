@@ -38,7 +38,7 @@ pub enum ActionOrigin {
     Agent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     ReadFile,
@@ -85,6 +85,20 @@ impl ActionKind {
                 | crate::module::ExecutionSemantics::Idempotent
         )
     }
+
+    /// Map web action kinds onto the fine-grained [`WebCapability`] model.
+    pub fn web_capability(&self) -> Option<crate::web_research::WebCapability> {
+        use crate::web_research::WebCapability;
+        match self {
+            ActionKind::WebSearch => Some(WebCapability::Search),
+            ActionKind::WebFetch => Some(WebCapability::Read),
+            ActionKind::WebDownload => Some(WebCapability::Download),
+            ActionKind::WebBrowser => Some(WebCapability::Browser),
+            ActionKind::WebSubmit => Some(WebCapability::Submit),
+            ActionKind::WebUpload => Some(WebCapability::Upload),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +143,10 @@ pub struct SandboxScope {
     pub workspace_root: PathBuf,
     pub allow_network: bool,
     pub allowed_hosts: Vec<String>,
+    /// Session grant for mutating outbound web (submit/upload/browser/download).
+    /// Default false: read-only web may Allow when `allow_network`; outbound NeedsApproval.
+    #[serde(default)]
+    pub allow_web_outbound: bool,
 }
 
 impl SandboxScope {
@@ -137,7 +155,20 @@ impl SandboxScope {
             workspace_root: workspace_root.into(),
             allow_network: false,
             allowed_hosts: vec![],
+            allow_web_outbound: false,
         }
+    }
+
+    /// Enable or disable coarse network (read-only web follows this flag).
+    pub fn with_network(mut self, allow: bool) -> Self {
+        self.allow_network = allow;
+        self
+    }
+
+    /// Grant session-level outbound web (POST/upload/auth-class actions).
+    pub fn with_web_outbound(mut self, allow: bool) -> Self {
+        self.allow_web_outbound = allow;
+        self
     }
 
     pub fn contains(&self, candidate: &Path) -> bool {
@@ -231,30 +262,34 @@ impl PolicyEngine {
                     }
                 }
             }
-            ActionKind::WebSearch | ActionKind::WebFetch => {
-                if !self.scope.allow_network {
-                    PolicyDecision::Deny {
-                        reason: "network is disabled in this workspace scope".into(),
-                    }
-                } else {
-                    PolicyDecision::Allow
-                }
-            }
-            ActionKind::WebDownload
+            ActionKind::WebSearch
+            | ActionKind::WebFetch
+            | ActionKind::WebDownload
             | ActionKind::WebBrowser
             | ActionKind::WebSubmit
-            | ActionKind::WebUpload => {
-                if !self.scope.allow_network {
-                    PolicyDecision::Deny {
-                        reason: "network is disabled in this workspace scope".into(),
-                    }
-                } else {
-                    PolicyDecision::NeedsApproval {
-                        reason: "performs web operation that may change state or transfer data"
-                            .into(),
-                    }
-                }
-            }
+            | ActionKind::WebUpload => self.evaluate_web_action(action.kind),
+        }
+    }
+
+    fn evaluate_web_action(&self, kind: ActionKind) -> PolicyDecision {
+        let Some(capability) = kind.web_capability() else {
+            return PolicyDecision::Deny {
+                reason: "unknown web action".into(),
+            };
+        };
+        if !self.scope.allow_network {
+            return PolicyDecision::Deny {
+                reason: "network is disabled in this workspace scope".into(),
+            };
+        }
+        if capability.is_read_only() {
+            return PolicyDecision::Allow;
+        }
+        if self.scope.allow_web_outbound {
+            return PolicyDecision::Allow;
+        }
+        PolicyDecision::NeedsApproval {
+            reason: "outbound web requires session allowance or user approval".into(),
         }
     }
 
@@ -442,5 +477,149 @@ mod tests {
         assert!(
             matches!(decision, PolicyDecision::Deny { reason } if reason.contains("unsupported"))
         );
+    }
+
+    #[test]
+    fn web_search_allows_when_network_enabled() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebSearch,
+            summary: "search".into(),
+            target: Some("web-search:auto".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+        assert_eq!(
+            ActionKind::WebSearch.web_capability(),
+            Some(crate::web_research::WebCapability::Search)
+        );
+    }
+
+    #[test]
+    fn web_fetch_allows_when_network_enabled() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebFetch,
+            summary: "fetch".into(),
+            target: Some("example.com".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn web_read_denied_when_network_disabled() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        for kind in [ActionKind::WebSearch, ActionKind::WebFetch] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind,
+                summary: "web".into(),
+                target: None,
+            });
+            assert!(
+                matches!(decision, PolicyDecision::Deny { .. }),
+                "{kind:?} should deny without network"
+            );
+        }
+    }
+
+    #[test]
+    fn web_outbound_needs_approval_by_default() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        for kind in [
+            ActionKind::WebSubmit,
+            ActionKind::WebUpload,
+            ActionKind::WebDownload,
+            ActionKind::WebBrowser,
+        ] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind,
+                summary: "outbound".into(),
+                target: Some("https://example.com/form".into()),
+            });
+            assert!(
+                matches!(
+                    decision,
+                    PolicyDecision::NeedsApproval { ref reason }
+                    if reason.contains("outbound web")
+                ),
+                "{kind:?} => {decision:?}"
+            );
+            assert!(
+                !kind.web_capability().expect("web cap").is_read_only(),
+                "{kind:?} must not be read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn web_outbound_allows_when_session_grants() {
+        let policy = PolicyEngine::new(
+            SandboxScope::local_workspace(".")
+                .with_network(true)
+                .with_web_outbound(true),
+        );
+        for kind in [
+            ActionKind::WebSubmit,
+            ActionKind::WebUpload,
+            ActionKind::WebDownload,
+            ActionKind::WebBrowser,
+        ] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind,
+                summary: "outbound granted".into(),
+                target: Some("https://example.com/upload".into()),
+            });
+            assert_eq!(decision, PolicyDecision::Allow);
+        }
+    }
+
+    #[test]
+    fn web_outbound_denied_when_network_disabled_even_if_granted() {
+        let policy = PolicyEngine::new(
+            SandboxScope::local_workspace(".")
+                .with_network(false)
+                .with_web_outbound(true),
+        );
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebSubmit,
+            summary: "submit".into(),
+            target: None,
+        });
+        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_snapshot_preserves_web_outbound_flag() {
+        let scope = SandboxScope::local_workspace(".")
+            .with_network(true)
+            .with_web_outbound(true);
+        let policy = PolicyEngine::new(scope.clone());
+        let snapshot = PolicySnapshot::capture(&policy);
+        assert!(snapshot.scope.allow_web_outbound);
+        assert_eq!(snapshot.scope, scope);
+    }
+
+    #[test]
+    fn web_policy_reasons_contain_no_secrets() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        let secret = "sk-live-super-secret-token";
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebUpload,
+            summary: format!("upload with {secret}"),
+            target: Some(format!("https://example.com/?token={secret}")),
+        });
+        match decision {
+            PolicyDecision::NeedsApproval { reason } => {
+                assert!(!reason.contains(secret));
+                assert!(!reason.contains("sk-live"));
+            }
+            other => panic!("expected NeedsApproval, got {other:?}"),
+        }
     }
 }
