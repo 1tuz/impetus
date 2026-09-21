@@ -734,7 +734,7 @@ mod tests {
             .find(|probe| probe["name"] == "capability.extension_runtime")
             .expect("extension runtime probe");
         assert_eq!(ext["status"], "WARN");
-        assert_eq!(ext["details"]["mcp_live_tools_in_loop"], false);
+        assert_eq!(ext["details"]["mcp_live_tools_in_loop"], true);
 
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));

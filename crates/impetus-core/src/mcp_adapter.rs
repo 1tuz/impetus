@@ -27,6 +27,9 @@ pub struct McpTool {
     pub description: String,
     #[serde(default, rename = "inputSchema")]
     pub input_schema: serde_json::Value,
+    /// Optional MCP tool annotations (`readOnlyHint`, `destructiveHint`, …).
+    #[serde(default)]
+    pub annotations: Option<serde_json::Value>,
 }
 
 /// MCP resource as reported by `resources/list`.
@@ -305,6 +308,19 @@ impl McpAdapter {
         serde_json::from_value(tools).context("invalid tools/list result")
     }
 
+    /// Invoke a tool via MCP `tools/call`.
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
+        self.request(
+            "tools/call",
+            json!({
+                "name": name,
+                "arguments": arguments,
+            }),
+        )
+        .await
+        .with_context(|| format!("MCP tools/call failed for `{name}`"))
+    }
+
     /// List resources exposed by the server.
     pub async fn list_resources(&mut self) -> Result<Vec<McpResource>> {
         let result = self.request("resources/list", json!({})).await?;
@@ -529,7 +545,7 @@ impl McpAdapter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::DuplexStream;
 
@@ -570,7 +586,12 @@ mod tests {
                         {
                             "name": "echo",
                             "description": "Echo text back",
-                            "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"text": {"type": "string"}},
+                                "required": ["text"]
+                            },
+                            "annotations": {"readOnlyHint": true}
                         },
                         {
                             "name": "sum",
@@ -579,6 +600,35 @@ mod tests {
                         }
                     ]
                 }),
+                "tools/call" => {
+                    let params = msg.get("params").cloned().unwrap_or(json!({}));
+                    let tool_name = params
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                    match tool_name {
+                        "echo" => {
+                            let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
+                            json!({
+                                "content": [{"type": "text", "text": format!("echo:{text}")}],
+                                "isError": false
+                            })
+                        }
+                        "sum" => {
+                            let a = args.get("a").and_then(Value::as_i64).unwrap_or(0);
+                            let b = args.get("b").and_then(Value::as_i64).unwrap_or(0);
+                            json!({
+                                "content": [{"type": "text", "text": format!("{}", a + b)}],
+                                "isError": false
+                            })
+                        }
+                        other => json!({
+                            "content": [{"type": "text", "text": format!("unknown tool: {other}")}],
+                            "isError": true
+                        }),
+                    }
+                }
                 "resources/list" => json!({
                     "resources": [
                         {"uri": "file:///data/schema.sql", "name": "schema", "description": "DB schema"}
@@ -610,7 +660,7 @@ mod tests {
         }
     }
 
-    async fn duplex_adapter() -> (McpAdapter, tokio::task::JoinHandle<()>) {
+    pub(crate) async fn duplex_adapter() -> (McpAdapter, tokio::task::JoinHandle<()>) {
         let (client, server) = tokio::io::duplex(8192);
         let server_task = tokio::spawn(mock_server_loop(server));
         let mut adapter = McpAdapter::from_stream(Box::new(MockStream { stream: client })).unwrap();
@@ -715,6 +765,7 @@ mod tests {
             tools[0].input_schema["properties"]["text"]["type"],
             "string"
         );
+        assert_eq!(tools[0].annotations.as_ref().unwrap()["readOnlyHint"], true);
 
         let resources = adapter.list_resources().await.unwrap();
         assert_eq!(resources.len(), 1);
@@ -726,6 +777,18 @@ mod tests {
         assert_eq!(prompts[0].arguments[0].name, "scope");
 
         adapter.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn call_tool_echo_roundtrip() {
+        let (mut adapter, server_task) = duplex_adapter().await;
+        let result = adapter
+            .call_tool("echo", json!({"text": "ping"}))
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["content"][0]["text"], "echo:ping");
         server_task.abort();
     }
 

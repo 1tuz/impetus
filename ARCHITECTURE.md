@@ -88,7 +88,7 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Partial | Threshold events exist; no auto compact in agent loop |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial / Missing | Skills via filesystem `InstructionResolver`; MCP not in loop |
+| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial | Skills via `InstructionResolver`; MCP live tools via `McpLiveBridge` + ToolOrchestrator (no marketplace/UI) |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
