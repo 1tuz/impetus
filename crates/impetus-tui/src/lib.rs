@@ -3,9 +3,13 @@
 //! The crate is deliberately presentation-only. Durable state, policy,
 //! approvals, tools and model execution stay in `impetusd`; this client talks
 //! to them through `HarnessClient` and renders typed events.
+//!
+//! Boundary (#142): no direct `impetus-core` dependency or import — see
+//! [`boundary`].
 
 mod app;
 mod backend;
+pub mod boundary;
 mod command;
 mod composer;
 mod markdown;
