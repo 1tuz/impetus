@@ -194,7 +194,9 @@ stale → close → salvage
 
 - [x] Create/resume/stop/close with durable session ↔ worktree binding
       (`WorktreeManager` + SQLite bindings; git CLI; temp-dir tests)
-- [ ] Diff / merge-ready / conflict checks before merge attempts
+- [x] Diff / merge-ready / conflict checks before merge attempts
+      (`diff_summary` / `check_merge_ready` / `attempt_merge`; `merge-tree`
+      conflict refuse; temp-repo tests)
 - [x] Safe cleanup + abandoned/stale detection
       (`detect_stale` / `mark_stale` / `cleanup_stale`; path-missing +
       not-registered; temp-repo tests)
