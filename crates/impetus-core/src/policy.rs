@@ -1,5 +1,7 @@
+use crate::policy_config::{PolicyConfig, PolicyConfigDecision};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Policy rule version for audit and replay.
@@ -38,7 +40,7 @@ pub enum ActionOrigin {
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     ReadFile,
@@ -230,11 +232,24 @@ pub enum PolicyDecision {
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
     scope: SandboxScope,
+    /// User overrides applied after fail-closed safety Denies.
+    overrides: BTreeMap<ActionKind, PolicyConfigDecision>,
 }
 
 impl PolicyEngine {
     pub fn new(scope: SandboxScope) -> Self {
-        Self { scope }
+        Self {
+            scope,
+            overrides: BTreeMap::new(),
+        }
+    }
+
+    /// Build an engine with validated user policy overrides.
+    pub fn with_config(scope: SandboxScope, config: PolicyConfig) -> Self {
+        Self {
+            scope,
+            overrides: config.overrides,
+        }
     }
 
     pub fn evaluate(&self, action: &Action) -> PolicyDecision {
@@ -252,6 +267,32 @@ impl PolicyEngine {
             _ => {}
         }
 
+        // Fail-closed network / private web Denies stay ahead of user overrides.
+        match action.kind {
+            ActionKind::NetworkConnect | ActionKind::SshConnect | ActionKind::SftpTransfer
+                if !self.scope.allow_network =>
+            {
+                return PolicyDecision::Deny {
+                    reason: "network is disabled in this workspace scope".into(),
+                };
+            }
+            ActionKind::WebSearch
+            | ActionKind::WebFetch
+            | ActionKind::WebDownload
+            | ActionKind::WebBrowser
+            | ActionKind::WebSubmit
+            | ActionKind::WebUpload => {
+                if let Some(deny) = self.evaluate_web_hard_deny(action) {
+                    return deny;
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(overridden) = self.overrides.get(&action.kind) {
+            return overridden.to_decision();
+        }
+
         match action.kind {
             ActionKind::ReadFile => PolicyDecision::Allow,
             ActionKind::SpawnProcess if action.origin == ActionOrigin::User => {
@@ -263,14 +304,8 @@ impl PolicyEngine {
                 }
             }
             ActionKind::NetworkConnect | ActionKind::SshConnect | ActionKind::SftpTransfer => {
-                if !self.scope.allow_network {
-                    PolicyDecision::Deny {
-                        reason: "network is disabled in this workspace scope".into(),
-                    }
-                } else {
-                    PolicyDecision::NeedsApproval {
-                        reason: "opens a network connection".into(),
-                    }
+                PolicyDecision::NeedsApproval {
+                    reason: "opens a network connection".into(),
                 }
             }
             ActionKind::WebSearch
@@ -282,30 +317,47 @@ impl PolicyEngine {
         }
     }
 
-    fn evaluate_web_action(&self, action: &Action) -> PolicyDecision {
-        use crate::web_research::{WebCapability, target_requires_private_read};
+    /// Hard Deny checks for web that must not be softened by user overrides.
+    fn evaluate_web_hard_deny(&self, action: &Action) -> Option<PolicyDecision> {
+        use crate::web_research::target_requires_private_read;
 
-        let Some(capability) = action.kind.web_capability() else {
-            return PolicyDecision::Deny {
+        if action.kind.web_capability().is_none() {
+            return Some(PolicyDecision::Deny {
                 reason: "unknown web action".into(),
-            };
-        };
-        if !self.scope.allow_network {
-            return PolicyDecision::Deny {
-                reason: "network is disabled in this workspace scope".into(),
-            };
+            });
         }
-
+        if !self.scope.allow_network {
+            return Some(PolicyDecision::Deny {
+                reason: "network is disabled in this workspace scope".into(),
+            });
+        }
         let private_target = action
             .target
             .as_deref()
             .is_some_and(target_requires_private_read);
         if private_target && !self.scope.allow_private_network {
-            return PolicyDecision::Deny {
+            return Some(PolicyDecision::Deny {
                 reason: "private/LAN web targets require session private-network allowance".into(),
-            };
+            });
+        }
+        None
+    }
+
+    fn evaluate_web_action(&self, action: &Action) -> PolicyDecision {
+        use crate::web_research::WebCapability;
+
+        if let Some(deny) = self.evaluate_web_hard_deny(action) {
+            return deny;
         }
 
+        let capability = action
+            .kind
+            .web_capability()
+            .expect("web hard-deny already checked capability");
+        let private_target = action
+            .target
+            .as_deref()
+            .is_some_and(crate::web_research::target_requires_private_read);
         let effective = if private_target && matches!(capability, WebCapability::Read) {
             WebCapability::PrivateRead
         } else {
@@ -360,6 +412,7 @@ impl PolicyEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy_config::{POLICY_CONFIG_VERSION, PolicyConfig};
 
     #[test]
     fn network_is_denied_when_scope_is_local_only() {
@@ -769,5 +822,99 @@ mod tests {
             }
             other => panic!("expected Deny for private target, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_override_allows_write_when_in_scope() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"write_file":"allow","spawn_process":"deny"}}"#,
+        )
+        .expect("config");
+        let policy = PolicyEngine::with_config(SandboxScope::local_workspace(workspace), config);
+
+        let write = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("new-from-config.txt".into()),
+        });
+        assert_eq!(write, PolicyDecision::Allow);
+
+        let spawn = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::SpawnProcess,
+            summary: "spawn".into(),
+            target: Some("echo".into()),
+        });
+        assert!(
+            matches!(
+                spawn,
+                PolicyDecision::Deny { ref reason } if reason.contains("user policy config")
+            ),
+            "{spawn:?}"
+        );
+    }
+
+    #[test]
+    fn config_cannot_allow_network_when_scope_disables_it() {
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow"}}"#,
+        )
+        .expect("config");
+        let policy = PolicyEngine::with_config(SandboxScope::local_workspace("."), config);
+        for kind in [ActionKind::NetworkConnect, ActionKind::SshConnect] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind,
+                summary: "net".into(),
+                target: None,
+            });
+            assert!(
+                matches!(
+                    decision,
+                    PolicyDecision::Deny { ref reason }
+                    if reason.contains("network is disabled")
+                ),
+                "{kind:?} => {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_override_network_when_scope_allows() {
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"network_connect":"allow"}}"#)
+                .expect("config");
+        let policy = PolicyEngine::with_config(
+            SandboxScope::local_workspace(".").with_network(true),
+            config,
+        );
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::NetworkConnect,
+            summary: "net".into(),
+            target: Some("example.com:443".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn absent_config_keeps_fail_closed_defaults() {
+        let with_config = PolicyEngine::with_config(
+            SandboxScope::local_workspace("."),
+            PolicyConfig {
+                version: POLICY_CONFIG_VERSION,
+                overrides: Default::default(),
+            },
+        );
+        let without = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let action = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::SpawnProcess,
+            summary: "run".into(),
+            target: Some("ls".into()),
+        };
+        assert_eq!(with_config.evaluate(&action), without.evaluate(&action));
     }
 }

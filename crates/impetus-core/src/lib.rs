@@ -52,6 +52,7 @@ pub mod openai_responses;
 pub mod output_reducer;
 pub mod plugins;
 pub mod policy;
+pub mod policy_config;
 pub mod profile;
 pub mod projection;
 pub mod provider;
@@ -172,6 +173,9 @@ pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry
 pub use policy::{
     Action, ActionFingerprint, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine,
     PolicySnapshot, PolicyVersion, SandboxScope,
+};
+pub use policy_config::{
+    POLICY_CONFIG_VERSION, PolicyConfig, PolicyConfigDecision, PolicyConfigError,
 };
 pub use profile::{Profile, ProfileConfig, ServiceBinding, ServiceBindings};
 pub use projection::{ProjectionError, SessionProjection, reduce};
