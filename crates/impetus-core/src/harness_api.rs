@@ -1323,6 +1323,7 @@ fn compute_approval_detail(
     }
 
     Ok(crate::ApprovalDetail {
+        schema_version: crate::APPROVAL_DETAIL_SCHEMA_VERSION,
         request,
         diff_preview,
         affected_files,
@@ -1884,6 +1885,7 @@ mod tests {
 
         assert_eq!(detail.request.id, approval_id);
         assert_eq!(detail.request.action.kind, crate::ActionKind::WriteFile);
+        assert_eq!(detail.schema_version, crate::APPROVAL_DETAIL_SCHEMA_VERSION);
         // Diff/scope computation now implemented
         assert_eq!(detail.affected_files, vec!["test.txt"]);
         assert!(detail.diff_preview.is_some());

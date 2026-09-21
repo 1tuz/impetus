@@ -80,8 +80,8 @@ pub use agent_plugins_adapter::{AgentPluginsAdapter, PluginCommandEntry};
 pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use anthropic_provider::AnthropicProvider;
 pub use approval::{
-    ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
-    ApprovalState, ScopeEstimate,
+    APPROVAL_DETAIL_SCHEMA_ID, APPROVAL_DETAIL_SCHEMA_VERSION, ApprovalDetail, ApprovalId,
+    ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState, ScopeEstimate,
 };
 pub use artifact_upload::{
     ArtifactUploadError, ArtifactUploadStore, MAX_ARTIFACT_UPLOAD_BYTES,
