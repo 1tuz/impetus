@@ -5,7 +5,7 @@
 //!
 //! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
 //! dry-run plan, register-before-write ownership, and durable install state.
-//! CLI: `impetus extension plan | install` (doctor/repair/remove later).
+//! CLI: `impetus extension plan | install | remove` (doctor/repair later).
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule};
@@ -158,6 +158,33 @@ impl ExtensionStateStore {
             None => Ok(None),
         }
     }
+
+    /// Delete install state by `installation_id`. Returns whether a row existed.
+    pub fn delete(&self, installation_id: &str) -> Result<bool, ApplyError> {
+        let conn = self.conn.lock().expect("install state db lock");
+        let n = conn.execute(
+            "DELETE FROM extension_install_state WHERE installation_id = ?1",
+            params![installation_id],
+        )?;
+        Ok(n > 0)
+    }
+}
+
+/// Result of a successful [`remove_install`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveResult {
+    pub installation_id: String,
+    pub removed_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Error)]
+pub enum RemoveError {
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Ownership(#[from] OwnershipError),
+    #[error("install state not found for id: {0}")]
+    StateNotFound(String),
 }
 
 /// Plan install destinations under `target_root` without writing anything.
@@ -344,6 +371,36 @@ pub fn apply_install(
     Ok(state)
 }
 
+/// Uninstall an extension by `installation_id` using ownership proof.
+///
+/// Requires a persisted install-state row. Removes each path returned by
+/// [`OwnershipStore::list_by_installation_id`] via [`OwnershipStore::uninstall`]
+/// (digest + owner must match). Deletes install state only after all owned
+/// paths are cleared. Digest mismatch leaves remaining paths and state intact.
+pub fn remove_install(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<RemoveResult, RemoveError> {
+    if state_store.get(installation_id)?.is_none() {
+        return Err(RemoveError::StateNotFound(installation_id.to_string()));
+    }
+
+    let records = ownership.list_by_installation_id(installation_id)?;
+    let mut removed_paths = Vec::with_capacity(records.len());
+    for record in &records {
+        let path = PathBuf::from(&record.path);
+        ownership.uninstall(&path, OWNER_IMPETUS)?;
+        removed_paths.push(path);
+    }
+
+    state_store.delete(installation_id)?;
+    Ok(RemoveResult {
+        installation_id: installation_id.to_string(),
+        removed_paths,
+    })
+}
+
 fn provenance(resolution: &ResolutionPlan) -> String {
     let source = match &resolution.source {
         ExtensionSource::Native => "native",
@@ -365,7 +422,7 @@ fn provenance(resolution: &ResolutionPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ownership::{OwnershipError, OwnershipStore, content_digest};
+    use crate::ownership::{OwnershipError, OwnershipStore, content_digest, path_key};
     use std::fs;
     use std::time::SystemTime;
 
@@ -632,5 +689,89 @@ mod tests {
         ));
         assert_eq!(fs::read_to_string(&dest).unwrap(), "pre-existing user");
         assert!(state_store.get("anything").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_install_deletes_owned_paths_and_state() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "remove me");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = state.created_paths[0].clone();
+        assert!(dest.exists());
+
+        let result =
+            remove_install(&state.installation_id, &ownership, &state_store).expect("remove");
+        assert_eq!(result.installation_id, state.installation_id);
+        assert_eq!(result.removed_paths.len(), 1);
+        assert_eq!(
+            path_key(&result.removed_paths[0]).unwrap(),
+            path_key(&dest).unwrap()
+        );
+        assert!(!dest.exists(), "owned file must be deleted");
+        assert!(
+            ownership
+                .list_by_installation_id(&state.installation_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(state_store.get(&state.installation_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_install_refuses_digest_mismatch_keeps_state() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "original");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = &state.created_paths[0];
+        fs::write(dest, "user edited").expect("tamper");
+
+        let err = remove_install(&state.installation_id, &ownership, &state_store)
+            .expect_err("digest mismatch");
+        assert!(matches!(
+            err,
+            RemoveError::Ownership(OwnershipError::DigestMismatch(_))
+        ));
+        assert_eq!(fs::read_to_string(dest).unwrap(), "user edited");
+        assert!(
+            state_store.get(&state.installation_id).unwrap().is_some(),
+            "state must remain for retry after mismatch"
+        );
+        assert_eq!(
+            ownership
+                .list_by_installation_id(&state.installation_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_install_unknown_id_errors() {
+        let target = tempfile::tempdir().expect("target");
+        let (ownership, state_store) = open_stores(target.path());
+        let err = remove_install("missing-id", &ownership, &state_store).expect_err("missing");
+        assert!(matches!(err, RemoveError::StateNotFound(_)));
     }
 }

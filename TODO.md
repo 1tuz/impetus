@@ -146,7 +146,9 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
       Skill / MCP config intents; no write; create vs modify classification)
 - [x] CLI: `extension plan | install` (wraps `plan_install` / `apply_install`;
       project DBs under `{root}/.impetus/`)
-- [ ] CLI/IPC: `extension doctor | repair | remove`
+- [x] CLI: `extension remove` (ownership uninstall + install-state delete by
+      `installation_id`; doctor | repair still open)
+- [ ] CLI/IPC: `extension doctor | repair`
 - [x] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
       (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)

@@ -75,6 +75,17 @@ enum ExtensionAction {
         #[arg(long)]
         json: bool,
     },
+    /// Uninstall by installation_id (ownership proof)
+    Remove {
+        /// Installation ID from a prior `extension install`
+        installation_id: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -98,7 +109,7 @@ enum Commands {
         #[command(subcommand)]
         action: SkillsAction,
     },
-    /// Extension lifecycle (plan / install; doctor|repair|remove later)
+    /// Extension lifecycle (plan / install / remove; doctor|repair later)
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
@@ -256,6 +267,14 @@ async fn main() -> Result<()> {
                         *json,
                     )
                     .await?;
+                }
+                ExtensionAction::Remove {
+                    installation_id,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::remove(installation_id, root_path.as_deref(), *json)?;
                 }
             }
             return Ok(());
@@ -490,6 +509,34 @@ mod tests {
                         ..
                     },
             } => assert_eq!(root, "/tmp/project"),
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_remove_with_root() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "remove",
+            "11111111-2222-3333-4444-555555555555",
+            "--root",
+            "/tmp/project",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Remove {
+                        installation_id,
+                        json: true,
+                        root: Some(root),
+                    },
+            } => {
+                assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");
+                assert_eq!(root, "/tmp/project");
+            }
             _ => panic!("unexpected command variant"),
         }
     }

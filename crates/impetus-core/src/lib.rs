@@ -152,7 +152,8 @@ pub use extension_compat::{
 };
 pub use extension_lifecycle::{
     ApplyError, ExtensionInstallIntent, ExtensionState, ExtensionStateStore, InstallPlan,
-    PlanError, ResolutionPlan, apply_install, plan_install,
+    PlanError, RemoveError, RemoveResult, ResolutionPlan, apply_install, plan_install,
+    remove_install,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{
