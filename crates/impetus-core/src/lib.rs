@@ -228,5 +228,6 @@ pub use tools::{
     ToolProvenance, ToolResult,
 };
 pub use worktree_manager::{
-    WorktreeBinding, WorktreeError, WorktreeLifecycleState, WorktreeManager,
+    StaleReason, StaleReport, WorktreeBinding, WorktreeError, WorktreeLifecycleState,
+    WorktreeManager,
 };

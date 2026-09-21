@@ -189,8 +189,11 @@ stale → close → salvage
 - [x] Create/resume/stop/close with durable session ↔ worktree binding
       (`WorktreeManager` + SQLite bindings; git CLI; temp-dir tests)
 - [ ] Diff / merge-ready / conflict checks before merge attempts
-- [ ] Safe cleanup + abandoned/stale detection
-- [ ] Salvage path for recoverable abandoned worktrees
+- [x] Safe cleanup + abandoned/stale detection
+      (`detect_stale` / `mark_stale` / `cleanup_stale`; path-missing +
+      not-registered; temp-repo tests)
+- [x] Salvage path for recoverable abandoned worktrees
+      (`salvage` re-registers + preserves on-disk files; same `worktree_id`)
 - [ ] Worktree identity survives compaction/resume
 - [ ] Build-role agents prefer isolated worktrees with attached permissions
 
