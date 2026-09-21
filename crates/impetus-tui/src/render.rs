@@ -9,6 +9,7 @@ use ratatui::{
 use crate::{
     command,
     composer::ComposerLayoutMode,
+    diff::{looks_like_diff, render_diff_view},
     markdown::{render_markdown, render_plain_wrapped},
     model::{AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, short_id},
     theme::Theme,
@@ -258,11 +259,19 @@ fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<
         ]));
         if !item.collapsed && (!item.body.is_empty() || item.streaming_key.is_some()) {
             let body_width = width.saturating_sub(3);
-            let body_lines = match item.kind {
-                ItemKind::Assistant | ItemKind::User | ItemKind::Plan => {
-                    render_markdown(&item.body, body_width, theme)
+            let body_lines = if looks_like_diff(&item.body) {
+                render_diff_view(&item.body, body_width, theme)
+            } else {
+                match item.kind {
+                    ItemKind::Assistant | ItemKind::User | ItemKind::Plan => {
+                        render_markdown(&item.body, body_width, theme)
+                    }
+                    _ => render_plain_wrapped(
+                        &item.body,
+                        body_width,
+                        Style::default().fg(theme.text),
+                    ),
                 }
-                _ => render_plain_wrapped(&item.body, body_width, Style::default().fg(theme.text)),
             };
             for line in body_lines {
                 let mut spans = vec![
@@ -315,11 +324,29 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme)
         } else {
             &item.details
         };
-        lines.extend(render_plain_wrapped(
-            detail,
-            inner.width as usize,
-            Style::default().fg(theme.text),
-        ));
+        if looks_like_diff(&item.body) {
+            lines.extend(render_diff_view(&item.body, inner.width as usize, theme));
+            if !item.details.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Event metadata",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.extend(render_plain_wrapped(
+                    &item.details,
+                    inner.width as usize,
+                    Style::default().fg(theme.muted),
+                ));
+            }
+        } else {
+            lines.extend(render_plain_wrapped(
+                detail,
+                inner.width as usize,
+                Style::default().fg(theme.text),
+            ));
+        }
     } else {
         lines.extend([
             Line::from(Span::styled(
@@ -849,18 +876,8 @@ fn render_approval_detail(frame: &mut Frame, app: &AppState, theme: Theme) {
                 "Diff preview",
                 Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
             )));
-            for line in diff.lines() {
-                let style = if line.starts_with('+') && !line.starts_with("+++") {
-                    Style::default().fg(theme.green)
-                } else if line.starts_with('-') && !line.starts_with("---") {
-                    Style::default().fg(theme.red)
-                } else if line.starts_with("@@") {
-                    Style::default().fg(theme.magenta)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                lines.extend(render_plain_wrapped(line, inner.width as usize, style));
-            }
+            lines.push(Line::from(""));
+            lines.extend(render_diff_view(diff, inner.width as usize, theme));
         }
     } else {
         lines.push(Line::from(Span::styled(
@@ -911,11 +928,12 @@ fn render_text_modal(
         vertical: 1,
     });
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(render_markdown(body, inner.width as usize, theme))
-            .wrap(Wrap { trim: false }),
-        inner,
-    );
+    let content = if looks_like_diff(body) {
+        render_diff_view(body, inner.width as usize, theme)
+    } else {
+        render_markdown(body, inner.width as usize, theme)
+    };
+    frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_toast(frame: &mut Frame, app: &AppState, theme: Theme) {

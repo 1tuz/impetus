@@ -12,6 +12,7 @@ mod backend;
 pub mod boundary;
 mod command;
 mod composer;
+mod diff;
 mod markdown;
 mod model;
 mod render;

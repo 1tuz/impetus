@@ -1627,6 +1627,7 @@ dependencies = [
  "futures-util",
  "impetus-client",
  "ratatui",
+ "serde",
  "serde_json",
  "syntect",
  "tokio",
