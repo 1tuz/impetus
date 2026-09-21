@@ -206,6 +206,12 @@ mod tests {
                 variant: "balanced".to_string()
             }
         );
+        assert_eq!(
+            bindings.context,
+            ServiceBinding::Builtin {
+                variant: "lazy".to_string()
+            }
+        );
     }
 
     #[test]

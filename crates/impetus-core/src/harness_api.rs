@@ -11,8 +11,11 @@ use crate::{
     AgentLoop, AgentRuntime, CredentialResolver, DurableArtifactStore, EventStore,
     IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
     MockProvider, NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider,
-    PolicyEngine, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
-    ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
+    PolicyEngine, Profile, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind,
+    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
+    context_optimizer::{
+        DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
+    },
     model_router::{ModelRouter, ModelRouterConfig},
 };
 use anyhow::Result;
@@ -684,11 +687,24 @@ fn resolve_provider_messages(
     workspace_root: &std::path::Path,
     runtime: &AgentRuntime,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
-    let mut messages = resolve_context(workspace_root)?
-        .references
-        .into_iter()
-        .map(|reference| ProviderMessage::system(reference.text))
-        .collect::<Vec<_>>();
+    resolve_provider_messages_with_binding(
+        workspace_root,
+        runtime,
+        &Profile::Standard.default_bindings().context,
+        DEFAULT_CONTEXT_BUDGET_TOKENS,
+    )
+}
+
+fn resolve_provider_messages_with_binding(
+    workspace_root: &std::path::Path,
+    runtime: &AgentRuntime,
+    context_binding: &crate::ServiceBinding,
+    budget_tokens: usize,
+) -> anyhow::Result<Vec<ProviderMessage>> {
+    let instructions = resolve_context(workspace_root)?;
+    let tools = default_tool_stubs();
+    let mut messages =
+        system_messages_for_binding(context_binding, &instructions, &tools, budget_tokens);
     let mut pending_assistant = String::new();
     let mut has_user_intent = false;
     for event in runtime.events()? {
@@ -1292,6 +1308,78 @@ mod tests {
         assert!(durable.contains("only user intent"));
         assert!(!durable.contains("resolved secret-free"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prompt_path_uses_token_budgeted_context_optimizer() {
+        let root = tempfile::tempdir().expect("temp root");
+        let workspace = root.path();
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            "HOT project rules that must remain",
+        )
+        .expect("agents");
+        std::fs::create_dir_all(workspace.join(".impetus/conventions")).expect("conv dir");
+        // Large WARM convention (~200 tokens) dropped under tight budget.
+        std::fs::write(
+            workspace.join(".impetus/conventions/bulk.md"),
+            format!("---\nid: bulk\n---\n{}", "C".repeat(800)),
+        )
+        .expect("convention");
+
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace));
+        let harness = Harness::new(store.clone(), policy.clone());
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let runtime = AgentRuntime::attach(store, policy.clone(), session_id).expect("attach");
+        runtime
+            .submit_intent("user question for prompt")
+            .expect("intent");
+
+        let lazy = crate::ServiceBinding::Builtin {
+            variant: "lazy".into(),
+        };
+        // Budget fits HOT (~9) + cold tool refs; not the large WARM convention.
+        let messages = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20)
+            .expect("resolve");
+
+        let system: Vec<_> = messages
+            .iter()
+            .filter(|m| m.role() == "system")
+            .map(|m| m.content())
+            .collect();
+        assert!(
+            system
+                .iter()
+                .any(|c| c.contains("HOT project rules that must remain")),
+            "HOT instruction kept"
+        );
+        assert!(
+            system.iter().all(|c| !c.contains(&"C".repeat(50))),
+            "large WARM convention body dropped under budget"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role() == "user" && m.content().contains("user question")),
+            "conversation intent preserved"
+        );
+
+        // Optimizer does not change policy decisions.
+        let denied = crate::Action {
+            origin: crate::ActionOrigin::Agent,
+            kind: crate::ActionKind::SshConnect,
+            summary: "connect".into(),
+            target: None,
+        };
+        let before = policy.evaluate(&denied);
+        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20);
+        assert_eq!(policy.evaluate(&denied), before);
     }
 
     struct CountingKeychainCredential {

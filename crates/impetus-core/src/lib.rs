@@ -81,8 +81,9 @@ pub use ci::{
 pub use claude_code_adapter::ClaudeCodeAdapter;
 pub use codex_adapter::CodexAdapter;
 pub use context_optimizer::{
-    BuiltinContextOptimizer, ContextCatalogEntry, ContextItem, ContextPayload, ContextTier,
-    DescriptionSource, MemoryDescriptionSource,
+    BuiltinContextOptimizer, BuiltinContextService, ContextCatalogEntry, ContextItem,
+    ContextPayload, ContextService, ContextTier, DEFAULT_CONTEXT_BUDGET_TOKENS, DescriptionSource,
+    MemoryDescriptionSource, ToolStub, default_tool_stubs, system_messages_for_binding,
 };
 pub use cursor_adapter::CursorAdapter;
 pub use deepseek_harness_adapter::{
