@@ -4,7 +4,7 @@ use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 5;
+pub const IPC_VERSION: u16 = 6;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
@@ -26,6 +26,9 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "artifact_upload",
     // Coding-tools IPC: definition (paths/ranges only; no secrets).
     "coding_definition",
+    "execution_mode",
+    "approval_scope_file_edits",
+    "approval_scope_full_auto",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,6 +133,13 @@ pub enum IpcRequest {
         line: u32,
         character: u32,
     },
+    SetExecutionMode {
+        session_id: Uuid,
+        mode: crate::ExecutionMode,
+    },
+    GetExecutionMode {
+        session_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -208,6 +218,10 @@ pub enum IpcResponse {
     /// Definition locations (workspace paths + ranges only).
     Definition {
         locations: Vec<crate::SourceLocation>,
+    },
+    ExecutionMode {
+        session_id: Uuid,
+        mode: crate::ExecutionMode,
     },
     Incompatible {
         supported_version: u16,
@@ -337,6 +351,53 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&stored).unwrap()).unwrap(),
             stored
+        );
+    }
+
+    #[test]
+    fn execution_mode_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        for mode in [
+            crate::ExecutionMode::Ask,
+            crate::ExecutionMode::Plan,
+            crate::ExecutionMode::AcceptEdits,
+            crate::ExecutionMode::Auto,
+            crate::ExecutionMode::Bypass,
+        ] {
+            let set = IpcRequest::SetExecutionMode { session_id, mode };
+            assert_eq!(
+                serde_json::from_str::<IpcRequest>(&serde_json::to_string(&set).unwrap()).unwrap(),
+                set
+            );
+            let get = IpcRequest::GetExecutionMode { session_id };
+            assert_eq!(
+                serde_json::from_str::<IpcRequest>(&serde_json::to_string(&get).unwrap()).unwrap(),
+                get
+            );
+            let response = IpcResponse::ExecutionMode { session_id, mode };
+            assert_eq!(
+                serde_json::from_str::<IpcResponse>(&serde_json::to_string(&response).unwrap())
+                    .unwrap(),
+                response
+            );
+        }
+    }
+
+    #[test]
+    fn hello_includes_execution_mode_capabilities() {
+        let request = IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec![
+                "execution_mode".into(),
+                "approval_scope_file_edits".into(),
+                "approval_scope_full_auto".into(),
+            ],
+        };
+        let encoded = serde_json::to_string(&request).expect("encode");
+        assert!(encoded.contains("execution_mode"));
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&encoded).expect("decode"),
+            request
         );
     }
 

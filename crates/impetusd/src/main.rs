@@ -327,6 +327,9 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
+        IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
+            "execution_mode"
+        }
     }
 }
 

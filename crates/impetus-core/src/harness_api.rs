@@ -8,13 +8,13 @@
 //! the client.
 
 use crate::{
-    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventStore,
-    IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
-    MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
-    ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope,
-    SteerActiveContext, SteerRewrite, TokenBudget, ToolOutcome, UserIntentRouter,
-    UserIntentSubmission, UserPromptIntent,
+    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventPayload,
+    EventStore, IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest,
+    IpcResponse, MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider,
+    PolicyEngine, Profile, ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool,
+    ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox,
+    SandboxScope, SessionEvent, SteerActiveContext, SteerRewrite, TokenBudget, ToolOutcome,
+    UserIntentRouter, UserIntentSubmission, UserPromptIntent, reduce,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
@@ -952,6 +952,52 @@ fn handle_request(
                 },
             }
         }
+        IpcRequest::SetExecutionMode { session_id, mode } => {
+            if let Some(required) = mode.required_ipc_capability() {
+                if !IPC_CAPABILITIES.contains(&required) {
+                    return IpcResponse::Error {
+                        code: IpcErrorCode::Unavailable,
+                        message: format!(
+                            "execution mode {} requires harness capability `{required}`",
+                            mode.label()
+                        ),
+                    };
+                }
+            }
+            match AgentRuntime::attach(store.clone(), policy.clone(), session_id) {
+                Ok(runtime) => {
+                    match runtime.record_event(EventPayload::Session(
+                        SessionEvent::ExecutionModeChanged { mode },
+                    )) {
+                        Ok(()) => IpcResponse::ExecutionMode { session_id, mode },
+                        Err(error) => runtime_error(error),
+                    }
+                }
+                Err(error) => runtime_error(error),
+            }
+        }
+        IpcRequest::GetExecutionMode { session_id } => {
+            match AgentRuntime::attach(store.clone(), policy.clone(), session_id) {
+                Ok(runtime) => match runtime.events() {
+                    Ok(events) => match reduce(&events) {
+                        Ok(Some(projection)) => IpcResponse::ExecutionMode {
+                            session_id,
+                            mode: projection.execution_mode,
+                        },
+                        Ok(None) => IpcResponse::Error {
+                            code: IpcErrorCode::MissingSession,
+                            message: format!("session {session_id} has no events"),
+                        },
+                        Err(error) => IpcResponse::Error {
+                            code: IpcErrorCode::Internal,
+                            message: error.to_string(),
+                        },
+                    },
+                    Err(error) => runtime_error(error),
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
     }
 }
 
@@ -1784,8 +1830,8 @@ fn compute_approval_detail(
 mod tests {
     use super::*;
     use crate::{
-        CredentialStrategy, EventPayload, MemoryEventStore, OpenAiProvider, OpenAiRetryBudget,
-        ProviderError, ProviderProfile, mock_provider::MockStreamItem,
+        CredentialStrategy, EventPayload, ExecutionMode, MemoryEventStore, OpenAiProvider,
+        OpenAiRetryBudget, ProviderError, ProviderProfile, mock_provider::MockStreamItem,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -3470,5 +3516,100 @@ mod tests {
             .expect("mcp");
         assert_eq!(observations[0].outcome, crate::ToolOutcomeStatus::Success);
         assert_eq!(observations[0].preview, "from-runtime");
+    }
+
+    #[test]
+    fn execution_mode_defaults_to_ask_on_new_session() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        })
+        else {
+            panic!("create session");
+        };
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::GetExecutionMode { session_id })
+        else {
+            panic!("get execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Ask);
+    }
+
+    #[test]
+    fn set_execution_mode_persists_via_durable_event() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        })
+        else {
+            panic!("create session");
+        };
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::SetExecutionMode {
+                session_id,
+                mode: ExecutionMode::Plan,
+            })
+        else {
+            panic!("set execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Plan);
+
+        let events = store.list(session_id).expect("events");
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::Session(SessionEvent::ExecutionModeChanged {
+                    mode: ExecutionMode::Plan
+                })
+            ))
+        );
+
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::GetExecutionMode { session_id })
+        else {
+            panic!("get execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Plan);
+    }
+
+    #[test]
+    fn hello_advertises_execution_mode_capabilities() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let IpcResponse::Hello { capabilities, version } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec![
+                "execution_mode".into(),
+                "approval_scope_file_edits".into(),
+                "approval_scope_full_auto".into(),
+            ],
+        })
+        else {
+            panic!("hello");
+        };
+        assert_eq!(version, IPC_VERSION);
+        for cap in [
+            "execution_mode",
+            "approval_scope_file_edits",
+            "approval_scope_full_auto",
+        ] {
+            assert!(
+                capabilities.iter().any(|advertised| advertised == cap),
+                "missing capability {cap}"
+            );
+        }
     }
 }

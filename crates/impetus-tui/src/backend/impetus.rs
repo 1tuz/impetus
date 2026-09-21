@@ -248,6 +248,12 @@ fn map_event(event: Event) -> UiEvent {
             }
         }
         EventPayload::Session(SessionEvent::Attached) => UiEventKind::SessionAttached,
+        EventPayload::Session(SessionEvent::ExecutionModeChanged { mode }) => UiEventKind::Notice {
+            title: "execution mode".to_owned(),
+            message: format!("daemon mode set to {}", mode.label()),
+            error: false,
+            remediation: None,
+        },
         EventPayload::Intent(intent) => UiEventKind::UserInput { text: intent.text },
         EventPayload::Plan(plan) => UiEventKind::Plan {
             summary: plan.summary,

@@ -36,6 +36,9 @@ pub enum SessionEvent {
     Created,
     WorkspaceRoot { workspace_root: std::path::PathBuf },
     Attached,
+    ExecutionModeChanged {
+        mode: crate::ExecutionMode,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -430,7 +433,13 @@ mod tests {
 
     #[test]
     fn all_session_events_serialize() {
-        let events = vec![SessionEvent::Created, SessionEvent::Attached];
+        let events = vec![
+            SessionEvent::Created,
+            SessionEvent::Attached,
+            SessionEvent::ExecutionModeChanged {
+                mode: crate::ExecutionMode::Plan,
+            },
+        ];
         for ev in events {
             let json = serde_json::to_string(&ev).unwrap();
             assert_eq!(serde_json::from_str::<SessionEvent>(&json).unwrap(), ev);

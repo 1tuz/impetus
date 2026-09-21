@@ -33,6 +33,7 @@ pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
 pub mod execution;
+pub mod execution_mode;
 pub mod explore_agent_loop;
 pub mod explore_child;
 pub mod extension_adapter;
@@ -174,6 +175,7 @@ pub use events::{
     EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent,
     RunEvent, SessionEvent, ToolEvent, ToolEventOutcome,
 };
+pub use execution_mode::ExecutionMode;
 pub use execution::{
     MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, MacosSeatbeltSandbox,
     PreparedSandboxCommand, ProcessExecution, ProcessExecutionError, ProcessExecutionRequest,

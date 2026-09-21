@@ -40,14 +40,15 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
 ### Daemon-owned execution modes
 
-- [ ] Typed execution mode as daemon/IPC state (not TUI `prompt_prefix`).
-      Modes: ASK, PLAN, ACCEPT_EDITS, AUTO; explicit opt-in BYPASS/FULL_AUTO
-      outside Shift+Tab cycle.
-      **Done:** TUI only selects/displays confirmed daemon state; PLAN denies
-      mutations daemon-side; prompt text cannot escalate permissions.
+- [x] Core `ExecutionMode` + IPC v6 `Set`/`Get` + durable `ExecutionModeChanged`
+      + projection + harness handlers + client wrappers (#308)
+- [ ] Enforce mode in daemon admission (PLAN denies mutations; not prompt text).
+      **Done:** EffectSeam / runtime uses session mode; prompt cannot escalate.
+- [ ] TUI syncs mode via IPC; drop `prompt_prefix`; show daemon-confirmed state.
+      **Done:** local TUI enum replaced / aliased; toast only after Set OK.
 - [ ] Shift+Tab cycles ASK → ACCEPT EDITS → PLAN → AUTO → ASK; Tab unchanged;
       F4 mode picker secondary; slash `/mode` `/plan` `/ask` `/auto`.
-      **Done:** TUI tests for keymap; Help/F1 matches reality.
+      **Done:** TUI keymap tests; Help/F1 matches reality.
 
 ### Auto Risk Gate
 
