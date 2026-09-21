@@ -10,6 +10,7 @@
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule, McpTransport};
 use crate::extension_manifest::{ExtensionManifest, ExtensionManifestError, ExtensionManifestKind};
+use crate::mcp_manifest::{McpManifest, McpManifestError};
 use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,8 @@ pub enum PlanError {
     Resolve(String),
     #[error("invalid MCP config: {0}")]
     InvalidMcpConfig(String),
+    #[error("invalid MCP manifest: {0}")]
+    InvalidMcpManifest(#[from] McpManifestError),
     #[error("invalid extension manifest: {0}")]
     InvalidManifest(#[from] ExtensionManifestError),
     #[error("path key error: {0}")]
@@ -275,6 +278,8 @@ fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanE
     let bytes = std::fs::read(path)?;
     let module: McpModule =
         serde_json::from_slice(&bytes).map_err(|e| PlanError::InvalidMcpConfig(e.to_string()))?;
+    // Validate local MCP config shape (`impetus.mcp.v1`); env values never enter the envelope.
+    McpManifest::from_module(&module)?;
 
     let module_id = sanitize_id(&module.name);
     let digest = content_digest(&bytes);

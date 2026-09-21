@@ -128,7 +128,8 @@ Agents remain **execution roles**. Workflows own step ordering. Worktrees are
         full session catalog still Planned)
   - [x] `impetus.extension.v1` (minimal manifest: id/kind/version/digest/capabilities;
         wired into `plan_install` / `InstallPlan`)
-  - [ ] `impetus.mcp.v1`
+  - [x] `impetus.mcp.v1` (minimal local MCP config: id/transport/command/args/
+        capabilities/env_keys; wired into `plan_mcp_config`)
   - [x] `impetus.capabilities.v1`
   - [x] `impetus.approval_detail.v1` wired into shared registry (#189/#191 pattern)
 - [x] Provider/harness-specific details nested; do not leak into common fields
