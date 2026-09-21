@@ -687,6 +687,24 @@ impl ToolOrchestrator {
         resolution: crate::ApprovalResolution,
         deferred: (String, String, serde_json::Value),
     ) -> Result<ToolObservation, OrchestratorError> {
+        Self::execute_approved_bash_with_artifacts(
+            runtime,
+            request,
+            resolution,
+            deferred,
+            &crate::default_artifact_root(),
+        )
+    }
+
+    /// Same as [`Self::execute_approved_bash`], but writes large stdout/stderr
+    /// bodies into the given artifact root (tests and harness share this path).
+    pub fn execute_approved_bash_with_artifacts(
+        runtime: &Arc<AgentRuntime>,
+        request: crate::ApprovalRequest,
+        resolution: crate::ApprovalResolution,
+        deferred: (String, String, serde_json::Value),
+        artifact_root: &std::path::Path,
+    ) -> Result<ToolObservation, OrchestratorError> {
         let (tool_call_id, tool_name, arguments) = deferred;
         if !matches!(tool_name.as_str(), "bash" | "shell" | "exec") {
             return Err(OrchestratorError::ToolNotFound(tool_name));
@@ -711,6 +729,12 @@ impl ToolOrchestrator {
                 "deferred action no longer matches approval".into(),
             ));
         }
+        let artifacts = DurableArtifactStore::open(artifact_root).map_err(|error| {
+            OrchestratorError::ToolFailed {
+                tool: tool_name.clone(),
+                reason: error.to_string(),
+            }
+        })?;
         let process = crate::ProcessExecutionRequest::new(
             "/bin/sh",
             vec!["-lc".into(), command.into()],
@@ -732,7 +756,7 @@ impl ToolOrchestrator {
                                     .enable_all()
                                     .build()
                                     .map_err(crate::ProcessExecutionError::Io)?
-                                    .block_on(process.execute(admission))
+                                    .block_on(process.execute(admission, &artifacts))
                             })
                             .join()
                             .map_err(|_| {
@@ -747,21 +771,21 @@ impl ToolOrchestrator {
                 tool: tool_name.clone(),
                 reason: error.to_string(),
             })?;
-        let (outcome, preview, error) = match execution {
-            crate::EffectExecution::Executed(output) => (
-                ToolOutcomeStatus::Success,
-                crate::tools::redact_text(&format!(
+        let (outcome, preview, artifact, error) = match execution {
+            crate::EffectExecution::Executed(output) => {
+                let preview = crate::tools::redact_text(&format!(
                     "exit_code={:?}\nstdout:\n{}\nstderr:\n{}",
                     output.exit_code, output.stdout, output.stderr
-                )),
-                None,
-            ),
+                ));
+                (ToolOutcomeStatus::Success, preview, output.artifact, None)
+            }
             crate::EffectExecution::Denied { reason } => {
-                (ToolOutcomeStatus::Denied, String::new(), Some(reason))
+                (ToolOutcomeStatus::Denied, String::new(), None, Some(reason))
             }
             crate::EffectExecution::NeedsApproval { reason } => (
                 ToolOutcomeStatus::ApprovalRequired,
                 String::new(),
+                None,
                 Some(reason),
             ),
         };
@@ -775,7 +799,7 @@ impl ToolOrchestrator {
             summarize_arguments(&arguments),
             outcome,
             preview,
-            None,
+            artifact,
             error,
         ))
     }
@@ -1166,6 +1190,87 @@ mod tests {
                 .expect("approved shell execution");
         assert_eq!(observation.outcome, ToolOutcomeStatus::Success);
         assert!(observation.preview.contains("verified"));
+    }
+
+    #[tokio::test]
+    async fn large_bash_stdout_artifact_survives_store_reopen() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let artifact_root = tempfile::tempdir().expect("artifact root");
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        ));
+        runtime.submit_intent("inspect workspace").expect("intent");
+        let orchestrator = ToolOrchestrator::with_artifact_root(
+            runtime.policy(),
+            workspace.path().to_path_buf(),
+            artifact_root.path().to_path_buf(),
+        );
+        let payload = "y".repeat(crate::MAX_PROCESS_PREVIEW_BYTES + 2048);
+        let byte_count = payload.len();
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "bash-large".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({
+                        "command": format!("yes y | tr -d '\\n' | head -c {byte_count}")
+                    }),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("request bash");
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::ApprovalRequired);
+        let request = runtime
+            .events()
+            .unwrap()
+            .iter()
+            .find_map(|event| match &event.payload {
+                crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.clone())
+                }
+                _ => None,
+            })
+            .expect("approval request");
+        let deferred = runtime
+            .deferred_tool(request.id)
+            .expect("deferred lookup")
+            .expect("deferred bash");
+        let resolution = crate::ApprovalResolution::user(&request, true);
+        runtime
+            .resolve_approval(resolution.clone())
+            .expect("approval");
+        let observation = ToolOrchestrator::execute_approved_bash_with_artifacts(
+            &runtime,
+            request,
+            resolution,
+            deferred,
+            artifact_root.path(),
+        )
+        .expect("approved large shell");
+        assert_eq!(observation.outcome, ToolOutcomeStatus::Success);
+        let artifact = observation.artifact.expect("large bash artifact");
+        assert!(
+            observation.preview.len() < payload.len(),
+            "durable event must keep bounded preview"
+        );
+        let reopened = DurableArtifactStore::open(artifact_root.path()).expect("reopen");
+        let full = String::from_utf8(reopened.read(&artifact.id).expect("read")).expect("utf8");
+        assert!(full.contains(&payload));
+        assert!(
+            runtime.events().expect("events").iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::Tool(crate::ToolEvent::Observed {
+                        artifact: Some(stored),
+                        ..
+                    }) if stored.id == artifact.id
+                )
+            }),
+            "durable tool event must retain ArtifactRef"
+        );
     }
 
     #[tokio::test]
