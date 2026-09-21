@@ -175,12 +175,14 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 
 - Stable ids: `impetus.<name>.vN` (`SchemaSpec::id`)
 - Numeric field: `schema_version` (u16)
-- Registered today: `impetus.approval_detail.v1`, `impetus.capabilities.v1`
-- Validation: version mismatch and unknown critical top-level fields fail
-  clearly (`SchemaValidationError`); provider-specific details stay nested
+- Registered today: `impetus.approval_detail.v1`, `impetus.capabilities.v1`,
+  `impetus.session.v1` (nest-shape slice only)
+- Validation: version mismatch, unknown critical top-level fields, and
+  leaked provider/harness keys fail clearly (`SchemaValidationError`);
+  provider/harness details nest under `provider` / `harness` objects
 - Lookup: `KNOWN_SCHEMAS` / `lookup_schema`
 
-Session / extension / MCP envelopes remain Planned.
+Full session / extension / MCP catalogs remain Planned.
 
 ## Documentation
 

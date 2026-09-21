@@ -221,9 +221,11 @@ pub use remote::{
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{
-    KNOWN_SCHEMAS, SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SchemaSpec, SchemaValidationError,
-    lookup as lookup_schema, reject_unknown_critical_fields,
-    require_version as require_schema_version, validate_envelope as validate_schema_envelope,
+    HARNESS_NEST_KEYS, KNOWN_SCHEMAS, NEST_HARNESS, NEST_PROVIDER, PROVIDER_NEST_KEYS,
+    SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_SESSION, SchemaSpec, SchemaValidationError,
+    lookup as lookup_schema, reject_leaked_nested_fields, reject_unknown_critical_fields,
+    require_nest_objects, require_version as require_schema_version,
+    validate_envelope as validate_schema_envelope,
 };
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,

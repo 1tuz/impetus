@@ -124,12 +124,15 @@ Agents remain **execution roles**. Workflows own step ordering. Worktrees are
 
 - [x] Shared schema registry (`schema` module): ids + `schema_version` convention
 - [x] Stable schemas with deterministic validation (partial — registry slice):
-  - [ ] `impetus.session.v1`
+  - [x] `impetus.session.v1` (nest-shape slice: common + `provider`/`harness`;
+        full session catalog still Planned)
   - [ ] `impetus.extension.v1`
   - [ ] `impetus.mcp.v1`
   - [x] `impetus.capabilities.v1`
   - [x] `impetus.approval_detail.v1` wired into shared registry (#189/#191 pattern)
-- [ ] Provider/harness-specific details nested; do not leak into common fields
+- [x] Provider/harness-specific details nested; do not leak into common fields
+      (`reject_leaked_nested_fields` + nest containers on capabilities/session/
+      approval_detail; #239)
 - [x] Compatibility evolution (version field + reject unknown critical fields)
   (registry helpers; full payload coverage still growing)
 
