@@ -59,6 +59,8 @@ pub mod reference_tools;
 pub mod remote;
 pub mod rtk_adapter;
 pub mod runtime;
+#[cfg(test)]
+mod security_runtime_pr;
 pub mod service_contract;
 pub mod service_provider;
 pub mod storage;

@@ -68,15 +68,25 @@ Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.
 Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
 `cargo test --workspace --lib --bins`.
 
-- [ ] Add focused lib/bin tests (or tiny PR-safe suite) covering:
-  - approve → execute; reject
-  - cancel
-  - reconnect / attach after daemon restart (where feasible without Seatbelt)
-  - sandbox deny → no execution
-  - `UnknownOutcome` / retry blocked for mutating
-  - secret redaction
-  - durable artifact restore
-- [ ] Do **not** move full Seatbelt integration into every PR; keep nightly/manual
+- [x] Add focused lib/bin tests (or tiny PR-safe suite) covering:
+  - [x] approve → execute; reject — `security_runtime_pr` + harness
+        `approval_resume_*` / `rejected_approval_*` (#174; refs full-flow #15)
+  - [x] cancel — harness `cancellation_stops_an_active_agent_run_*` (lib)
+  - [x] reconnect / attach after daemon restart (where feasible without Seatbelt)
+        — runtime `attach_recovers_pending_approval_*` /
+        `reattach_recovers_the_exact_deferred_tool_arguments` (lib; no daemon
+        process restart / Seatbelt)
+  - [x] sandbox deny → no execution — `security_runtime_pr` + `effects` path-scope
+        fail-closed (lib). Seatbelt process wrap still out of PR path.
+  - [x] `UnknownOutcome` / retry blocked for mutating — `security_runtime_pr` +
+        `module_fallback` (lib)
+  - [x] secret redaction — `redact_tool_outcome` + tools
+        `client_visible_tool_output_redacts_*` (lib). Deeper audit-log IPC
+        fixtures stay in `tests/audit_log_redaction.rs` (not `--lib`).
+  - [x] durable artifact restore — `security_runtime_pr` reopen +
+        `tool_orchestrator` large_*_survives_store_reopen (lib)
+- [x] Do **not** move full Seatbelt integration into every PR; keep nightly/manual
+      (`tests/macos_sandbox_spike.rs` / Seatbelt remain non-PR)
 
 ### 6. Capability truth generation
 
