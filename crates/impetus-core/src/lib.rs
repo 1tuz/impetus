@@ -16,6 +16,7 @@ pub mod budget;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod codex_adapter;
+pub mod context_builder;
 pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod cursor_adapter;
@@ -85,6 +86,9 @@ pub use ci::{
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
 pub use codex_adapter::CodexAdapter;
+pub use context_builder::{
+    ArtifactRangeSource, ContextBuilder, ContextBuilderError, MaterializedArtifact,
+};
 pub use context_optimizer::{
     BuiltinContextOptimizer, BuiltinContextService, ContextCatalogEntry, ContextItem,
     ContextPayload, ContextService, ContextTier, DEFAULT_CONTEXT_BUDGET_TOKENS, DescriptionSource,
@@ -183,6 +187,6 @@ pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };
 pub use tools::{
-    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome, ToolProvenance,
-    ToolResult,
+    ARTIFACT_CHUNK_SIZE, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome,
+    ToolProvenance, ToolResult,
 };
