@@ -37,6 +37,7 @@ claim of implementation automatically.
 
 | Reference | Status |
 | --- | --- |
+| [Ratatui](https://crates.io/crates/ratatui) `0.30.2` + [Crossterm](https://crates.io/crates/crossterm) `0.29.0` | **Adopted** for standalone `impetus-tui` (GO — [RATATUI_SPIKE.md](RATATUI_SPIKE.md)). |
 | [russh](https://github.com/Eugeny/russh) | Candidate low-level SSH transport for the remote target. |
 | [portable-pty](https://crates.io/crates/portable-pty) | Candidate low-level controlled PTY capability. |
 
