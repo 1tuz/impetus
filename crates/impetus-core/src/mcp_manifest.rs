@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::extension_compat::{McpCapabilities, McpModule, McpTransport};
+use crate::extension_id::{ExtensionIdError, is_valid_extension_id, normalize_extension_id};
 use crate::schema::{SCHEMA_MCP, SchemaValidationError, require_version, validate_envelope};
 
 /// Documented schema id for the MCP config contract.
@@ -46,6 +47,8 @@ pub struct McpManifest {
 pub enum McpManifestError {
     #[error("MCP id must be non-empty")]
     EmptyId,
+    #[error(transparent)]
+    InvalidId(#[from] ExtensionIdError),
     #[error("MCP command must be non-empty")]
     EmptyCommand,
     #[error("MCP env_keys entry must be non-empty")]
@@ -82,11 +85,13 @@ impl McpManifest {
     /// Project a parsed [`McpModule`] into the `impetus.mcp.v1` envelope.
     ///
     /// Copies env **keys** only — never values from `module.env`.
+    /// Normalizes `module.name` through [`normalize_extension_id`].
     pub fn from_module(module: &McpModule) -> Result<Self, McpManifestError> {
         let mut env_keys: Vec<String> = module.env.keys().cloned().collect();
         env_keys.sort();
+        let id = normalize_extension_id(&module.name)?;
         Self::new(
-            module.name.clone(),
+            id,
             module.transport,
             module.command.clone(),
             module.args.clone(),
@@ -99,6 +104,13 @@ impl McpManifest {
     pub fn validate(&self) -> Result<(), McpManifestError> {
         if self.id.trim().is_empty() {
             return Err(McpManifestError::EmptyId);
+        }
+        if !is_valid_extension_id(&self.id) {
+            return Err(McpManifestError::InvalidId(
+                ExtensionIdError::InvalidFormat {
+                    id: self.id.clone(),
+                },
+            ));
         }
         if self.command.trim().is_empty() {
             return Err(McpManifestError::EmptyCommand);

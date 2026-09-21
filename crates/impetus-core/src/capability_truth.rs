@@ -187,10 +187,12 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Partial,
-                    "Skills via filesystem InstructionResolver; MCP tools live in ToolOrchestrator",
+                    "Skills via InstructionResolver; MCP live library + ToolOrchestrator hook; AgentLoop/daemon not wired",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
-                        "mcp_live_tools_in_loop": true,
+                        "mcp_live_library": true,
+                        "mcp_live_orchestrator_hook": true,
+                        "mcp_live_tools_in_loop": false,
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
                         "lifecycle_cli_plan_install": true,
@@ -269,6 +271,11 @@ mod tests {
         assert_eq!(ext_rt.level, CapabilityLevel::Partial);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_tools_in_loop"],
+            false
+        );
+        assert_eq!(ext_rt.details.as_ref().unwrap()["mcp_live_library"], true);
+        assert_eq!(
+            ext_rt.details.as_ref().unwrap()["mcp_live_orchestrator_hook"],
             true
         );
 

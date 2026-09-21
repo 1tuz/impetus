@@ -9,6 +9,10 @@
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule, McpTransport};
+use crate::extension_id::{
+    ExtensionIdError, ExtensionTypeDir, ensure_owned_extension_path, mcp_install_path,
+    normalize_extension_id, skill_install_path,
+};
 use crate::extension_manifest::{ExtensionManifest, ExtensionManifestError, ExtensionManifestKind};
 use crate::mcp_manifest::{McpManifest, McpManifestError};
 use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
@@ -64,6 +68,8 @@ pub enum PlanError {
     InvalidMcpManifest(#[from] McpManifestError),
     #[error("invalid extension manifest: {0}")]
     InvalidManifest(#[from] ExtensionManifestError),
+    #[error("invalid extension id: {0}")]
+    InvalidId(#[from] ExtensionIdError),
     #[error("path key error: {0}")]
     PathKey(String),
 }
@@ -89,6 +95,8 @@ pub enum ApplyError {
     Sqlite(#[from] rusqlite::Error),
     #[error("install state already exists for id: {0}")]
     StateExists(String),
+    #[error("invalid extension id: {0}")]
+    InvalidId(#[from] ExtensionIdError),
     #[error("path key error: {0}")]
     PathKey(String),
 }
@@ -212,6 +220,8 @@ pub enum RemoveError {
     Ownership(#[from] OwnershipError),
     #[error("install state not found for id: {0}")]
     StateNotFound(String),
+    #[error("invalid extension id: {0}")]
+    InvalidId(#[from] ExtensionIdError),
 }
 
 /// Plan install destinations under `target_root` without writing anything.
@@ -248,18 +258,19 @@ async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, Plan
 
     let bytes = std::fs::read(&skill_md)?;
     let digest = content_digest(&bytes);
+    let module_id = normalize_extension_id(&skill.id)?;
     let manifest = ExtensionManifest::new(
-        skill.id.clone(),
+        module_id.clone(),
         ExtensionManifestKind::Skill,
         spec.version.clone(),
         digest,
         vec!["instructions".to_string(), "triggers".to_string()],
     )?;
 
-    let dest = skill_dest(target_root, &spec.id);
+    let dest = skill_install_path(target_root, &module_id)?;
     let resolution = ResolutionPlan {
         source: ExtensionSource::AgentSkills,
-        module_id: skill.id,
+        module_id,
         module_name: spec.name,
         version: spec.version,
         source_path: skill_md.canonicalize().unwrap_or_else(|_| skill_md.clone()),
@@ -279,9 +290,9 @@ fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanE
     let module: McpModule =
         serde_json::from_slice(&bytes).map_err(|e| PlanError::InvalidMcpConfig(e.to_string()))?;
     // Validate local MCP config shape (`impetus.mcp.v1`); env values never enter the envelope.
-    McpManifest::from_module(&module)?;
+    let mcp_manifest = McpManifest::from_module(&module)?;
 
-    let module_id = sanitize_id(&module.name);
+    let module_id = mcp_manifest.id.clone();
     let digest = content_digest(&bytes);
     // Ponytail: MCP config JSON has no version field; stable placeholder under extension.v1.
     let version = "1.0.0".to_string();
@@ -293,7 +304,7 @@ fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanE
         mcp_capability_tokens(&module),
     )?;
 
-    let dest = mcp_dest(target_root, &module_id);
+    let dest = mcp_install_path(target_root, &module_id)?;
     let resolution = ResolutionPlan {
         source: ExtensionSource::Mcp,
         module_id,
@@ -327,27 +338,13 @@ fn mcp_capability_tokens(module: &McpModule) -> Vec<String> {
     caps
 }
 
-fn skill_dest(target_root: &Path, skill_id: &str) -> PathBuf {
-    target_root
-        .join(".impetus")
-        .join("skills")
-        .join(skill_id)
-        .join("SKILL.md")
-}
-
-fn mcp_dest(target_root: &Path, module_id: &str) -> PathBuf {
-    target_root
-        .join(".impetus")
-        .join("mcp")
-        .join(format!("{module_id}.json"))
-}
-
-fn sanitize_id(name: &str) -> String {
-    let trimmed = name.trim().to_lowercase().replace(' ', "-");
-    if trimmed.is_empty() {
-        "unnamed".to_string()
-    } else {
-        trimmed
+fn type_dir_for_source(source: &ExtensionSource) -> Result<ExtensionTypeDir, ExtensionIdError> {
+    match source {
+        ExtensionSource::AgentSkills => Ok(ExtensionTypeDir::Skills),
+        ExtensionSource::Mcp => Ok(ExtensionTypeDir::Mcp),
+        other => Err(ExtensionIdError::PathEscape(format!(
+            "unsupported extension source for path safety: {other:?}"
+        ))),
     }
 }
 
@@ -455,11 +452,21 @@ pub fn remove_install(
     ownership: &OwnershipStore,
     state_store: &ExtensionStateStore,
 ) -> Result<RemoveResult, RemoveError> {
-    if state_store.get(installation_id)?.is_none() {
-        return Err(RemoveError::StateNotFound(installation_id.to_string()));
-    }
+    let state = state_store
+        .get(installation_id)?
+        .ok_or_else(|| RemoveError::StateNotFound(installation_id.to_string()))?;
+    let type_dir = type_dir_for_source(&state.resolution.source)?;
 
     let records = ownership.list_by_installation_id(installation_id)?;
+    // Fail closed: prove every owned path before deleting any.
+    for record in &records {
+        ensure_owned_extension_path(
+            Path::new(&record.path),
+            type_dir,
+            &state.resolution.module_id,
+        )?;
+    }
+
     let mut removed_paths = Vec::with_capacity(records.len());
     for record in &records {
         let path = PathBuf::from(&record.path);
@@ -547,6 +554,8 @@ pub enum RepairError {
     StateNotFound(String),
     #[error("install source missing at {}", .0.display())]
     SourceMissing(PathBuf),
+    #[error("invalid extension id: {0}")]
+    InvalidId(#[from] ExtensionIdError),
 }
 
 /// Restore owned paths for `installation_id` from the recorded `source_path`.
@@ -563,6 +572,7 @@ pub fn repair_install(
     let state = state_store
         .get(installation_id)?
         .ok_or_else(|| RepairError::StateNotFound(installation_id.to_string()))?;
+    let type_dir = type_dir_for_source(&state.resolution.source)?;
 
     let source = &state.resolution.source_path;
     if !source.is_file() {
@@ -571,6 +581,15 @@ pub fn repair_install(
     let bytes = fs::read(source)?;
 
     let records = ownership.list_by_installation_id(installation_id)?;
+    // Fail closed: prove every owned path before repairing any.
+    for record in &records {
+        ensure_owned_extension_path(
+            Path::new(&record.path),
+            type_dir,
+            &state.resolution.module_id,
+        )?;
+    }
+
     let mut repaired_paths = Vec::new();
     let mut skipped_ok = Vec::new();
 
@@ -802,7 +821,7 @@ mod tests {
         let target = tempfile::tempdir().expect("target");
         let skill_md = write_skill(src.path(), "demo-skill", "v1");
 
-        let dest = skill_dest(target.path(), "demo-skill");
+        let dest = skill_install_path(target.path(), "demo-skill").expect("dest");
         fs::create_dir_all(dest.parent().unwrap()).expect("dest dir");
         fs::write(&dest, "pre-existing").expect("seed dest");
 
@@ -962,7 +981,7 @@ mod tests {
         let src = tempfile::tempdir().expect("src");
         let target = tempfile::tempdir().expect("target");
         let skill_md = write_skill(src.path(), "demo-skill", "v2");
-        let dest = skill_dest(target.path(), "demo-skill");
+        let dest = skill_install_path(target.path(), "demo-skill").expect("dest");
         fs::create_dir_all(dest.parent().unwrap()).expect("dest dir");
         fs::write(&dest, "pre-existing user").expect("seed");
 
@@ -1274,5 +1293,165 @@ mod tests {
         let err =
             repair_install("missing-id", &ownership, &state_store, false).expect_err("missing");
         assert!(matches!(err, RepairError::StateNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn plan_rejects_path_traversal_skill_ids() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        for bad in ["../../escape", "../foo", "foo/bar", ".", ".."] {
+            // Keep on-disk dirname safe; only frontmatter `name` is malicious.
+            let skill_dir = src.path().join(format!("case-{}", bad.len()));
+            fs::create_dir_all(&skill_dir).expect("skill dir");
+            let skill_md = skill_dir.join("SKILL.md");
+            fs::write(
+                &skill_md,
+                format!(
+                    "---\nname: {bad}\ndescription: test skill\nversion: \"0.1.0\"\n---\n\nbody\n"
+                ),
+            )
+            .expect("write skill");
+            let err = plan_install(
+                &ExtensionInstallIntent::Skill { path: skill_dir },
+                target.path(),
+            )
+            .await
+            .expect_err("must reject");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("invalid") || msg.contains("extension id") || msg.contains("skill id"),
+                "unexpected err for {bad:?}: {msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_rejects_path_traversal_mcp_ids() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        for (i, bad) in ["../../escape", "foo/bar", "foo\\bar", "/tmp/foo"]
+            .iter()
+            .enumerate()
+        {
+            // Safe filename; malicious name lives only inside JSON.
+            let path = src.path().join(format!("mcp-{i}.json"));
+            let json = serde_json::json!({
+                "name": bad,
+                "command": "true",
+                "args": [],
+                "env": {},
+                "transport": "stdio",
+                "capabilities": {
+                    "tools": true,
+                    "resources": false,
+                    "prompts": false,
+                    "sampling": false
+                }
+            });
+            fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).expect("write mcp");
+            let err = plan_install(&ExtensionInstallIntent::McpConfig { path }, target.path())
+                .await
+                .expect_err("must reject");
+            assert!(
+                matches!(
+                    err,
+                    PlanError::InvalidId(_) | PlanError::InvalidMcpManifest(_)
+                ),
+                "unexpected err for {bad:?}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_accepts_underscore_and_dash_ids() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo_skill-v2", "body");
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        assert_eq!(plan.resolution.module_id, "demo_skill-v2");
+        assert!(
+            plan.created_paths[0].ends_with(Path::new(".impetus/skills/demo_skill-v2/SKILL.md"))
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_refuses_ownership_path_outside_extension_root() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "body");
+        let (ownership, state_store) = open_stores(target.path());
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+
+        // Plant a second ownership row pointing outside `.impetus/skills/{id}/`
+        // (path must not exist yet — create refuses pre-existing unowned files).
+        let outside = target.path().join("escape.txt");
+        let records = ownership
+            .list_by_installation_id(&state.installation_id)
+            .expect("list");
+        let mut rogue = records[0].clone();
+        rogue.path = path_key(&outside).expect("key");
+        ownership.create(&rogue).expect("plant rogue");
+
+        let err = remove_install(&state.installation_id, &ownership, &state_store)
+            .expect_err("must refuse escape");
+        assert!(
+            matches!(err, RemoveError::InvalidId(_)),
+            "unexpected: {err}"
+        );
+        assert!(
+            state.created_paths.iter().all(|p| p.exists()),
+            "owned skill must remain after refused remove"
+        );
+        assert!(
+            state_store.get(&state.installation_id).unwrap().is_some(),
+            "install state must remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_refuses_ownership_path_outside_extension_root() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "body");
+        let (ownership, state_store) = open_stores(target.path());
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+
+        let outside = target.path().join("escape.txt");
+        let records = ownership
+            .list_by_installation_id(&state.installation_id)
+            .expect("list");
+        let mut rogue = records[0].clone();
+        rogue.path = path_key(&outside).expect("key");
+        ownership.create(&rogue).expect("plant rogue");
+
+        let err = repair_install(&state.installation_id, &ownership, &state_store, true)
+            .expect_err("must refuse escape");
+        assert!(
+            matches!(err, RepairError::InvalidId(_)),
+            "unexpected: {err}"
+        );
     }
 }

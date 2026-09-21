@@ -618,6 +618,50 @@ fn validate_recipe(recipe: &WorkflowRecipe) -> Result<(), WorkflowError> {
             }
         }
     }
+    reject_dependency_cycles(recipe)?;
+    Ok(())
+}
+
+/// Kahn topological sort — unfinished nodes mean a cycle (A↔B or A→B→C→A).
+fn reject_dependency_cycles(recipe: &WorkflowRecipe) -> Result<(), WorkflowError> {
+    let mut indegree: HashMap<&str, usize> = recipe
+        .steps
+        .iter()
+        .map(|s| (s.id.as_str(), 0usize))
+        .collect();
+    let mut successors: HashMap<&str, Vec<&str>> = HashMap::new();
+    for s in &recipe.steps {
+        for dep in &s.depends_on {
+            *indegree.get_mut(s.id.as_str()).expect("step id present") += 1;
+            successors
+                .entry(dep.as_str())
+                .or_default()
+                .push(s.id.as_str());
+        }
+    }
+    let mut queue: Vec<&str> = indegree
+        .iter()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    let mut visited = 0usize;
+    while let Some(id) = queue.pop() {
+        visited += 1;
+        if let Some(nexts) = successors.get(id) {
+            for &n in nexts {
+                let e = indegree.get_mut(n).expect("step id present");
+                *e -= 1;
+                if *e == 0 {
+                    queue.push(n);
+                }
+            }
+        }
+    }
+    if visited != recipe.steps.len() {
+        return Err(WorkflowError::InvalidRecipe(
+            "dependency cycle detected".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -1043,5 +1087,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rejects_self_dependency() {
+        let recipe = WorkflowRecipe {
+            id: "cycle".into(),
+            name: "Cycle".into(),
+            steps: vec![step("a", "A", None, &["a"])],
+        };
+        let err = WorkflowEngine::new(recipe, WorkflowBudget::default()).unwrap_err();
+        assert!(
+            matches!(err, WorkflowError::InvalidRecipe(ref msg) if msg.contains("itself")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_mutual_dependency_cycle() {
+        let recipe = WorkflowRecipe {
+            id: "cycle".into(),
+            name: "Cycle".into(),
+            steps: vec![step("a", "A", None, &["b"]), step("b", "B", None, &["a"])],
+        };
+        let err = WorkflowEngine::new(recipe, WorkflowBudget::default()).unwrap_err();
+        assert!(
+            matches!(err, WorkflowError::InvalidRecipe(ref msg) if msg.contains("cycle")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_three_node_dependency_cycle() {
+        let recipe = WorkflowRecipe {
+            id: "cycle".into(),
+            name: "Cycle".into(),
+            steps: vec![
+                step("a", "A", None, &["c"]),
+                step("b", "B", None, &["a"]),
+                step("c", "C", None, &["b"]),
+            ],
+        };
+        let err = WorkflowEngine::new(recipe, WorkflowBudget::default()).unwrap_err();
+        assert!(
+            matches!(err, WorkflowError::InvalidRecipe(ref msg) if msg.contains("cycle")),
+            "got {err:?}"
+        );
     }
 }

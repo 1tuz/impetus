@@ -23,10 +23,12 @@ Target roles of the two Rust binaries in this repository.
 
 ## Dual CLI
 
-`impetus-cli` — earlier reference CLI before role separation (`ATM-001`). Both
-CLIs exist and remain supported: `impetus` is the fuller surface (doctor, ui,
-skills, …); `impetus-cli` stays available for its existing workflows. Dual CLI
-is intentional.
+`impetus` — **primary** user-facing CLI/TUI (doctor, ui, skills, extension, …).
+
+`impetus-cli` — earlier reference CLI before role separation (`ATM-001`);
+**legacy/secondary**. Both crates remain in tree: migrate callers toward
+`impetus` over time; do **not** delete `impetus-cli`. Dual CLI is intentional
+during migration.
 
 ## Status
 

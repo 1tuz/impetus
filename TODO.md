@@ -69,8 +69,11 @@ Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `openai_responses.rs
 
 ### 5. Security / runtime E2E in PR CI
 
-Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
-`cargo test --workspace --lib --bins`.
+Keep suite small. PR CI today (path-aware; see `docs/development.md`):
+
+- macOS: `fmt` + Clippy + `cargo test` on affected packages with `--lib --bins`
+- Linux: `cargo check` on affected + dependants
+- Docs-only / site-only skip Rust; `Cargo.toml`/`Cargo.lock` broaden to workspace
 
 - [x] Add focused lib/bin tests (or tiny PR-safe suite) covering:
   - [x] approve → execute; reject — `security_runtime_pr` + harness
@@ -150,7 +153,8 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
       (`extension_lifecycle::plan_install`: ResolutionPlan + InstallPlan for
       Skill / MCP config intents; no write; create vs modify classification)
 - [x] CLI: `extension plan | install` (wraps `plan_install` / `apply_install`;
-      project DBs under `{root}/.impetus/`)
+      project DBs under `{root}/.impetus/`; extension IDs allowlisted —
+      `extension_id` / `normalize_extension_id`, #296)
 - [x] CLI: `extension remove` (ownership uninstall + install-state delete by
       `installation_id`)
 - [x] CLI: `extension doctor` (install-state + ownership health: missing /
@@ -160,7 +164,10 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
 - [x] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
       (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)
-- [x] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
+- Live MCP tools — **Partial** (Foundation vs Runtime):
+  - [x] Foundation: `McpLiveBridge` + `ToolOrchestrator::with_mcp_live` (unit tests)
+  - [ ] Runtime: wire into production `AgentLoop` / `impetusd` (not done;
+        capability truth `mcp_live_tools_in_loop: false`)
 - [x] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
       (`extension_manifest` + `impetus.extension.v1`; validated on `plan_install`)
 - [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
@@ -190,7 +197,7 @@ Runtime State ≠ Memory ≠ Policy
 | --- | --- |
 | `EventStore` | Authoritative runtime/session state |
 | `MemoryStore` | Contextual knowledge (untrusted by default) |
-| `PolicyStore` | Governed instructions and permissions |
+| `PolicyStore` | Governed instructions and permissions — **Planned** (name only; no type yet) |
 
 - [x] Memory never auto-promotes to policy or tool/sandbox capability
 - [x] Scopes: project / team / user; provenance; secret filtering
@@ -205,6 +212,7 @@ Runtime State ≠ Memory ≠ Policy
 - [x] Human-readable source format where useful
       (`export_jsonl` / `export_markdown` / `import_*` / `from_*`;
       labels only; import via create-only `remember` + redaction; unit tests)
+- [ ] `PolicyStore` type + governed-instruction surface (not PolicyConfig overrides)
 
 ### 5. WorktreeManager
 
@@ -230,9 +238,14 @@ stale → close → salvage
       (`create_for_role(Build)` + durable `WorktreeAttachedPermissions`;
       `enforce_write` / `to_sandbox_scope` hook; temp-dir tests)
 
-### 6. WorkflowEngine + small recipes
+### 6. WorkflowEngine + small recipes — Partial
 
 Do **not** invent a new hard-coded agent type per workflow.
+
+Honest split: **Foundation** (in-memory library) vs **Runtime** (live spawn /
+production AgentLoop wire).
+
+**Foundation**
 
 - [x] Declarative recipes (examples):
   - [x] Feature: Research → Plan → Tests → Implement → Review → Approval
@@ -245,12 +258,24 @@ Do **not** invent a new hard-coded agent type per workflow.
       checkpoints, cancellation, result propagation, minimal per-step retry
       (`workflow_engine` — in-memory; `max_retries` workflow/step + fail→Pending
       then Failed checkpoint; concurrency still open)
+- [x] Reject self-deps and multi-node dependency cycles at recipe validate
+      (`reject_dependency_cycles` Kahn sort; #296)
 - [x] AgentScheduler schedules roles; WorkflowEngine sequences steps
       (`InMemoryAgentScheduler` + `begin_step_with_scheduler` /
       `complete_step_with_scheduler`; schedule id / result slot on checkpoint;
       no live spawn)
 
-### 7. Subagents (explicit roles, not a swarm)
+**Runtime**
+
+- [ ] Live agent process spawn from WorkflowEngine / scheduler
+- [ ] WorkflowEngine cancel/replace wired to session-run intents
+- [ ] Cross-machine / IPC orchestration beyond in-process fanout
+
+### 7. Subagents (explicit roles, not a swarm) — Partial
+
+Same Foundation vs Runtime split as §6.
+
+**Foundation**
 
 - [x] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
       Review (read-only diff/tests)
@@ -266,6 +291,18 @@ Do **not** invent a new hard-coded agent type per workflow.
       (`child_concurrency::ChildConcurrencyGate` global counter; default cap 4;
       admit / reject-at-cap / release on complete|cancel; no live spawn;
       per-parent caps / fair scheduling still open)
+
+**Runtime**
+
+- [x] ExploreChildRunner minimal vertical — **Partial** (#296):
+      parent → validate Explore metadata → `ChildConcurrencyGate` → injectable
+      `ExploreChildExecutor` → durable `ChildResultStore` → `gate_parent_resume`;
+      allowed tools ⊆ {list,read,search}; optional `ReadOnlyTools` path;
+      AgentLoop / model provider binding still open (`explore_child.rs`)
+- [ ] Live child process / PTY spawn for other roles
+- [ ] Parent-resume gate wired to live child completion (beyond Explore slice)
+- [ ] Per-parent caps / fair scheduling
+- [ ] Wire ExploreChildRunner into production AgentLoop / daemon
 
 ### 8. Steer vs follow-up
 
@@ -367,6 +404,14 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [ ] Full Zap discovery/authorize production protocol
       Honesty docs for classic #5 (adapter today vs Planned): ARCHITECTURE.md
       § Zap path (#290); protocol impl still open
+- [ ] Production macOS Seatbelt wire into `execution/process.rs` (spike exists;
+      macOS confinement priority > broad Linux/Windows sandbox backends)
+- [ ] Prefer invert `impetus-core` → `impetus-acp-gateway` dependency (core should
+      not own gateway as a library dep long-term); large refactor postponed
+- [ ] Thin-client boundary / `harness_api` domain split (Zap/TUI on protocol crate;
+      recoverable errors not daemon panic) — postponed
+- [ ] CLI migration: keep `impetus` primary; migrate `impetus-cli` callers over
+      time (do **not** delete the crate)
 
 ---
 

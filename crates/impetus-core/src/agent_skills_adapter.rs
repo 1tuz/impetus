@@ -2,6 +2,7 @@ use crate::extension_compat::{
     CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, ExtensionSource, Instruction,
     InstructionContext, InstructionPriority,
 };
+use crate::extension_id::normalize_extension_id;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -35,7 +36,8 @@ impl AgentSkillsAdapter {
 
         let (frontmatter, body) = Self::extract_frontmatter(&content)?;
 
-        let skill_id = frontmatter.name.to_lowercase().replace(' ', "-");
+        let skill_id = normalize_extension_id(&frontmatter.name)
+            .with_context(|| format!("invalid skill id from name {:?}", frontmatter.name))?;
 
         let instructions = vec![Instruction {
             content: body.trim().to_string(),

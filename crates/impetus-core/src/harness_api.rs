@@ -2582,7 +2582,7 @@ mod tests {
         assert_eq!(modules["extension_runtime"]["level"], "PARTIAL");
         assert_eq!(
             modules["extension_runtime"]["details"]["mcp_live_tools_in_loop"],
-            true
+            false
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
         let caps = modules["capability_matrix"]["capabilities"]
