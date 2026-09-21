@@ -5,7 +5,7 @@
 
 use crate::{
     FinishReason, ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile,
-    StreamEvent,
+    ProviderProtocolAdapter, StreamEvent, ToolCallAssembler,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -30,14 +30,6 @@ pub fn anthropic_tools_payload() -> serde_json::Value {
         })
         .collect();
     serde_json::Value::Array(tools)
-}
-
-/// Accumulates streaming tool call input from Anthropic SSE.
-#[derive(Debug, Default)]
-struct ToolCallAccumulator {
-    id: String,
-    name: String,
-    input_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,8 +199,7 @@ impl AnthropicProvider {
     ) -> Result<(), ProviderError> {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
-        let mut tool_call_accumulators: std::collections::HashMap<usize, ToolCallAccumulator> =
-            std::collections::HashMap::new();
+        let mut tool_calls = ToolCallAssembler::new();
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
 
@@ -246,9 +237,9 @@ impl AnthropicProvider {
                                     && content_block.type_field == "tool_use"
                                 {
                                     let index = parsed.index.unwrap_or(0);
-                                    let acc = tool_call_accumulators.entry(index).or_default();
-                                    acc.id = content_block.id.unwrap_or_default();
-                                    acc.name = content_block.name.unwrap_or_default();
+                                    tool_calls.set_id(index, content_block.id.unwrap_or_default());
+                                    tool_calls
+                                        .set_name(index, content_block.name.unwrap_or_default());
                                 }
                             }
                             "content_block_delta" => {
@@ -261,11 +252,9 @@ impl AnthropicProvider {
                                             }
                                         }
                                         "input_json_delta" => {
-                                            if let Some(partial_json) = delta.partial_json
-                                                && let Some(acc) =
-                                                    tool_call_accumulators.get_mut(&index)
-                                            {
-                                                acc.input_json.push_str(&partial_json);
+                                            if let Some(partial_json) = delta.partial_json {
+                                                tool_calls
+                                                    .push_arguments_fragment(index, &partial_json);
                                             }
                                         }
                                         _ => {}
@@ -301,10 +290,7 @@ impl AnthropicProvider {
                                         measured: true,
                                     })?;
                                 }
-                                Self::emit_accumulated_tool_calls(
-                                    &mut tool_call_accumulators,
-                                    &mut on_event,
-                                )?;
+                                tool_calls.emit_into(&mut on_event)?;
                                 return Ok(());
                             }
                             _ => {}
@@ -314,35 +300,14 @@ impl AnthropicProvider {
             }
         }
 
-        Self::emit_accumulated_tool_calls(&mut tool_call_accumulators, &mut on_event)?;
+        tool_calls.emit_into(&mut on_event)?;
         Ok(())
     }
+}
 
-    fn emit_accumulated_tool_calls(
-        tool_call_accumulators: &mut std::collections::HashMap<usize, ToolCallAccumulator>,
-        on_event: &mut dyn FnMut(StreamEvent) -> Result<(), ProviderError>,
-    ) -> Result<(), ProviderError> {
-        let pending: Vec<_> = tool_call_accumulators.drain().collect();
-        for (_index, acc) in pending {
-            if !acc.id.is_empty() && !acc.name.is_empty() {
-                let arguments = if acc.input_json.is_empty() {
-                    serde_json::Value::Object(serde_json::Map::new())
-                } else {
-                    serde_json::from_str(&acc.input_json).map_err(|_| {
-                        ProviderError::MalformedToolCall(format!(
-                            "invalid JSON in tool call arguments for {}",
-                            acc.name
-                        ))
-                    })?
-                };
-                on_event(StreamEvent::ToolCall {
-                    id: acc.id,
-                    name: acc.name,
-                    arguments,
-                })?;
-            }
-        }
-        Ok(())
+impl ProviderProtocolAdapter for AnthropicProvider {
+    fn protocol_id(&self) -> &'static str {
+        "anthropic_messages"
     }
 }
 
@@ -483,11 +448,18 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_accumulator_default() {
-        let acc = ToolCallAccumulator::default();
-        assert!(acc.id.is_empty());
-        assert!(acc.name.is_empty());
-        assert!(acc.input_json.is_empty());
+    fn protocol_adapter_id_is_messages() {
+        let provider = AnthropicProvider::new(
+            crate::ProviderProfile {
+                id: "anthropic".into(),
+                model: "claude-3-5-sonnet".into(),
+                endpoint: "http://127.0.0.1:8080".into(),
+                credential_strategy: crate::CredentialStrategy::None,
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(provider.protocol_id(), "anthropic_messages");
     }
 
     #[test]

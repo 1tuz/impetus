@@ -26,11 +26,13 @@ Gate before P1 product features.
       `[DONE]` / `message_stop` early-return
 - [x] Export `AnthropicProvider` (still optional / not default daemon path)
 - [x] Keep legacy OpenAI-compatible text adapter in tree for compatibility
+- [x] Explicit `ProviderProtocolAdapter` trait boundary (shared assembler)
+      (`provider_protocol_adapter.rs`: trait + `ToolCallAssembler`; used by
+      `openai_provider.rs` + `anthropic_provider.rs`)
 - [ ] OpenAI Responses API (`/v1/responses`) — Planned (after Chat Completions production)
-- [ ] Explicit `ProviderProtocolAdapter` trait boundary (shared assembler) — Planned
 
 Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.rs`,
-`impetusd` `--provider-profile`.
+`provider_protocol_adapter.rs`, `impetusd` `--provider-profile`.
 
 ### 2. Mandatory tool argument validation
 
