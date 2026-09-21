@@ -149,8 +149,9 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
 - [x] CLI: `extension remove` (ownership uninstall + install-state delete by
       `installation_id`)
 - [x] CLI: `extension doctor` (install-state + ownership health: missing /
-      digest mismatch; repair still open)
-- [ ] CLI/IPC: `extension repair`
+      digest mismatch)
+- [x] CLI/IPC: `extension repair` (`repair_install` + CLI `--force` for digest
+      mismatch; missing restores without force)
 - [x] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
       (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)

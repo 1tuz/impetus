@@ -1,13 +1,13 @@
-//! CLI wrappers for extension lifecycle plan + install + remove + doctor.
+//! CLI wrappers for extension lifecycle plan + install + remove + doctor + repair.
 //!
 //! Offline (no daemon): wraps `plan_install` / `apply_install` / `remove_install` /
-//! `doctor_install`. Repair stays out of scope.
+//! `doctor_install` / `repair_install`.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use impetus_core::{
     ExtensionInstallIntent, ExtensionStateStore, InstallPlan, OwnershipStore, apply_install,
-    doctor_install, plan_install, remove_install,
+    doctor_install, plan_install, remove_install, repair_install,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -221,4 +221,31 @@ fn print_doctor_human(report: &impetus_core::DoctorReport) {
             }
         }
     }
+}
+
+/// Repair owned paths from recorded source (`--force` for digest mismatch).
+pub fn repair(installation_id: &str, root: Option<&Path>, force: bool, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let result = repair_install(installation_id, &ownership, &state_store, force)
+        .with_context(|| format!("repair install {installation_id}"))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Repaired extension");
+        println!("  installation_id: {}", result.installation_id);
+        println!("  repaired: {}", result.repaired_paths.len());
+        for p in &result.repaired_paths {
+            println!("    ~ {}", p.display());
+        }
+        println!("  skipped (ok): {}", result.skipped_ok.len());
+        for p in &result.skipped_ok {
+            println!("    = {}", p.display());
+        }
+        if result.repaired_paths.is_empty() && result.skipped_ok.is_empty() {
+            println!("  (no ownership paths for this installation)");
+        }
+    }
+    Ok(())
 }

@@ -153,8 +153,8 @@ pub use extension_compat::{
 pub use extension_lifecycle::{
     ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionState,
     ExtensionStateStore, InstallHealthReport, InstallPlan, PathHealthReport, PathHealthStatus,
-    PlanError, RemoveError, RemoveResult, ResolutionPlan, apply_install, doctor_install,
-    plan_install, remove_install,
+    PlanError, RemoveError, RemoveResult, RepairError, RepairResult, ResolutionPlan, apply_install,
+    doctor_install, plan_install, remove_install, repair_install,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{
