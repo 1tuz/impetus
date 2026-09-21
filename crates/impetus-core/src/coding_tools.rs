@@ -1,13 +1,15 @@
-//! Typed coding-tool capability seam (TODO P1 §11 / #261).
+//! Typed coding-tool capability seam (TODO P1 §11 / #261 / #282).
 //!
 //! Harness requests language intelligence (definition, references, diagnostics,
 //! symbols, hover) through [`CodingToolsProvider`] — a replaceable backend.
 //! Runtime does **not** compile against or require a single LSP binary path
-//! (`rust-analyzer`, `clangd`, …). Concrete LSP bridges stay optional later.
+//! (`rust-analyzer`, `clangd`, …). Optional [`crate::LspBackendModule`] carries a
+//! runtime path hint only; Absent/Mock remain the default. Real process spawn
+//! stays Planned (not a core dep).
 //!
 //! Payloads are path/range/label only — no secrets, tokens, or raw credentials.
 //!
-//! Out of scope: real LSP process spawn, IDE UI, language installers.
+//! Out of scope: full LSP protocol completeness, IDE UI, language installers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

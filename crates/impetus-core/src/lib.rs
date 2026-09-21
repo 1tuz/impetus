@@ -42,6 +42,7 @@ pub mod hook_prefilter;
 pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
+pub mod lsp_backend;
 pub mod mcp_adapter;
 pub mod mcp_live;
 pub mod mcp_manifest;
@@ -206,6 +207,10 @@ pub use instructions::{
     InstructionScope, InstructionTokenEstimate, ResolveRequest, ResolvedInstructions,
 };
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
+pub use lsp_backend::{
+    LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
+    LspBackendModule, optional_coding_tools_with_lsp,
+};
 pub use mcp_adapter::McpAdapter;
 pub use mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveToolEntry};
 pub use mcp_manifest::{
