@@ -8,11 +8,12 @@
 //! the client.
 
 use crate::{
-    AgentLoop, AgentRuntime, CredentialResolver, DurableArtifactStore, EventStore,
+    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventStore,
     IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
     MockProvider, NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider,
     PolicyEngine, Profile, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, ToolOutcome,
+    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget,
+    ToolOutcome,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
@@ -747,6 +748,10 @@ fn resolve_provider_messages_with_binding(
     let tools = default_tool_stubs();
     let mut messages =
         system_messages_for_binding(context_binding, &instructions, &tools, budget_tokens);
+    let artifact_store = DurableArtifactStore::open(crate::default_artifact_root()).ok();
+    let artifact_budget = TokenBudget {
+        max_tokens: budget_tokens.clamp(64, 2_000),
+    };
     let mut pending_assistant = String::new();
     let mut has_user_intent = false;
     for event in runtime.events()? {
@@ -777,6 +782,18 @@ fn resolve_provider_messages_with_binding(
                         &mut pending_assistant,
                     )));
                 }
+                let (preview, artifact_error) = materialize_tool_preview(
+                    artifact_store.as_ref(),
+                    &preview,
+                    artifact.as_ref(),
+                    artifact_budget,
+                );
+                let error = match (error, artifact_error) {
+                    (Some(existing), Some(extra)) => Some(format!("{existing}; {extra}")),
+                    (Some(existing), None) => Some(existing),
+                    (None, Some(extra)) => Some(extra),
+                    (None, None) => None,
+                };
                 messages.push(ProviderMessage::tool(serde_json::to_string(
                     &serde_json::json!({
                         "tool_call_id": tool_call_id,
@@ -799,6 +816,29 @@ fn resolve_provider_messages_with_binding(
         messages.push(ProviderMessage::user(runtime_intent(runtime)?));
     }
     Ok(messages)
+}
+
+/// When a tool observation carries an artifact, replace the inline preview with
+/// a budgeted materialization from chunked `read_range` (never full `read`).
+fn materialize_tool_preview(
+    store: Option<&DurableArtifactStore>,
+    preview: &str,
+    artifact: Option<&crate::DurableArtifactRef>,
+    budget: TokenBudget,
+) -> (String, Option<String>) {
+    let Some(artifact) = artifact else {
+        return (preview.to_string(), None);
+    };
+    let Some(store) = store else {
+        return (
+            preview.to_string(),
+            Some("artifact store unavailable for context materialization".into()),
+        );
+    };
+    match ContextBuilder::new(store, budget).materialize(artifact) {
+        Ok(materialized) => (materialized.content, None),
+        Err(error) => (preview.to_string(), Some(error.to_string())),
+    }
 }
 
 fn runtime_intent(runtime: &AgentRuntime) -> anyhow::Result<String> {

@@ -133,7 +133,25 @@ impl AgentLoop {
             // Note: Using 'user' role for observations as assistant/tool_result
             // roles are not yet implemented in ProviderMessage
             messages.push(ProviderMessage::assistant(turn_result.text));
-            for observation in observations {
+            let artifact_store =
+                crate::DurableArtifactStore::open(crate::default_artifact_root()).ok();
+            let artifact_budget = crate::TokenBudget { max_tokens: 2_000 };
+            for mut observation in observations {
+                if let Some(artifact) = observation.artifact.as_ref()
+                    && let Some(store) = artifact_store.as_ref()
+                {
+                    match crate::ContextBuilder::new(store, artifact_budget).materialize(artifact) {
+                        Ok(materialized) => {
+                            observation.preview = materialized.content;
+                        }
+                        Err(error) => {
+                            observation.error = Some(match observation.error.take() {
+                                Some(existing) => format!("{existing}; {error}"),
+                                None => error.to_string(),
+                            });
+                        }
+                    }
+                }
                 messages.push(ProviderMessage::tool(
                     serde_json::to_string(&observation)
                         .map_err(|error| ProviderError::RequestFailed(error.to_string()))?,

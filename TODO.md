@@ -236,7 +236,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [ ] Large paste: detection threshold + compact composer display
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [ ] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
-- [ ] Context Builder: read large artifact in parts, summarize within token budget
+- [x] Context Builder: read large artifact in parts, summarize within token budget
 
 ---
 
