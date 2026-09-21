@@ -2014,4 +2014,73 @@ mod tests {
             [Effect::ActivateSession(id)] if *id == alpha
         ));
     }
+
+    #[test]
+    fn command_palette_opens_filters_and_runs_selected() {
+        let mut app = AppState::new(ConnectionInfo::default());
+
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(
+            &app.overlay,
+            Overlay::Commands {
+                selected: 0,
+                query
+            } if query.is_empty()
+        ));
+
+        for ch in ['h', 'e', 'l'] {
+            let _ = handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        match &app.overlay {
+            Overlay::Commands { selected, query } => {
+                assert_eq!(query, "hel");
+                assert_eq!(*selected, 0);
+                let suggestions = command::suggestions(query);
+                assert_eq!(suggestions.first().map(|item| item.name), Some("help"));
+            }
+            _ => panic!("expected commands overlay"),
+        }
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(effects.is_empty());
+        assert!(matches!(app.overlay, Overlay::Help));
+    }
+
+    #[test]
+    fn command_palette_down_selects_and_runs_command() {
+        let mut app = AppState::new(ConnectionInfo::default());
+
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+
+        let suggestions = command::suggestions("c");
+        assert!(suggestions.len() >= 2);
+        assert_eq!(suggestions[0].name, "clear");
+        assert_eq!(suggestions[1].name, "cancel");
+
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match &app.overlay {
+            Overlay::Commands { selected, query } => {
+                assert_eq!(query, "c");
+                assert_eq!(*selected, 1);
+            }
+            _ => panic!("expected commands overlay"),
+        }
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(effects.as_slice(), [Effect::Cancel]));
+        assert!(matches!(app.overlay, Overlay::None));
+    }
 }
