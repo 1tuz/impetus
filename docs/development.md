@@ -38,6 +38,22 @@ Workflow: `.github/workflows/ci.yml` (single PR pipeline).
 
 Docs/markdown/assets-only changes skip Rust jobs.
 
+## Docs capability claims check
+
+Selected capability claims (sandbox level, durable artifacts, tool schema gate,
+Seatbelt wrap, extension runtime) live in
+`crates/impetus-core/tests/fixtures/docs_capability_claims.json` and are checked
+against `CapabilityTruthReport::gather` (same source as `impetus doctor --json`
+capability probes). No secrets in the fixture.
+
+```zsh
+cargo test -p impetus-core --test docs_capability_claims
+```
+
+When capability truth changes intentionally: update the fixture (and keep
+ARCHITECTURE / ROADMAP wording aligned). Do not invent capabilities that
+`CapabilityTruthReport` does not report.
+
 Preview what CI would select:
 
 ```zsh
