@@ -1312,9 +1312,7 @@ mod tests {
             )
             .expect("write skill");
             let err = plan_install(
-                &ExtensionInstallIntent::Skill {
-                    path: skill_dir,
-                },
+                &ExtensionInstallIntent::Skill { path: skill_dir },
                 target.path(),
             )
             .await
@@ -1351,12 +1349,9 @@ mod tests {
                 }
             });
             fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).expect("write mcp");
-            let err = plan_install(
-                &ExtensionInstallIntent::McpConfig { path },
-                target.path(),
-            )
-            .await
-            .expect_err("must reject");
+            let err = plan_install(&ExtensionInstallIntent::McpConfig { path }, target.path())
+                .await
+                .expect_err("must reject");
             assert!(
                 matches!(
                     err,
@@ -1423,10 +1418,7 @@ mod tests {
             "owned skill must remain after refused remove"
         );
         assert!(
-            state_store
-                .get(&state.installation_id)
-                .unwrap()
-                .is_some(),
+            state_store.get(&state.installation_id).unwrap().is_some(),
             "install state must remain"
         );
     }

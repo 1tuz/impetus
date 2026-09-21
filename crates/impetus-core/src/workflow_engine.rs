@@ -1108,10 +1108,7 @@ mod tests {
         let recipe = WorkflowRecipe {
             id: "cycle".into(),
             name: "Cycle".into(),
-            steps: vec![
-                step("a", "A", None, &["b"]),
-                step("b", "B", None, &["a"]),
-            ],
+            steps: vec![step("a", "A", None, &["b"]), step("b", "B", None, &["a"])],
         };
         let err = WorkflowEngine::new(recipe, WorkflowBudget::default()).unwrap_err();
         assert!(
