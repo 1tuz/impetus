@@ -159,7 +159,7 @@ impetusd  — authoritative daemon
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); more Phase 7 open |
-| Zap as Impetus backend | Partial | Experimental adapter crate |
+| Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | PR: fmt/clippy/`--lib --bins` on macOS; integration = nightly/manual |
 
 ## Request path
@@ -326,6 +326,64 @@ Honest list (no new runtime in this docs slice):
 
 Docs index for the shipped contracts: this section (#286).
 
+
+## Zap path vs standalone CLI/TUI (#5)
+
+Classic issue #5: standalone CLI/TUI and Zap integration. This section indexes
+honest client paths and what `impetus-zap-adapter` does today. It does not ship
+a production Zap protocol or copy Zap/Warp client internals into the harness.
+
+### Client paths
+
+| Path | Role | Status |
+| --- | --- | --- |
+| CLI (`impetus`) | First-class user-facing commands via `HarnessClient` | Implemented (surface still growing) |
+| Standalone TUI (`impetus ui` / `impetus-tui`) | First-class Ratatui client; ANSI/scrollback stay client-side | Partial — Phase 7 open |
+| Zap | Zap owns UI; Impetus is agent backend after connect/authorize | Partial — experimental adapter only |
+
+Boundaries (see [AGENTS.md](AGENTS.md)):
+
+- Zap uses its own UI; structured integration is a **separate** adapter or
+  personal fork — not harness core
+- Do **not** copy Zap/Warp client internals (renderer, tabs, PTY/ANSI emulator)
+  into `impetus-core` / `impetusd`
+- OSC / notification hooks do **not** replace the typed versioned IPC protocol
+- No local HTTP UI, Electron/WebView, or Node runtime in the harness
+- Client disconnect must not destroy durable sessions or report unknown work as
+  `Completed`
+
+### `impetus-zap-adapter` checklist
+
+Crate: [`crates/impetus-zap-adapter`](crates/impetus-zap-adapter). Historical /
+experimental baseline that talks to `impetusd` over the Unix socket and renders
+to stdout for a Zap-like terminal host.
+
+| Piece | Status | Evidence / notes |
+| --- | --- | --- |
+| Unix-socket connect (`IMPETUS_SOCKET` or default data-dir sock) | Partial | `main.rs` — connect path only; no discovery service |
+| `CreateSession` + `Prompt` + event `Stream` | Partial | `create_and_attach` / `stream_session` via transport requests |
+| Typed transport (`UnixSocketTransport`) | Partial | Uses `impetus-client`; also imports `impetus-core` wire DTOs directly (boundary debt) |
+| Structured Blocks (diff / approval / output / attachment / status / error) | Partial | `blocks.rs` — stdout / JSON helpers; not a production Zap wire protocol |
+| OSC notification hooks (777 / 9 / 0) | Partial | `osc.rs` — terminal hooks only; not typed IPC |
+| Live session status bar via OSC | Partial | `status_bar.rs` — Running / Idle / NeedsApproval hints |
+| Capability negotiation / Hello / `Incompatible` handling | Planned | Not implemented in adapter |
+| Zap discovery / Connect / Authorize production protocol | Planned | Classic #5 remaining; listed under P2 in [TODO.md](TODO.md) |
+| Bidirectional interactive approvals from Zap UI | Planned | Adapter TODO; approvals are render-only today |
+| Consume `impetus.approval_detail.v1` as non-TUI client | Planned | Gap under § Policy customization (#9) |
+| Embed Zap/Warp renderer or PTY emulator in harness | Out of scope | Client concern; AGENTS.md immovable boundary |
+
+Labels mean the same as the capability matrix: **Implemented** / **Partial** /
+**Planned**. Do not mark discovery/authorize or production Zap protocol as
+Completed.
+
+### Out of scope (this docs slice)
+
+- Full Zap production discovery/authorize/backend handoff code
+- Electron / HTTP UI inside the harness
+- ACP production hardening checklist (separate issue)
+
+Docs index for Zap honesty: this section (#290).
+
 ## Canonical schema registry
 
 Shared module [`schema`](crates/impetus-core/src/schema.rs):
@@ -355,6 +413,7 @@ Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of sco
 - Kernel invariants: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
 - Agent rules: [AGENTS.md](AGENTS.md)
 - TUI notes: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
+- Zap path honesty (#5): § Zap path vs standalone CLI/TUI above
 - Design references (principles, not copy claims): [docs/REFERENCES.md](docs/REFERENCES.md)
 
 Historical audits under `docs/` may lag; prefer this file + `TODO.md`.
