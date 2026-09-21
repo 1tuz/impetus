@@ -137,6 +137,7 @@ pub use coding_tools::{
     CodingToolsProvider, CodingToolsService, DiagnosticSeverity, DocumentSymbol, HoverInfo,
     MockCodingToolsProvider, OptionalCodingToolsService, PositionQuery,
     ProviderBackedCodingToolsService, SourceLocation, SourcePosition, SourceRange, SymbolKind,
+    block_on_coding_tools,
 };
 pub use compaction::{
     compact_provider_messages, estimate_tokens as estimate_compaction_tokens, summarize_messages,

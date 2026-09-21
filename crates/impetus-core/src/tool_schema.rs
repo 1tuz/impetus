@@ -59,6 +59,7 @@ pub fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "web_browser" => Some("web_browser"),
         "web_submit" => Some("web_submit"),
         "web_upload" => Some("web_upload"),
+        "goto_definition" => Some("goto_definition"),
         _ => None,
     }
 }
@@ -376,6 +377,26 @@ fn schemas() -> &'static [BuiltinToolSchema] {
                         }),
                     ),
                 },
+                BuiltinToolSchema {
+                    name: "goto_definition",
+                    description: "Resolve symbol definition via coding-tools provider (paths/ranges only)",
+                    parameters: object_schema(
+                        &["path", "line", "character"],
+                        serde_json::json!({
+                            "path": string_prop("File path relative to workspace"),
+                            "line": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Zero-based line"
+                            },
+                            "character": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Zero-based character offset"
+                            },
+                        }),
+                    ),
+                },
             ]
         })
         .as_slice()
@@ -464,9 +485,10 @@ mod tests {
             "web_browser",
             "web_submit",
             "web_upload",
+            "goto_definition",
         ] {
             assert!(schema_for_tool(name).is_some(), "missing schema for {name}");
         }
-        assert_eq!(builtin_tool_schemas().len(), 11);
+        assert_eq!(builtin_tool_schemas().len(), 12);
     }
 }

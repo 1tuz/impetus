@@ -68,6 +68,7 @@ pub struct Harness {
     uploads: crate::ArtifactUploadStore,
     /// In-memory Prompt/Steer/FollowUp router (synced from projection on submit).
     intent_router: Arc<Mutex<UserIntentRouter>>,
+    coding_tools: Arc<dyn crate::CodingToolsService>,
 }
 
 impl Harness {
@@ -94,12 +95,19 @@ impl Harness {
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
+            coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
         }
     }
 
     /// Override durable artifact root (tests / portable installs).
     pub fn with_artifact_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.uploads = crate::ArtifactUploadStore::new(root);
+        self
+    }
+
+    /// Attach optional coding-tools provider (tests / future LSP bridge).
+    pub fn with_coding_tools(mut self, service: Arc<dyn crate::CodingToolsService>) -> Self {
+        self.coding_tools = service;
         self
     }
 
@@ -130,6 +138,7 @@ impl Harness {
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
+            coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
         }
     }
 
@@ -191,6 +200,7 @@ impl Harness {
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
+            coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
         }
     }
 
@@ -242,6 +252,7 @@ impl Harness {
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
+            coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
         }
     }
 
@@ -275,6 +286,7 @@ impl Harness {
             self.attachments.clone(),
             self.uploads.clone(),
             self.intent_router.clone(),
+            self.coding_tools.clone(),
             request,
         )
     }
@@ -294,6 +306,7 @@ fn handle_request(
     attachments: crate::AttachmentStore,
     uploads: crate::ArtifactUploadStore,
     intent_router: Arc<Mutex<UserIntentRouter>>,
+    coding_tools: Arc<dyn crate::CodingToolsService>,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -821,6 +834,26 @@ fn handle_request(
                 gather_subsystem_health(&store, &policy, &provider_registry, &workspace_root);
             IpcResponse::Diagnostics {
                 subsystems: Box::new(subsystems),
+            }
+        }
+        IpcRequest::GotoDefinition {
+            path,
+            line,
+            character,
+        } => {
+            let query = crate::PositionQuery::new(path, line, character);
+            let coding_tools = coding_tools.clone();
+            match crate::block_on_coding_tools(async move { coding_tools.definition(&query).await })
+            {
+                Ok(locations) => IpcResponse::Definition { locations },
+                Err(error) if error.is_unavailable() => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: error.to_string(),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
             }
         }
     }
@@ -2696,5 +2729,59 @@ mod tests {
             matches!(response, IpcResponse::Error { .. }),
             "expected rejection, got {response:?}"
         );
+    }
+
+    #[test]
+    fn goto_definition_ipc_uses_mock_coding_tools() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let query = crate::PositionQuery::new("src/main.rs", 1, 2);
+        let location =
+            crate::SourceLocation::new("src/lib.rs", crate::SourceRange::new(8, 0, 8, 4));
+        let mock = Arc::new(
+            crate::MockCodingToolsProvider::new().with_definition(query, vec![location.clone()]),
+        );
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_coding_tools(Arc::new(crate::OptionalCodingToolsService::with_provider(
+            mock,
+        )));
+
+        let response = harness.handle(IpcRequest::GotoDefinition {
+            path: std::path::PathBuf::from("src/main.rs"),
+            line: 1,
+            character: 2,
+        });
+        match response {
+            IpcResponse::Definition { locations } => {
+                assert_eq!(locations, vec![location]);
+            }
+            other => panic!("expected Definition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_definition_ipc_absent_provider_fail_closed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+
+        let response = harness.handle(IpcRequest::GotoDefinition {
+            path: std::path::PathBuf::from("src/lib.rs"),
+            line: 0,
+            character: 0,
+        });
+        match response {
+            IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message,
+            } => {
+                assert!(message.contains(crate::ABSENT_CODING_TOOLS_REASON));
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 }

@@ -64,6 +64,7 @@ pub struct ToolOrchestrator {
     artifact_root: PathBuf,
     web_research: Option<Arc<dyn crate::web_research::WebResearchService>>,
     mcp_live: Option<Arc<crate::mcp_live::McpLiveBridge>>,
+    coding_tools: Arc<dyn crate::CodingToolsService>,
 }
 
 impl ToolOrchestrator {
@@ -82,6 +83,7 @@ impl ToolOrchestrator {
             artifact_root,
             web_research: None,
             mcp_live: None,
+            coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
         }
     }
 
@@ -97,6 +99,12 @@ impl ToolOrchestrator {
     /// Attach a live MCP tool catalog for this session (discover/list + call path).
     pub fn with_mcp_live(mut self, bridge: Arc<crate::mcp_live::McpLiveBridge>) -> Self {
         self.mcp_live = Some(bridge);
+        self
+    }
+
+    /// Attach optional coding-tools seam (definition/refs/…). Absent by default.
+    pub fn with_coding_tools(mut self, service: Arc<dyn crate::CodingToolsService>) -> Self {
+        self.coding_tools = service;
         self
     }
 
@@ -151,6 +159,7 @@ impl ToolOrchestrator {
                 let orchestrator_artifact = self.artifact_root.clone();
                 let web_research = self.web_research.clone();
                 let mcp_live = self.mcp_live.clone();
+                let coding_tools = self.coding_tools.clone();
 
                 let handle = tokio::spawn(async move {
                     let orchestrator = ToolOrchestrator::with_artifact_root(
@@ -159,7 +168,8 @@ impl ToolOrchestrator {
                         orchestrator_artifact,
                     )
                     .with_optional_web_research(web_research)
-                    .with_optional_mcp_live(mcp_live);
+                    .with_optional_mcp_live(mcp_live)
+                    .with_coding_tools(coding_tools);
                     orchestrator.process_single_tool(tool_call, &runtime).await
                 });
                 handles.push(handle);
@@ -358,6 +368,12 @@ impl ToolOrchestrator {
                 .await;
         }
 
+        if tool_call.name == "goto_definition" {
+            return self
+                .execute_goto_definition(runtime, tool_call, arguments_summary)
+                .await;
+        }
+
         match self.execute_read_only(&tool_call) {
             Ok(ToolOutcome::Allowed { result }) => Self::record_observation(
                 runtime,
@@ -529,7 +545,7 @@ impl ToolOrchestrator {
 
         // Map tool names to ActionKind
         let kind = match tool_call.name.as_str() {
-            "list_files" | "read_file" | "search" => ActionKind::ReadFile,
+            "list_files" | "read_file" | "search" | "goto_definition" => ActionKind::ReadFile,
             "web_search" => ActionKind::WebSearch,
             "web_fetch" => ActionKind::WebFetch,
             "web_download" => ActionKind::WebDownload,
@@ -615,6 +631,107 @@ impl ToolOrchestrator {
                 tool: tool_call.name.clone(),
                 reason: error.to_string(),
             })
+    }
+
+    async fn execute_goto_definition(
+        &self,
+        runtime: &Arc<AgentRuntime>,
+        tool_call: crate::ToolCall,
+        arguments_summary: String,
+    ) -> ToolObservation {
+        let path = tool_call
+            .arguments
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(".")
+            .to_string();
+        let line = tool_call
+            .arguments
+            .get("line")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        let character = tool_call
+            .arguments
+            .get("character")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+
+        let effect = crate::NormalizedEffect::workspace_read(
+            ActionOrigin::Agent,
+            "goto_definition via agent",
+            path.clone(),
+        );
+        let seam = EffectSeam::with_sandbox(
+            self.policy.clone(),
+            Sandbox::workspace(&self.workspace_root),
+        );
+        match seam.decide(&effect) {
+            crate::EffectDecision::Allow => {}
+            crate::EffectDecision::NeedsApproval { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::ApprovalRequired,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+            crate::EffectDecision::Deny { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Denied,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+        }
+
+        let query = crate::PositionQuery::new(path, line, character);
+        match self.coding_tools.definition(&query).await {
+            Ok(locations) => {
+                let preview = if locations.is_empty() {
+                    "goto_definition: no locations".into()
+                } else {
+                    locations
+                        .iter()
+                        .map(|loc| {
+                            format!(
+                                "{}:{}:{}-{}:{}",
+                                loc.path.display(),
+                                loc.range.start.line,
+                                loc.range.start.character,
+                                loc.range.end.line,
+                                loc.range.end.character
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Success,
+                    preview,
+                    None,
+                    None,
+                )
+            }
+            Err(error) => Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Error,
+                String::new(),
+                None,
+                Some(error.to_string()),
+            ),
+        }
     }
 
     async fn execute_web_tool(
@@ -1706,5 +1823,82 @@ mod tests {
         assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
         assert_eq!(observations[0].preview, "echo:e2e");
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn goto_definition_uses_mock_coding_tools_provider() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let src = workspace.path().join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        std::fs::write(src.join("lib.rs"), "fn run() {}\n").expect("fixture");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let query = crate::PositionQuery::new("src/lib.rs", 42, 5);
+        let location =
+            crate::SourceLocation::new("src/lib.rs", crate::SourceRange::new(10, 0, 10, 3));
+        let mock =
+            Arc::new(crate::MockCodingToolsProvider::new().with_definition(query, vec![location]));
+        let service = Arc::new(crate::OptionalCodingToolsService::with_provider(mock));
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf())
+            .with_coding_tools(service);
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "def-1".into(),
+                    name: "goto_definition".into(),
+                    arguments: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "line": 42,
+                        "character": 5
+                    }),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("definition batch");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
+        assert!(observations[0].preview.contains("src/lib.rs:10:0-10:3"));
+        assert!(observations[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn goto_definition_absent_provider_fail_closed() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let src = workspace.path().join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        std::fs::write(src.join("lib.rs"), "fn run() {}\n").expect("fixture");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "def-absent".into(),
+                    name: "goto_definition".into(),
+                    arguments: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "line": 0,
+                        "character": 0
+                    }),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("definition batch");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Error);
+        let err = observations[0].error.as_deref().expect("error");
+        assert!(err.contains(crate::ABSENT_CODING_TOOLS_REASON));
     }
 }
