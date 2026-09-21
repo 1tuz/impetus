@@ -227,9 +227,21 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
                 BudgetEvent::CompactionRequired { threshold, used } => {
                     osc::send_warning(&format!("Compaction required: {}/{}", used, threshold));
                 }
+                BudgetEvent::CompactionStarted {
+                    from_sequence,
+                    to_sequence,
+                    threshold,
+                    used,
+                } => {
+                    osc::send_warning(&format!(
+                        "Compaction started: events {}..{} ({}/{})",
+                        from_sequence, to_sequence, used, threshold
+                    ));
+                }
                 BudgetEvent::CompactionCompleted {
                     compacted_to,
                     compaction_count,
+                    ..
                 } => {
                     render_block(
                         "Budget",
