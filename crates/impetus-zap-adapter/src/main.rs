@@ -131,6 +131,7 @@ async fn create_and_attach(
             session_id,
             text: prompt.to_string(),
             artifact: None,
+            intent: Default::default(),
         })
         .await
         .context("Failed to send prompt")?;

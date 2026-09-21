@@ -390,6 +390,7 @@ mod tests {
                     session_id,
                     text: "explain repository".into(),
                     artifact: None,
+                    intent: Default::default(),
                 }
             ),
             IpcResponse::Status {
@@ -494,6 +495,7 @@ mod tests {
                     session_id,
                     text: "cancel mock response".into(),
                     artifact: None,
+                    intent: Default::default(),
                 }
             ),
             IpcResponse::Status {
@@ -542,6 +544,7 @@ mod tests {
                 session_id,
                 text: "first".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -553,6 +556,7 @@ mod tests {
                 session_id,
                 text: "second".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Error {
                 code: IpcErrorCode::Conflict,

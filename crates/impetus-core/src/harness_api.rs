@@ -13,10 +13,13 @@ use crate::{
     MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
     ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
     ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget, ToolOutcome,
+    UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
     model_router::{ModelRouter, ModelRouterConfig},
+    policy::ActionOrigin,
+    user_intent::UserIntentError,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -63,6 +66,8 @@ pub struct Harness {
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
     uploads: crate::ArtifactUploadStore,
+    /// In-memory Prompt/Steer/FollowUp router (synced from projection on submit).
+    intent_router: Arc<Mutex<UserIntentRouter>>,
 }
 
 impl Harness {
@@ -88,6 +93,7 @@ impl Harness {
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
+            intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
         }
     }
 
@@ -123,6 +129,7 @@ impl Harness {
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
+            intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
         }
     }
 
@@ -183,6 +190,7 @@ impl Harness {
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
+            intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
         }
     }
 
@@ -233,6 +241,7 @@ impl Harness {
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
+            intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
         }
     }
 
@@ -265,6 +274,7 @@ impl Harness {
             self.session_coordinator.clone(),
             self.attachments.clone(),
             self.uploads.clone(),
+            self.intent_router.clone(),
             request,
         )
     }
@@ -283,6 +293,7 @@ fn handle_request(
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
     uploads: crate::ArtifactUploadStore,
+    intent_router: Arc<Mutex<UserIntentRouter>>,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -318,10 +329,16 @@ fn handle_request(
         },
         IpcRequest::CreateSession { workspace_root } => {
             match AgentRuntime::create_with_workspace(store, policy, workspace_root) {
-                Ok(runtime) => IpcResponse::Session {
-                    session_id: runtime.session_id(),
-                    status: RuntimeStatus::Idle,
-                },
+                Ok(runtime) => {
+                    let session_id = runtime.session_id();
+                    if let Ok(mut router) = intent_router.lock() {
+                        router.open_session(session_id);
+                    }
+                    IpcResponse::Session {
+                        session_id,
+                        status: RuntimeStatus::Idle,
+                    }
+                }
                 Err(error) => runtime_error(error),
             }
         }
@@ -329,7 +346,12 @@ fn handle_request(
             match AgentRuntime::attach(store, policy, session_id)
                 .and_then(|runtime| Ok((runtime.session_id(), runtime.status()?)))
             {
-                Ok((session_id, status)) => IpcResponse::Session { session_id, status },
+                Ok((session_id, status)) => {
+                    if let Ok(mut router) = intent_router.lock() {
+                        router.open_session(session_id);
+                    }
+                    IpcResponse::Session { session_id, status }
+                }
                 Err(error) => runtime_error(error),
             }
         }
@@ -401,6 +423,7 @@ fn handle_request(
             session_id,
             text,
             artifact,
+            intent,
         } => {
             let session_lock = session_coordinator.lock_for(session_id);
             let _session_guard = session_lock
@@ -409,7 +432,44 @@ fn handle_request(
             let artifact_root = uploads.artifact_root().to_path_buf();
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 let runtime = Arc::new(runtime);
+
+                // Sync projection → router, then validate typed intent (no origin/policy bypass).
+                let accepted = {
+                    let mut router = intent_router
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    router.open_session(session_id);
+                    let active = runtime.active_run_id()?;
+                    router
+                        .set_active_run(session_id, active)
+                        .map_err(user_intent_to_runtime)?;
+                    router
+                        .submit(UserIntentSubmission {
+                            session_id,
+                            intent,
+                            text: text.clone(),
+                            origin: ActionOrigin::User,
+                        })
+                        .map_err(user_intent_to_runtime)?
+                };
+
+                // Steer / FollowUp: durable Intent event only (no new run / LLM rewrite).
+                if matches!(
+                    accepted.intent,
+                    UserPromptIntent::Steer | UserPromptIntent::FollowUp
+                ) {
+                    runtime.submit_intent_with_artifact_and_kind(
+                        accepted.text,
+                        artifact,
+                        accepted.intent,
+                    )?;
+                    return runtime.status();
+                }
+
                 let run_id = runtime.submit_intent_and_start_run_with_artifact(text, artifact)?;
+                if let Ok(mut router) = intent_router.lock() {
+                    let _ = router.set_active_run(session_id, Some(run_id));
+                }
                 let session_workspace = runtime.workspace_root()?;
                 let provider_messages =
                     resolve_provider_messages(&session_workspace, &runtime, Some(&artifact_root))
@@ -1012,11 +1072,23 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
         RuntimeError::Store(crate::StoreError::DuplicateCheckpointName { .. })
         | RuntimeError::ActiveRun(_) => IpcErrorCode::Conflict,
         RuntimeError::Store(crate::StoreError::EmptyCheckpointName) => IpcErrorCode::InvalidRequest,
+        RuntimeError::Denied(message) if message.contains("steer rejected") => {
+            IpcErrorCode::Conflict
+        }
         _ => IpcErrorCode::Internal,
     };
     IpcResponse::Error {
         code,
         message: error.to_string(),
+    }
+}
+
+fn user_intent_to_runtime(error: UserIntentError) -> RuntimeError {
+    match error {
+        UserIntentError::UnknownSession(id) => RuntimeError::MissingSession(id),
+        UserIntentError::NoActiveRun(id) => {
+            RuntimeError::Denied(format!("steer rejected: session {id} has no active run"))
+        }
     }
 }
 
@@ -1443,6 +1515,7 @@ mod tests {
                 session_id,
                 text: "user question".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -1565,6 +1638,7 @@ mod tests {
             session_id,
             text: "only user intent".into(),
             artifact: None,
+            intent: Default::default(),
         });
         let durable = serde_json::to_string(&store.list(session_id).unwrap()).unwrap();
         assert!(durable.contains("only user intent"));
@@ -1699,6 +1773,7 @@ mod tests {
                 session_id,
                 text: "question without credential".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -1989,6 +2064,7 @@ mod tests {
                 session_id,
                 text: "inspect evidence and write the result".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -2094,6 +2170,7 @@ mod tests {
             session_id,
             text: "try the write".into(),
             artifact: None,
+            intent: Default::default(),
         });
         let mut approval_id = None;
         for _ in 0..100 {
@@ -2174,6 +2251,7 @@ mod tests {
                 session_id,
                 text: "start a long task".into(),
                 artifact: None,
+                intent: Default::default(),
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -2476,6 +2554,7 @@ mod tests {
                 session_id,
                 text: label.into(),
                 artifact: Some(artifact.clone()),
+                intent: Default::default(),
             }),
             IpcResponse::Status { .. }
         ));
@@ -2496,6 +2575,102 @@ mod tests {
             .expect("intent");
         assert_eq!(intent.text, label);
         assert_eq!(intent.artifact.as_ref(), Some(&artifact));
+        assert_eq!(intent.intent, UserPromptIntent::Prompt);
+    }
+
+    #[tokio::test]
+    async fn prompt_intent_routes_steer_and_follow_up_without_secrets() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        // Steer without active run → Conflict (router stub).
+        let steer_idle = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "nudge".into(),
+            artifact: None,
+            intent: UserPromptIntent::Steer,
+        });
+        assert!(
+            matches!(
+                &steer_idle,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Conflict,
+                    message
+                } if message.contains("steer rejected")
+            ),
+            "expected steer conflict, got {steer_idle:?}"
+        );
+
+        // Baseline Prompt starts a run (RunStarted recorded before spawn).
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "do work".into(),
+                artifact: None,
+                intent: UserPromptIntent::Prompt,
+            }),
+            IpcResponse::Status { .. }
+        ));
+
+        let steer_ok = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "prefer tests".into(),
+            artifact: None,
+            intent: UserPromptIntent::Steer,
+        });
+        assert!(
+            matches!(steer_ok, IpcResponse::Status { .. }),
+            "steer should accept while run active: {steer_ok:?}"
+        );
+        let events = store.list(session_id).expect("events");
+        let steer_event = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::Intent(intent) if intent.intent == UserPromptIntent::Steer => {
+                    Some(intent)
+                }
+                _ => None,
+            })
+            .expect("steer intent event");
+        assert_eq!(steer_event.text, "prefer tests");
+
+        let follow = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "then open PR".into(),
+            artifact: None,
+            intent: UserPromptIntent::FollowUp,
+        });
+        assert!(
+            matches!(follow, IpcResponse::Status { .. }),
+            "follow-up should enqueue when session exists: {follow:?}"
+        );
+        let events = store.list(session_id).expect("events");
+        let follow_event = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::Intent(intent) if intent.intent == UserPromptIntent::FollowUp => {
+                    Some(intent)
+                }
+                _ => None,
+            })
+            .expect("follow-up intent event");
+        assert_eq!(follow_event.text, "then open PR");
+        // No secrets in payloads.
+        let encoded = serde_json::to_string(&events).expect("encode");
+        assert!(!encoded.contains("sk-"));
+        assert!(!encoded.contains("Bearer "));
     }
 
     #[test]

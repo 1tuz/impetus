@@ -1,4 +1,5 @@
 use crate::RuntimeStatus;
+use crate::UserPromptIntent;
 use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -65,6 +66,9 @@ pub enum IpcRequest {
         /// Optional durable paste/attachment ref; raw body must not be in `text`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         artifact: Option<crate::DurableArtifactRef>,
+        /// Prompt | Steer | FollowUp. Absent / default → Prompt (compat).
+        #[serde(default)]
+        intent: UserPromptIntent,
     },
     Context {
         session_id: Uuid,
@@ -297,5 +301,47 @@ mod tests {
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&stored).unwrap()).unwrap(),
             stored
         );
+    }
+
+    #[test]
+    fn prompt_intent_discriminant_round_trips_and_defaults() {
+        let session_id = Uuid::new_v4();
+        for intent in [
+            UserPromptIntent::Prompt,
+            UserPromptIntent::Steer,
+            UserPromptIntent::FollowUp,
+        ] {
+            let request = IpcRequest::Prompt {
+                session_id,
+                text: "nudge".into(),
+                artifact: None,
+                intent,
+            };
+            let encoded = serde_json::to_string(&request).expect("encode");
+            let decoded: IpcRequest = serde_json::from_str(&encoded).expect("decode");
+            assert_eq!(decoded, request);
+            let needle = match intent {
+                UserPromptIntent::Prompt => "\"prompt\"",
+                UserPromptIntent::Steer => "\"steer\"",
+                UserPromptIntent::FollowUp => "\"follow_up\"",
+            };
+            assert!(
+                encoded.contains(needle),
+                "encoded intent discriminant missing in {encoded}"
+            );
+        }
+
+        // Legacy clients omit intent → Prompt.
+        let legacy = format!(
+            r#"{{"method":"prompt","params":{{"session_id":"{session_id}","text":"hi"}}}}"#
+        );
+        let decoded: IpcRequest = serde_json::from_str(&legacy).expect("legacy decode");
+        match decoded {
+            IpcRequest::Prompt { intent, text, .. } => {
+                assert_eq!(intent, UserPromptIntent::Prompt);
+                assert_eq!(text, "hi");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

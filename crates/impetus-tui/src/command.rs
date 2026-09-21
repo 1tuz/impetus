@@ -96,6 +96,24 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: "F1",
     },
     CommandSpec {
+        name: "prompt",
+        aliases: &[],
+        description: "composer sends baseline Prompt intent",
+        shortcut: "",
+    },
+    CommandSpec {
+        name: "steer",
+        aliases: &[],
+        description: "composer sends Steer intent (active run required)",
+        shortcut: "",
+    },
+    CommandSpec {
+        name: "follow-up",
+        aliases: &["followup", "follow"],
+        description: "composer sends FollowUp intent (enqueue after turn)",
+        shortcut: "",
+    },
+    CommandSpec {
         name: "quit",
         aliases: &["exit", "q"],
         description: "close the client; daemon sessions keep running",
@@ -110,6 +128,7 @@ pub enum CommandAction {
     Sessions,
     ModePicker,
     SetMode(ExecutionMode),
+    SetPromptIntent(impetus_client::protocol::UserPromptIntent),
     ShowDiff,
     ToggleInspector,
     Status,
@@ -163,6 +182,15 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
         "cancel" => CommandAction::Cancel,
         "clear" => CommandAction::ClearViewport,
         "help" => CommandAction::Help,
+        "prompt" => {
+            CommandAction::SetPromptIntent(impetus_client::protocol::UserPromptIntent::Prompt)
+        }
+        "steer" => {
+            CommandAction::SetPromptIntent(impetus_client::protocol::UserPromptIntent::Steer)
+        }
+        "follow-up" => {
+            CommandAction::SetPromptIntent(impetus_client::protocol::UserPromptIntent::FollowUp)
+        }
         "quit" => CommandAction::Quit,
         _ => CommandAction::Unknown(format!("unknown command `/{name}`")),
     };
@@ -240,6 +268,27 @@ mod tests {
         assert_eq!(
             parse_command("/accept"),
             Some(CommandAction::SetMode(ExecutionMode::Ask))
+        );
+    }
+
+    #[test]
+    fn intent_commands_set_prompt_steer_follow_up() {
+        use impetus_client::protocol::UserPromptIntent;
+        assert_eq!(
+            parse_command("/steer"),
+            Some(CommandAction::SetPromptIntent(UserPromptIntent::Steer))
+        );
+        assert_eq!(
+            parse_command("/follow-up"),
+            Some(CommandAction::SetPromptIntent(UserPromptIntent::FollowUp))
+        );
+        assert_eq!(
+            parse_command("/followup"),
+            Some(CommandAction::SetPromptIntent(UserPromptIntent::FollowUp))
+        );
+        assert_eq!(
+            parse_command("/prompt"),
+            Some(CommandAction::SetPromptIntent(UserPromptIntent::Prompt))
         );
     }
 

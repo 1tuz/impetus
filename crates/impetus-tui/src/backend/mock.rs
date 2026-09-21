@@ -297,7 +297,13 @@ impl UiBackend for MockBackend {
         }
     }
 
-    async fn send_message(&self, session_id: Uuid, text: String) -> Result<String> {
+    async fn send_message(
+        &self,
+        session_id: Uuid,
+        text: String,
+        intent: impetus_client::protocol::UserPromptIntent,
+    ) -> Result<String> {
+        let _ = intent;
         self.publish_prompt(session_id, text).await
     }
 
@@ -306,9 +312,10 @@ impl UiBackend for MockBackend {
         session_id: Uuid,
         label: String,
         body: Vec<u8>,
+        intent: impetus_client::protocol::UserPromptIntent,
     ) -> Result<String> {
         // Demo backend never stores bytes; only the compact label enters the timeline.
-        let _ = body;
+        let _ = (body, intent);
         self.publish_prompt(session_id, label).await
     }
 

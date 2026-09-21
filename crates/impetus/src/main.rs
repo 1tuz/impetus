@@ -420,6 +420,7 @@ async fn main() -> Result<()> {
                     session_id,
                     text,
                     artifact: None,
+                    intent: Default::default(),
                 })
                 .await?;
             match response {

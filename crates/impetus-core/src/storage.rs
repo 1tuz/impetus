@@ -1077,6 +1077,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 1");
@@ -1086,6 +1087,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 2");
@@ -1095,6 +1097,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step3".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 3");
@@ -1133,6 +1136,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 1");
@@ -1142,6 +1146,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 2");
@@ -1151,6 +1156,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step3".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append event 3");
@@ -1201,6 +1207,7 @@ mod tests {
                     EventPayload::Intent(IntentEvent {
                         text: format!("event{}", i),
                         artifact: None,
+                        intent: crate::UserPromptIntent::Prompt,
                     }),
                 )
                 .expect("append event");
@@ -1232,6 +1239,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append");
@@ -1241,6 +1249,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append");
@@ -1285,6 +1294,7 @@ mod tests {
                     EventPayload::Intent(IntentEvent {
                         text: "kept".into(),
                         artifact: None,
+                        intent: crate::UserPromptIntent::Prompt,
                     }),
                 )
                 .expect("append");
@@ -1294,6 +1304,7 @@ mod tests {
                     EventPayload::Intent(IntentEvent {
                         text: "later".into(),
                         artifact: None,
+                        intent: crate::UserPromptIntent::Prompt,
                     }),
                 )
                 .expect("append");
@@ -1304,6 +1315,7 @@ mod tests {
                     EventPayload::Intent(IntentEvent {
                         text: "branch".into(),
                         artifact: None,
+                        intent: crate::UserPromptIntent::Prompt,
                     }),
                 )
                 .expect("append to fork");
@@ -1350,6 +1362,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "before".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append");
@@ -1359,6 +1372,7 @@ mod tests {
                 EventPayload::Intent(IntentEvent {
                     text: "after".into(),
                     artifact: None,
+                    intent: crate::UserPromptIntent::Prompt,
                 }),
             )
             .expect("append");

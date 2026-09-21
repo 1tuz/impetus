@@ -523,6 +523,8 @@ pub struct AppState {
     pub composer: Composer,
     pub focus: Focus,
     pub mode: ExecutionMode,
+    /// Composer Prompt / Steer / FollowUp selection (sent on submit).
+    pub prompt_intent: impetus_client::protocol::UserPromptIntent,
     pub run_state: RunState,
     pub budget: BudgetState,
     pub overlay: Overlay,
@@ -558,6 +560,7 @@ impl AppState {
             composer: Composer::default(),
             focus: Focus::Composer,
             mode: ExecutionMode::Ask,
+            prompt_intent: impetus_client::protocol::UserPromptIntent::Prompt,
             run_state: RunState::Idle,
             budget: BudgetState::default(),
             overlay: Overlay::None,

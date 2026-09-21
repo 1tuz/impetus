@@ -163,11 +163,29 @@ pub trait HarnessClient: Send + Sync {
         text: String,
         artifact: Option<impetus_core::DurableArtifactRef>,
     ) -> Result<impetus_core::RuntimeStatus> {
+        self.send_message_with_intent(
+            session_id,
+            text,
+            artifact,
+            impetus_core::UserPromptIntent::Prompt,
+        )
+        .await
+    }
+
+    /// Submit typed Prompt / Steer / FollowUp (origin stays user; no policy bypass).
+    async fn send_message_with_intent(
+        &self,
+        session_id: uuid::Uuid,
+        text: String,
+        artifact: Option<impetus_core::DurableArtifactRef>,
+        intent: impetus_core::UserPromptIntent,
+    ) -> Result<impetus_core::RuntimeStatus> {
         match self
             .request(IpcRequest::Prompt {
                 session_id,
                 text,
                 artifact,
+                intent,
             })
             .await?
         {

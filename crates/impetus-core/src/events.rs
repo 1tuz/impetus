@@ -54,6 +54,9 @@ pub struct IntentEvent {
     /// Large paste / attachment: durable ref only — raw body stays out of events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<crate::DurableArtifactRef>,
+    /// Prompt | Steer | FollowUp discriminant. Absent in legacy events → Prompt.
+    #[serde(default)]
+    pub intent: crate::user_intent::UserPromptIntent,
 }
 
 impl IntentEvent {
@@ -61,6 +64,7 @@ impl IntentEvent {
         Self {
             text: text.into(),
             artifact: None,
+            intent: crate::user_intent::UserPromptIntent::Prompt,
         }
     }
 
@@ -68,6 +72,19 @@ impl IntentEvent {
         Self {
             text: text.into(),
             artifact: Some(artifact),
+            intent: crate::user_intent::UserPromptIntent::Prompt,
+        }
+    }
+
+    pub fn with_intent(
+        text: impl Into<String>,
+        intent: crate::user_intent::UserPromptIntent,
+        artifact: Option<crate::DurableArtifactRef>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            artifact,
+            intent,
         }
     }
 }
@@ -362,6 +379,24 @@ mod tests {
                 .expect("convert legacy"),
             EventPayload::Intent(IntentEvent::new("explain"))
         );
+    }
+
+    #[test]
+    fn intent_event_carries_prompt_intent_discriminant() {
+        for intent in [
+            crate::UserPromptIntent::Prompt,
+            crate::UserPromptIntent::Steer,
+            crate::UserPromptIntent::FollowUp,
+        ] {
+            let event = IntentEvent::with_intent("nudge", intent, None);
+            let encoded = serde_json::to_string(&event).expect("encode");
+            let decoded: IntentEvent = serde_json::from_str(&encoded).expect("decode");
+            assert_eq!(decoded.intent, intent);
+            assert_eq!(decoded.text, "nudge");
+        }
+        let legacy: IntentEvent =
+            serde_json::from_str(r#"{"text":"hi"}"#).expect("legacy intent event");
+        assert_eq!(legacy.intent, crate::UserPromptIntent::Prompt);
     }
 
     #[test]
