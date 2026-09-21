@@ -14,8 +14,10 @@
 //! refuse exact duplicates (same pattern + action). Pattern subsumption is
 //! YAGNI while patterns stay exact-string equality.
 //!
-//! Out of scope: full hook/plugin ABI, arbitrary script runner, perf suite,
-//! wiring into live `ProcessExecution` (real OS spawn), subsumption detection.
+//! Out of scope: full hook/plugin ABI, arbitrary script runner, large catalog
+//! fuzzer, wiring into live `ProcessExecution` (real OS spawn), subsumption
+//! detection. Perf smoke for a small rule set lives in unit tests (generous
+//! wall-clock bound; not a CI gate for absolute latency).
 
 use thiserror::Error;
 
@@ -483,5 +485,56 @@ mod tests {
         .unwrap();
         assert_eq!(pf.rules().len(), 2);
         assert_eq!(pf.prefilter("tool").unwrap(), PrefilterDecision::SkipSpawn);
+    }
+
+    /// Perf smoke: small rule set × many label lookups stay under a generous
+    /// ceiling. Documents overhead before live `ProcessExecution` wiring.
+    /// Not a CI wall-time gate — bound is loose for disk/CPU noise.
+    #[test]
+    fn prefilter_small_catalog_overhead_smoke() {
+        use std::time::{Duration, Instant};
+
+        const N_RULES: usize = 64;
+        const M_LABELS: usize = 2_000;
+        // Generous: exact-match scan of 64 rules × 2k labels is µs–low-ms locally.
+        const CEILING: Duration = Duration::from_millis(50);
+
+        let rules: Vec<HookRule> = (0..N_RULES)
+            .map(|i| {
+                let action = if i % 3 == 0 {
+                    HookAction::SkipSpawn
+                } else if i % 3 == 1 {
+                    HookAction::Deny
+                } else {
+                    HookAction::AllowContinue
+                };
+                HookRule::new(format!("tool-{i}"), action)
+            })
+            .collect();
+        let pf = HookPrefilter::new(rules);
+
+        // Mix: hits (first / mid / last rule) + misses (full scan).
+        let labels: Vec<String> = (0..M_LABELS)
+            .map(|i| match i % 4 {
+                0 => "tool-0".to_string(),
+                1 => format!("tool-{}", N_RULES / 2),
+                2 => format!("tool-{}", N_RULES - 1),
+                _ => format!("miss-{i}"),
+            })
+            .collect();
+
+        let start = Instant::now();
+        for label in &labels {
+            let _ = pf.prefilter(label);
+        }
+        let elapsed = start.elapsed();
+
+        println!(
+            "hook_prefilter smoke: {N_RULES} rules × {M_LABELS} labels → {elapsed:?} (ceiling {CEILING:?})"
+        );
+        assert!(
+            elapsed < CEILING,
+            "prefilter overhead too high for small catalog: {elapsed:?} >= {CEILING:?}"
+        );
     }
 }

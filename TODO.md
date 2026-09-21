@@ -300,7 +300,11 @@ Do **not** invent a new hard-coded agent type per workflow.
       (`HookTrustLevel::InDaemon` / `External`; security-critical rules require
       InDaemon; External matcher for critical action → clear Deny/error;
       unit tests labels-only; no plugin ABI / script runner) (#272)
-- [ ] Measure per-tool-call overhead; add perf tests if hooks land
+- [x] Measure per-tool-call overhead; add perf tests if hooks land — Partial
+      (`HookPrefilter::prefilter` smoke: 64 rules × 2k labels, generous
+      wall-clock assert in unit tests; Criterion already in crate for event
+      log — not duplicated here; live `ProcessExecution` spawn wiring still
+      separate / out of scope) (#279)
 - [x] Avoid large overlapping hook catalogs — Partial
       (`hook_prefilter`: `try_new` / `add_rule` refuse exact duplicates —
       same pattern + action; clear error lists conflicting rule ids/patterns;
