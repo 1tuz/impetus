@@ -8,7 +8,8 @@
 //! CLI: `impetus extension plan | install | remove | doctor | repair`.
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
-use crate::extension_compat::{ExtensionSource, McpModule};
+use crate::extension_compat::{ExtensionSource, McpModule, McpTransport};
+use crate::extension_manifest::{ExtensionManifest, ExtensionManifestError, ExtensionManifestKind};
 use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,8 @@ pub struct ResolutionPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallPlan {
     pub resolution: ResolutionPlan,
+    /// Validated `impetus.extension.v1` manifest (id/kind/version/digest/capabilities).
+    pub manifest: ExtensionManifest,
     /// Paths that do not exist yet and would be created.
     pub created_paths: Vec<PathBuf>,
     /// Paths that already exist and would be overwritten (subject to ownership).
@@ -56,6 +59,8 @@ pub enum PlanError {
     Resolve(String),
     #[error("invalid MCP config: {0}")]
     InvalidMcpConfig(String),
+    #[error("invalid extension manifest: {0}")]
+    InvalidManifest(#[from] ExtensionManifestError),
     #[error("path key error: {0}")]
     PathKey(String),
 }
@@ -238,6 +243,16 @@ async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, Plan
         .await
         .map_err(|e| PlanError::Resolve(e.to_string()))?;
 
+    let bytes = std::fs::read(&skill_md)?;
+    let digest = content_digest(&bytes);
+    let manifest = ExtensionManifest::new(
+        skill.id.clone(),
+        ExtensionManifestKind::Skill,
+        spec.version.clone(),
+        digest,
+        vec!["instructions".to_string(), "triggers".to_string()],
+    )?;
+
     let dest = skill_dest(target_root, &spec.id);
     let resolution = ResolutionPlan {
         source: ExtensionSource::AgentSkills,
@@ -246,7 +261,7 @@ async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, Plan
         version: spec.version,
         source_path: skill_md.canonicalize().unwrap_or_else(|_| skill_md.clone()),
     };
-    classify_plan(resolution, vec![dest])
+    classify_plan(resolution, manifest, vec![dest])
 }
 
 fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanError> {
@@ -262,17 +277,49 @@ fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanE
         serde_json::from_slice(&bytes).map_err(|e| PlanError::InvalidMcpConfig(e.to_string()))?;
 
     let module_id = sanitize_id(&module.name);
+    let digest = content_digest(&bytes);
+    // Ponytail: MCP config JSON has no version field; stable placeholder under extension.v1.
+    let version = "1.0.0".to_string();
+    let manifest = ExtensionManifest::new(
+        module_id.clone(),
+        ExtensionManifestKind::McpConfig,
+        version.clone(),
+        digest,
+        mcp_capability_tokens(&module),
+    )?;
+
     let dest = mcp_dest(target_root, &module_id);
     let resolution = ResolutionPlan {
         source: ExtensionSource::Mcp,
         module_id,
         module_name: module.name,
-        // Ponytail: MCP config has no version field yet; placeholder until extension.v1.
-        version: "1.0.0".to_string(),
+        version,
         source_path: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
     };
     // Dry-run: parse config only — no MCP server spawn.
-    classify_plan(resolution, vec![dest])
+    classify_plan(resolution, manifest, vec![dest])
+}
+
+fn mcp_capability_tokens(module: &McpModule) -> Vec<String> {
+    let mut caps = vec!["mcp".to_string()];
+    caps.push(match module.transport {
+        McpTransport::Stdio => "stdio".to_string(),
+        McpTransport::Http => "http".to_string(),
+        McpTransport::Sse => "sse".to_string(),
+    });
+    if module.capabilities.tools {
+        caps.push("tools".to_string());
+    }
+    if module.capabilities.resources {
+        caps.push("resources".to_string());
+    }
+    if module.capabilities.prompts {
+        caps.push("prompts".to_string());
+    }
+    if module.capabilities.sampling {
+        caps.push("sampling".to_string());
+    }
+    caps
 }
 
 fn skill_dest(target_root: &Path, skill_id: &str) -> PathBuf {
@@ -301,6 +348,7 @@ fn sanitize_id(name: &str) -> String {
 
 fn classify_plan(
     resolution: ResolutionPlan,
+    manifest: ExtensionManifest,
     destinations: Vec<PathBuf>,
 ) -> Result<InstallPlan, PlanError> {
     let mut created_paths = Vec::new();
@@ -321,6 +369,7 @@ fn classify_plan(
 
     Ok(InstallPlan {
         resolution,
+        manifest,
         created_paths,
         modified_paths,
     })
@@ -719,6 +768,19 @@ mod tests {
         assert_eq!(before, after, "dry-run must not mutate target tree");
         assert_eq!(plan.resolution.source, ExtensionSource::AgentSkills);
         assert_eq!(plan.resolution.module_id, "demo-skill");
+        assert_eq!(plan.manifest.id, "demo-skill");
+        assert_eq!(
+            plan.manifest.kind,
+            crate::extension_manifest::ExtensionManifestKind::Skill
+        );
+        assert_eq!(plan.manifest.version, plan.resolution.version);
+        assert!(!plan.manifest.version.is_empty());
+        assert!(plan.manifest.digest.starts_with("sha256:"));
+        assert_eq!(
+            plan.manifest.capabilities,
+            vec!["instructions".to_string(), "triggers".to_string()]
+        );
+        plan.manifest.validate().expect("manifest valid");
         assert_eq!(plan.modified_paths, Vec::<PathBuf>::new());
         assert_eq!(plan.created_paths.len(), 1);
         assert!(
@@ -778,6 +840,16 @@ mod tests {
         assert_eq!(before, after, "dry-run must not mutate target tree");
         assert_eq!(plan.resolution.source, ExtensionSource::Mcp);
         assert_eq!(plan.resolution.module_id, "filesystem");
+        assert_eq!(plan.manifest.id, "filesystem");
+        assert_eq!(
+            plan.manifest.kind,
+            crate::extension_manifest::ExtensionManifestKind::McpConfig
+        );
+        assert_eq!(
+            plan.manifest.capabilities,
+            vec!["mcp".to_string(), "stdio".to_string(), "tools".to_string()]
+        );
+        plan.manifest.validate().expect("manifest valid");
         assert_eq!(plan.modified_paths, Vec::<PathBuf>::new());
         assert_eq!(plan.created_paths.len(), 1);
         assert!(

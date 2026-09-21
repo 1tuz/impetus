@@ -59,18 +59,24 @@ fn open_stores(target_root: &Path) -> Result<(OwnershipStore, ExtensionStateStor
 #[derive(Serialize)]
 struct PlanOutput<'a> {
     resolution: &'a impetus_core::ResolutionPlan,
+    manifest: &'a impetus_core::ExtensionManifest,
     created_paths: &'a [PathBuf],
     modified_paths: &'a [PathBuf],
 }
 
 fn print_plan_human(plan: &InstallPlan) {
     let r = &plan.resolution;
+    let m = &plan.manifest;
     println!("Install plan (dry-run; no writes)");
     println!("  source: {:?}", r.source);
     println!("  module_id: {}", r.module_id);
     println!("  module_name: {}", r.module_name);
     println!("  version: {}", r.version);
     println!("  source_path: {}", r.source_path.display());
+    println!("  manifest.id: {}", m.id);
+    println!("  manifest.kind: {:?}", m.kind);
+    println!("  manifest.digest: {}", m.digest);
+    println!("  manifest.capabilities: {:?}", m.capabilities);
     println!("  create ({}):", plan.created_paths.len());
     for path in &plan.created_paths {
         println!("    + {}", path.display());
@@ -92,6 +98,7 @@ pub async fn plan(kind: ExtensionKind, path: &Path, root: Option<&Path>, json: b
     if json {
         let out = PlanOutput {
             resolution: &plan.resolution,
+            manifest: &plan.manifest,
             created_paths: &plan.created_paths,
             modified_paths: &plan.modified_paths,
         };

@@ -97,7 +97,7 @@ impetusd  — authoritative daemon
 | Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); scheduler/workflows Planned |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
-| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities`; session/extension/mcp Planned |
+| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental adapter crate |
@@ -176,13 +176,16 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 - Stable ids: `impetus.<name>.vN` (`SchemaSpec::id`)
 - Numeric field: `schema_version` (u16)
 - Registered today: `impetus.approval_detail.v1`, `impetus.capabilities.v1`,
-  `impetus.session.v1` (nest-shape slice only)
+  `impetus.session.v1` (nest-shape slice), `impetus.extension.v1`
 - Validation: version mismatch, unknown critical top-level fields, and
   leaked provider/harness keys fail clearly (`SchemaValidationError`);
   provider/harness details nest under `provider` / `harness` objects
 - Lookup: `KNOWN_SCHEMAS` / `lookup_schema`
+- Extension contract: [`ExtensionManifest`](crates/impetus-core/src/extension_manifest.rs)
+  (`id` / `kind` / `version` / `digest` / `capabilities`) validated on
+  `plan_install` for Skill + MCP config; not a marketplace
 
-Full session / extension / MCP catalogs remain Planned.
+Full MCP envelope remains Planned; session nest-shape is a slice only.
 
 ## Documentation
 
