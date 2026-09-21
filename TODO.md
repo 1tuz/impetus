@@ -300,8 +300,10 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 ### 11. LSP
 
-- [ ] First-class coding tools: definition, references, diagnostics, symbols, hover
-- [ ] No hard couple of runtime to one LSP binary
+- [x] Typed coding-tool seam + mock (definition / references / diagnostics /
+      symbols / hover); no LSP binary required at compile time (#261)
+- [ ] Real LSP backend spawn (rust-analyzer / clangd / …) — optional, not core dep
+- [ ] Wire coding tools into agent loop / IPC / TUI
 
 ### 12. Web / research
 
