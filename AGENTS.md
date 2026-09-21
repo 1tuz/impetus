@@ -54,11 +54,18 @@ For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/r
 
 ## CI and Verification
 
-- Before handoff of Rust changes, execute `task verify` (locally).
-- **PR Rust CI:** one macOS job runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --lib --bins`; Clippy replaces a separate CI `cargo check`. Rust CI runs only for Rust/workflow changes and does not rerun on `main` after a merged PR.
-- **Integration CI:** `cargo test --workspace` runs only from the manual/nightly macOS workflow. Integration tests from `crates/*/tests/` stay outside the PR path because they require macOS Seatbelt and compile slowly in Docker. Locally run full `task verify` with integration tests.
-- **Dependency security CI:** `cargo audit` and `cargo deny` run only when `Cargo.toml`, `Cargo.lock`, `deny.toml`, or their workflow changes. Pages runs only for `site/**` changes.
-- On `Cargo.toml` or `Cargo.lock` changes, execute `task security`; do not ignore RustSec/CVE, license/source/bans findings without versioned entry in `deny.toml` with specific reason.
+- Before handoff of Rust changes, execute `task verify` (locally) — full workspace.
+- **PR CI** (`.github/workflows/ci.yml`): path-aware. Docs-only skips Rust.
+  macOS runs `fmt` + Clippy/tests on **affected crates** (`--lib --bins`);
+  Linux runs cheap `cargo check` on affected + dependants. Workspace-wide
+  `Cargo.toml`/`Cargo.lock` changes broaden to `--workspace`. No nightly.
+- **Heavy tests:** `crates/*/tests/` and full `cargo test --workspace` stay
+  local via `task verify` / `task test` — not the PR merge gate.
+- **Security:** `cargo audit` / `cargo deny` only when dependency files change
+  (folded into CI). Pages only for `site/**` deploys.
+- On `Cargo.toml` or `Cargo.lock` changes, execute `task security` locally;
+  do not ignore RustSec/CVE/license findings without a versioned `deny.toml` entry.
+- Preview scope: `task ci:affected`.
 
 ## Git and Commits
 

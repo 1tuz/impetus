@@ -6,14 +6,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,15 +30,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v6
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-release-rust-1.98-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.target }}-release-rust-1.98-
+          shared-key: release-${{ matrix.target }}
+          cache-targets: "false"
 
       - name: Build release binaries
         run: |
@@ -71,6 +65,8 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 

@@ -1043,9 +1043,19 @@ fn gather_subsystem_health(
         Err(e) => SubsystemStatus::unavailable(format!("Event store error: {}", e)),
     };
 
-    // Artifact Store (ephemeral, in-memory)
-    let artifact_store = SubsystemStatus::ok("Ephemeral attachment backing (in-memory)")
-        .with_details(serde_json::json!({ "durable": false }));
+    let providers: Vec<String> = provider_registry.list_provider_ids();
+    let capability_truth = crate::CapabilityTruthReport::gather(&providers);
+
+    // Durable artifacts + separate ephemeral approval attachments (do not conflate).
+    let artifact_store = SubsystemStatus::ok(
+        "DurableArtifactStore active; AttachmentStore remains ephemeral for approval previews",
+    )
+    .with_details(serde_json::json!({
+        "durable": true,
+        "durable_artifact_store": true,
+        "ephemeral_attachment_store": true,
+        "capability": capability_truth.entry("durable_artifact_store"),
+    }));
 
     // Policy Engine
     let policy_engine =
@@ -1054,21 +1064,28 @@ fn gather_subsystem_health(
         }));
 
     // Provider Registry
-    let providers: Vec<String> = provider_registry.list_provider_ids();
     let provider_registry_status = if providers.is_empty() {
         SubsystemStatus::unavailable("No providers registered")
     } else {
-        SubsystemStatus::ok(format!("Providers: {}", providers.join(", ")))
-            .with_details(serde_json::json!({ "providers": providers }))
+        SubsystemStatus::ok(format!("Providers: {}", providers.join(", "))).with_details(
+            serde_json::json!({
+                "providers": providers,
+                "openai_native": capability_truth.entry("openai_native_chat_completions"),
+                "openai_compat": capability_truth.entry("openai_compat_text_adapter"),
+            }),
+        )
     };
 
-    // Sandbox (capability check)
-    let sandbox = if cfg!(target_os = "macos") {
-        SubsystemStatus::ok("Seatbelt available (macOS)")
-            .with_details(serde_json::json!({ "platform": "macos", "fail_closed": true }))
-    } else {
-        SubsystemStatus::unavailable("Seatbelt not available (non-macOS)")
-    };
+    // Path-scope admission is production. Seatbelt process wrap is spike-only (false).
+    let sandbox =
+        SubsystemStatus::ok("Path-scope sandbox fail-closed; Seatbelt process wrap not wired")
+            .with_details(serde_json::json!({
+                "platform": std::env::consts::OS,
+                "fail_closed": true,
+                "admission": "path_scope",
+                "seatbelt_process_wrap": false,
+                "capability": capability_truth.entry("seatbelt_process_wrap"),
+            }));
 
     // Credential Store (platform keychain)
     let credential_store = if cfg!(target_os = "macos") {
@@ -1078,28 +1095,36 @@ fn gather_subsystem_health(
         SubsystemStatus::unavailable("Platform credential store not configured")
     };
 
-    // Tools/Capabilities Registration
+    // Tools/Capabilities Registration + schema gate truth
     let tools_capabilities =
-        SubsystemStatus::ok("Built-in tools registered").with_details(serde_json::json!({
-            "builtin_tools": ["bash", "read", "write", "edit", "search"],
-            "module_registry": "available"
-        }));
+        SubsystemStatus::ok("Built-in tools registered; tool_schema validates args before policy")
+            .with_details(serde_json::json!({
+                "builtin_tools": ["bash", "read", "write", "edit", "search"],
+                "module_registry": "available",
+                "tool_schema_gate": true,
+                "provider_http_tools": false,
+                "capability": capability_truth.entry("tool_schema_validation"),
+            }));
 
     // External Agents / ACP Adapters
     let external_agents = SubsystemStatus::unavailable("No external agents configured")
         .with_details(serde_json::json!({
             "acp_adapters": [],
-            "note": "ACP adapter support planned for Phase 6"
+            "note": "ACP adapter support planned; not a production Seatbelt claim"
         }));
 
-    // Optional modules (Module Runtime Phase 2)
-    let optional_modules =
-        SubsystemStatus::ok("Module registry available").with_details(serde_json::json!({
-            "loaded_modules": 0,
-            "compatibility_adapters": 0,
-            "remote_capabilities": false,
-            "note": "Module discovery and loading implemented in Phase 2"
-        }));
+    // Optional modules + extension import vs runtime honesty
+    let optional_modules = SubsystemStatus::ok(
+        "Module registry available; extension import Implemented, runtime Partial",
+    )
+    .with_details(serde_json::json!({
+        "loaded_modules": 0,
+        "compatibility_adapters": 0,
+        "remote_capabilities": false,
+        "extension_import": capability_truth.entry("extension_import"),
+        "extension_runtime": capability_truth.entry("extension_runtime"),
+        "capability_matrix": capability_truth,
+    }));
 
     // Disk/Runtime health
     let disk_runtime = probe_disk_runtime(workspace_root);
@@ -2193,6 +2218,61 @@ mod tests {
         assert_eq!(details["web_fetch"], true);
         assert_eq!(details["search_backends"][0]["id"], "bing_html");
         assert_eq!(details["search_backends"][1]["id"], "duckduckgo");
+    }
+
+    #[test]
+    fn doctor_subsystem_health_matches_capability_truth_matrix() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let health =
+            gather_subsystem_health(&store, &policy, &ProviderRegistry::new(), workspace.path());
+
+        let sandbox = health.sandbox.details.expect("sandbox details");
+        assert_eq!(sandbox["seatbelt_process_wrap"], false);
+        assert_eq!(sandbox["admission"], "path_scope");
+        assert!(
+            health
+                .sandbox
+                .message
+                .contains("Seatbelt process wrap not wired")
+        );
+
+        let artifacts = health.artifact_store.details.expect("artifact details");
+        assert_eq!(artifacts["durable"], true);
+        assert_eq!(artifacts["durable_artifact_store"], true);
+        assert_eq!(artifacts["ephemeral_attachment_store"], true);
+
+        let tools = health.tools_capabilities.details.expect("tools details");
+        assert_eq!(tools["tool_schema_gate"], true);
+        assert_eq!(tools["provider_http_tools"], false);
+
+        let modules = health.optional_modules.details.expect("modules details");
+        assert_eq!(modules["extension_runtime"]["level"], "PARTIAL");
+        assert_eq!(
+            modules["extension_runtime"]["details"]["mcp_live_tools_in_loop"],
+            false
+        );
+        assert_eq!(modules["capability_matrix"]["schema_version"], 1);
+        let caps = modules["capability_matrix"]["capabilities"]
+            .as_array()
+            .expect("capabilities array");
+        assert!(
+            caps.iter()
+                .any(|c| c["id"] == "seatbelt_process_wrap" && c["level"] == "PARTIAL")
+        );
+        assert!(
+            caps.iter()
+                .any(|c| c["id"] == "durable_artifact_store" && c["level"] == "IMPLEMENTED")
+        );
+        assert!(
+            caps.iter()
+                .any(|c| c["id"] == "tool_schema_validation" && c["level"] == "IMPLEMENTED")
+        );
+        assert!(
+            caps.iter()
+                .any(|c| c["id"] == "openai_native_chat_completions" && c["level"] == "PARTIAL")
+        );
     }
 
     #[test]
