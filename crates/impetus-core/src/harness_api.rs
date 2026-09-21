@@ -12,11 +12,13 @@ use crate::{
     IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
     MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
     ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget,
-    ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
+    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope,
+    SteerActiveContext, SteerRewrite, TokenBudget, ToolOutcome, UserIntentRouter,
+    UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
+    default_steer_rewrite,
     model_router::{ModelRouter, ModelRouterConfig},
     policy::ActionOrigin,
     user_intent::UserIntentError,
@@ -77,6 +79,8 @@ pub struct Harness {
     /// In-memory Prompt/Steer/FollowUp router (synced from projection on submit).
     intent_router: Arc<Mutex<UserIntentRouter>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
+    /// Steer prompt rewrite seam (default passthrough; live LLM wire deferred).
+    steer_rewrite: Arc<dyn SteerRewrite>,
 }
 
 impl Harness {
@@ -104,6 +108,7 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
+            steer_rewrite: default_steer_rewrite(),
         }
     }
 
@@ -116,6 +121,12 @@ impl Harness {
     /// Attach optional coding-tools provider (tests / future LSP bridge).
     pub fn with_coding_tools(mut self, service: Arc<dyn crate::CodingToolsService>) -> Self {
         self.coding_tools = service;
+        self
+    }
+
+    /// Attach Steer prompt rewriter (tests / future live LLM wire).
+    pub fn with_steer_rewrite(mut self, rewriter: Arc<dyn SteerRewrite>) -> Self {
+        self.steer_rewrite = rewriter;
         self
     }
 
@@ -147,6 +158,7 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
+            steer_rewrite: default_steer_rewrite(),
         }
     }
 
@@ -209,6 +221,7 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
+            steer_rewrite: default_steer_rewrite(),
         }
     }
 
@@ -261,6 +274,7 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
+            steer_rewrite: default_steer_rewrite(),
         }
     }
 
@@ -295,6 +309,7 @@ impl Harness {
             self.uploads.clone(),
             self.intent_router.clone(),
             self.coding_tools.clone(),
+            self.steer_rewrite.clone(),
             request,
         )
     }
@@ -315,6 +330,7 @@ fn handle_request(
     uploads: crate::ArtifactUploadStore,
     intent_router: Arc<Mutex<UserIntentRouter>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
+    steer_rewrite: Arc<dyn SteerRewrite>,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -475,15 +491,36 @@ fn handle_request(
                             .map_err(user_intent_to_runtime)?
                     };
 
-                    // Steer / FollowUp: durable Intent event only (no new run / LLM rewrite).
-                    if matches!(
-                        accepted.intent,
-                        UserPromptIntent::Steer | UserPromptIntent::FollowUp
-                    ) {
+                    // Steer: rewrite hook (passthrough/mock; live LLM deferred), then
+                    // durable Intent event. FollowUp: durable event only.
+                    // Origin/Policy unchanged; router already required active run for Steer.
+                    if accepted.intent == UserPromptIntent::Steer {
+                        let active_run_id = accepted.active_run_id.ok_or_else(|| {
+                            RuntimeError::Denied(format!(
+                                "steer rejected: session {session_id} has no active run"
+                            ))
+                        })?;
+                        let context = SteerActiveContext {
+                            session_id,
+                            active_run_id,
+                            active_prompt: runtime_intent(&runtime).ok(),
+                        };
+                        // Clear hook for later live provider wire — result not streamed yet.
+                        let _rewritten = steer_rewrite
+                            .rewrite(&context, &accepted.text)
+                            .map_err(|err| RuntimeError::Denied(err.to_string()))?;
                         runtime.submit_intent_with_artifact_and_kind(
                             accepted.text,
                             artifact,
-                            accepted.intent,
+                            UserPromptIntent::Steer,
+                        )?;
+                        return runtime.status();
+                    }
+                    if accepted.intent == UserPromptIntent::FollowUp {
+                        runtime.submit_intent_with_artifact_and_kind(
+                            accepted.text,
+                            artifact,
+                            UserPromptIntent::FollowUp,
                         )?;
                         return runtime.status();
                     }
@@ -2883,6 +2920,86 @@ mod tests {
         let encoded = serde_json::to_string(&events).expect("encode");
         assert!(!encoded.contains("sk-"));
         assert!(!encoded.contains("Bearer "));
+    }
+
+    #[tokio::test]
+    async fn steer_accept_calls_mock_rewrite_seam_without_network() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let mock = Arc::new(crate::MockSteerRewrite::with_fixed_fragment(
+            "rewritten-nudge",
+        ));
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_steer_rewrite(mock.clone());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        // Idle: rewrite must not run (router rejects first).
+        let idle = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "early".into(),
+            artifact: None,
+            intent: UserPromptIntent::Steer,
+        });
+        assert!(
+            matches!(
+                &idle,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Conflict,
+                    ..
+                }
+            ),
+            "expected idle steer conflict: {idle:?}"
+        );
+        assert_eq!(mock.call_count(), 0);
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "baseline work".into(),
+                artifact: None,
+                intent: UserPromptIntent::Prompt,
+            }),
+            IpcResponse::Status { .. }
+        ));
+
+        let steer_ok = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "prefer tests".into(),
+            artifact: None,
+            intent: UserPromptIntent::Steer,
+        });
+        assert!(
+            matches!(steer_ok, IpcResponse::Status { .. }),
+            "steer should accept: {steer_ok:?}"
+        );
+        assert_eq!(mock.call_count(), 1);
+        let calls = mock.calls();
+        assert_eq!(calls[0].0.session_id, session_id);
+        assert!(calls[0].0.active_run_id != uuid::Uuid::nil());
+        assert_eq!(calls[0].0.active_prompt.as_deref(), Some("baseline work"));
+        assert_eq!(calls[0].1, "prefer tests");
+
+        // Durable Intent keeps user steer text (origin/policy path unchanged).
+        let events = store.list(session_id).expect("events");
+        let steer_event = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::Intent(intent) if intent.intent == UserPromptIntent::Steer => {
+                    Some(intent)
+                }
+                _ => None,
+            })
+            .expect("steer intent");
+        assert_eq!(steer_event.text, "prefer tests");
     }
 
     #[tokio::test]
