@@ -50,6 +50,7 @@ pub mod openai_native_adapter;
 pub mod openai_provider;
 pub mod openai_responses;
 pub mod output_reducer;
+pub mod ownership;
 pub mod plugins;
 pub mod policy;
 pub mod profile;
@@ -168,6 +169,7 @@ pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_native_adapter::OpenAiNativeAdapter;
 pub use openai_provider::{OpenAiProvider, RetryBudget as OpenAiRetryBudget};
 pub use output_reducer::{OutputReducer, ReducedOutput, ReductionStrategy, TokenBudget};
+pub use ownership::{OwnershipError, OwnershipRecord, OwnershipStore, path_key};
 pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry};
 pub use policy::{
     Action, ActionFingerprint, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine,
