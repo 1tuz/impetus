@@ -1247,9 +1247,7 @@ fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
         return vec![Effect::LoadApprovalDetail(approval.id)];
     }
     if let Some(item) = app.selected_item.and_then(|index| app.timeline.get(index)) {
-        let body = if crate::diff::looks_like_diff(&item.body) {
-            item.body.clone()
-        } else if item.details.is_empty() {
+        let body = if crate::diff::looks_like_diff(&item.body) || item.details.is_empty() {
             item.body.clone()
         } else {
             item.details.clone()
