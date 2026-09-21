@@ -5,6 +5,7 @@ pub mod doctor;
 mod duckduckgo;
 mod html;
 mod http;
+mod real_browser;
 mod research_loop;
 mod searxng;
 mod security;
@@ -30,6 +31,10 @@ pub use duckduckgo::DuckDuckGoSearchBackend;
 pub use http::{
     DnsResolver, HttpTransport, PreparedGet, PreparedPostForm, RawHttpResponse, ReqwestTransport,
     SecureHttpClient, SecureHttpResponse, SystemDnsResolver,
+};
+pub use real_browser::{
+    BROWSER_AUTOMATION_NOT_IMPLEMENTED, OptionalBrowserService, RealBrowserFamily,
+    RealBrowserLaunchHint, RealBrowserProviderModule,
 };
 pub use research_loop::{ResearchConfig, ResearchResult, research};
 pub use searxng::SearxngSearchBackend;
