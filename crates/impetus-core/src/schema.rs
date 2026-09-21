@@ -109,12 +109,28 @@ pub const SCHEMA_EXTENSION: SchemaSpec = SchemaSpec {
     ],
 };
 
+/// Minimal local MCP server-config envelope (stdio config shape; not full MCP RPC).
+pub const SCHEMA_MCP: SchemaSpec = SchemaSpec {
+    id: "impetus.mcp.v1",
+    version: 1,
+    critical_fields: &[
+        "schema_version",
+        "id",
+        "transport",
+        "command",
+        "args",
+        "capabilities",
+        "env_keys",
+    ],
+};
+
 /// All schemas known to this crate build. Order is stable for tests/docs.
 pub const KNOWN_SCHEMAS: &[SchemaSpec] = &[
     SCHEMA_APPROVAL_DETAIL,
     SCHEMA_CAPABILITIES,
     SCHEMA_SESSION,
     SCHEMA_EXTENSION,
+    SCHEMA_MCP,
 ];
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -277,7 +293,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn known_schemas_include_approval_capabilities_session_and_extension() {
+    fn known_schemas_include_approval_capabilities_session_extension_and_mcp() {
         assert_eq!(SCHEMA_APPROVAL_DETAIL.id, "impetus.approval_detail.v1");
         assert_eq!(SCHEMA_APPROVAL_DETAIL.version, 1);
         assert_eq!(SCHEMA_CAPABILITIES.id, "impetus.capabilities.v1");
@@ -286,12 +302,17 @@ mod tests {
         assert_eq!(SCHEMA_SESSION.version, 1);
         assert_eq!(SCHEMA_EXTENSION.id, "impetus.extension.v1");
         assert_eq!(SCHEMA_EXTENSION.version, 1);
+        assert_eq!(SCHEMA_MCP.id, "impetus.mcp.v1");
+        assert_eq!(SCHEMA_MCP.version, 1);
         assert!(lookup(SCHEMA_APPROVAL_DETAIL.id).is_some());
         assert!(lookup(SCHEMA_CAPABILITIES.id).is_some());
         assert!(lookup(SCHEMA_SESSION.id).is_some());
         assert!(lookup(SCHEMA_EXTENSION.id).is_some());
+        assert!(lookup(SCHEMA_MCP.id).is_some());
         assert!(SCHEMA_CAPABILITIES.critical_fields.contains(&NEST_PROVIDER));
         assert!(SCHEMA_CAPABILITIES.critical_fields.contains(&NEST_HARNESS));
+        assert!(SCHEMA_MCP.critical_fields.contains(&"env_keys"));
+        assert!(!SCHEMA_MCP.critical_fields.contains(&"env"));
     }
 
     #[test]

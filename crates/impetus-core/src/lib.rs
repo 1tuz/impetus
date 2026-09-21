@@ -38,6 +38,7 @@ pub mod instructions;
 pub mod ipc;
 pub mod mcp_adapter;
 pub mod mcp_live;
+pub mod mcp_manifest;
 pub mod memory_store;
 pub mod mock_provider;
 pub mod model_router;
@@ -174,6 +175,10 @@ pub use instructions::{
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
 pub use mcp_adapter::McpAdapter;
 pub use mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveToolEntry};
+pub use mcp_manifest::{
+    MCP_SCHEMA_ID, MCP_SCHEMA_VERSION, McpManifest, McpManifestError,
+    validate_env_keys as validate_mcp_env_keys,
+};
 pub use memory_store::{
     DERIVED_INDEX_DIR, MemoryDerivedIndex, MemoryEntry, MemoryPromotionTarget, MemoryProvenance,
     MemoryScope, MemoryStore, MemoryStoreError, MemoryTrustError, evaluate_with_memory_context,
@@ -228,8 +233,8 @@ pub use remote::{
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{
     HARNESS_NEST_KEYS, KNOWN_SCHEMAS, NEST_HARNESS, NEST_PROVIDER, PROVIDER_NEST_KEYS,
-    SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_EXTENSION, SCHEMA_SESSION, SchemaSpec,
-    SchemaValidationError, lookup as lookup_schema, reject_leaked_nested_fields,
+    SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_EXTENSION, SCHEMA_MCP, SCHEMA_SESSION,
+    SchemaSpec, SchemaValidationError, lookup as lookup_schema, reject_leaked_nested_fields,
     reject_unknown_critical_fields, require_nest_objects,
     require_version as require_schema_version, validate_envelope as validate_schema_envelope,
 };

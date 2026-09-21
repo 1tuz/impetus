@@ -151,7 +151,7 @@ pub enum McpTransport {
 }
 
 /// MCP capabilities
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpCapabilities {
     pub tools: bool,
     pub resources: bool,

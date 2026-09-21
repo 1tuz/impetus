@@ -176,7 +176,8 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 - Stable ids: `impetus.<name>.vN` (`SchemaSpec::id`)
 - Numeric field: `schema_version` (u16)
 - Registered today: `impetus.approval_detail.v1`, `impetus.capabilities.v1`,
-  `impetus.session.v1` (nest-shape slice), `impetus.extension.v1`
+  `impetus.session.v1` (nest-shape slice), `impetus.extension.v1`,
+  `impetus.mcp.v1` (local MCP config envelope)
 - Validation: version mismatch, unknown critical top-level fields, and
   leaked provider/harness keys fail clearly (`SchemaValidationError`);
   provider/harness details nest under `provider` / `harness` objects
@@ -184,8 +185,11 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 - Extension contract: [`ExtensionManifest`](crates/impetus-core/src/extension_manifest.rs)
   (`id` / `kind` / `version` / `digest` / `capabilities`) validated on
   `plan_install` for Skill + MCP config; not a marketplace
+- MCP config contract: [`McpManifest`](crates/impetus-core/src/mcp_manifest.rs)
+  (`id` / `transport` / `command` / `args` / `capabilities` / `env_keys`);
+  env keys/labels only — never secret values; validated on `plan_mcp_config`
 
-Full MCP envelope remains Planned; session nest-shape is a slice only.
+Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of scope.
 
 ## Documentation
 
