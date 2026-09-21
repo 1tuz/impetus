@@ -241,6 +241,6 @@ pub use tools::{
     ToolProvenance, ToolResult,
 };
 pub use worktree_manager::{
-    AgentWorkRole, StaleReason, StaleReport, WorktreeAttachedPermissions, WorktreeBinding,
-    WorktreeError, WorktreeLifecycleState, WorktreeManager,
+    AgentWorkRole, MergeReadyReport, StaleReason, StaleReport, WorktreeAttachedPermissions,
+    WorktreeBinding, WorktreeDiffSummary, WorktreeError, WorktreeLifecycleState, WorktreeManager,
 };
