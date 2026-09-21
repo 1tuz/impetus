@@ -75,3 +75,4 @@ and approval UI contracts (#9)** in [ARCHITECTURE.md](../ARCHITECTURE.md)
 | PolicyConfig + ApprovalDetail | [ARCHITECTURE.md § Policy customization (#9)](../ARCHITECTURE.md#policy-customization-and-approval-ui-contracts-9) |
 | Phases and gates | [ROADMAP.md](ROADMAP.md) |
 | Executable tasks | [TODO.md](../TODO.md) |
+| Ubuntu 24.04 smoke vs PR CI | [ubuntu-smoke-checklist.md](ubuntu-smoke-checklist.md) |

@@ -492,6 +492,8 @@ Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of sco
 - ACP hardening checklist (#66): [this file § ACP](#acp-production-hardening-checklist-66)
 - TUI notes: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
 - Zap path honesty (#5): § Zap path vs standalone CLI/TUI above
+- Ubuntu 24.04 smoke honesty (#293):
+  [docs/ubuntu-smoke-checklist.md](docs/ubuntu-smoke-checklist.md)
 - Design references (principles, not copy claims): [docs/REFERENCES.md](docs/REFERENCES.md)
 
 Historical audits under `docs/` may lag; prefer this file + `TODO.md`.

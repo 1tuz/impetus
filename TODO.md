@@ -360,6 +360,10 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [ ] Deep Claude/Codex/Cursor compatibility **runtime** (imports already Partial)
 - [ ] Autonomous long-running planner/tester loops
 - [ ] Ubuntu 24.04 release tier + clean-machine smoke
+      Honesty checklist (docs; #293):
+      [docs/ubuntu-smoke-checklist.md](docs/ubuntu-smoke-checklist.md) —
+      PR CI vs required clean-machine proofs; automated smoke / packaging
+      still Planned (do not mark this row Implemented for docs alone)
 - [ ] Full Zap discovery/authorize production protocol
       Honesty docs for classic #5 (adapter today vs Planned): ARCHITECTURE.md
       § Zap path (#290); protocol impl still open

@@ -38,6 +38,10 @@ Workflow: `.github/workflows/ci.yml` (single PR pipeline).
 
 Docs/markdown/assets-only changes skip Rust jobs.
 
+Ubuntu 24.04 PR CI is a **compile guard** (`cargo check`), not a clean-machine
+release smoke. What smoke must still prove (doctor, daemon, no secrets in
+logs, Linux data-dir override): [ubuntu-smoke-checklist.md](ubuntu-smoke-checklist.md).
+
 ## Docs capability claims check
 
 Selected capability claims (sandbox level, durable artifacts, tool schema gate,
