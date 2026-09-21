@@ -15,9 +15,10 @@
 //! YAGNI while patterns stay exact-string equality.
 //!
 //! Out of scope: full hook/plugin ABI, arbitrary script runner, large catalog
-//! fuzzer, wiring into live `ProcessExecution` (real OS spawn), subsumption
-//! detection. Perf smoke for a small rule set lives in unit tests (generous
-//! wall-clock bound; not a CI gate for absolute latency).
+//! fuzzer, daemon-wide catalog load, subsumption detection. Live spawn wiring:
+//! optional inject on [`crate::ProcessExecutionRequest::with_hook_prefilter`]
+//! (performance hook only — not RiskGate). Perf smoke for a small rule set lives
+//! in unit tests (generous wall-clock bound; not a CI gate for absolute latency).
 
 use thiserror::Error;
 
@@ -488,7 +489,7 @@ mod tests {
     }
 
     /// Perf smoke: small rule set × many label lookups stay under a generous
-    /// ceiling. Documents overhead before live `ProcessExecution` wiring.
+    /// ceiling. Documents overhead for the pre-spawn label scan.
     /// Not a CI wall-time gate — bound is loose for disk/CPU noise.
     #[test]
     fn prefilter_small_catalog_overhead_smoke() {

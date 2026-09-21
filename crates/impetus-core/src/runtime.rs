@@ -1,8 +1,8 @@
 use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
     BudgetChecker, BudgetConfig, DeferredEffect, EffectSeam, Event, EventPayload, EventStore,
-    ExecutionMode, IntentEvent, NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError,
-    RunEvent, Sandbox, ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
+    ExecutionMode, IntentEvent, NoticeEvent, PolicyEngine, ProjectionError, RunEvent, Sandbox,
+    ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -426,15 +426,15 @@ impl AgentRuntime {
         action: &Action,
         capability_version: Option<u32>,
     ) -> Result<crate::EffectDecision, RuntimeError> {
-        let Some(effect) = normalized_effect_from_action(action, capability_version) else {
-            return Ok(match self.policy.evaluate(action) {
-                PolicyDecision::Allow => crate::EffectDecision::Allow,
-                PolicyDecision::Deny { reason } => crate::EffectDecision::Deny { reason },
-                PolicyDecision::NeedsApproval { reason } => {
-                    crate::EffectDecision::NeedsApproval { reason }
-                }
-            });
-        };
+        // Every ActionKind maps to a NormalizedEffect — always admit via EffectSeam
+        // (sandbox → hard policy → execution mode → RiskGate). Never policy-only.
+        let effect =
+            normalized_effect_from_action(action, capability_version).ok_or_else(|| {
+                RuntimeError::Denied(format!(
+                    "action kind {:?} has no normalized effect for admission",
+                    action.kind
+                ))
+            })?;
         let seam = self.effect_seam()?;
         Ok(seam.decide(&effect))
     }

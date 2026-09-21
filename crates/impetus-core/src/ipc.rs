@@ -4,7 +4,7 @@ use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 6;
+pub const IPC_VERSION: u16 = 7;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
@@ -27,6 +27,7 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     // Coding-tools IPC: definition (paths/ranges only; no secrets).
     "coding_definition",
     "execution_mode",
+    "reload_policy_config",
     "approval_scope_file_edits",
     "approval_scope_full_auto",
 ];
@@ -140,6 +141,14 @@ pub enum IpcRequest {
     GetExecutionMode {
         session_id: Uuid,
     },
+    /// Replace live PolicyConfig overrides without daemon restart.
+    /// Supply `path` or `config_json`, not both.
+    ReloadPolicyConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<std::path::PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_json: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -222,6 +231,9 @@ pub enum IpcResponse {
     ExecutionMode {
         session_id: Uuid,
         mode: crate::ExecutionMode,
+    },
+    PolicyConfig {
+        config: crate::PolicyConfig,
     },
     Incompatible {
         supported_version: u16,
@@ -381,6 +393,34 @@ mod tests {
                 response
             );
         }
+    }
+
+    #[test]
+    fn reload_policy_config_messages_round_trip() {
+        let request = IpcRequest::ReloadPolicyConfig {
+            path: Some(std::path::PathBuf::from("/tmp/policy.json")),
+            config_json: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
+            request
+        );
+        let inline = IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":1}"#.into()),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&inline).unwrap()).unwrap(),
+            inline
+        );
+        let response = IpcResponse::PolicyConfig {
+            config: crate::PolicyConfig::parse(r#"{"version":1}"#).expect("config"),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&response).unwrap())
+                .unwrap(),
+            response
+        );
     }
 
     #[test]

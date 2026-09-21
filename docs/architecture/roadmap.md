@@ -8,16 +8,15 @@ This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
-1. **Now** ([#308](https://github.com/1tuz/impetus/issues/308)) — make daily use
-   coherent: faster PR CI (target cache / fmt off macOS critical path), honest
-   docs memory (no Implemented-unwired / `[x]`+Partial), **daemon-owned**
-   execution modes + Auto Risk Gate (not TUI prompt prefixes), Keychain
-   non-interactive hardening, wire Explore + MCP autoload + PolicyConfig IPC
-   reload into **production** `impetusd`. (Seatbelt macOS process wrap,
-   PolicyConfig startup load, Explore **library** E2E already in tree.)
+1. **Now** ([#308](https://github.com/1tuz/impetus/issues/308)) — largely landed
+   on the feature branch: faster PR CI (~85s warm Gate), honest docs memory,
+   daemon-owned execution modes + RiskGate, Keychain non-interactive + rebuild
+   diagnosis docs, Explore + MCP autoload in `impetusd`, PolicyConfig IPC
+   reload, live `hook_prefilter` on process spawn. Remaining Now items move to
+   Next as they complete (see [TODO.md](../../TODO.md)).
 2. **Next** — operator / orchestration runtime and optional modules: live
-   WorkflowEngine spawn + cancel, other subagent roles, `PolicyStore`, hooks on
-   process spawn (performance prefilter ≠ RiskGate), Steer live rewrite, real
+   WorkflowEngine spawn + cancel, other subagent roles, `PolicyStore`,
+   daemon hook_prefilter catalog file load, Steer live rewrite, real
    LSP/search/browser backends, policy operator UX. Capability leases / RepoMap:
    design only — [capability-leases-and-repomap.md](capability-leases-and-repomap.md).
 3. **Later** — marketplaces, multi-harness portability, deep vendor runtime

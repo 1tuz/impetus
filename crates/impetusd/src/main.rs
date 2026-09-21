@@ -407,6 +407,7 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
             "execution_mode"
         }
+        IpcRequest::ReloadPolicyConfig { .. } => "reload_policy_config",
     }
 }
 
@@ -633,6 +634,29 @@ mod tests {
             Some(impetus_core::PolicyConfigDecision::Deny)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reload_policy_config_via_ipc_updates_live_policy() {
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(store, impetus_core::harness_api::policy());
+        let IpcResponse::PolicyConfig { config } = harness.handle(IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":1,"overrides":{"spawn_process":"deny"}}"#.into()),
+        }) else {
+            panic!("reload policy config");
+        };
+        assert_eq!(
+            config.override_for(impetus_core::ActionKind::SpawnProcess),
+            Some(impetus_core::PolicyConfigDecision::Deny)
+        );
+        assert_eq!(
+            harness
+                .policy()
+                .config()
+                .override_for(impetus_core::ActionKind::SpawnProcess),
+            Some(impetus_core::PolicyConfigDecision::Deny)
+        );
     }
 
     #[test]

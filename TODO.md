@@ -17,7 +17,9 @@ Doc map = [docs/README.md](docs/README.md).
 
 ## Now
 
-Active work for [#308](https://github.com/1tuz/impetus/issues/308).
+[#308](https://github.com/1tuz/impetus/issues/308) Now slice is complete on the
+feature branch (CI, docs truth, modes, RiskGate, Keychain, Explore/MCP,
+ReloadPolicyConfig, hook_prefilter). Next agent: start at **Next** below.
 
 ### Docs truth (persistent memory)
 
@@ -56,21 +58,20 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 - [x] Core `DeterministicRiskGate` + `EffectSeam` admission chain (sandbox →
       policy hard deny → execution mode → RiskGate → decision) with adversarial
       unit tests (#308)
-- [ ] Production-wide RiskGate coverage (all spawn paths, hook_prefilter wired
-      separately as performance-only prefilter).
-      **Done:** runtime + tool_orchestrator + process argv + IPC read tools use
-      session-aware seam; AUTO/ACCEPT_EDITS auto-allow safe reads + scoped
-      workspace edits; risky paths need approval; hard denies still win.
-- [ ] Wire `hook_prefilter` into live `ProcessExecution` as performance hook
-      only (not security classifier).
-      **Done:** spawn path calls prefilter; docs say RiskGate ≠ HookPrefilter.
+- [x] Production-wide RiskGate: all `request_action` via EffectSeam (no
+      policy-only fallback); process argv; orchestrator; remote/`with_sandbox`
+      helpers include RiskGate. PTY OS spawn still stub (Next).
+- [x] Wire `hook_prefilter` into live `ProcessExecution` as performance hook
+      only (not security classifier). `execute` always runs `spawn_stub` before
+      OS spawn (empty default catalog or `with_hook_prefilter`).
 
 ### Keychain / non-interactive
 
 - [x] CI / `IMPETUS_NONINTERACTIVE` fail closed without Keychain GUI;
       `IMPETUS_CREDENTIAL_BACKEND=mock|keychain`; unit test; operator docs (#308).
-- [ ] Diagnose intermittent `impetusd` Keychain GUI prompt after rebuild
-      (service/account/ACL/signing). No permissive ACL / `-A` / plaintext.
+- [x] Document Keychain GUI after rebuild: ACL/cdhash identity; diagnose with
+      `codesign -dv`; stable signing identity (no `-A` / FDA). See
+      [troubleshooting](docs/guides/troubleshooting.md).
 
 ### Runtime gaps (honest open items)
 
@@ -79,8 +80,8 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 - [x] `impetusd` autoload MCP servers from disk config into
       `ToolProviderRuntime` (`$IMPETUS_DATA_DIR/mcp/*.json`; fail closed on bad
       config; `impetusd_autoload: true`).
-- [ ] Typed IPC `ReloadPolicyConfig` (startup file load already exists).
-      **Done:** invalid reload keeps previous policy + durable/audit event.
+- [x] Typed IPC `ReloadPolicyConfig` (startup file load already exists).
+      Invalid reload keeps previous policy + durable/audit Notice event.
 
 ---
 
@@ -94,6 +95,7 @@ Important after Now; not blocking daily single-session use.
 - [ ] `WorkflowEngine` cancel/replace on session-run intents (drain race open)
 - [ ] Live child process / PTY for Research / Build / Review
 - [ ] Per-parent concurrency caps / fair scheduling
+- [ ] Daemon-owned hook_prefilter catalog file load (execute path already live)
 
 ### Trust / policy / provider
 

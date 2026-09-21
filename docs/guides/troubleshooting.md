@@ -42,19 +42,38 @@ Errors are redacted; do not paste credentials into issues or logs.
 ### macOS Keychain prompts after rebuild
 
 `impetusd --provider-profile` with `keychain_reference` may trigger a macOS
-authorization dialog on the first provider request. A local rebuild changes
-binary identity (code signature / path), so macOS can treat the new binary as a
-different client and prompt again.
+authorization dialog on the **first provider request** (lazy lookup — not at
+daemon start). Service/account come from the profile JSON (labels only).
+
+**Root cause (not Full Disk Access):** Keychain ACL / partition list binds to
+the calling binary’s code-signing identity (`cdhash` / designated requirement).
+Unsigned or ad-hoc `cargo build` binaries get a **new identity every rebuild**,
+so “Always Allow” does not stick across rebuilds. Same path after `cargo install`
+or replacing the binary also re-prompts.
 
 | Choice | Effect |
 | --- | --- |
-| **Allow** | Works until the next rebuild or install path change. |
-| **Always Allow** | Persists for this binary identity until signing identity or path changes materially. |
+| **Allow** / **Allow Once** | Works until next rebuild or path change. |
+| **Always Allow** | Persists only while binary signing identity stays the same. |
+
+**Safe operator path**
+
+1. Confirm item: Keychain Access → search service label from profile (often
+   `impetus`), or `security find-generic-password -s '<service>' -a '<account>'`
+   (never print `-w` into logs/issues).
+2. Inspect binary identity: `codesign -dv --verbose=4 "$(command -v impetusd)"`
+   (or `target/debug/impetusd`). Unsigned / changing cdhash → expect re-prompt.
+3. Prefer a **stable signing identity** for daily local daemons (Apple Development
+   or a dedicated codesign identity you reuse). Sign after build:
+   `codesign -f -s '<identity>' target/debug/impetusd`, then click Always Allow
+   once. Do **not** use permissive ACL (`security … -A` / allow-all-apps).
+4. Live Keychain tests: interactive only. CI / scripts:
+   `CI=true` or `IMPETUS_NONINTERACTIVE=1` → fail closed, no GUI.
+   `IMPETUS_CREDENTIAL_BACKEND=mock` → never touches Keychain.
 
 Do **not** grant Full Disk Access to work around Keychain — it is not required
-and widens trust incorrectly. Impetus does not use permissive Keychain ACL or
-`codesign -A` workarounds; credentials stay reference-only via documented
-`service` / `account` fields.
+and widens trust incorrectly. Impetus does not ship `-A` ACL scripts; credentials
+stay reference-only via documented `service` / `account` fields.
 
 ### CI and non-interactive runs
 

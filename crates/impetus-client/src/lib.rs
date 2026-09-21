@@ -238,6 +238,22 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Replace live PolicyConfig overrides without restarting the daemon.
+    async fn reload_policy_config(
+        &self,
+        path: Option<PathBuf>,
+        config_json: Option<String>,
+    ) -> Result<impetus_core::PolicyConfig> {
+        match self
+            .request(IpcRequest::ReloadPolicyConfig { path, config_json })
+            .await?
+        {
+            IpcResponse::PolicyConfig { config } => Ok(config),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Stop at the next safe runtime boundary.
     async fn cancel(&self, session_id: uuid::Uuid) -> Result<impetus_core::RuntimeStatus> {
         match self.request(IpcRequest::Cancel { session_id }).await? {

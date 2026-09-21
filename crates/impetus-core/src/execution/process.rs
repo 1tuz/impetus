@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectAdmission,
-    EffectSeam, NormalizedEffect,
+    EffectSeam, HookPrefilter, NormalizedEffect, SpawnStubOutcome, spawn_stub,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -54,6 +54,12 @@ pub enum ProcessExecutionError {
     SandboxDenied(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("hook prefilter denied spawn for label {0}")]
+    PrefilterDenied(String),
+    #[error(
+        "security-critical hook for label `{label}` requires InDaemon trust; External matcher refused"
+    )]
+    PrefilterExternalForCritical { label: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +91,8 @@ pub struct ProcessExecutionRequest {
     pub origin: ActionOrigin,
     pub intent_revision: u64,
     pub timeout: Duration,
+    /// Optional performance prefilter (not RiskGate). When absent, spawn proceeds unchanged.
+    hook_prefilter: Option<HookPrefilter>,
 }
 
 impl ProcessExecutionRequest {
@@ -104,7 +112,19 @@ impl ProcessExecutionRequest {
             origin,
             intent_revision,
             timeout: DEFAULT_EXECUTION_TIMEOUT,
+            hook_prefilter: None,
         }
+    }
+
+    /// Attach a performance-only hook prefilter catalog (optional inject).
+    pub fn with_hook_prefilter(mut self, prefilter: HookPrefilter) -> Self {
+        self.hook_prefilter = Some(prefilter);
+        self
+    }
+
+    /// Executable basename used for hook prefilter label match (exact equality).
+    pub fn spawn_label(&self) -> &str {
+        self.command.rsplit('/').next().unwrap_or(&self.command)
     }
 
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
@@ -172,6 +192,19 @@ impl ProcessExecutionRequest {
         artifacts: &DurableArtifactStore,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let start = std::time::Instant::now();
+        // Always run performance prefilter (empty catalog = AllowContinue).
+        // Optional `with_hook_prefilter` replaces the default catalog.
+        let default_prefilter = HookPrefilter::default();
+        let prefilter = self.hook_prefilter.as_ref().unwrap_or(&default_prefilter);
+        match spawn_stub(prefilter, self.spawn_label())? {
+            SpawnStubOutcome::WouldSpawn => {}
+            SpawnStubOutcome::Skipped => {
+                return Ok(skipped_by_prefilter_output(
+                    start.elapsed().as_millis() as u64,
+                    self.spawn_label(),
+                ));
+            }
+        }
         let mut spawned = self.spawn_child()?;
         let child = &mut spawned.child;
 
@@ -345,6 +378,28 @@ fn finalize_process_output(
     })
 }
 
+fn skipped_by_prefilter_output(duration_ms: u64, label: &str) -> ProcessOutput {
+    ProcessOutput {
+        exit_code: None,
+        stdout: String::new(),
+        stderr: format!("hook prefilter skipped spawn for label `{label}`"),
+        truncated: false,
+        duration_ms,
+        artifact: None,
+    }
+}
+
+impl From<crate::SpawnStubError> for ProcessExecutionError {
+    fn from(err: crate::SpawnStubError) -> Self {
+        match err {
+            crate::SpawnStubError::Denied(label) => Self::PrefilterDenied(label),
+            crate::SpawnStubError::ExternalForCritical { label } => {
+                Self::PrefilterExternalForCritical { label }
+            }
+        }
+    }
+}
+
 fn truncate_preview(input: &str) -> String {
     if input.len() <= MAX_PROCESS_PREVIEW_BYTES {
         return input.to_owned();
@@ -429,7 +484,9 @@ impl ProcessExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PolicyEngine, Sandbox, SandboxScope};
+    use crate::{
+        HookAction, HookPrefilter, HookRule, HookTrustLevel, PolicyEngine, Sandbox, SandboxScope,
+    };
 
     fn test_seam() -> EffectSeam {
         let workspace = test_workspace();
@@ -636,6 +693,77 @@ mod tests {
         assert!(full_text.contains("stdout:"));
         assert!(full_text.len() > MAX_PROCESS_PREVIEW_BYTES);
         assert!(full_text.matches('x').count() > MAX_PROCESS_PREVIEW_BYTES);
+    }
+
+    #[test]
+    fn spawn_label_uses_executable_basename() {
+        let request =
+            ProcessExecutionRequest::new("/bin/echo", vec!["hi".into()], ActionOrigin::User, 1);
+        assert_eq!(request.spawn_label(), "echo");
+    }
+
+    #[tokio::test]
+    async fn spawn_path_invokes_hook_prefilter_skip_spawn() {
+        let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
+        let prefilter = HookPrefilter::new(vec![HookRule::new("echo", HookAction::SkipSpawn)]);
+        let request = user_request("echo", vec!["hello".into()]).with_hook_prefilter(prefilter);
+
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user echo"),
+        };
+
+        let output = request
+            .execute(&token, &artifacts)
+            .await
+            .expect("skip spawn is not an error");
+        assert_eq!(output.exit_code, None);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains("skipped spawn"));
+        assert!(output.stderr.contains("echo"));
+        assert!(!output.stdout.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn spawn_path_invokes_hook_prefilter_deny() {
+        let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
+        let prefilter = HookPrefilter::new(vec![HookRule::new("sleep", HookAction::Deny)]);
+        let request = user_request("sleep", vec!["10".into()]).with_hook_prefilter(prefilter);
+
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user sleep"),
+        };
+
+        let err = request.execute(&token, &artifacts).await.unwrap_err();
+        assert!(matches!(err, ProcessExecutionError::PrefilterDenied(label) if label == "sleep"));
+    }
+
+    #[tokio::test]
+    async fn spawn_path_hook_prefilter_external_critical_fail_closed() {
+        let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
+        let prefilter = HookPrefilter::new(vec![
+            HookRule::security_critical("false", HookAction::Deny)
+                .with_trust(HookTrustLevel::External),
+        ]);
+        let request = user_request("false", vec![]).with_hook_prefilter(prefilter);
+
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user false"),
+        };
+
+        let err = request.execute(&token, &artifacts).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ProcessExecutionError::PrefilterExternalForCritical { label } if label == "false"
+        ));
     }
 
     #[tokio::test]
