@@ -2,17 +2,13 @@
 
 ## Workspace
 
-Impetus is a Rust 2024 workspace. `Cargo.toml` pins Rust `1.98` and the
-workspace contains the core, daemon, CLI, client, Zap adapter, and ACP gateway
-crates.
+Impetus is a Rust 2024 workspace. `Cargo.toml` pins Rust `1.98`.
 
-Run the standard local gate from the repository root:
+Local gate from the repository root (full workspace — use before handoff):
 
 ```zsh
 task verify
 ```
-
-It runs, in order:
 
 ```zsh
 cargo fmt --all -- --check
@@ -21,36 +17,58 @@ cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-For dependency changes, add:
+For dependency changes, also:
 
 ```zsh
 task security
 ```
 
-This invokes `cargo audit` and `cargo deny check advisories bans sources
-licenses`.
+## Pull request CI
+
+Workflow: `.github/workflows/ci.yml` (single PR pipeline).
+
+1. **Detect** — `scripts/ci-affected.sh` vs PR base (`main`).
+2. **macOS** (if Rust changed) — `fmt`, Clippy + `cargo test --lib --bins` on
+   affected packages; `cargo check` on dependants when a shared crate changed.
+3. **Linux** (if Rust changed) — `cargo check` on affected + dependants only
+   (compile guard, not a second full test suite).
+4. **Security** — only when `Cargo.toml` / `Cargo.lock` / `deny.toml` change.
+5. **Site** — only when `site/**` changes (`npm run check`).
+6. **Gate** — always-green aggregator so docs-only PRs still pass required checks.
+
+Docs/markdown/assets-only changes skip Rust jobs.
+
+Preview what CI would select:
+
+```zsh
+task ci:affected
+```
+
+### Required GitHub branch-protection check
+
+Mark **only** `Gate` (job name under workflow `CI`) as required for auto-merge.
+Do not require the internal macOS/Linux/security/site jobs individually — they
+may be skipped when out of scope.
+
+## Manual / heavy tests
+
+Keep running locally when you touch Seatbelt, full IPC integration, or want the
+whole suite:
+
+```zsh
+cargo test --workspace
+```
+
+Integration tests under `crates/*/tests/` are intentionally outside the PR gate.
 
 ## Useful commands
 
 | Command | Purpose |
 | --- | --- |
-| `task harness` | Run `impetusd` (daemon). Taskfile still uses legacy `-p impetus` — see [TODO.md](../TODO.md). |
-| `task cli -- <args>` | Legacy `impetus-cli`; prefer `cargo run -p impetus -- …`. |
-| `task ci:list` | List jobs declared in `.gitlab-ci.yml`. |
-| `task ci:local` | Run GitLab CI locally with the trusted shell executor. |
-
-`task ci:local` requires `gitlab-ci-local`. The GitLab pipeline has `verify`
-and `security` stages. Its test job intentionally uses library and binary tests
-instead of the full macOS integration-test set; use `task verify` locally for
-the full workspace suite.
-
-## GitHub automation
-
-`.github/workflows/check.yml` runs the macOS Rust checks for pull requests and
-pushes to `main`. `.github/workflows/star-chart.yml` runs weekly or on manual
-dispatch. It uses the pinned ShieldCN action with `contents: write` so it can
-commit the generated star-chart SVG. The chart is not embedded in the README
-until the repository has meaningful star history.
+| `task daemon` | Run `impetusd`. |
+| `task client -- <args>` | Run `impetus` CLI. |
+| `task ci:affected` | Print CI scope for current branch vs `origin/main`. |
+| `task security` | `cargo audit` + `cargo deny`. |
 
 ## Change boundaries
 
@@ -59,7 +77,5 @@ until the repository has meaningful star history.
 - Do not store raw secrets in SQLite, JSONL, logs, test fixtures, or config.
 - Treat process, PTY, network, and filesystem effects as harness capabilities;
   clients do not own policy or the SQLite connection.
-- Update `.gitlab-ci.yml` with any Rust, toolchain, dependency-policy, or
-  verification-contract change.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the contribution workflow.
+See [CONTRIBUTING.md](../CONTRIBUTING.md).

@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+      site: ${{ steps.scope.outputs.site }}
+      workspace: ${{ steps.scope.outputs.workspace }}
+      security: ${{ steps.scope.outputs.security }}
+      packages: ${{ steps.scope.outputs.packages }}
+      check_packages: ${{ steps.scope.outputs.check_packages }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune origin "${{ github.base_ref || 'main' }}"
+          export BASE_REF="origin/${{ github.base_ref || 'main' }}"
+          chmod +x scripts/ci-affected.sh
+          ./scripts/ci-affected.sh | tee /tmp/scope.txt
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_OUTPUT"
+          done < /tmp/scope.txt
+
+  macos:
+    name: macOS
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-macos
+          cache-targets: "false"
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (affected)
+        run: cargo clippy ${{ needs.detect.outputs.packages }} --all-targets -- -D warnings
+      - name: Test (affected lib/bins)
+        run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins
+      - name: Check dependants
+        if: needs.detect.outputs.check_packages != needs.detect.outputs.packages
+        run: cargo check ${{ needs.detect.outputs.check_packages }}
+
+  linux:
+    name: Linux
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux
+          cache-targets: "false"
+      - name: Check (affected + dependants)
+        run: cargo check ${{ needs.detect.outputs.check_packages }}
+
+  security:
+    name: Security
+    needs: detect
+    if: needs.detect.outputs.security == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux
+          cache-targets: "false"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - run: cargo audit
+      - run: cargo deny check advisories bans sources licenses
+
+  site:
+    name: Site
+    needs: detect
+    if: needs.detect.outputs.site == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - run: npm run check
+        working-directory: site
+        env:
+          GITHUB_ACTIONS: "true"
+
+  gate:
+    name: Gate
+    if: always()
+    needs: [detect, macos, linux, security, site]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require successful applicable jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
+          echo "detect=${{ needs.detect.result }}"
+          echo "macos=${{ needs.macos.result }}"
+          echo "linux=${{ needs.linux.result }}"
+          echo "security=${{ needs.security.result }}"
+          echo "site=${{ needs.site.result }}"
+          ok "${{ needs.detect.result }}"
+          ok "${{ needs.macos.result }}"
+          ok "${{ needs.linux.result }}"
+          ok "${{ needs.security.result }}"
+          ok "${{ needs.site.result }}"
+          echo "CI gate passed"

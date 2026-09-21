@@ -17,9 +17,7 @@ __pycache__/
 /.codewhale/state/
 /.codewhale/workflow-runs.jsonl
 /.codewhale/*.bak-*
-/.gitlab-ci-local/cache/
-/.gitlab-ci-local/builds/
-/.gitlab-ci-local/output/
+.gitlab-ci-local/
 .codewhale/
 /.agents/
 /.openclaude/
