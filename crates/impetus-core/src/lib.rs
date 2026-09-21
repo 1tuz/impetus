@@ -194,8 +194,8 @@ pub use extension_manifest::{
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use hook_prefilter::{
-    HookAction, HookPrefilter, HookRule, HookTrustLevel, PrefilterDecision, PrefilterError,
-    SpawnStubError, SpawnStubOutcome, spawn_stub,
+    HookAction, HookCatalogError, HookPrefilter, HookRule, HookTrustLevel, PrefilterDecision,
+    PrefilterError, SpawnStubError, SpawnStubOutcome, spawn_stub,
 };
 pub use instruction_learning::{
     InstructionLearning, LearningEvidence, ObservationKind, Proposal, ProposalLifecycle,
