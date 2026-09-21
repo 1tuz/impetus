@@ -2,15 +2,17 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::policy::{Action, ActionFingerprint};
+use crate::schema::{SCHEMA_APPROVAL_DETAIL, require_version};
 
 pub type ApprovalId = Uuid;
 
 /// Documented schema id for the ApprovalDetail IPC UI contract.
 /// Stable string clients may advertise or log alongside `schema_version`.
-pub const APPROVAL_DETAIL_SCHEMA_ID: &str = "impetus.approval_detail.v1";
+/// Sourced from the shared schema registry ([`SCHEMA_APPROVAL_DETAIL`]).
+pub const APPROVAL_DETAIL_SCHEMA_ID: &str = SCHEMA_APPROVAL_DETAIL.id;
 
 /// Current ApprovalDetail payload schema version (IPC UI contract).
-pub const APPROVAL_DETAIL_SCHEMA_VERSION: u16 = 1;
+pub const APPROVAL_DETAIL_SCHEMA_VERSION: u16 = SCHEMA_APPROVAL_DETAIL.version;
 
 fn default_approval_detail_schema_version() -> u16 {
     APPROVAL_DETAIL_SCHEMA_VERSION
@@ -95,6 +97,13 @@ pub enum ScopeEstimate {
     Operations(u32),
 }
 
+impl ApprovalDetail {
+    /// Reject payloads whose `schema_version` does not match the registry.
+    pub fn validate_schema_version(&self) -> Result<(), crate::schema::SchemaValidationError> {
+        require_version(&SCHEMA_APPROVAL_DETAIL, self.schema_version)
+    }
+}
+
 impl ApprovalRequest {
     pub fn pending(action: Action, reason: String, intent_revision: u64) -> Self {
         Self::pending_with_version(action, reason, intent_revision, None)
@@ -152,6 +161,22 @@ mod tests {
     fn approval_detail_schema_constants_match_v1() {
         assert_eq!(APPROVAL_DETAIL_SCHEMA_ID, "impetus.approval_detail.v1");
         assert_eq!(APPROVAL_DETAIL_SCHEMA_VERSION, 1);
+        assert_eq!(APPROVAL_DETAIL_SCHEMA_ID, SCHEMA_APPROVAL_DETAIL.id);
+        assert_eq!(
+            APPROVAL_DETAIL_SCHEMA_VERSION,
+            SCHEMA_APPROVAL_DETAIL.version
+        );
+        sample_detail()
+            .validate_schema_version()
+            .expect("v1 detail ok");
+    }
+
+    #[test]
+    fn approval_detail_version_mismatch_fails() {
+        let mut detail = sample_detail();
+        detail.schema_version = 99;
+        let err = detail.validate_schema_version().unwrap_err();
+        assert!(err.to_string().contains("version mismatch"));
     }
 
     #[test]

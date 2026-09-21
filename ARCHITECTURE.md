@@ -96,7 +96,7 @@ impetusd  — authoritative daemon
 | Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` create/resume/stop/close + durable binding (#198); scheduler/workflows Planned |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Import adapters exist; no InstallPlan/ownership store |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote to policy/sandbox/tool; scopes/provenance still Planned |
-| Versioned canonical schemas (`impetus.*.v1`) | Partial | IPC/events versioned; extension/session/mcp schemas Planned |
+| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities`; session/extension/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental adapter crate |
@@ -159,7 +159,7 @@ ProviderProtocolAdapter → StreamEvent → ToolCall assembler
 **versioned UI contract**, not a user policy file format:
 
 - Schema id: `impetus.approval_detail.v1`
-  (`APPROVAL_DETAIL_SCHEMA_ID`)
+  (`APPROVAL_DETAIL_SCHEMA_ID` / registry `SCHEMA_APPROVAL_DETAIL`)
 - Payload field: `schema_version` (u16, currently `1`; omitted JSON defaults
   to v1 for backward compatibility)
 - Capability: `get_approval_detail` (Hello negotiation)
@@ -167,6 +167,19 @@ ProviderProtocolAdapter → StreamEvent → ToolCall assembler
   UUIDs
 
 PolicyEngine rules and runtime policy reload remain separate follow-ups.
+
+## Canonical schema registry
+
+Shared module [`schema`](crates/impetus-core/src/schema.rs):
+
+- Stable ids: `impetus.<name>.vN` (`SchemaSpec::id`)
+- Numeric field: `schema_version` (u16)
+- Registered today: `impetus.approval_detail.v1`, `impetus.capabilities.v1`
+- Validation: version mismatch and unknown critical top-level fields fail
+  clearly (`SchemaValidationError`); provider-specific details stay nested
+- Lookup: `KNOWN_SCHEMAS` / `lookup_schema`
+
+Session / extension / MCP envelopes remain Planned.
 
 ## Documentation
 
