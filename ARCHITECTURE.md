@@ -76,7 +76,9 @@
 
 ### Agent Loop
 - **ModelProvider**: OpenAI-compatible, local, cloud
-- **ToolOrchestrator**: tool execution through policy pipeline
+- **ToolOrchestrator**: schema-validate args, then policy/sandbox/exec
+- **Builtin tool schemas**: `tool_schema` registry (JSON Schema subset);
+  prompt-only catalog today — provider HTTP `tools` field not wired yet
 - **BudgetChecker**: token/time tracking per session
 - **InstructionResolver**: layered context (global/project/session)
 

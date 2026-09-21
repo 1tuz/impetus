@@ -9,7 +9,8 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, AgentRuntime, DurableArtifactStore, EffectSeam, PolicyEngine,
-    ReadOnlyTool, ReadOnlyTools, RuntimeError, Sandbox, ToolEvent, ToolEventOutcome, ToolOutcome,
+    ReadOnlyTool, ReadOnlyTools, RuntimeError, Sandbox, ToolArgError, ToolEvent, ToolEventOutcome,
+    ToolOutcome, validate_tool_arguments,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ pub enum OrchestratorError {
     Runtime(#[from] RuntimeError),
     #[error("tool `{0}` not found")]
     ToolNotFound(String),
+    #[error(transparent)]
+    InvalidArguments(#[from] ToolArgError),
     #[error("tool `{tool}` failed: {reason}")]
     ToolFailed { tool: String, reason: String },
     #[error("tool execution denied: {0}")]
@@ -95,10 +98,11 @@ impl ToolOrchestrator {
     /// sequential execution for mutating operations.
     ///
     /// For each tool:
-    /// 1. Normalize into an Action
-    /// 2. Request policy decision
-    /// 3. If allowed, execute and capture observation
-    /// 4. If denied or needs approval, record that outcome
+    /// 1. Validate arguments against the builtin JSON Schema
+    /// 2. Normalize into an Action
+    /// 3. Request policy decision
+    /// 4. If allowed, execute and capture observation
+    /// 5. If denied or needs approval, record that outcome
     ///
     /// Returns observations for all tool calls (success or error).
     pub async fn process_tool_calls(
@@ -354,6 +358,12 @@ impl ToolOrchestrator {
         &self,
         tool_call: &crate::ToolCall,
     ) -> Result<Action, OrchestratorError> {
+        if crate::canonical_tool_name(&tool_call.name).is_none() {
+            return Err(OrchestratorError::ToolNotFound(tool_call.name.clone()));
+        }
+        // Schema gate first: malformed args never reach policy / sandbox / exec.
+        validate_tool_arguments(&tool_call.name, &tool_call.arguments)?;
+
         // Map tool names to ActionKind
         let kind = match tool_call.name.as_str() {
             "list_files" | "read_file" | "search" => ActionKind::ReadFile,
@@ -599,6 +609,7 @@ impl ToolOrchestrator {
         if !matches!(tool_name.as_str(), "write_file" | "edit_file") {
             return Err(OrchestratorError::ToolNotFound(tool_name));
         }
+        validate_tool_arguments(&tool_name, &arguments)?;
         let path = arguments
             .get("path")
             .and_then(serde_json::Value::as_str)
@@ -680,6 +691,7 @@ impl ToolOrchestrator {
         if !matches!(tool_name.as_str(), "bash" | "shell" | "exec") {
             return Err(OrchestratorError::ToolNotFound(tool_name));
         }
+        validate_tool_arguments(&tool_name, &arguments)?;
         let command = arguments
             .get("command")
             .and_then(serde_json::Value::as_str)
@@ -1192,5 +1204,91 @@ mod tests {
             reopened.read(&artifact.id).expect("artifact bytes"),
             content.as_bytes()
         );
+    }
+
+    #[test]
+    fn normalize_rejects_missing_required_args() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let orchestrator = ToolOrchestrator::new(policy, PathBuf::from("."));
+        let result = orchestrator.normalize_tool_call(&crate::ToolCall {
+            id: "bad".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        });
+        assert!(matches!(
+            result,
+            Err(OrchestratorError::InvalidArguments(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_args_never_reach_policy_or_sandbox() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let marker = workspace.path().join("must-not-exist.txt");
+        let store = Arc::new(MemoryEventStore::default());
+        // Policy would allow writes after approval; schema must stop us first.
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        runtime.submit_intent("write").expect("intent");
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "bad-write".into(),
+                    name: "write_file".into(),
+                    // Missing required `content` — must not defer/approve/exec.
+                    arguments: serde_json::json!({"path": "must-not-exist.txt"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("batch ok");
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Error);
+        let error = observations[0].error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("missing required property `content`"),
+            "error={error}"
+        );
+        assert!(!marker.exists(), "executor must not run");
+        assert!(
+            !runtime.events().unwrap().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::Approval(_)
+                        | crate::EventPayload::Tool(crate::ToolEvent::Deferred { .. })
+                )
+            }),
+            "invalid args must not create approval/deferred tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_args_still_reach_policy_allow_path() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        std::fs::write(workspace.path().join("ok.txt"), "hello").expect("fixture");
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "ok-read".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "ok.txt"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("batch ok");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
+        assert!(observations[0].preview.contains("hello"));
     }
 }
