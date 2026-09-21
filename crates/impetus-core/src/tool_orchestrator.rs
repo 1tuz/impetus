@@ -939,6 +939,60 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn web_fetch_private_lan_denied_without_private_network_grant() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut scope = SandboxScope::local_workspace(workspace.path());
+        scope.allow_network = true;
+        let policy = PolicyEngine::new(scope);
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        runtime.submit_intent("fetch lan").expect("intent");
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "fetch-lan".into(),
+                    name: "web_fetch".into(),
+                    arguments: serde_json::json!({"url": "http://10.0.0.5/status"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("tool orchestration");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Denied);
+        let err = observations[0].error.as_deref().unwrap_or_default();
+        assert!(err.contains("private/LAN"), "{err}");
+        assert!(!err.contains("sk-"));
+    }
+
+    #[test]
+    fn private_lan_fetch_normalizes_and_allows_when_private_network_granted() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(
+            SandboxScope::local_workspace(workspace.path())
+                .with_network(true)
+                .with_private_network(true),
+        );
+        let orchestrator = ToolOrchestrator::new(policy.clone(), workspace.path().to_path_buf());
+        let action = orchestrator
+            .normalize_tool_call(&crate::ToolCall {
+                id: "f".into(),
+                name: "web_fetch".into(),
+                arguments: serde_json::json!({"url": "http://10.0.0.5/status"}),
+            })
+            .expect("normalize");
+        assert_eq!(action.kind, ActionKind::WebFetch);
+        assert_eq!(action.target.as_deref(), Some("10.0.0.5"));
+        assert_eq!(policy.evaluate(&action), crate::PolicyDecision::Allow);
+        assert!(policy.egress_policy().allow_private_network);
+    }
+
     #[test]
     fn normalize_unknown_tool_fails() {
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
