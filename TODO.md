@@ -244,9 +244,11 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [x] Engine owns: step order, dependencies, budgets (token/wall stubs),
       checkpoints, cancellation, result propagation, minimal per-step retry
       (`workflow_engine` — in-memory; `max_retries` workflow/step + fail→Pending
-      then Failed checkpoint; AgentScheduler / live spawn still open)
-- [ ] AgentScheduler schedules roles; WorkflowEngine sequences steps
-      (engine sequences steps; scheduler role enforcement out of this slice)
+      then Failed checkpoint; concurrency still open)
+- [x] AgentScheduler schedules roles; WorkflowEngine sequences steps
+      (`InMemoryAgentScheduler` + `begin_step_with_scheduler` /
+      `complete_step_with_scheduler`; schedule id / result slot on checkpoint;
+      no live spawn)
 
 ### 7. Subagents (explicit roles, not a swarm)
 
@@ -255,7 +257,8 @@ Do **not** invent a new hard-coded agent type per workflow.
       (`subagent_metadata::SubagentRole` + capability intent; no live spawn)
 - [x] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
       `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
-      (`ChildRunMetadata` validated; AgentScheduler/spawn still open)
+      (`ChildRunMetadata` validated; in-memory scheduler wired in #253;
+      live spawn still open)
 - [x] Persist child results before parent resume
       (`ChildResultStore` SQLite + `gate_parent_resume` stub; no live spawn /
       AgentScheduler wiring — #250)

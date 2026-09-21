@@ -6,6 +6,7 @@
 pub mod acp_adapter;
 pub mod agent_loop;
 pub mod agent_plugins_adapter;
+pub mod agent_scheduler;
 pub mod agent_skills_adapter;
 pub mod anthropic_provider;
 pub mod approval;
@@ -91,6 +92,10 @@ pub mod worktree_manager;
 pub use acp_adapter::AcpAdapter;
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
 pub use agent_plugins_adapter::{AgentPluginsAdapter, PluginCommandEntry};
+pub use agent_scheduler::{
+    AgentSchedulerError, InMemoryAgentScheduler, RoleScheduleTask, ScheduleAdmission,
+    ScheduleRecord, ScheduleStatus, parse_step_role,
+};
 pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use anthropic_provider::AnthropicProvider;
 pub use approval::{

@@ -41,9 +41,13 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   ([`ChildConcurrencyGate`](crates/impetus-core/src/child_concurrency.rs), default
   cap 4) landed (#251); durable
   [`ChildResultStore`](crates/impetus-core/src/child_result_store.rs)
-  + parent-resume gate stub (#250, labels only); live spawn still Planned.
+  + parent-resume gate stub (#250, labels only); in-memory role scheduler wired into
+  [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
+  ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
+  schedule id / result slot, no live spawn); live process spawn still Planned.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
-  order, budgets, retry, checkpoints, cancellation, result propagation. Do not
+  order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
+  steps record scheduler handles via `begin_step_with_scheduler` (#253). Do not
   invent a new agent type per workflow.
 - **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
@@ -105,7 +109,8 @@ impetusd  — authoritative daemon
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp stubs (`user_intent`, #247 — no TUI/IPC yet); hook prefilter stub (`hook_prefilter`, #257); AgentScheduler live spawn still Planned || Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp stubs (`user_intent`, #247 — no TUI/IPC yet); hook prefilter stub (`hook_prefilter`, #257); live agent spawn still Planned |
+| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |

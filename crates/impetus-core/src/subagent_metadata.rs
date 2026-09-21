@@ -44,6 +44,17 @@ impl SubagentRole {
         }
     }
 
+    /// Parse a WorkflowEngine / stored role label. Unknown labels → `None`.
+    pub fn parse_label(label: &str) -> Option<Self> {
+        match label {
+            "Explore" => Some(Self::Explore),
+            "Research" => Some(Self::Research),
+            "Build" => Some(Self::Build),
+            "Review" => Some(Self::Review),
+            _ => None,
+        }
+    }
+
     /// Capability intent the harness should enforce for this role.
     pub fn capability_intent(self) -> SubagentCapabilityIntent {
         match self {
