@@ -1,12 +1,18 @@
 //! In-memory WorkflowEngine skeleton (TODO P1 §6).
 //!
 //! Owns step order, dependency gating, per-workflow budget stubs, cancellation,
-//! minimal per-step retry, and per-step checkpoint / result slots. Does **not**
-//! spawn subagents or call LLMs — role strings on steps are hints for a future
-//! [`crate::service_contract::AgentScheduler`].
+//! minimal per-step retry, and per-step checkpoint / result slots. Role-tagged
+//! steps advance through [`crate::agent_scheduler::InMemoryAgentScheduler`]
+//! (schedule id + result slot) — still **no** live subagent spawn or LLM calls.
 
 use std::collections::HashMap;
 use thiserror::Error;
+
+use crate::agent_scheduler::{
+    AgentSchedulerError, InMemoryAgentScheduler, RoleScheduleTask, ScheduleAdmission,
+    parse_step_role,
+};
+use crate::subagent_metadata::SubagentRole;
 
 /// Declared step inside a [`WorkflowRecipe`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +66,10 @@ pub struct StepCheckpoint {
     pub result: Option<String>,
     /// Count of recorded failures for this step (drives retry budget).
     pub attempts: u32,
+    /// Deterministic id from [`InMemoryAgentScheduler::schedule`], when used.
+    pub schedule_id: Option<String>,
+    /// Result-slot label from the scheduler (labels only).
+    pub result_slot: Option<String>,
 }
 
 /// Overall run status.
@@ -93,6 +103,14 @@ pub enum WorkflowError {
     Cancelled,
     #[error("invalid recipe: {0}")]
     InvalidRecipe(String),
+    #[error("scheduler rejected step {0}")]
+    SchedulerRejected(String),
+    #[error("unknown role label on step {step_id}: {label}")]
+    UnknownRole { step_id: String, label: String },
+    #[error("step {0} has no schedule id (begin via scheduler first)")]
+    MissingSchedule(String),
+    #[error("scheduler error: {0}")]
+    Scheduler(String),
 }
 
 /// Boring in-memory state machine over a recipe.
@@ -125,6 +143,8 @@ impl WorkflowEngine {
                         status: StepStatus::Pending,
                         result: None,
                         attempts: 0,
+                        schedule_id: None,
+                        result_slot: None,
                     },
                 )
             })
@@ -312,6 +332,114 @@ impl WorkflowEngine {
         Ok(())
     }
 
+    /// Resolve step role hint to [`SubagentRole`] (four known labels only).
+    pub fn step_role(&self, step_id: &str) -> Result<Option<SubagentRole>, WorkflowError> {
+        let step = self
+            .recipe
+            .steps
+            .iter()
+            .find(|s| s.id == step_id)
+            .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+        match step.role.as_deref() {
+            None => Ok(None),
+            Some(label) => {
+                parse_step_role(label)
+                    .map(Some)
+                    .map_err(|_| WorkflowError::UnknownRole {
+                        step_id: step_id.to_string(),
+                        label: label.to_string(),
+                    })
+            }
+        }
+    }
+
+    /// Begin a ready step after the scheduler admits the role-tagged task.
+    ///
+    /// Records deterministic `schedule_id` / `result_slot` on the checkpoint.
+    /// Rejected schedules leave the step Pending.
+    pub fn begin_step_with_scheduler(
+        &mut self,
+        step_id: &str,
+        scheduler: &mut InMemoryAgentScheduler,
+    ) -> Result<ScheduleAdmission, WorkflowError> {
+        self.ensure_runnable()?;
+        if let Some(kind) = self.budget_exceeded() {
+            self.status = WorkflowStatus::BudgetExhausted;
+            return Err(WorkflowError::BudgetExhausted { kind });
+        }
+        let blocking = self.blocking_deps(step_id);
+        if !blocking.is_empty() {
+            return Err(WorkflowError::BlockedByDependency(
+                step_id.to_string(),
+                blocking,
+            ));
+        }
+        {
+            let cp = self
+                .checkpoints
+                .get(step_id)
+                .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+            if cp.status != StepStatus::Pending {
+                return Err(WorkflowError::NotRunnable(step_id.to_string(), cp.status));
+            }
+        }
+
+        let role = self.step_role(step_id)?;
+        let admission = scheduler
+            .schedule(RoleScheduleTask {
+                workflow_id: self.recipe.id.clone(),
+                step_id: step_id.to_string(),
+                role,
+            })
+            .map_err(map_scheduler_err)?;
+
+        let cp = self
+            .checkpoints
+            .get_mut(step_id)
+            .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+        cp.status = StepStatus::Running;
+        cp.schedule_id = Some(admission.schedule_id.clone());
+        cp.result_slot = Some(admission.result_slot.clone());
+        Ok(admission)
+    }
+
+    /// Complete a scheduled step and write the result into the scheduler slot.
+    pub fn complete_step_with_scheduler(
+        &mut self,
+        step_id: &str,
+        result: impl Into<String>,
+        tokens: u64,
+        wall_ms: u64,
+        scheduler: &mut InMemoryAgentScheduler,
+    ) -> Result<(), WorkflowError> {
+        let schedule_id = self
+            .checkpoints
+            .get(step_id)
+            .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?
+            .schedule_id
+            .clone()
+            .ok_or_else(|| WorkflowError::MissingSchedule(step_id.to_string()))?;
+        let result = result.into();
+        let outcome = self.complete_step(step_id, result.clone(), tokens, wall_ms);
+        // complete_step keeps the step result even when the budget tips.
+        if matches!(outcome, Ok(()) | Err(WorkflowError::BudgetExhausted { .. })) {
+            scheduler
+                .complete(&schedule_id, result)
+                .map_err(map_scheduler_err)?;
+        }
+        outcome
+    }
+
+    /// Cancel the workflow and any still-admitted schedules for its steps.
+    pub fn cancel_with_scheduler(&mut self, scheduler: &mut InMemoryAgentScheduler) {
+        for cp in self.checkpoints.values() {
+            if let Some(ref sid) = cp.schedule_id {
+                let _ = scheduler.cancel(sid);
+            }
+        }
+        self.cancel();
+    }
+
     /// Complete the running step, store result, account budget stubs.
     pub fn complete_step(
         &mut self,
@@ -493,6 +621,17 @@ fn validate_recipe(recipe: &WorkflowRecipe) -> Result<(), WorkflowError> {
     Ok(())
 }
 
+fn map_scheduler_err(err: AgentSchedulerError) -> WorkflowError {
+    match err {
+        AgentSchedulerError::Rejected { step_id } => WorkflowError::SchedulerRejected(step_id),
+        AgentSchedulerError::UnknownRole(label) => WorkflowError::UnknownRole {
+            step_id: String::new(),
+            label,
+        },
+        other => WorkflowError::Scheduler(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +641,20 @@ mod tests {
         engine.begin_step(id).unwrap();
         engine
             .complete_step(id, format!("ok:{id}"), tokens, wall_ms)
+            .unwrap();
+    }
+
+    fn run_step_scheduled(
+        engine: &mut WorkflowEngine,
+        scheduler: &mut InMemoryAgentScheduler,
+        id: &str,
+        tokens: u64,
+        wall_ms: u64,
+    ) {
+        engine.start().unwrap();
+        engine.begin_step_with_scheduler(id, scheduler).unwrap();
+        engine
+            .complete_step_with_scheduler(id, format!("ok:{id}"), tokens, wall_ms, scheduler)
             .unwrap();
     }
 
@@ -733,5 +886,162 @@ mod tests {
             WorkflowError::BudgetExhausted { kind: "tokens" }
         ));
         assert!(engine.next_ready_step().is_none());
+    }
+
+    #[test]
+    fn recipe_advances_when_scheduler_admits() {
+        let mut engine = WorkflowEngine::new(
+            WorkflowEngine::bug_skeleton_recipe(),
+            WorkflowBudget::default(),
+        )
+        .unwrap();
+        let mut scheduler = InMemoryAgentScheduler::new();
+        engine.start().unwrap();
+
+        let order: Vec<String> = engine.recipe().steps.iter().map(|s| s.id.clone()).collect();
+        for (i, id) in order.iter().enumerate() {
+            assert_eq!(engine.next_ready_step().unwrap().id, id.as_str());
+            let admission = engine
+                .begin_step_with_scheduler(id, &mut scheduler)
+                .unwrap();
+            assert_eq!(admission.schedule_id, format!("sched-{:04}", i + 1));
+            assert_eq!(admission.result_slot, format!("slot-bug-{id}"));
+            let cp = engine.checkpoint(id).unwrap();
+            assert_eq!(
+                cp.schedule_id.as_deref(),
+                Some(admission.schedule_id.as_str())
+            );
+            assert_eq!(
+                cp.result_slot.as_deref(),
+                Some(admission.result_slot.as_str())
+            );
+            assert_eq!(
+                engine.step_role(id).unwrap().map(|r| r.as_str()),
+                engine
+                    .recipe()
+                    .steps
+                    .iter()
+                    .find(|s| s.id == *id)
+                    .unwrap()
+                    .role
+                    .as_deref()
+            );
+            engine
+                .complete_step_with_scheduler(id, format!("ok:{id}"), 1, 1, &mut scheduler)
+                .unwrap();
+            let expected = format!("ok:{id}");
+            assert_eq!(
+                scheduler
+                    .record(&admission.schedule_id)
+                    .unwrap()
+                    .result
+                    .as_deref(),
+                Some(expected.as_str())
+            );
+        }
+        assert_eq!(engine.status(), WorkflowStatus::Completed);
+        assert_eq!(scheduler.active_count(), 0);
+    }
+
+    #[test]
+    fn scheduler_reject_leaves_step_pending() {
+        let mut engine = WorkflowEngine::new(
+            WorkflowEngine::bug_skeleton_recipe(),
+            WorkflowBudget::default(),
+        )
+        .unwrap();
+        let mut scheduler = InMemoryAgentScheduler::new();
+        scheduler.set_admit(false);
+        engine.start().unwrap();
+
+        let err = engine
+            .begin_step_with_scheduler("reproduce", &mut scheduler)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            WorkflowError::SchedulerRejected(id) if id == "reproduce"
+        ));
+        assert_eq!(
+            engine.checkpoint("reproduce").unwrap().status,
+            StepStatus::Pending
+        );
+        assert!(
+            engine
+                .checkpoint("reproduce")
+                .unwrap()
+                .schedule_id
+                .is_none()
+        );
+        assert!(engine.is_ready("reproduce"));
+    }
+
+    #[test]
+    fn cancel_with_scheduler_cancels_admitted() {
+        let mut engine = WorkflowEngine::new(
+            WorkflowEngine::feature_skeleton_recipe(),
+            WorkflowBudget::default(),
+        )
+        .unwrap();
+        let mut scheduler = InMemoryAgentScheduler::new();
+        run_step_scheduled(&mut engine, &mut scheduler, "research", 1, 1);
+        let admission = engine
+            .begin_step_with_scheduler("plan", &mut scheduler)
+            .unwrap();
+        engine.cancel_with_scheduler(&mut scheduler);
+
+        assert_eq!(engine.status(), WorkflowStatus::Cancelled);
+        assert_eq!(
+            engine.checkpoint("plan").unwrap().status,
+            StepStatus::Cancelled
+        );
+        assert_eq!(
+            scheduler.record(&admission.schedule_id).unwrap().status,
+            crate::agent_scheduler::ScheduleStatus::Cancelled
+        );
+        assert!(matches!(
+            engine.begin_step_with_scheduler("tests", &mut scheduler),
+            Err(WorkflowError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn budget_still_works_with_scheduler() {
+        let budget = WorkflowBudget {
+            max_tokens: Some(15),
+            max_wall_ms: None,
+            max_retries: 0,
+        };
+        let mut engine =
+            WorkflowEngine::new(WorkflowEngine::bug_skeleton_recipe(), budget).unwrap();
+        let mut scheduler = InMemoryAgentScheduler::new();
+        run_step_scheduled(&mut engine, &mut scheduler, "reproduce", 10, 0);
+        engine
+            .begin_step_with_scheduler("failing_regression", &mut scheduler)
+            .unwrap();
+        let err = engine
+            .complete_step_with_scheduler("failing_regression", "ok", 10, 0, &mut scheduler)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            WorkflowError::BudgetExhausted { kind: "tokens" }
+        ));
+        assert_eq!(engine.status(), WorkflowStatus::BudgetExhausted);
+        assert!(matches!(
+            engine.begin_step_with_scheduler("fix", &mut scheduler),
+            Err(WorkflowError::BudgetExhausted { .. })
+        ));
+    }
+
+    #[test]
+    fn feature_roles_are_known_subagent_roles_only() {
+        let recipe = WorkflowEngine::feature_skeleton_recipe();
+        for step in &recipe.steps {
+            if let Some(ref label) = step.role {
+                assert!(
+                    SubagentRole::parse_label(label).is_some(),
+                    "unknown role {label}"
+                );
+            }
+        }
     }
 }
