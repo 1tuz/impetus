@@ -185,7 +185,9 @@ Runtime State ≠ Memory ≠ Policy
 - [x] Scopes: project / team / user; provenance; secret filtering
       (`MemoryScope` / `MemoryProvenance` on `MemoryEntry`; store path
       reuses `tools::redact_text`; fake-token unit tests)
-- [ ] Create-only or append-safe semantics where appropriate
+- [x] Create-only or append-safe semantics where appropriate
+      (`remember` create-only / `append` append-safe; `MemoryStoreError::AlreadyExists`;
+      no silent overwrite; unit tests)
 - [ ] Derived indexes disposable/rebuildable; no unsafe symlink traversal
 - [ ] Human-readable source format where useful
 
