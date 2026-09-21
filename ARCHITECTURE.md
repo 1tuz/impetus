@@ -120,7 +120,7 @@ impetusd  — authoritative daemon
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267) + optional `LspBackendModule` runtime path hint (#282); mock/absent fail-closed; no real LSP process / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp + IPC/TUI + session-run follow-up drain (`user_intent`, #247/#263/#271 — LLM rewrite / WorkflowEngine cancel-replace still open); multi-session `fanout` with explicit ids + partial-failure map (#275 — no cross-machine / IPC yet); hook prefilter + trust levels + exact-duplicate catalog refuse (`hook_prefilter`, #257/#272/#276 — InDaemon required for security-critical; subsumption YAGNI); built-in id inventory + duplicate detect (`builtin_ids`, #260 — unused stub Planned); live agent spawn still Planned |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp + IPC/TUI + session-run follow-up drain (`user_intent`, #247/#263/#271) + Steer rewrite seam Partial (`SteerRewrite`, #285 — live provider wire / WorkflowEngine cancel-replace still open); multi-session `fanout` with explicit ids + partial-failure map (#275 — no cross-machine / IPC yet); hook prefilter + trust levels + exact-duplicate catalog refuse (`hook_prefilter`, #257/#272/#276 — InDaemon required for security-critical; subsumption YAGNI); built-in id inventory + duplicate detect (`builtin_ids`, #260 — unused stub Planned); live agent spawn still Planned |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
@@ -151,8 +151,9 @@ Completed/Cancelled, harness drains one queued FollowUp into a Prompt turn
 (origin preserved; at-most-once vs cancel race) (#271). Multi-session fanout
 takes an explicit `session_ids` list through `UserIntentRouter::fanout` (#275) —
 empty list rejected; each target routes independently with a per-session ok/err
-map (not broadcast-by-accident; no cross-machine). LLM rewrite and WorkflowEngine
-cancel/replace remain open.
+map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
+(`SteerRewrite` / passthrough + mock; harness hook on accept) is Partial (#285);
+live provider wire and WorkflowEngine cancel/replace remain open.
 
 ## Storage
 

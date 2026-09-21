@@ -80,6 +80,7 @@ pub mod schema;
 mod security_runtime_pr;
 pub mod service_contract;
 pub mod service_provider;
+pub mod steer_rewrite;
 pub mod storage;
 pub mod subagent_metadata;
 pub mod supervisor;
@@ -278,6 +279,10 @@ pub use schema::{
 };
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
+};
+pub use steer_rewrite::{
+    MockSteerRewrite, PassthroughSteerRewrite, SteerActiveContext, SteerRewrite, SteerRewriteError,
+    SteerRewriteOutput, default_steer_rewrite,
 };
 pub use storage::{
     CheckpointInfo, EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError,

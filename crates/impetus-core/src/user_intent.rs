@@ -29,7 +29,8 @@
 //! — not broadcast-by-accident; each target routes independently; partial
 //! failure returns a per-session ok/err map.
 //!
-//! Still out of scope: LLM prompt rewriting.
+//! LLM prompt rewriting for Steer lives in [`crate::steer_rewrite`] (mockable
+//! seam; live provider wire deferred).
 
 use std::collections::{HashMap, VecDeque};
 

@@ -280,7 +280,11 @@ Do **not** invent a new hard-coded agent type per workflow.
       - `IpcRequest::Prompt.intent` + `IntentEvent.intent` (serde default Prompt)
       - Harness routes via `UserIntentRouter` (Steer/FollowUp: durable event only)
       - TUI: `/prompt` · `/steer` · `/follow-up` set composer intent
-- [ ] LLM prompt rewrite for Steer
+- [x] LLM prompt rewrite for Steer — Partial (#285)
+      - `SteerRewrite` seam: (active context + steer text) → fragment/messages
+      - Default `PassthroughSteerRewrite` (offline); `MockSteerRewrite` for tests
+      - Harness calls rewriter on Steer accept; durable Intent keeps user text
+      - Live provider wire deferred; origin/Policy unchanged; active run still required
 - [x] Follow-up drain on session-run Completed/Cancelled — Partial (#271)
       - Per-session in-memory queue; dequeue → Prompt turn (origin preserved)
       - Cancel/replace: at-most-once drain via matching `active_run_id`
