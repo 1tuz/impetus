@@ -277,9 +277,13 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 ### 9. Hooks (only if needed; performance-first)
 
-- [ ] Cheap match/filter **before** spawning expensive processes
+- [x] Cheap match/filter **before** spawning expensive processes — Partial
+      (`hook_prefilter`: typed `HookRule` + `prefilter(label)` + spawn stub;
+      unit tests for skip/deny/no-match; not wired into live `ProcessExecution`)
+      (#257)
 - [ ] Security-critical hooks prefer in-daemon / trusted runtime, not arbitrary
-      external processes by default
+      external processes by default (documented in `hook_prefilter` module docs
+      + ARCHITECTURE; enforcement / policy still open)
 - [ ] Measure per-tool-call overhead; add perf tests if hooks land
 - [ ] Avoid large overlapping hook catalogs
 - [x] Event log query baselines (append_next / list / cursor backfill) — Criterion

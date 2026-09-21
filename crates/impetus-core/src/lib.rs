@@ -35,6 +35,7 @@ pub mod extension_compat;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
 pub mod harness_api;
+pub mod hook_prefilter;
 pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
@@ -174,6 +175,10 @@ pub use extension_manifest::{
     validate_digest as validate_extension_digest,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
+pub use hook_prefilter::{
+    HookAction, HookPrefilter, HookRule, PrefilterDecision, SpawnStubError, SpawnStubOutcome,
+    spawn_stub,
+};
 pub use instruction_learning::{
     InstructionLearning, LearningEvidence, ObservationKind, Proposal, ProposalLifecycle,
     ProposalTarget,
