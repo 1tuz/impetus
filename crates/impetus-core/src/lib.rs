@@ -13,9 +13,11 @@ pub mod artifact_upload;
 pub mod attachments;
 pub mod audit_log;
 pub mod budget;
+pub mod capability_truth;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod codex_adapter;
+pub mod compaction;
 pub mod context_builder;
 pub mod context_optimizer;
 pub mod cost_estimation;
@@ -82,13 +84,19 @@ pub use artifact_upload::{
 };
 pub use attachments::{Attachment, AttachmentError, AttachmentStore, StoreStats};
 pub use audit_log::{AuditEntry, AuditLog, AuditQuery};
-pub use budget::{BudgetChecker, BudgetConfig, BudgetError, BudgetState, ReasoningEffort};
+pub use budget::{
+    BudgetChecker, BudgetConfig, BudgetError, BudgetState, CompactionPolicy, ReasoningEffort,
+};
+pub use capability_truth::{CapabilityEntry, CapabilityLevel, CapabilityTruthReport};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
 pub use codex_adapter::CodexAdapter;
+pub use compaction::{
+    compact_provider_messages, estimate_tokens as estimate_compaction_tokens, summarize_messages,
+};
 pub use context_builder::{
     ArtifactRangeSource, ContextBuilder, ContextBuilderError, MaterializedArtifact,
 };
@@ -111,9 +119,9 @@ pub use effects::{
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
 };
 pub use events::{
-    AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, EVENT_SCHEMA_VERSION, Event,
-    EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent, RunEvent, SessionEvent,
-    ToolEvent, ToolEventOutcome,
+    AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, CompactionStructuralState,
+    EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent,
+    RunEvent, SessionEvent, ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
     MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, ProcessExecution, ProcessExecutionError,

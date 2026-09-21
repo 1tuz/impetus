@@ -156,11 +156,31 @@ impl SessionSupervisor {
             checker.record_compaction(compacted_to);
 
             let state = checker.state();
+            let scope = self.runtime.policy().scope().clone();
+            let structural = crate::CompactionStructuralState {
+                workspace_root: self
+                    .runtime
+                    .workspace_root()
+                    .unwrap_or_else(|_| scope.workspace_root.clone()),
+                parent_session_id: None,
+                allow_network: scope.allow_network,
+                allow_web_outbound: scope.allow_web_outbound,
+                allow_private_network: scope.allow_private_network,
+                allowed_hosts: scope.allowed_hosts.clone(),
+                turns_used: state.turns_used,
+                tokens_used: state.tokens_used,
+                compaction_count: state.compaction_count,
+                worktree_id: None,
+            };
             let _ =
                 self.runtime
                     .record_event(EventPayload::Budget(BudgetEvent::CompactionCompleted {
                         compacted_to,
                         compaction_count: state.compaction_count,
+                        from_sequence: 0,
+                        to_sequence: 0,
+                        summary_artifact: None,
+                        structural: Some(structural),
                     }));
         }
     }

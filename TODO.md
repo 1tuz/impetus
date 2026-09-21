@@ -57,9 +57,10 @@ Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.
 - [x] ContextBuilder chunked artifact summarize
 - [x] Shared-prefix fork + named checkpoints
 - [x] Wire measured provider usage into `BudgetChecker::record_usage`
-- [ ] Compaction as durable events (`CompactionStarted` / range / summary refs /
-      `CompactionCommitted`) executed from agent loop — not silent history rewrite
-- [ ] Structural state (permissions, cwd, budgets, parent, worktree) never only in text summary
+- [x] Compaction as durable events (`CompactionStarted` / range / summary refs /
+      `CompactionCompleted`) executed from agent loop — not silent history rewrite
+- [x] Structural state (permissions, cwd, budgets, parent, worktree) never only in
+      text summary (`CompactionStructuralState` on `CompactionCompleted`)
 
 ### 5. Security / runtime E2E in PR CI
 
@@ -78,8 +79,9 @@ Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
 
 ### 6. Capability truth generation
 
-- [ ] `impetus doctor --json` (and human doctor) reflects real capability matrix
-      (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime)
+- [x] `impetus doctor --json` (and human doctor) reflects real capability matrix
+      (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime,
+      tool_schema gate) via `CapabilityTruthReport`
 - [ ] Prefer generating/checking docs claims from doctor JSON where practical
 
 ---

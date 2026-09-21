@@ -206,6 +206,18 @@ impl AgentRuntime {
         Ok(())
     }
 
+    /// Returns `(threshold, used)` when auto-compaction should run.
+    pub fn compaction_needed(&self) -> Option<(u64, u64)> {
+        let checker = self.budget.as_ref()?;
+        let guard = checker.lock().unwrap();
+        match guard.check_compaction() {
+            Err(crate::budget::BudgetError::CompactionRequired { threshold, used }) => {
+                Some((threshold, used))
+            }
+            _ => None,
+        }
+    }
+
     /// Record turn completion and persist budget state (tokens treated as estimated).
     pub fn record_turn(&self, tokens_used: u64) -> Result<(), RuntimeError> {
         self.record_turn_with_usage(tokens_used, false)
@@ -225,6 +237,117 @@ impl AgentRuntime {
                 .update_budget_state(self.session_id, guard.state())?;
         }
         Ok(())
+    }
+
+    /// Persist compaction token reset after a durable compaction commit.
+    pub fn record_compaction(&self, compacted_to: u64) -> Result<(), RuntimeError> {
+        if let Some(ref checker) = self.budget {
+            let mut guard = checker.lock().unwrap();
+            guard.record_compaction(compacted_to);
+            self.store
+                .as_ref()
+                .update_budget_state(self.session_id, guard.state())?;
+        }
+        Ok(())
+    }
+
+    /// Run durable compaction: emit Started → summary/artifact → Completed.
+    ///
+    /// Prompt `messages` are folded for the next model turn. Event history is
+    /// append-only — never rewritten. Structural state is stored as typed
+    /// payload fields, not only inside the summary text.
+    pub fn run_durable_compaction(
+        &self,
+        messages: Vec<crate::ProviderMessage>,
+    ) -> Result<Vec<crate::ProviderMessage>, RuntimeError> {
+        let owned_store = crate::DurableArtifactStore::open(crate::default_artifact_root()).ok();
+        self.run_durable_compaction_with_store(messages, owned_store.as_ref())
+    }
+
+    /// Same as [`Self::run_durable_compaction`] with an explicit artifact store
+    /// (tests inject a temp root; production may pass `None` to skip artifacts).
+    pub fn run_durable_compaction_with_store(
+        &self,
+        messages: Vec<crate::ProviderMessage>,
+        artifact_store: Option<&crate::DurableArtifactStore>,
+    ) -> Result<Vec<crate::ProviderMessage>, RuntimeError> {
+        let Some((threshold, used)) = self.compaction_needed() else {
+            return Ok(messages);
+        };
+
+        let events = self.events()?;
+        let to_sequence = events.last().map(|e| e.sequence).unwrap_or(0);
+        let from_sequence = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::Budget(crate::BudgetEvent::CompactionCompleted {
+                    to_sequence,
+                    ..
+                }) if *to_sequence > 0 => Some(*to_sequence + 1),
+                _ => None,
+            })
+            .unwrap_or(1);
+
+        self.record(EventPayload::Budget(
+            crate::BudgetEvent::CompactionRequired { threshold, used },
+        ))?;
+        self.record(EventPayload::Budget(
+            crate::BudgetEvent::CompactionStarted {
+                from_sequence,
+                to_sequence,
+                threshold,
+                used,
+            },
+        ))?;
+
+        let (compacted_messages, summary) = crate::compaction::compact_provider_messages(messages);
+        let compacted_to = crate::compaction::estimate_tokens(&summary)
+            + compacted_messages
+                .iter()
+                .map(|m| crate::compaction::estimate_tokens(m.content()))
+                .sum::<u64>();
+
+        let summary_artifact =
+            artifact_store.and_then(|store| store.store(summary.as_bytes()).ok());
+
+        self.record_compaction(compacted_to)?;
+        let budget_state = self.budget_state().unwrap_or_default();
+        let scope = self.policy.scope();
+        let structural = crate::CompactionStructuralState {
+            workspace_root: self.workspace_root.clone(),
+            parent_session_id: self.parent_session_id(),
+            allow_network: scope.allow_network,
+            allow_web_outbound: scope.allow_web_outbound,
+            allow_private_network: scope.allow_private_network,
+            allowed_hosts: scope.allowed_hosts.clone(),
+            turns_used: budget_state.turns_used,
+            tokens_used: budget_state.tokens_used,
+            compaction_count: budget_state.compaction_count,
+            worktree_id: None,
+        };
+
+        self.record(EventPayload::Budget(
+            crate::BudgetEvent::CompactionCompleted {
+                compacted_to,
+                compaction_count: budget_state.compaction_count,
+                from_sequence,
+                to_sequence,
+                summary_artifact,
+                structural: Some(structural),
+            },
+        ))?;
+
+        Ok(compacted_messages)
+    }
+
+    fn parent_session_id(&self) -> Option<Uuid> {
+        self.store
+            .list_sessions()
+            .ok()?
+            .into_iter()
+            .find(|session| session.id == self.session_id)
+            .and_then(|session| session.parent_session_id)
     }
 
     pub fn workspace_root(&self) -> Result<PathBuf, RuntimeError> {

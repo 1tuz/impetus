@@ -113,9 +113,22 @@ pub fn render_event_block(event: &Event) -> Option<Block> {
                     state: "compaction_required".to_string(),
                     detail: Some(format!("used: {}/{}", used, threshold)),
                 }),
+                BudgetEvent::CompactionStarted {
+                    from_sequence,
+                    to_sequence,
+                    threshold,
+                    used,
+                } => Some(Block::Status {
+                    state: "compaction_started".to_string(),
+                    detail: Some(format!(
+                        "events {}..{} used: {}/{}",
+                        from_sequence, to_sequence, used, threshold
+                    )),
+                }),
                 BudgetEvent::CompactionCompleted {
                     compacted_to,
                     compaction_count,
+                    ..
                 } => Some(Block::Status {
                     state: "compaction_completed".to_string(),
                     detail: Some(format!(

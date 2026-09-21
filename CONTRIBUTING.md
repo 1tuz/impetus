@@ -20,10 +20,10 @@ task setup
 task verify
 ```
 
-`task verify` is required for Rust changes. If a change modifies
-`Cargo.toml` or `Cargo.lock`, run `task security` as well. When changing CI,
-toolchain, dependency policy, or the verification contract, update
-`.gitlab-ci.yml` and exercise the relevant local CI job when available.
+`task verify` is required for Rust changes (full workspace). If a change
+modifies `Cargo.toml` or `Cargo.lock`, run `task security` as well. Preview
+PR CI scope with `task ci:affected`. Update `.github/workflows/ci.yml` when
+changing the merge gate.
 
 ## Scope and safety
 

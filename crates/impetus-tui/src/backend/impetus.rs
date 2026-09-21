@@ -368,9 +368,20 @@ fn map_event(event: Event) -> UiEvent {
                 message: format!("context compaction required: {used}/{threshold} tokens"),
             }
         }
+        EventPayload::Budget(BudgetEvent::CompactionStarted {
+            from_sequence,
+            to_sequence,
+            threshold,
+            used,
+        }) => UiEventKind::BudgetWarning {
+            message: format!(
+                "compacting events {from_sequence}..{to_sequence} ({used}/{threshold} tokens)"
+            ),
+        },
         EventPayload::Budget(BudgetEvent::CompactionCompleted {
             compacted_to,
             compaction_count,
+            ..
         }) => UiEventKind::Notice {
             title: "context compacted".to_owned(),
             message: format!("{compacted_to} tokens · compaction #{compaction_count}"),
