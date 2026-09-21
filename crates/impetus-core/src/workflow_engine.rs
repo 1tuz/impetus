@@ -1,8 +1,9 @@
 //! In-memory WorkflowEngine skeleton (TODO P1 §6).
 //!
 //! Owns step order, dependency gating, per-workflow budget stubs, cancellation,
-//! and per-step checkpoint / result slots. Does **not** spawn subagents or call
-//! LLMs — role strings on steps are hints for a future [`crate::service_contract::AgentScheduler`].
+//! minimal per-step retry, and per-step checkpoint / result slots. Does **not**
+//! spawn subagents or call LLMs — role strings on steps are hints for a future
+//! [`crate::service_contract::AgentScheduler`].
 
 use std::collections::HashMap;
 use thiserror::Error;
@@ -17,6 +18,8 @@ pub struct WorkflowStep {
     pub role: Option<String>,
     /// Explicit step-id dependencies that must complete before this step runs.
     pub depends_on: Vec<String>,
+    /// Per-step retry override. `None` → use [`WorkflowBudget::max_retries`].
+    pub max_retries: Option<u32>,
 }
 
 /// Declarative ordered recipe. Step list order is the default advance order;
@@ -34,6 +37,8 @@ pub struct WorkflowBudget {
     pub max_tokens: Option<u64>,
     /// Cumulative step-reported duration budget (milliseconds).
     pub max_wall_ms: Option<u64>,
+    /// Default max failure retries per step (`0` = fail once → failed checkpoint).
+    pub max_retries: u32,
 }
 
 /// Lifecycle of a single step checkpoint.
@@ -42,6 +47,8 @@ pub enum StepStatus {
     Pending,
     Running,
     Completed,
+    /// Retries exhausted; step will not run again.
+    Failed,
     Cancelled,
 }
 
@@ -51,6 +58,8 @@ pub struct StepCheckpoint {
     pub step_id: String,
     pub status: StepStatus,
     pub result: Option<String>,
+    /// Count of recorded failures for this step (drives retry budget).
+    pub attempts: u32,
 }
 
 /// Overall run status.
@@ -61,6 +70,8 @@ pub enum WorkflowStatus {
     Completed,
     Cancelled,
     BudgetExhausted,
+    /// A step exhausted its retry budget.
+    Failed,
 }
 
 /// Errors from advancing or completing steps.
@@ -76,6 +87,8 @@ pub enum WorkflowError {
     NotRunnable(String, StepStatus),
     #[error("workflow budget exhausted ({kind})")]
     BudgetExhausted { kind: &'static str },
+    #[error("step {0} retries exhausted")]
+    RetriesExhausted(String),
     #[error("workflow cancelled")]
     Cancelled,
     #[error("invalid recipe: {0}")]
@@ -84,8 +97,9 @@ pub enum WorkflowError {
 
 /// Boring in-memory state machine over a recipe.
 ///
-/// ponytail: single-workflow sequential advance only; concurrency / retry /
-/// cross-workflow caps stay for a later slice.
+/// ponytail: single-workflow sequential advance only; concurrency /
+/// cross-workflow caps stay for a later slice. Retry is fail→Pending under
+/// `max_retries`, then [`StepStatus::Failed`] — no backoff / jitter.
 #[derive(Debug, Clone)]
 pub struct WorkflowEngine {
     recipe: WorkflowRecipe,
@@ -110,6 +124,7 @@ impl WorkflowEngine {
                         step_id: s.id.clone(),
                         status: StepStatus::Pending,
                         result: None,
+                        attempts: 0,
                     },
                 )
             })
@@ -159,6 +174,27 @@ impl WorkflowEngine {
         }
     }
 
+    /// Refactor skeleton: Baseline tests → Characterization if needed → Refactor
+    /// → Validation → Review. "If needed" is recipe text only — no branch logic.
+    pub fn refactor_skeleton_recipe() -> WorkflowRecipe {
+        WorkflowRecipe {
+            id: "refactor".into(),
+            name: "Refactor".into(),
+            steps: vec![
+                step("baseline_tests", "Baseline tests", Some("Build"), &[]),
+                step(
+                    "characterization",
+                    "Characterization if needed",
+                    Some("Explore"),
+                    &["baseline_tests"],
+                ),
+                step("refactor", "Refactor", Some("Build"), &["characterization"]),
+                step("validation", "Validation", Some("Build"), &["refactor"]),
+                step("review", "Review", Some("Review"), &["validation"]),
+            ],
+        }
+    }
+
     pub fn recipe(&self) -> &WorkflowRecipe {
         &self.recipe
     }
@@ -184,6 +220,15 @@ impl WorkflowEngine {
             .steps
             .iter()
             .filter_map(|s| self.checkpoints.get(&s.id))
+    }
+
+    /// Effective retry budget for `step_id` (step override or workflow default).
+    pub fn effective_max_retries(&self, step_id: &str) -> Option<u32> {
+        self.recipe
+            .steps
+            .iter()
+            .find(|s| s.id == step_id)
+            .map(|s| s.max_retries.unwrap_or(self.budget.max_retries))
     }
 
     /// Mark run as Running (no-op if already running).
@@ -302,11 +347,63 @@ impl WorkflowEngine {
         Ok(())
     }
 
+    /// Record a step failure. Under retry budget → Pending again; else Failed
+    /// checkpoint and workflow [`WorkflowStatus::Failed`].
+    pub fn fail_step(
+        &mut self,
+        step_id: &str,
+        reason: impl Into<String>,
+        tokens: u64,
+        wall_ms: u64,
+    ) -> Result<(), WorkflowError> {
+        self.ensure_runnable()?;
+        let max_retries = self
+            .effective_max_retries(step_id)
+            .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+        let reason = reason.into();
+        {
+            let cp = self
+                .checkpoints
+                .get_mut(step_id)
+                .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+            if cp.status != StepStatus::Running {
+                return Err(WorkflowError::NotRunnable(step_id.to_string(), cp.status));
+            }
+            cp.attempts = cp.attempts.saturating_add(1);
+            cp.result = Some(reason);
+            if cp.attempts <= max_retries {
+                cp.status = StepStatus::Pending;
+            } else {
+                cp.status = StepStatus::Failed;
+            }
+        }
+        self.tokens_used = self.tokens_used.saturating_add(tokens);
+        self.wall_ms_used = self.wall_ms_used.saturating_add(wall_ms);
+
+        if let Some(kind) = self.budget_exceeded() {
+            self.status = WorkflowStatus::BudgetExhausted;
+            return Err(WorkflowError::BudgetExhausted { kind });
+        }
+
+        let cp = self
+            .checkpoints
+            .get(step_id)
+            .ok_or_else(|| WorkflowError::UnknownStep(step_id.to_string()))?;
+        if cp.status == StepStatus::Failed {
+            self.status = WorkflowStatus::Failed;
+            return Err(WorkflowError::RetriesExhausted(step_id.to_string()));
+        }
+        Ok(())
+    }
+
     /// Cancel the workflow: running/pending steps become Cancelled.
     pub fn cancel(&mut self) {
         if matches!(
             self.status,
-            WorkflowStatus::Completed | WorkflowStatus::Cancelled | WorkflowStatus::BudgetExhausted
+            WorkflowStatus::Completed
+                | WorkflowStatus::Cancelled
+                | WorkflowStatus::BudgetExhausted
+                | WorkflowStatus::Failed
         ) {
             return;
         }
@@ -325,6 +422,7 @@ impl WorkflowEngine {
             WorkflowStatus::BudgetExhausted => {
                 Err(WorkflowError::BudgetExhausted { kind: "exhausted" })
             }
+            WorkflowStatus::Failed => Err(WorkflowError::AlreadyFinished(WorkflowStatus::Failed)),
             other => Err(WorkflowError::AlreadyFinished(other)),
         }
     }
@@ -356,6 +454,7 @@ fn step(id: &str, name: &str, role: Option<&str>, deps: &[&str]) -> WorkflowStep
         name: name.into(),
         role: role.map(str::to_string),
         depends_on: deps.iter().map(|d| (*d).to_string()).collect(),
+        max_retries: None,
     }
 }
 
@@ -441,6 +540,101 @@ mod tests {
     }
 
     #[test]
+    fn refactor_skeleton_happy_path() {
+        let recipe = WorkflowEngine::refactor_skeleton_recipe();
+        assert_eq!(recipe.id, "refactor");
+        assert_eq!(recipe.steps.len(), 5);
+        assert_eq!(
+            recipe
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "baseline_tests",
+                "characterization",
+                "refactor",
+                "validation",
+                "review",
+            ]
+        );
+        assert_eq!(recipe.steps[1].name, "Characterization if needed");
+        assert_eq!(recipe.steps[2].depends_on, vec!["characterization"]);
+
+        let mut engine = WorkflowEngine::new(recipe, WorkflowBudget::default()).unwrap();
+        engine.start().unwrap();
+        let order: Vec<String> = engine.recipe().steps.iter().map(|s| s.id.clone()).collect();
+        for id in &order {
+            assert_eq!(engine.next_ready_step().unwrap().id, id.as_str());
+            run_step(&mut engine, id, 1, 1);
+        }
+        assert_eq!(engine.status(), WorkflowStatus::Completed);
+        assert_eq!(engine.tokens_used(), 5);
+    }
+
+    #[test]
+    fn retry_then_success() {
+        let budget = WorkflowBudget {
+            max_retries: 1,
+            ..WorkflowBudget::default()
+        };
+        let mut engine =
+            WorkflowEngine::new(WorkflowEngine::bug_skeleton_recipe(), budget).unwrap();
+        engine.start().unwrap();
+        engine.begin_step("reproduce").unwrap();
+        engine.fail_step("reproduce", "transient", 2, 1).unwrap();
+        let cp = engine.checkpoint("reproduce").unwrap();
+        assert_eq!(cp.status, StepStatus::Pending);
+        assert_eq!(cp.attempts, 1);
+        assert_eq!(cp.result.as_deref(), Some("transient"));
+        assert!(engine.is_ready("reproduce"));
+
+        engine.begin_step("reproduce").unwrap();
+        engine
+            .complete_step("reproduce", "ok:reproduce", 1, 1)
+            .unwrap();
+        assert_eq!(
+            engine.checkpoint("reproduce").unwrap().status,
+            StepStatus::Completed
+        );
+        assert_eq!(engine.status(), WorkflowStatus::Running);
+        assert!(engine.is_ready("failing_regression"));
+    }
+
+    #[test]
+    fn retry_exhausted_marks_failed_checkpoint() {
+        let mut recipe = WorkflowEngine::refactor_skeleton_recipe();
+        // Per-step override: zero retries → first failure fails permanently.
+        recipe.steps[0].max_retries = Some(0);
+        let budget = WorkflowBudget {
+            max_retries: 5, // workflow default ignored for overridden step
+            ..WorkflowBudget::default()
+        };
+        let mut engine = WorkflowEngine::new(recipe, budget).unwrap();
+        engine.start().unwrap();
+        assert_eq!(engine.effective_max_retries("baseline_tests"), Some(0));
+
+        engine.begin_step("baseline_tests").unwrap();
+        let err = engine
+            .fail_step("baseline_tests", "hard fail", 1, 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            WorkflowError::RetriesExhausted(ref id) if id == "baseline_tests"
+        ));
+        let cp = engine.checkpoint("baseline_tests").unwrap();
+        assert_eq!(cp.status, StepStatus::Failed);
+        assert_eq!(cp.attempts, 1);
+        assert_eq!(cp.result.as_deref(), Some("hard fail"));
+        assert_eq!(engine.status(), WorkflowStatus::Failed);
+        assert!(engine.next_ready_step().is_none());
+        assert!(matches!(
+            engine.begin_step("characterization"),
+            Err(WorkflowError::AlreadyFinished(WorkflowStatus::Failed))
+        ));
+    }
+
+    #[test]
     fn blocked_by_dependency() {
         let mut engine = WorkflowEngine::new(
             WorkflowEngine::bug_skeleton_recipe(),
@@ -496,6 +690,7 @@ mod tests {
         let budget = WorkflowBudget {
             max_tokens: Some(15),
             max_wall_ms: None,
+            max_retries: 0,
         };
         let mut engine =
             WorkflowEngine::new(WorkflowEngine::bug_skeleton_recipe(), budget).unwrap();
@@ -525,6 +720,7 @@ mod tests {
         let budget = WorkflowBudget {
             max_tokens: Some(5),
             max_wall_ms: None,
+            max_retries: 0,
         };
         let mut engine =
             WorkflowEngine::new(WorkflowEngine::bug_skeleton_recipe(), budget).unwrap();
