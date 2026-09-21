@@ -170,7 +170,7 @@ impl SessionSupervisor {
                 turns_used: state.turns_used,
                 tokens_used: state.tokens_used,
                 compaction_count: state.compaction_count,
-                worktree_id: None,
+                worktree_id: self.runtime.worktree_id().map(str::to_owned),
             };
             let _ =
                 self.runtime

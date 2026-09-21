@@ -1,6 +1,7 @@
 //! Managed git worktree lifecycle with durable session binding.
 //!
-//! Vertical slice (TODO P1 §5): create → resume → stop → close → stale → salvage.
+//! Vertical slice (TODO P1 §5): create → resume → stop → close → stale → salvage;
+//! identity survives compaction via `CompactionStructuralState.worktree_id`.
 //! Diff / merge-ready / conflict checks come later.
 //!
 //! Uses the system `git` CLI (no new git dependency). Bindings survive daemon
@@ -433,6 +434,32 @@ impl WorktreeManager {
             )
             .optional()?;
         Ok(row)
+    }
+
+    /// Resolve session ↔ worktree binding after compaction using structural identity.
+    ///
+    /// Prefer `structural.worktree_id` when present; fall back to session lookup.
+    /// Binding row is unchanged by CompactionCompleted — this only verifies it still
+    /// resolves to the same identity.
+    pub fn resolve_after_compaction(
+        &self,
+        session_id: Uuid,
+        structural: &crate::CompactionStructuralState,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        match structural.worktree_id.as_deref() {
+            Some(id) => {
+                let binding = self
+                    .get_by_worktree_id(id)?
+                    .ok_or_else(|| WorktreeError::NotFoundId(id.to_string()))?;
+                if binding.session_id != session_id {
+                    return Err(WorktreeError::NotFoundId(id.to_string()));
+                }
+                Ok(binding)
+            }
+            None => self
+                .get_by_session(session_id)?
+                .ok_or(WorktreeError::NotFound(session_id)),
+        }
     }
 
     fn classify_stale(
@@ -888,5 +915,69 @@ mod tests {
         manager.create(session, repo.path()).expect("create");
         assert!(manager.detect_stale().expect("detect").is_empty());
         assert!(manager.mark_stale().expect("mark").is_empty());
+    }
+
+    #[test]
+    fn identity_survives_compaction_structural_and_resume() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        let worktree_id = created.worktree_id.clone();
+
+        // Simulated CompactionCompleted structural snapshot.
+        let structural = crate::CompactionStructuralState {
+            workspace_root: repo.path().to_path_buf(),
+            parent_session_id: None,
+            allow_network: false,
+            allow_web_outbound: false,
+            allow_private_network: false,
+            allowed_hosts: vec![],
+            turns_used: 3,
+            tokens_used: 900,
+            compaction_count: 1,
+            worktree_id: Some(worktree_id.clone()),
+        };
+
+        let resolved = manager
+            .resolve_after_compaction(session, &structural)
+            .expect("resolve after compaction");
+        assert_eq!(resolved.worktree_id, worktree_id);
+        assert_eq!(resolved.session_id, session);
+        assert_eq!(resolved.state, WorktreeLifecycleState::Active);
+
+        let stopped = manager.stop(session).expect("stop");
+        assert_eq!(stopped.worktree_id, worktree_id);
+
+        let resumed = manager.resume(session).expect("resume");
+        assert_eq!(resumed.worktree_id, worktree_id);
+
+        let after_resume = manager
+            .resolve_after_compaction(session, &structural)
+            .expect("resolve after resume");
+        assert_eq!(after_resume.worktree_id, worktree_id);
+        assert_eq!(after_resume.state, WorktreeLifecycleState::Active);
+    }
+
+    #[test]
+    fn resolve_after_compaction_rejects_foreign_session() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        let structural = crate::CompactionStructuralState {
+            workspace_root: repo.path().to_path_buf(),
+            parent_session_id: None,
+            allow_network: false,
+            allow_web_outbound: false,
+            allow_private_network: false,
+            allowed_hosts: vec![],
+            turns_used: 0,
+            tokens_used: 0,
+            compaction_count: 1,
+            worktree_id: Some(created.worktree_id.clone()),
+        };
+        let err = manager
+            .resolve_after_compaction(Uuid::new_v4(), &structural)
+            .expect_err("foreign session");
+        assert!(matches!(err, WorktreeError::NotFoundId(_)));
     }
 }
