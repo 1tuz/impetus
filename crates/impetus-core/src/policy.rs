@@ -1,4 +1,4 @@
-use crate::policy_config::{PolicyConfig, PolicyConfigDecision};
+use crate::policy_config::{PolicyConfig, PolicyConfigDecision, PolicyConfigError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -249,6 +249,29 @@ impl PolicyEngine {
         Self {
             scope,
             overrides: config.overrides,
+        }
+    }
+
+    /// Replace user overrides in place. Scope and fail-closed Denies stay unchanged.
+    pub fn reload_config(&mut self, config: PolicyConfig) {
+        self.overrides = config.overrides;
+    }
+
+    /// Load JSON policy config from path and apply it. On error, prior overrides stay.
+    pub fn reload_config_from_path(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<(), PolicyConfigError> {
+        let config = PolicyConfig::load_from_path(path)?;
+        self.reload_config(config);
+        Ok(())
+    }
+
+    /// Snapshot current overrides as a PolicyConfig document.
+    pub fn config(&self) -> PolicyConfig {
+        PolicyConfig {
+            version: crate::policy_config::POLICY_CONFIG_VERSION,
+            overrides: self.overrides.clone(),
         }
     }
 
@@ -916,5 +939,135 @@ mod tests {
             target: Some("ls".into()),
         };
         assert_eq!(with_config.evaluate(&action), without.evaluate(&action));
+    }
+
+    #[test]
+    fn reload_config_applies_new_overrides() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let mut policy = PolicyEngine::new(SandboxScope::local_workspace(workspace));
+        let write = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("reload-target.txt".into()),
+        };
+        assert!(matches!(
+            policy.evaluate(&write),
+            PolicyDecision::NeedsApproval { .. }
+        ));
+
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"write_file":"allow","spawn_process":"deny"}}"#,
+        )
+        .expect("config");
+        policy.reload_config(config);
+
+        assert_eq!(policy.evaluate(&write), PolicyDecision::Allow);
+        let spawn = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::SpawnProcess,
+            summary: "spawn".into(),
+            target: Some("echo".into()),
+        });
+        assert!(
+            matches!(
+                spawn,
+                PolicyDecision::Deny { ref reason } if reason.contains("user policy config")
+            ),
+            "{spawn:?}"
+        );
+    }
+
+    #[test]
+    fn reload_config_from_path_applies_file() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let mut policy = PolicyEngine::new(SandboxScope::local_workspace(workspace));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("policy.json");
+        std::fs::write(&path, r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+            .expect("write");
+
+        policy
+            .reload_config_from_path(&path)
+            .expect("reload from path");
+
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("from-path.txt".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn reload_from_path_failure_keeps_prior_overrides() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let mut policy = PolicyEngine::with_config(
+            SandboxScope::local_workspace(workspace),
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                .expect("config"),
+        );
+        let err = policy
+            .reload_config_from_path("/nonexistent/policy-config-reload.json")
+            .expect_err("missing path");
+        assert!(matches!(err, PolicyConfigError::Io(_)));
+
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("still-allowed.txt".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn reload_cannot_soften_fail_closed_network_deny() {
+        let mut policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        policy.reload_config(
+            PolicyConfig::parse(
+                r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow"}}"#,
+            )
+            .expect("config"),
+        );
+        for kind in [ActionKind::NetworkConnect, ActionKind::SshConnect] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind,
+                summary: "net".into(),
+                target: None,
+            });
+            assert!(
+                matches!(
+                    decision,
+                    PolicyDecision::Deny { ref reason }
+                    if reason.contains("network is disabled")
+                ),
+                "{kind:?} => {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reload_cannot_soften_private_web_deny() {
+        let mut policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        policy.reload_config(
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"web_fetch":"allow"}}"#)
+                .expect("config"),
+        );
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebFetch,
+            summary: "lan".into(),
+            target: Some("10.0.0.1".into()),
+        });
+        assert!(
+            matches!(
+                decision,
+                PolicyDecision::Deny { ref reason } if reason.contains("private/LAN")
+            ),
+            "{decision:?}"
+        );
     }
 }

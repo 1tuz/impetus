@@ -64,7 +64,7 @@ pub struct AgentRuntime {
 fn policy_for_workspace(policy: &PolicyEngine, workspace_root: PathBuf) -> PolicyEngine {
     let mut scope = policy.scope().clone();
     scope.workspace_root = workspace_root;
-    PolicyEngine::new(scope)
+    PolicyEngine::with_config(scope, policy.config())
 }
 
 impl AgentRuntime {
@@ -356,6 +356,19 @@ impl AgentRuntime {
 
     pub fn policy(&self) -> PolicyEngine {
         self.policy.clone()
+    }
+
+    /// Replace live policy overrides without restarting the runtime.
+    pub fn reload_policy_config(&mut self, config: crate::PolicyConfig) {
+        self.policy.reload_config(config);
+    }
+
+    /// Reload policy overrides from a JSON file path. On error, prior overrides stay.
+    pub fn reload_policy_config_from_path(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), crate::PolicyConfigError> {
+        self.policy.reload_config_from_path(path)
     }
 
     pub fn submit_intent(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
@@ -685,6 +698,71 @@ mod tests {
                     event.payload,
                     EventPayload::Approval(ApprovalEvent::Requested { .. })
                 ))
+        );
+    }
+
+    #[test]
+    fn reload_policy_config_applies_without_restart() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut runtime = AgentRuntime::create_with_workspace(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            workspace.path().to_path_buf(),
+        )
+        .expect("create");
+        runtime
+            .submit_intent("update workspace")
+            .expect("record intent");
+
+        let write = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("new-after-reload.txt".into()),
+        };
+        assert_eq!(
+            runtime.request_action(write.clone()).expect("request"),
+            RuntimeStatus::AwaitingApproval
+        );
+
+        runtime.reload_policy_config(
+            crate::PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                .expect("config"),
+        );
+        assert_eq!(
+            runtime.request_action(write).expect("allowed write"),
+            RuntimeStatus::Idle
+        );
+    }
+
+    #[test]
+    fn create_with_workspace_preserves_policy_overrides() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config =
+            crate::PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                .expect("config");
+        let runtime = AgentRuntime::create_with_workspace(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::with_config(SandboxScope::local_workspace(workspace.path()), config),
+            workspace.path().to_path_buf(),
+        )
+        .expect("create");
+
+        let status = runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "write".into(),
+                target: Some("preserved.txt".into()),
+            })
+            .expect("request");
+        assert_eq!(status, RuntimeStatus::Idle);
+        assert_eq!(
+            runtime
+                .policy()
+                .config()
+                .override_for(ActionKind::WriteFile),
+            Some(crate::PolicyConfigDecision::Allow)
         );
     }
 
