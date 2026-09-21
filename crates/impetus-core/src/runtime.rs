@@ -56,6 +56,8 @@ pub struct AgentRuntime {
     policy: PolicyEngine,
     workspace_root: PathBuf,
     budget: Option<Arc<Mutex<BudgetChecker>>>,
+    /// Bound WorktreeManager identity; snapped into CompactionStructuralState.
+    worktree_id: Option<String>,
     // A2 Phase 2: Store deferred effects for approval continuation.
     // Maps approval_id -> DeferredEffect so approved work can resume.
     deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
@@ -65,6 +67,17 @@ fn policy_for_workspace(policy: &PolicyEngine, workspace_root: PathBuf) -> Polic
     let mut scope = policy.scope().clone();
     scope.workspace_root = workspace_root;
     PolicyEngine::with_config(scope, policy.config())
+}
+
+/// Latest `worktree_id` snapped into a durable CompactionCompleted structural payload.
+fn worktree_id_from_compaction_events(events: &[Event]) -> Option<String> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::Budget(crate::BudgetEvent::CompactionCompleted {
+            structural: Some(structural),
+            ..
+        }) => structural.worktree_id.clone(),
+        _ => None,
+    })
 }
 
 impl AgentRuntime {
@@ -80,6 +93,7 @@ impl AgentRuntime {
             workspace_root: policy.scope().workspace_root.clone(),
             policy,
             budget: None,
+            worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -109,6 +123,7 @@ impl AgentRuntime {
             policy: scoped_policy,
             workspace_root,
             budget: None,
+            worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -126,12 +141,14 @@ impl AgentRuntime {
         let workspace_root = projection
             .workspace_root
             .unwrap_or_else(|| policy.scope().workspace_root.clone());
+        let worktree_id = worktree_id_from_compaction_events(&events);
         Ok(Self {
             session_id,
             store,
             policy: policy_for_workspace(&policy, workspace_root.clone()),
             workspace_root,
             budget: None,
+            worktree_id,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -149,6 +166,7 @@ impl AgentRuntime {
             workspace_root: policy.scope().workspace_root.clone(),
             policy,
             budget: None,
+            worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -166,6 +184,21 @@ impl AgentRuntime {
 
     pub fn session_id(&self) -> Uuid {
         self.session_id
+    }
+
+    /// Bound WorktreeManager identity (survives compaction via structural snapshot).
+    pub fn worktree_id(&self) -> Option<&str> {
+        self.worktree_id.as_deref()
+    }
+
+    /// Bind a managed worktree identity to this session runtime.
+    pub fn set_worktree_id(&mut self, worktree_id: impl Into<String>) {
+        self.worktree_id = Some(worktree_id.into());
+    }
+
+    /// Clear the bound worktree identity (e.g. after close).
+    pub fn clear_worktree_id(&mut self) {
+        self.worktree_id = None;
     }
 
     /// Set budget configuration for this runtime
@@ -324,7 +357,7 @@ impl AgentRuntime {
             turns_used: budget_state.turns_used,
             tokens_used: budget_state.tokens_used,
             compaction_count: budget_state.compaction_count,
-            worktree_id: None,
+            worktree_id: self.worktree_id.clone(),
         };
 
         self.record(EventPayload::Budget(

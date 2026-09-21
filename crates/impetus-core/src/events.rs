@@ -175,7 +175,7 @@ pub struct CompactionStructuralState {
     pub turns_used: u32,
     pub tokens_used: u64,
     pub compaction_count: u32,
-    /// Reserved for WorktreeManager (P1); None until a worktree is bound.
+    /// Bound WorktreeManager identity; survives compaction as typed payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
 }

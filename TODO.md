@@ -197,7 +197,9 @@ stale → close → salvage
       not-registered; temp-repo tests)
 - [x] Salvage path for recoverable abandoned worktrees
       (`salvage` re-registers + preserves on-disk files; same `worktree_id`)
-- [ ] Worktree identity survives compaction/resume
+- [x] Worktree identity survives compaction/resume
+      (`CompactionStructuralState.worktree_id` + `resolve_after_compaction`;
+      attach restores id from CompactionCompleted)
 - [ ] Build-role agents prefer isolated worktrees with attached permissions
 
 ### 6. WorkflowEngine + small recipes
