@@ -398,21 +398,27 @@ fn handle_request(
             Ok(events) => IpcResponse::Events { session_id, events },
             Err(error) => runtime_error(error),
         },
-        IpcRequest::Prompt { session_id, text } => {
+        IpcRequest::Prompt {
+            session_id,
+            text,
+            artifact,
+        } => {
             let session_lock = session_coordinator.lock_for(session_id);
             let _session_guard = session_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let artifact_root = uploads.artifact_root().to_path_buf();
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 let runtime = Arc::new(runtime);
-                let run_id = runtime.submit_intent_and_start_run(text)?;
+                let run_id = runtime.submit_intent_and_start_run_with_artifact(text, artifact)?;
                 let session_workspace = runtime.workspace_root()?;
-                let provider_messages = resolve_provider_messages(&session_workspace, &runtime)
-                    .unwrap_or_else(|_| {
-                        vec![ProviderMessage::user(
-                            runtime_intent(&runtime).unwrap_or_default(),
-                        )]
-                    });
+                let provider_messages =
+                    resolve_provider_messages(&session_workspace, &runtime, Some(&artifact_root))
+                        .unwrap_or_else(|_| {
+                            vec![ProviderMessage::user(
+                                runtime_intent(&runtime).unwrap_or_default(),
+                            )]
+                        });
                 let runtime_session_id = runtime.session_id();
 
                 // Select model through router
@@ -608,8 +614,12 @@ fn handle_request(
             }
             if let Some(run_id) = runtime.active_run_id()? {
                 let workspace_root = runtime.workspace_root()?;
-                let messages = resolve_provider_messages(&workspace_root, &runtime)
-                    .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                let messages = resolve_provider_messages(
+                    &workspace_root,
+                    &runtime,
+                    Some(uploads.artifact_root()),
+                )
+                .map_err(|error| RuntimeError::Denied(error.to_string()))?;
                 let cancellation = CancellationToken::new();
                 if let Ok(mut active) = cancellations.lock() {
                     active.insert(session_id, cancellation.clone());
@@ -804,12 +814,14 @@ fn resolve_context(
 fn resolve_provider_messages(
     workspace_root: &std::path::Path,
     runtime: &AgentRuntime,
+    artifact_root: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
     resolve_provider_messages_with_binding(
         workspace_root,
         runtime,
         &Profile::Standard.default_bindings().context,
         DEFAULT_CONTEXT_BUDGET_TOKENS,
+        artifact_root,
     )
 }
 
@@ -818,12 +830,16 @@ fn resolve_provider_messages_with_binding(
     runtime: &AgentRuntime,
     context_binding: &crate::ServiceBinding,
     budget_tokens: usize,
+    artifact_root: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
     let instructions = resolve_context(workspace_root)?;
     let tools = default_tool_stubs();
     let mut messages =
         system_messages_for_binding(context_binding, &instructions, &tools, budget_tokens);
-    let artifact_store = DurableArtifactStore::open(crate::default_artifact_root()).ok();
+    let root = artifact_root
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(crate::default_artifact_root);
+    let artifact_store = DurableArtifactStore::open(root).ok();
     let artifact_budget = TokenBudget {
         max_tokens: budget_tokens.clamp(64, 2_000),
     };
@@ -837,7 +853,13 @@ fn resolve_provider_messages_with_binding(
                         &mut pending_assistant,
                     )));
                 }
-                messages.push(ProviderMessage::user(intent.text));
+                let user_text = materialize_intent_text(
+                    artifact_store.as_ref(),
+                    &intent.text,
+                    intent.artifact.as_ref(),
+                    artifact_budget,
+                );
+                messages.push(ProviderMessage::user(user_text));
                 has_user_intent = true;
             }
             crate::EventPayload::Agent(crate::AgentEvent::Chunk { text, .. }) => {
@@ -891,6 +913,45 @@ fn resolve_provider_messages_with_binding(
         messages.push(ProviderMessage::user(runtime_intent(runtime)?));
     }
     Ok(messages)
+}
+
+/// Expand an intent that carries an artifact ref into budgeted prompt text.
+/// Compact placeholder text stays as a label; raw paste never enters the event.
+fn materialize_intent_text(
+    store: Option<&DurableArtifactStore>,
+    label: &str,
+    artifact: Option<&crate::DurableArtifactRef>,
+    budget: TokenBudget,
+) -> String {
+    let Some(artifact) = artifact else {
+        return label.to_string();
+    };
+    let Some(store) = store else {
+        return if label.is_empty() {
+            format!(
+                "[pasted artifact {} unavailable: artifact store missing]",
+                artifact.id
+            )
+        } else {
+            format!("{label}\n\n[artifact body unavailable: artifact store missing]")
+        };
+    };
+    match ContextBuilder::new(store, budget).materialize(artifact) {
+        Ok(materialized) => {
+            if label.is_empty() {
+                materialized.content
+            } else {
+                format!("{label}\n\n{}", materialized.content)
+            }
+        }
+        Err(error) => {
+            if label.is_empty() {
+                format!("[pasted artifact {} unavailable: {error}]", artifact.id)
+            } else {
+                format!("{label}\n\n[artifact body unavailable: {error}]")
+            }
+        }
+    }
 }
 
 /// When a tool observation carries an artifact, replace the inline preview with
@@ -1350,6 +1411,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "user question".into(),
+                artifact: None,
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -1471,6 +1533,7 @@ mod tests {
         harness.handle(IpcRequest::Prompt {
             session_id,
             text: "only user intent".into(),
+            artifact: None,
         });
         let durable = serde_json::to_string(&store.list(session_id).unwrap()).unwrap();
         assert!(durable.contains("only user intent"));
@@ -1513,7 +1576,7 @@ mod tests {
             variant: "lazy".into(),
         };
         // Budget fits HOT (~9) + cold tool refs; not the large WARM convention.
-        let messages = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20)
+        let messages = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None)
             .expect("resolve");
 
         let system: Vec<_> = messages
@@ -1546,7 +1609,7 @@ mod tests {
             target: None,
         };
         let before = policy.evaluate(&denied);
-        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20);
+        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None);
         assert_eq!(policy.evaluate(&denied), before);
     }
 
@@ -1603,6 +1666,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "question without credential".into(),
+                artifact: None,
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -1891,6 +1955,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "inspect evidence and write the result".into(),
+                artifact: None,
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -1995,6 +2060,7 @@ mod tests {
         harness.handle(IpcRequest::Prompt {
             session_id,
             text: "try the write".into(),
+            artifact: None,
         });
         let mut approval_id = None;
         for _ in 0..100 {
@@ -2074,6 +2140,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "start a long task".into(),
+                artifact: None,
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -2137,13 +2204,13 @@ mod tests {
         store
             .append_next(
                 session_id,
-                EventPayload::Intent(crate::IntentEvent { text: "one".into() }),
+                EventPayload::Intent(crate::IntentEvent::new("one")),
             )
             .expect("intent 1");
         store
             .append_next(
                 session_id,
-                EventPayload::Intent(crate::IntentEvent { text: "two".into() }),
+                EventPayload::Intent(crate::IntentEvent::new("two")),
             )
             .expect("intent 2");
 
@@ -2266,6 +2333,77 @@ mod tests {
         .materialize(&artifact)
         .expect("materialize uploaded artifact");
         assert!(materialized.content.contains("oversized paste payload"));
+    }
+
+    #[tokio::test]
+    async fn prompt_with_artifact_ref_keeps_body_out_of_intent_event() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+        let artifact_root = tempfile::tempdir().expect("artifacts");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_artifact_root(artifact_root.path());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let body = b"secret paste body for artifact-backed prompt";
+        let IpcResponse::ArtifactUploadBegun { upload_id, .. } =
+            harness.handle(IpcRequest::BeginArtifactUpload {
+                session_id,
+                declared_bytes: Some(body.len()),
+                content_type: Some("text/plain".into()),
+            })
+        else {
+            panic!("begin");
+        };
+        assert!(matches!(
+            harness.handle(IpcRequest::AppendArtifactChunk {
+                upload_id,
+                seq: 0,
+                data_b64: BASE64.encode(body),
+            }),
+            IpcResponse::ArtifactChunkAccepted { .. }
+        ));
+        let IpcResponse::ArtifactStored { artifact } =
+            harness.handle(IpcRequest::FinishArtifactUpload { upload_id })
+        else {
+            panic!("finish");
+        };
+
+        let label = "[Pasted text · 1 KB · 1 lines]";
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: label.into(),
+                artifact: Some(artifact.clone()),
+            }),
+            IpcResponse::Status { .. }
+        ));
+
+        let events = store.list(session_id).expect("events");
+        let encoded = serde_json::to_string(&events).expect("encode");
+        assert!(
+            !encoded.contains("secret paste body"),
+            "raw paste must not appear in durable events"
+        );
+        let intent = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::Intent(intent) => Some(intent),
+                _ => None,
+            })
+            .expect("intent");
+        assert_eq!(intent.text, label);
+        assert_eq!(intent.artifact.as_ref(), Some(&artifact));
     }
 
     #[test]

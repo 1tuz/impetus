@@ -35,6 +35,7 @@ async fn model_router_selects_provider_on_prompt() {
     let response = harness.handle(IpcRequest::Prompt {
         session_id,
         text: "test prompt".to_string(),
+        artifact: None,
     });
     assert!(matches!(response, IpcResponse::Status { .. }));
 
@@ -81,6 +82,7 @@ async fn model_router_falls_back_to_default_when_no_models_configured() {
     let response = harness.handle(IpcRequest::Prompt {
         session_id,
         text: "test prompt".to_string(),
+        artifact: None,
     });
 
     // Should not fail even with empty router

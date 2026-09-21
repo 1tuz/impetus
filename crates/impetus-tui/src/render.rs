@@ -849,19 +849,16 @@ fn render_large_paste(frame: &mut Frame, app: &AppState, theme: Theme) {
         .as_ref()
         .map(|paste| paste.len())
         .unwrap_or_default();
-    let direct_action = if bytes <= crate::model::MAX_DIRECT_PROMPT_BYTES {
-        "[Y] send once through the current direct prompt path"
-    } else {
-        "[Y] unavailable: paste exceeds the safe direct-IPC budget"
-    };
+    let lines = app
+        .pending_large_paste
+        .as_ref()
+        .map(|paste| crate::model::paste_line_count(paste))
+        .unwrap_or_default();
+    let placeholder = crate::model::format_paste_placeholder(bytes, lines);
     let body = format!(
-        "The paste is {} ({} lines). The current IPC accepts prompt text but does not yet expose chunked ArtifactStore upload.\n\n{}\n[I] insert into the composer so it can be trimmed or split\n[N] cancel and discard this pending paste\n\nThe production adapter also preflights the exact serialized IPC line before sending.",
+        "Composer shows compact placeholder:\n{placeholder}\n\nSize: {} · {lines} lines.\nConfirm uploads via chunked artifact_upload; durable events keep only ArtifactRef + label.\n\n[Y] upload and send\n[I] insert full text into the composer for editing\n[N] cancel and discard this pending paste\n\nMaximum upload size: {}.",
         human_bytes(bytes),
-        app.pending_large_paste
-            .as_ref()
-            .map(|paste| paste.lines().count())
-            .unwrap_or_default(),
-        direct_action,
+        human_bytes(crate::model::MAX_PASTE_UPLOAD_BYTES),
     );
     render_text_modal(frame, " large paste ", &body, 72, 52, false, theme);
 }

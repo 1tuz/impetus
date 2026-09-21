@@ -76,17 +76,69 @@ impl UiBackend for ImpetusBackend {
     }
 
     async fn send_message(&self, session_id: Uuid, text: String) -> Result<String> {
-        let request = IpcRequest::Prompt { session_id, text };
+        let request = IpcRequest::Prompt {
+            session_id,
+            text,
+            artifact: None,
+        };
         let encoded_len = serde_json::to_vec(&request)?.len().saturating_add(1);
         if encoded_len > MAX_IPC_LINE_BYTES {
             bail!(
-                "prompt serializes to {encoded_len} bytes, above the current 64 KiB IPC line limit; use an artifact-backed large-paste flow once the daemon exposes upload support"
+                "prompt serializes to {encoded_len} bytes, above the 64 KiB IPC line limit; paste again so the TUI can upload via artifact_upload"
             );
         }
         match self.client.request(request).await? {
             IpcResponse::Status { status, .. } => Ok(format!("{status:?}")),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected prompt response: {response:?}"),
+        }
+    }
+
+    async fn send_large_paste(
+        &self,
+        session_id: Uuid,
+        label: String,
+        body: Vec<u8>,
+    ) -> Result<String> {
+        let hello = self.client.hello().await?;
+        let supports_upload = match &hello {
+            IpcResponse::Hello { capabilities, .. } => {
+                capabilities.iter().any(|cap| cap == "artifact_upload")
+            }
+            IpcResponse::Incompatible {
+                supported_version,
+                client_version,
+                upgrade_recommendation,
+            } => {
+                bail!(
+                    "IPC incompatible: client={client_version}, daemon={supported_version}. {}",
+                    upgrade_recommendation
+                        .as_deref()
+                        .unwrap_or("Upgrade the client or daemon.")
+                );
+            }
+            response => bail!("unexpected hello response: {response:?}"),
+        };
+        if !supports_upload {
+            bail!(
+                "daemon does not expose artifact_upload; cannot send large paste ({} bytes)",
+                body.len()
+            );
+        }
+
+        let artifact = self
+            .client
+            .upload_artifact(session_id, &body, Some("text/plain".into()))
+            .await
+            .map_err(|error| anyhow::anyhow!("artifact upload failed: {error}"))?;
+
+        match self
+            .client
+            .send_message_with_artifact(session_id, label, Some(artifact))
+            .await
+        {
+            Ok(status) => Ok(format!("{status:?}")),
+            Err(error) => bail!("prompt after upload failed: {error}"),
         }
     }
 

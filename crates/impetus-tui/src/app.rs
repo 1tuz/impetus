@@ -14,8 +14,9 @@ use uuid::Uuid;
 use crate::backend::UiBackend;
 use crate::command::{self, CommandAction};
 use crate::model::{
-    AppState, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES, MAX_DIRECT_PROMPT_BYTES, Overlay,
+    AppState, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES, MAX_PASTE_UPLOAD_BYTES, Overlay,
     RunOptions, RunState, SessionSummary, TimelineItem, UiEvent, UiEventKind, bounded,
+    format_paste_placeholder, is_paste_placeholder, normalize_paste, paste_line_count,
 };
 use crate::render::{filtered_sessions, render};
 use crate::terminal::TerminalSession;
@@ -179,6 +180,7 @@ enum Effect {
     CreateSession,
     ActivateSession(Uuid),
     SendMessage(String),
+    SendLargePaste { label: String, body: String },
     Cancel,
     ResolveApproval { approval_id: Uuid, accepted: bool },
     LoadApprovalDetail(Uuid),
@@ -347,6 +349,39 @@ fn execute_effect(
             spawn_detached(async move {
                 let result = backend
                     .send_message(session_id, text)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = tx
+                    .send(AppMessage::PromptSent {
+                        session_id,
+                        generation,
+                        result,
+                    })
+                    .await;
+            });
+        }
+        Effect::SendLargePaste { label, body } => {
+            let Some(session_id) = app.active_session else {
+                app.show_toast("No active session. Create or resume one first.", true);
+                return;
+            };
+            if !app.connection.capabilities.contains("artifact_upload") {
+                app.show_toast(
+                    "Large paste upload requires a daemon with artifact_upload capability.",
+                    true,
+                );
+                app.run_state = RunState::Failed;
+                return;
+            }
+            app.run_state = RunState::Working;
+            app.status_message = "uploading paste".to_owned();
+            app.dirty = true;
+            let generation = app.subscription_generation;
+            let backend = backend.clone();
+            let tx = tx.clone();
+            spawn_detached(async move {
+                let result = backend
+                    .send_large_paste(session_id, label, body.into_bytes())
                     .await
                     .map_err(|error| error.to_string());
                 let _ = tx
@@ -648,8 +683,24 @@ fn handle_terminal_event(app: &mut AppState, event: TerminalEvent) -> Vec<Effect
     match event {
         TerminalEvent::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key),
         TerminalEvent::Paste(text) => {
+            let text = normalize_paste(&text);
+            if text.len() > MAX_PASTE_UPLOAD_BYTES {
+                app.show_toast(
+                    format!(
+                        "Paste is too large ({} bytes). Maximum upload size is {} bytes.",
+                        text.len(),
+                        MAX_PASTE_UPLOAD_BYTES
+                    ),
+                    true,
+                );
+                app.dirty = true;
+                return vec![];
+            }
             if text.len() > LARGE_PASTE_BYTES {
+                let placeholder = format_paste_placeholder(text.len(), paste_line_count(&text));
                 app.pending_large_paste = Some(text);
+                app.composer.clear();
+                app.composer.insert_str(&placeholder);
                 app.overlay = Overlay::LargePaste;
             } else {
                 app.composer.insert_str(&text);
@@ -714,8 +765,9 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Tab => cycle_focus(app),
         KeyCode::Enter if app.focus == Focus::Timeline => toggle_selected_item(app),
         KeyCode::Esc => {
-            if !app.composer.is_empty() {
+            if !app.composer.is_empty() || app.pending_large_paste.is_some() {
                 app.composer.clear();
+                app.pending_large_paste = None;
             } else {
                 app.focus = Focus::Composer;
             }
@@ -923,28 +975,31 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             _ => (Overlay::ApprovalDetail, vec![]),
         },
         Overlay::LargePaste => match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let byte_len = app
-                    .pending_large_paste
-                    .as_ref()
-                    .map(String::len)
-                    .unwrap_or_default();
-                if byte_len > MAX_DIRECT_PROMPT_BYTES {
+            KeyCode::Char('y') | KeyCode::Char('Y') => match app.pending_large_paste.take() {
+                None => (Overlay::None, vec![]),
+                Some(body) if body.len() > MAX_PASTE_UPLOAD_BYTES => {
+                    app.pending_large_paste = Some(body);
                     app.show_toast(
-                        "Paste exceeds the safe direct-IPC budget. Insert it into the composer and trim it, or wait for ArtifactStore upload support.",
+                        format!(
+                            "Paste exceeds the {} byte upload limit.",
+                            MAX_PASTE_UPLOAD_BYTES
+                        ),
                         true,
                     );
                     (Overlay::LargePaste, vec![])
-                } else {
-                    let text = app.pending_large_paste.take();
-                    let effects = text
-                        .map(|text| vec![send_effect(app.mode, text)])
-                        .unwrap_or_default();
-                    (Overlay::None, effects)
                 }
-            }
+                Some(body) => {
+                    let label = format_paste_placeholder(body.len(), paste_line_count(&body));
+                    app.composer.clear();
+                    (
+                        Overlay::None,
+                        vec![send_large_paste_effect(app.mode, label, body)],
+                    )
+                }
+            },
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 if let Some(text) = app.pending_large_paste.take() {
+                    app.composer.clear();
                     app.composer.insert_str(&text);
                     app.show_toast("Large paste inserted into the composer for editing.", false);
                 }
@@ -952,6 +1007,7 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 app.pending_large_paste = None;
+                app.composer.clear();
                 app.show_toast("Large paste cancelled.", false);
                 (Overlay::None, vec![])
             }
@@ -975,8 +1031,9 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 };
             }
             KeyCode::Char('c') => {
-                if !app.composer.is_empty() {
+                if !app.composer.is_empty() || app.pending_large_paste.is_some() {
                     app.composer.clear();
+                    app.pending_large_paste = None;
                 } else if matches!(
                     app.run_state,
                     RunState::Working | RunState::WaitingApproval | RunState::Cancelling
@@ -1013,13 +1070,33 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 return vec![];
             };
             if let Some(action) = command::parse_command(&text) {
+                app.pending_large_paste = None;
                 return execute_command(app, action);
             }
-            if text.len() > LARGE_PASTE_BYTES {
-                app.pending_large_paste = Some(text);
-                app.overlay = Overlay::LargePaste;
+            if let Some(body) = app.pending_large_paste.take() {
+                let label = if is_paste_placeholder(&text) {
+                    format_paste_placeholder(body.len(), paste_line_count(&body))
+                } else {
+                    text
+                };
+                return vec![send_large_paste_effect(app.mode, label, body)];
+            }
+            if text.len() > MAX_PASTE_UPLOAD_BYTES {
+                app.show_toast(
+                    format!(
+                        "Message is too large ({} bytes). Maximum upload size is {} bytes.",
+                        text.len(),
+                        MAX_PASTE_UPLOAD_BYTES
+                    ),
+                    true,
+                );
+                app.composer.insert_str(&text);
                 app.dirty = true;
                 return vec![];
+            }
+            if text.len() > LARGE_PASTE_BYTES {
+                let label = format_paste_placeholder(text.len(), paste_line_count(&text));
+                return vec![send_large_paste_effect(app.mode, label, text)];
             }
             return vec![send_effect(app.mode, text)];
         }
@@ -1126,6 +1203,14 @@ fn send_effect(mode: ExecutionMode, text: String) -> Effect {
         .map(|prefix| format!("{prefix}{text}"))
         .unwrap_or(text);
     Effect::SendMessage(payload)
+}
+
+fn send_large_paste_effect(mode: ExecutionMode, label: String, body: String) -> Effect {
+    let label = mode
+        .prompt_prefix()
+        .map(|prefix| format!("{prefix}{label}"))
+        .unwrap_or(label);
+    Effect::SendLargePaste { label, body }
 }
 
 fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
@@ -1594,5 +1679,50 @@ mod tests {
         ingest_event(&mut app, event.clone());
         ingest_event(&mut app, event);
         assert_eq!(app.timeline.len(), 1);
+    }
+
+    #[test]
+    fn large_paste_sets_compact_composer_placeholder() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let body = "x".repeat(LARGE_PASTE_BYTES + 1);
+        let effects = handle_terminal_event(&mut app, TerminalEvent::Paste(body.clone()));
+        assert!(effects.is_empty());
+        assert_eq!(app.pending_large_paste.as_deref(), Some(body.as_str()));
+        assert_eq!(
+            app.composer.text(),
+            format_paste_placeholder(body.len(), paste_line_count(&body))
+        );
+        assert!(matches!(app.overlay, Overlay::LargePaste));
+        assert!(!app.composer.text().contains(&body));
+    }
+
+    #[test]
+    fn oversized_paste_above_upload_cap_is_rejected() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let body = "y".repeat(MAX_PASTE_UPLOAD_BYTES + 1);
+        let _ = handle_terminal_event(&mut app, TerminalEvent::Paste(body));
+        assert!(app.pending_large_paste.is_none());
+        assert!(app.composer.is_empty());
+        assert!(app.toast.as_ref().is_some_and(|toast| toast.error));
+    }
+
+    #[test]
+    fn confirm_large_paste_emits_upload_effect() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let body = "z".repeat(LARGE_PASTE_BYTES + 10);
+        app.pending_large_paste = Some(body.clone());
+        app.overlay = Overlay::LargePaste;
+        let effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        assert!(app.pending_large_paste.is_none());
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SendLargePaste { label, body: effect_body }]
+                if effect_body == &body
+                    && is_paste_placeholder(label)
+        ));
     }
 }

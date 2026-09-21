@@ -149,8 +149,26 @@ pub trait HarnessClient: Send + Sync {
         session_id: uuid::Uuid,
         text: String,
     ) -> Result<impetus_core::RuntimeStatus> {
+        self.send_message_with_artifact(session_id, text, None)
+            .await
+    }
+
+    /// Submit a user message with an optional durable artifact (large paste).
+    ///
+    /// When `artifact` is set, only the compact `text` label and the ref enter
+    /// durable events — never the raw pasted body.
+    async fn send_message_with_artifact(
+        &self,
+        session_id: uuid::Uuid,
+        text: String,
+        artifact: Option<impetus_core::DurableArtifactRef>,
+    ) -> Result<impetus_core::RuntimeStatus> {
         match self
-            .request(IpcRequest::Prompt { session_id, text })
+            .request(IpcRequest::Prompt {
+                session_id,
+                text,
+                artifact,
+            })
             .await?
         {
             IpcResponse::Status { status, .. } => Ok(status),

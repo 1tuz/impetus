@@ -80,7 +80,7 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
             EventPayload::Session(crate::SessionEvent::WorkspaceRoot { workspace_root }) => {
                 projection.workspace_root = Some(workspace_root.clone());
             }
-            EventPayload::Intent(IntentEvent { text }) => {
+            EventPayload::Intent(IntentEvent { text, .. }) => {
                 projection.latest_intent = Some(text.clone());
                 projection.latest_intent_revision = Some(event.sequence);
             }
@@ -171,6 +171,7 @@ mod tests {
             1,
             EventPayload::Intent(IntentEvent {
                 text: "explain repo".into(),
+                artifact: None,
             }),
         )];
         assert_eq!(

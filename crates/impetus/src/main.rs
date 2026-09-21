@@ -281,7 +281,11 @@ async fn main() -> Result<()> {
         }
         Commands::Prompt { session_id, text } => {
             let response = client
-                .request(impetus_core::IpcRequest::Prompt { session_id, text })
+                .request(impetus_core::IpcRequest::Prompt {
+                    session_id,
+                    text,
+                    artifact: None,
+                })
                 .await?;
             match response {
                 impetus_core::IpcResponse::Status { status, .. } => {

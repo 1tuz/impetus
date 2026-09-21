@@ -227,17 +227,36 @@ impl AgentRuntime {
     }
 
     pub fn submit_intent(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
-        self.record(EventPayload::Intent(IntentEvent { text: text.into() }))
+        self.submit_intent_with_artifact(text, None)
+    }
+
+    pub fn submit_intent_with_artifact(
+        &self,
+        text: impl Into<String>,
+        artifact: Option<crate::DurableArtifactRef>,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Intent(IntentEvent {
+            text: text.into(),
+            artifact,
+        }))
     }
 
     pub fn submit_intent_and_start_run(
         &self,
         text: impl Into<String>,
     ) -> Result<Uuid, RuntimeError> {
+        self.submit_intent_and_start_run_with_artifact(text, None)
+    }
+
+    pub fn submit_intent_and_start_run_with_artifact(
+        &self,
+        text: impl Into<String>,
+        artifact: Option<crate::DurableArtifactRef>,
+    ) -> Result<Uuid, RuntimeError> {
         if let Some(run_id) = self.projection()?.active_run_id {
             return Err(RuntimeError::ActiveRun(run_id));
         }
-        self.submit_intent(text)?;
+        self.submit_intent_with_artifact(text, artifact)?;
         self.start_run()
     }
 
