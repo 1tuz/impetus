@@ -172,7 +172,7 @@ Runtime State ≠ Memory ≠ Policy
 | `MemoryStore` | Contextual knowledge (untrusted by default) |
 | `PolicyStore` | Governed instructions and permissions |
 
-- [ ] Memory never auto-promotes to policy or tool/sandbox capability
+- [x] Memory never auto-promotes to policy or tool/sandbox capability
 - [ ] Scopes: project / team / user; provenance; secret filtering
 - [ ] Create-only or append-safe semantics where appropriate
 - [ ] Derived indexes disposable/rebuildable; no unsafe symlink traversal
