@@ -20,6 +20,7 @@ pub mod child_result_store;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod codex_adapter;
+pub mod coding_tools;
 pub mod compaction;
 pub mod context_builder;
 pub mod context_optimizer;
@@ -126,6 +127,12 @@ pub use ci::{
 };
 pub use claude_code_adapter::ClaudeCodeAdapter;
 pub use codex_adapter::CodexAdapter;
+pub use coding_tools::{
+    ABSENT_CODING_TOOLS_REASON, AbsentCodingToolsService, CodingDiagnostic, CodingToolsError,
+    CodingToolsProvider, CodingToolsService, DiagnosticSeverity, DocumentSymbol, HoverInfo,
+    MockCodingToolsProvider, OptionalCodingToolsService, PositionQuery,
+    ProviderBackedCodingToolsService, SourceLocation, SourcePosition, SourceRange, SymbolKind,
+};
 pub use compaction::{
     compact_provider_messages, estimate_tokens as estimate_compaction_tokens, summarize_messages,
 };
