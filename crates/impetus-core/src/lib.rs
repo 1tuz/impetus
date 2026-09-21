@@ -151,7 +151,8 @@ pub use extension_compat::{
     McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
 };
 pub use extension_lifecycle::{
-    ExtensionInstallIntent, InstallPlan, PlanError, ResolutionPlan, plan_install,
+    ApplyError, ExtensionInstallIntent, ExtensionState, ExtensionStateStore, InstallPlan,
+    PlanError, ResolutionPlan, apply_install, plan_install,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{
