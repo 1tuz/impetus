@@ -108,6 +108,12 @@ impl AgentLoop {
 
             iteration += 1;
 
+            // Durable compaction when context budget threshold is hit.
+            // Prompt messages fold; event log stays append-only with typed state.
+            if self.runtime.compaction_needed().is_some() {
+                messages = self.runtime.run_durable_compaction(messages)?;
+            }
+
             // Phase 1: Model inference with retry logic
             let turn_result = self
                 .call_model_with_retry(run_id, &provider, &messages, &cancellation)

@@ -159,6 +159,27 @@ pub enum BackendEvent {
     },
 }
 
+/// Structural session state persisted with compaction commits.
+///
+/// Must never live only inside a model-generated text summary: policy, cwd,
+/// budgets, and parent identity are recovered from this typed payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompactionStructuralState {
+    pub workspace_root: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<Uuid>,
+    pub allow_network: bool,
+    pub allow_web_outbound: bool,
+    pub allow_private_network: bool,
+    pub allowed_hosts: Vec<String>,
+    pub turns_used: u32,
+    pub tokens_used: u64,
+    pub compaction_count: u32,
+    /// Reserved for WorktreeManager (P1); None until a worktree is bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+}
+
 /// Budget state events для live display в TUI/Zap.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -175,9 +196,26 @@ pub enum BudgetEvent {
         threshold: u64,
         used: u64,
     },
+    /// Durable start of a compaction transition (event-store range selected).
+    CompactionStarted {
+        from_sequence: u64,
+        to_sequence: u64,
+        threshold: u64,
+        used: u64,
+    },
+    /// Compaction committed: summary/artifact refs + structural snapshot.
+    /// (`CompactionCommitted` in roadmap language — same BudgetEvent family.)
     CompactionCompleted {
         compacted_to: u64,
         compaction_count: u32,
+        #[serde(default)]
+        from_sequence: u64,
+        #[serde(default)]
+        to_sequence: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary_artifact: Option<crate::DurableArtifactRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structural: Option<CompactionStructuralState>,
     },
     TurnLimitApproaching {
         limit: u32,
@@ -481,9 +519,30 @@ mod tests {
                 threshold: 10000,
                 used: 12000,
             },
+            BudgetEvent::CompactionStarted {
+                from_sequence: 1,
+                to_sequence: 42,
+                threshold: 10000,
+                used: 12000,
+            },
             BudgetEvent::CompactionCompleted {
                 compacted_to: 5000,
                 compaction_count: 2,
+                from_sequence: 1,
+                to_sequence: 42,
+                summary_artifact: None,
+                structural: Some(CompactionStructuralState {
+                    workspace_root: std::path::PathBuf::from("/tmp/ws"),
+                    parent_session_id: None,
+                    allow_network: false,
+                    allow_web_outbound: false,
+                    allow_private_network: false,
+                    allowed_hosts: vec![],
+                    turns_used: 5,
+                    tokens_used: 5000,
+                    compaction_count: 2,
+                    worktree_id: None,
+                }),
             },
             BudgetEvent::TurnLimitApproaching { limit: 10, used: 8 },
             BudgetEvent::TokenLimitApproaching {

@@ -258,6 +258,10 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [x] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [x] Context Builder: read large artifact in parts, summarize within token budget
+- [x] Compaction as durable events (`CompactionStarted` / range / summary refs /
+      `CompactionCompleted`) executed from agent loop — not silent history rewrite
+- [x] Structural state (permissions, cwd, budgets, parent, worktree) never only in
+      text summary (`CompactionStructuralState` on `CompactionCompleted`)
 
 ---
 
