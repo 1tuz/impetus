@@ -196,6 +196,7 @@ impl CapabilityTruthReport {
                         "lifecycle_cli_plan_install": true,
                         "lifecycle_cli_remove": true,
                         "lifecycle_cli_doctor": true,
+                        "lifecycle_cli_repair": true,
                     })),
                 ),
             ],

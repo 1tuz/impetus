@@ -5,7 +5,7 @@
 //!
 //! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
 //! dry-run plan, register-before-write ownership, and durable install state.
-//! CLI: `impetus extension plan | install | remove | doctor` (repair later).
+//! CLI: `impetus extension plan | install | remove | doctor | repair`.
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule};
@@ -470,6 +470,74 @@ pub enum DoctorError {
     Ownership(#[from] OwnershipError),
     #[error("no install state or ownership records for id: {0}")]
     NotFound(String),
+}
+
+/// Result of a successful [`repair_install`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairResult {
+    pub installation_id: String,
+    pub repaired_paths: Vec<PathBuf>,
+    /// Owned paths whose on-disk digest already matched the record (untouched).
+    pub skipped_ok: Vec<PathBuf>,
+}
+
+#[derive(Debug, Error)]
+pub enum RepairError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Ownership(#[from] OwnershipError),
+    #[error("install state not found for id: {0}")]
+    StateNotFound(String),
+    #[error("install source missing at {}", .0.display())]
+    SourceMissing(PathBuf),
+}
+
+/// Restore owned paths for `installation_id` from the recorded `source_path`.
+///
+/// Uses [`OwnershipStore::repair`]: missing files restore without `force`;
+/// digest mismatch (unrelated user edits) refuses unless `force` is true.
+/// Paths already matching the ownership digest are skipped.
+pub fn repair_install(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+    force: bool,
+) -> Result<RepairResult, RepairError> {
+    let state = state_store
+        .get(installation_id)?
+        .ok_or_else(|| RepairError::StateNotFound(installation_id.to_string()))?;
+
+    let source = &state.resolution.source_path;
+    if !source.is_file() {
+        return Err(RepairError::SourceMissing(source.clone()));
+    }
+    let bytes = fs::read(source)?;
+
+    let records = ownership.list_by_installation_id(installation_id)?;
+    let mut repaired_paths = Vec::new();
+    let mut skipped_ok = Vec::new();
+
+    for record in &records {
+        let path = PathBuf::from(&record.path);
+        let health = check_owned_path(record);
+        if matches!(health.status, PathHealthStatus::Ok) {
+            skipped_ok.push(path);
+            continue;
+        }
+        ownership.repair(&path, &bytes, force)?;
+        repaired_paths.push(path);
+    }
+
+    repaired_paths.sort();
+    skipped_ok.sort();
+    Ok(RepairResult {
+        installation_id: installation_id.to_string(),
+        repaired_paths,
+        skipped_ok,
+    })
 }
 
 /// Report install-state + ownership health (read-only; no repair).
@@ -1015,5 +1083,119 @@ mod tests {
         let err =
             doctor_install(Some("missing-id"), &ownership, &state_store).expect_err("missing");
         assert!(matches!(err, DoctorError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn repair_refuses_digest_mismatch_without_force() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "repair-skill", "original body");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill { path: skill_md },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = PathBuf::from(&state.ownership[0].path);
+        fs::write(&dest, "user edited").expect("tamper");
+
+        let err = repair_install(&state.installation_id, &ownership, &state_store, false)
+            .expect_err("digest mismatch");
+        assert!(matches!(
+            err,
+            RepairError::Ownership(OwnershipError::DigestMismatch(_))
+        ));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "user edited");
+    }
+
+    #[tokio::test]
+    async fn repair_overwrites_digest_mismatch_with_force() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "force-skill", "canonical");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.clone(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = PathBuf::from(&state.ownership[0].path);
+        fs::write(&dest, "user edited").expect("tamper");
+
+        let result = repair_install(&state.installation_id, &ownership, &state_store, true)
+            .expect("force repair");
+        assert_eq!(result.repaired_paths.len(), 1);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            fs::read(&skill_md).unwrap(),
+            "dest restored from source"
+        );
+        let report =
+            doctor_install(Some(&state.installation_id), &ownership, &state_store).expect("doctor");
+        assert!(report.healthy);
+    }
+
+    #[tokio::test]
+    async fn repair_restores_missing_without_force() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "missing-skill", "restore me");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.clone(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = PathBuf::from(&state.ownership[0].path);
+        fs::remove_file(&dest).expect("delete owned");
+
+        let result = repair_install(&state.installation_id, &ownership, &state_store, false)
+            .expect("restore missing");
+        assert_eq!(result.repaired_paths.len(), 1);
+        assert!(dest.exists());
+        assert_eq!(fs::read(&dest).unwrap(), fs::read(&skill_md).unwrap());
+    }
+
+    #[tokio::test]
+    async fn repair_skips_healthy_paths() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "ok-skill", "already fine");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill { path: skill_md },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+
+        let result = repair_install(&state.installation_id, &ownership, &state_store, false)
+            .expect("noop repair");
+        assert!(result.repaired_paths.is_empty());
+        assert_eq!(result.skipped_ok.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn repair_unknown_id_errors() {
+        let target = tempfile::tempdir().expect("target");
+        let (ownership, state_store) = open_stores(target.path());
+        let err =
+            repair_install("missing-id", &ownership, &state_store, false).expect_err("missing");
+        assert!(matches!(err, RepairError::StateNotFound(_)));
     }
 }

@@ -97,6 +97,20 @@ enum ExtensionAction {
         #[arg(long)]
         json: bool,
     },
+    /// Restore owned paths from recorded source (digest mismatch needs --force)
+    Repair {
+        /// Installation ID from a prior `extension install`
+        installation_id: String,
+        /// Overwrite paths whose digest no longer matches ownership (user edits)
+        #[arg(long)]
+        force: bool,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -120,7 +134,7 @@ enum Commands {
         #[command(subcommand)]
         action: SkillsAction,
     },
-    /// Extension lifecycle (plan / install / remove / doctor; repair later)
+    /// Extension lifecycle (plan / install / remove / doctor / repair)
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
@@ -294,6 +308,15 @@ async fn main() -> Result<()> {
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
                     extension::doctor(installation_id.as_deref(), root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Repair {
+                    installation_id,
+                    force,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::repair(installation_id, root_path.as_deref(), *force, *json)?;
                 }
             }
             return Ok(());
@@ -593,6 +616,36 @@ mod tests {
                     },
             } => {
                 assert_eq!(id, "11111111-2222-3333-4444-555555555555");
+                assert_eq!(root, "/tmp/project");
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_repair_with_force() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "repair",
+            "11111111-2222-3333-4444-555555555555",
+            "--force",
+            "--root",
+            "/tmp/project",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Repair {
+                        installation_id,
+                        force: true,
+                        json: true,
+                        root: Some(root),
+                    },
+            } => {
+                assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");
                 assert_eq!(root, "/tmp/project");
             }
             _ => panic!("unexpected command variant"),
