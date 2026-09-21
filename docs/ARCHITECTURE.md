@@ -47,7 +47,9 @@ Standalone first-class client: `impetus` CLI/TUI via `HarnessClient` → `impetu
 TUI reference audit: [TUI_REFERENCE.md](TUI_REFERENCE.md).
 
 Zap: own UI, Impetus as agent backend after Connect/Authorize. No duplicated
-sessions, approvals, or renderer in adapter target.
+sessions, approvals, or renderer in adapter target. Honest Implemented vs
+Planned checklist: **Zap path vs standalone CLI/TUI (#5)** in
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 All clients (including future remote): `HarnessClient` only — no core bypass.
 

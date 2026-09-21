@@ -361,6 +361,8 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [ ] Autonomous long-running planner/tester loops
 - [ ] Ubuntu 24.04 release tier + clean-machine smoke
 - [ ] Full Zap discovery/authorize production protocol
+      Honesty docs for classic #5 (adapter today vs Planned): ARCHITECTURE.md
+      § Zap path (#290); protocol impl still open
 
 ---
 
@@ -368,6 +370,8 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
 
+- [x] Classic #5 Zap path honesty + adapter checklist (docs; #290) — production
+      discovery/authorize still open (P2)
 - [x] Ratatui/Crossterm adopted; composer single/multi; large paste upload; streaming
 - [x] Bounded markdown (#146)
 - [x] Diff view (#148)

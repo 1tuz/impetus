@@ -43,7 +43,9 @@ and an experimental Zap adapter. Also available: `impetus doctor` (diagnostics),
 fuller surface (doctor, ui, skills, …).
 
 **Target.** Modular, extensible harness: `impetus` becomes first-class CLI/TUI;
-Zap keeps its own UI as another `HarnessClient` consumer. See
+Zap keeps its own UI as another `HarnessClient` consumer. Honest adapter
+checklist (today vs Planned discovery/authorize): [Architecture — Zap path
+(#5)](ARCHITECTURE.md#zap-path-vs-standalone-clitui-5). See
 [Architecture](ARCHITECTURE.md) for kernel invariants vs replaceable modules.
 
 ## What works now
