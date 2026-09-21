@@ -24,7 +24,7 @@ pub use http::{
 };
 pub use research_loop::{ResearchConfig, ResearchResult, research};
 pub use searxng::SearxngSearchBackend;
-pub use security::{AddressClass, EgressPolicy};
+pub use security::{AddressClass, EgressPolicy, target_requires_private_read};
 pub use service::{
     ArtifactPolicy, ExternalSearchBackend, SearchBackend, WebFetchService, WebResearchEngine,
     WebResearchService, WebSearchService,

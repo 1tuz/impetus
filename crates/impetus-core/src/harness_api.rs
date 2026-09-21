@@ -1040,9 +1040,7 @@ fn gather_subsystem_health(
     let disk_runtime = probe_disk_runtime(workspace_root);
 
     // Offline-safe web inspection: live backend checks are deliberately not run by doctor.
-    let web_engine = crate::web_research::WebResearchEngine::production(
-        crate::web_research::EgressPolicy::default(),
-    );
+    let web_engine = crate::web_research::WebResearchEngine::production(policy.egress_policy());
     let web_report = crate::web_research::WebDoctor::inspect(
         &web_engine,
         crate::web_research::BrowserServiceStatus::Unavailable,
@@ -1051,6 +1049,7 @@ fn gather_subsystem_health(
         serde_json::json!({
             "internet_access": policy.scope().allow_network,
             "web_outbound": policy.scope().allow_web_outbound,
+            "private_network": policy.scope().allow_private_network,
             "web_fetch": true,
             "search_backends": web_report.search_backends,
             "browser_provider": web_report.browser,
@@ -2119,6 +2118,7 @@ mod tests {
         let details = health.web_research.details.expect("web details");
         assert_eq!(details["internet_access"], false);
         assert_eq!(details["web_outbound"], false);
+        assert_eq!(details["private_network"], false);
         assert_eq!(details["web_fetch"], true);
         assert_eq!(details["search_backends"][0]["id"], "bing_html");
         assert_eq!(details["search_backends"][1]["id"], "duckduckgo");

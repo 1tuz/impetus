@@ -40,6 +40,14 @@ impl Default for EgressPolicy {
 }
 
 impl EgressPolicy {
+    /// Build egress policy from a session private-network grant.
+    pub fn with_private_network(allow_private_network: bool) -> Self {
+        Self {
+            allow_private_network,
+            ..Self::default()
+        }
+    }
+
     pub fn validate_url(&self, raw: &str) -> Result<Url, WebError> {
         let url = Url::parse(raw).map_err(|error| {
             WebError::new(WebErrorKind::InvalidUrl, format!("invalid URL: {error}")).with_url(raw)
@@ -120,6 +128,27 @@ impl EgressPolicy {
             }
         })
     }
+}
+
+/// True when a host or URL needs [`super::WebCapability::PrivateRead`].
+///
+/// Covers blocked local suffixes (`localhost`, `.local`, …) and literal
+/// private/link-local/CGNAT addresses. Public hostnames that later resolve to
+/// private IPs stay fail-closed in DNS/`enforce_address`.
+pub fn target_requires_private_read(target: &str) -> bool {
+    let host = Url::parse(target)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| target.to_string());
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    let defaults = EgressPolicy::default();
+    if defaults.host_is_blocked(&normalized) {
+        return true;
+    }
+    if let Ok(address) = normalized.parse::<IpAddr>() {
+        return matches!(classify_address(address), AddressClass::Private);
+    }
+    false
 }
 
 pub fn classify_address(address: IpAddr) -> AddressClass {
@@ -285,5 +314,29 @@ mod tests {
                 .enforce_address("192.0.2.1".parse().unwrap(), "http://192.0.2.1")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn target_requires_private_read_for_lan_and_local_hosts() {
+        for target in [
+            "10.0.0.1",
+            "http://192.168.1.1/status",
+            "https://127.0.0.1/",
+            "localhost",
+            "router.local",
+            "169.254.169.254",
+            "http://service.internal/health",
+        ] {
+            assert!(
+                target_requires_private_read(target),
+                "expected private target: {target}"
+            );
+        }
+        for target in ["example.com", "https://example.com/docs", "1.1.1.1"] {
+            assert!(
+                !target_requires_private_read(target),
+                "expected public target: {target}"
+            );
+        }
     }
 }

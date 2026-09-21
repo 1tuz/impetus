@@ -147,6 +147,10 @@ pub struct SandboxScope {
     /// Default false: read-only web may Allow when `allow_network`; outbound NeedsApproval.
     #[serde(default)]
     pub allow_web_outbound: bool,
+    /// Session grant for LAN/private/link-local/metadata web targets (`WebCapability::PrivateRead`).
+    /// Default false: private targets stay Deny even when `allow_network` is true.
+    #[serde(default)]
+    pub allow_private_network: bool,
 }
 
 impl SandboxScope {
@@ -156,6 +160,7 @@ impl SandboxScope {
             allow_network: false,
             allowed_hosts: vec![],
             allow_web_outbound: false,
+            allow_private_network: false,
         }
     }
 
@@ -168,6 +173,12 @@ impl SandboxScope {
     /// Grant session-level outbound web (POST/upload/auth-class actions).
     pub fn with_web_outbound(mut self, allow: bool) -> Self {
         self.allow_web_outbound = allow;
+        self
+    }
+
+    /// Grant session-level private/LAN web reads (`PrivateRead` / egress private network).
+    pub fn with_private_network(mut self, allow: bool) -> Self {
+        self.allow_private_network = allow;
         self
     }
 
@@ -267,12 +278,14 @@ impl PolicyEngine {
             | ActionKind::WebDownload
             | ActionKind::WebBrowser
             | ActionKind::WebSubmit
-            | ActionKind::WebUpload => self.evaluate_web_action(action.kind),
+            | ActionKind::WebUpload => self.evaluate_web_action(action),
         }
     }
 
-    fn evaluate_web_action(&self, kind: ActionKind) -> PolicyDecision {
-        let Some(capability) = kind.web_capability() else {
+    fn evaluate_web_action(&self, action: &Action) -> PolicyDecision {
+        use crate::web_research::{WebCapability, target_requires_private_read};
+
+        let Some(capability) = action.kind.web_capability() else {
             return PolicyDecision::Deny {
                 reason: "unknown web action".into(),
             };
@@ -282,7 +295,24 @@ impl PolicyEngine {
                 reason: "network is disabled in this workspace scope".into(),
             };
         }
-        if capability.is_read_only() {
+
+        let private_target = action
+            .target
+            .as_deref()
+            .is_some_and(target_requires_private_read);
+        if private_target && !self.scope.allow_private_network {
+            return PolicyDecision::Deny {
+                reason: "private/LAN web targets require session private-network allowance".into(),
+            };
+        }
+
+        let effective = if private_target && matches!(capability, WebCapability::Read) {
+            WebCapability::PrivateRead
+        } else {
+            capability
+        };
+
+        if effective.is_read_only() {
             return PolicyDecision::Allow;
         }
         if self.scope.allow_web_outbound {
@@ -291,6 +321,11 @@ impl PolicyEngine {
         PolicyDecision::NeedsApproval {
             reason: "outbound web requires session allowance or user approval".into(),
         }
+    }
+
+    /// Egress policy aligned with this session's private-network grant.
+    pub fn egress_policy(&self) -> crate::web_research::EgressPolicy {
+        crate::web_research::EgressPolicy::with_private_network(self.scope.allow_private_network)
     }
 
     pub fn scope(&self) -> &SandboxScope {
@@ -605,6 +640,104 @@ mod tests {
     }
 
     #[test]
+    fn private_lan_fetch_denied_by_default_even_with_network() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        for target in [
+            "10.0.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "localhost",
+            "router.local",
+            "169.254.169.254",
+        ] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WebFetch,
+                summary: "lan fetch".into(),
+                target: Some(target.into()),
+            });
+            assert!(
+                matches!(
+                    decision,
+                    PolicyDecision::Deny { ref reason }
+                    if reason.contains("private/LAN")
+                ),
+                "{target} => {decision:?}"
+            );
+            assert_eq!(
+                Action {
+                    origin: ActionOrigin::Agent,
+                    kind: ActionKind::WebFetch,
+                    summary: "lan".into(),
+                    target: Some(target.into()),
+                }
+                .kind
+                .web_capability(),
+                Some(crate::web_research::WebCapability::Read)
+            );
+        }
+    }
+
+    #[test]
+    fn private_lan_fetch_allows_when_session_grants_private_network() {
+        let policy = PolicyEngine::new(
+            SandboxScope::local_workspace(".")
+                .with_network(true)
+                .with_private_network(true),
+        );
+        for target in ["10.0.0.1", "localhost", "service.internal"] {
+            let decision = policy.evaluate(&Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WebFetch,
+                summary: "lan fetch granted".into(),
+                target: Some(target.into()),
+            });
+            assert_eq!(decision, PolicyDecision::Allow, "{target}");
+        }
+        assert!(policy.egress_policy().allow_private_network);
+    }
+
+    #[test]
+    fn public_fetch_still_allows_without_private_network_grant() {
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebFetch,
+            summary: "public".into(),
+            target: Some("example.com".into()),
+        });
+        assert_eq!(decision, PolicyDecision::Allow);
+        assert!(!policy.egress_policy().allow_private_network);
+    }
+
+    #[test]
+    fn private_network_denied_when_network_disabled_even_if_granted() {
+        let policy = PolicyEngine::new(
+            SandboxScope::local_workspace(".")
+                .with_network(false)
+                .with_private_network(true),
+        );
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebFetch,
+            summary: "lan".into(),
+            target: Some("10.0.0.1".into()),
+        });
+        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_snapshot_preserves_private_network_flag() {
+        let scope = SandboxScope::local_workspace(".")
+            .with_network(true)
+            .with_private_network(true);
+        let policy = PolicyEngine::new(scope.clone());
+        let snapshot = PolicySnapshot::capture(&policy);
+        assert!(snapshot.scope.allow_private_network);
+        assert_eq!(snapshot.scope, scope);
+    }
+
+    #[test]
     fn web_policy_reasons_contain_no_secrets() {
         let policy = PolicyEngine::new(SandboxScope::local_workspace(".").with_network(true));
         let secret = "sk-live-super-secret-token";
@@ -620,6 +753,21 @@ mod tests {
                 assert!(!reason.contains("sk-live"));
             }
             other => panic!("expected NeedsApproval, got {other:?}"),
+        }
+
+        let private_decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WebFetch,
+            summary: format!("fetch {secret}"),
+            target: Some(format!("http://10.0.0.1/?token={secret}")),
+        });
+        match private_decision {
+            PolicyDecision::Deny { reason } => {
+                assert!(!reason.contains(secret));
+                assert!(!reason.contains("sk-live"));
+                assert!(reason.contains("private/LAN"));
+            }
+            other => panic!("expected Deny for private target, got {other:?}"),
         }
     }
 }
