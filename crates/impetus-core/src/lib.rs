@@ -52,6 +52,7 @@ pub mod policy;
 pub mod profile;
 pub mod projection;
 pub mod provider;
+pub mod provider_protocol_adapter;
 pub mod provider_registry;
 pub mod provider_trait;
 pub mod reference_store;
@@ -169,6 +170,7 @@ pub use provider::{
     CredentialResolver, CredentialStrategy, NoCredentialResolver, OpenAiCompatibleProvider,
     ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, RetryBudget,
 };
+pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
 pub use provider_registry::ProviderRegistry;
 pub use provider_trait::{FinishReason, ModelProvider, StreamEvent};
 pub use reference_store::{

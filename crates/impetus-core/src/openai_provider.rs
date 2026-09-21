@@ -4,7 +4,8 @@
 //! retry logic and health tracking.
 
 use crate::{
-    ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, StreamEvent,
+    ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile,
+    ProviderProtocolAdapter, StreamEvent, ToolCallAssembler,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -32,14 +33,6 @@ pub fn openai_tools_payload() -> serde_json::Value {
         })
         .collect();
     serde_json::Value::Array(tools)
-}
-
-/// Accumulates streaming tool call chunks from OpenAI SSE.
-#[derive(Debug, Default)]
-struct ToolCallAccumulator {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,8 +161,7 @@ impl OpenAiProvider {
     ) -> Result<(), ProviderError> {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
-        let mut tool_call_accumulators: std::collections::HashMap<usize, ToolCallAccumulator> =
-            std::collections::HashMap::new();
+        let mut tool_calls = ToolCallAssembler::new();
 
         while let Some(chunk_result) = stream.next().await {
             if cancel.is_cancelled() {
@@ -192,10 +184,7 @@ impl OpenAiProvider {
                         if data.trim() == "[DONE]" {
                             // Flush tool calls before ending — early return used to
                             // skip emission after the stream terminator.
-                            Self::emit_accumulated_tool_calls(
-                                &mut tool_call_accumulators,
-                                &mut on_event,
-                            )?;
+                            tool_calls.emit_into(&mut on_event)?;
                             return Ok(());
                         }
                         if let Ok(parsed) = serde_json::from_str::<SseData>(data) {
@@ -207,23 +196,17 @@ impl OpenAiProvider {
                                     })?;
                                 }
 
-                                // Accumulate tool calls
-                                if let Some(tool_calls) = &delta_choice.delta.tool_calls {
-                                    for tc in tool_calls {
-                                        let acc =
-                                            tool_call_accumulators.entry(tc.index).or_default();
-
-                                        if let Some(id) = &tc.id {
-                                            acc.id = Some(id.clone());
-                                        }
-                                        if let Some(func) = &tc.function {
-                                            if let Some(name) = &func.name {
-                                                acc.name = Some(name.clone());
-                                            }
-                                            if let Some(args) = &func.arguments {
-                                                acc.arguments.push_str(args);
-                                            }
-                                        }
+                                // Accumulate tool calls via shared assembler
+                                if let Some(delta_tool_calls) = &delta_choice.delta.tool_calls {
+                                    for tc in delta_tool_calls {
+                                        tool_calls.apply_openai_delta(
+                                            tc.index,
+                                            tc.id.as_deref(),
+                                            tc.function.as_ref().and_then(|f| f.name.as_deref()),
+                                            tc.function
+                                                .as_ref()
+                                                .and_then(|f| f.arguments.as_deref()),
+                                        );
                                     }
                                 }
 
@@ -256,33 +239,7 @@ impl OpenAiProvider {
             }
         }
 
-        Self::emit_accumulated_tool_calls(&mut tool_call_accumulators, &mut on_event)?;
-        Ok(())
-    }
-
-    fn emit_accumulated_tool_calls(
-        tool_call_accumulators: &mut std::collections::HashMap<usize, ToolCallAccumulator>,
-        on_event: &mut dyn FnMut(StreamEvent) -> Result<(), ProviderError>,
-    ) -> Result<(), ProviderError> {
-        let pending: Vec<_> = tool_call_accumulators.drain().collect();
-        for (_index, acc) in pending {
-            if let (Some(id), Some(name)) = (acc.id, acc.name) {
-                let arguments = if acc.arguments.is_empty() {
-                    serde_json::Value::Object(serde_json::Map::new())
-                } else {
-                    serde_json::from_str(&acc.arguments).map_err(|_| {
-                        ProviderError::MalformedToolCall(format!(
-                            "invalid JSON in tool call arguments for {name}"
-                        ))
-                    })?
-                };
-                on_event(StreamEvent::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                })?;
-            }
-        }
+        tool_calls.emit_into(&mut on_event)?;
         Ok(())
     }
 }
@@ -316,6 +273,12 @@ impl ModelProvider for OpenAiProvider {
     ) -> Result<(), ProviderError> {
         self.stream_with_retry(messages, credential, runtime, cancel, on_event)
             .await
+    }
+}
+
+impl ProviderProtocolAdapter for OpenAiProvider {
+    fn protocol_id(&self) -> &'static str {
+        "openai_chat_completions"
     }
 }
 
@@ -398,11 +361,18 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_accumulator_default() {
-        let acc = ToolCallAccumulator::default();
-        assert!(acc.id.is_none());
-        assert!(acc.name.is_none());
-        assert!(acc.arguments.is_empty());
+    fn protocol_adapter_id_is_chat_completions() {
+        let provider = OpenAiProvider::new(
+            crate::ProviderProfile {
+                id: "openai".into(),
+                model: "gpt-4o".into(),
+                endpoint: "http://127.0.0.1:8080".into(),
+                credential_strategy: crate::CredentialStrategy::None,
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(provider.protocol_id(), "openai_chat_completions");
     }
 
     #[test]
