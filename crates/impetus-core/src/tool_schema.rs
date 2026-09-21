@@ -73,6 +73,15 @@ pub fn validate_tool_arguments(tool_name: &str, arguments: &Value) -> Result<(),
     validate_against_schema(tool_name, arguments, &schema.parameters)
 }
 
+/// Validate arguments against an arbitrary JSON Schema (MCP live tools).
+pub fn validate_arguments_with_schema(
+    tool_name: &str,
+    arguments: &Value,
+    schema: &Value,
+) -> Result<(), ToolArgError> {
+    validate_against_schema(tool_name, arguments, schema)
+}
+
 fn validate_against_schema(tool: &str, value: &Value, schema: &Value) -> Result<(), ToolArgError> {
     let schema_obj = schema
         .as_object()

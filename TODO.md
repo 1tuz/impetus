@@ -140,7 +140,7 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
 - [ ] CLI/IPC equivalents: `extension plan | install | doctor | repair | remove`
 - [ ] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
-- [ ] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
+- [x] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
 - [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
 - [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
 - [x] MCP **import** adapter (JSON-RPC client library)

@@ -166,10 +166,10 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Partial,
-                    "Skills via filesystem InstructionResolver; MCP tools not live in agent loop",
+                    "Skills via filesystem InstructionResolver; MCP tools live in ToolOrchestrator",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
-                        "mcp_live_tools_in_loop": false,
+                        "mcp_live_tools_in_loop": true,
                         "lifecycle_plan_apply_ownership": false,
                     })),
                 ),
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(ext_rt.level, CapabilityLevel::Partial);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_tools_in_loop"],
-            false
+            true
         );
 
         let json = serde_json::to_value(&report).expect("serialize");

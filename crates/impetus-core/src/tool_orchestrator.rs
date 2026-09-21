@@ -63,6 +63,7 @@ pub struct ToolOrchestrator {
     workspace_root: PathBuf,
     artifact_root: PathBuf,
     web_research: Option<Arc<dyn crate::web_research::WebResearchService>>,
+    mcp_live: Option<Arc<crate::mcp_live::McpLiveBridge>>,
 }
 
 impl ToolOrchestrator {
@@ -80,6 +81,7 @@ impl ToolOrchestrator {
             workspace_root,
             artifact_root,
             web_research: None,
+            mcp_live: None,
         }
     }
 
@@ -89,6 +91,12 @@ impl ToolOrchestrator {
         service: Arc<dyn crate::web_research::WebResearchService>,
     ) -> Self {
         self.web_research = Some(service);
+        self
+    }
+
+    /// Attach a live MCP tool catalog for this session (discover/list + call path).
+    pub fn with_mcp_live(mut self, bridge: Arc<crate::mcp_live::McpLiveBridge>) -> Self {
+        self.mcp_live = Some(bridge);
         self
     }
 
@@ -114,6 +122,15 @@ impl ToolOrchestrator {
         // Partition tool calls into parallelizable and sequential
         let (parallel_calls, sequential_calls): (Vec<_>, Vec<_>) =
             tool_calls.into_iter().partition(|tool_call| {
+                if let Some(bridge) = &self.mcp_live
+                    && let Some(entry) = bridge.get(&tool_call.name)
+                {
+                    return matches!(
+                        entry.semantics,
+                        crate::module::ExecutionSemantics::ReadOnly
+                            | crate::module::ExecutionSemantics::Idempotent
+                    );
+                }
                 // Try to normalize and check if parallelizable
                 self.normalize_tool_call(tool_call)
                     .ok()
@@ -133,6 +150,7 @@ impl ToolOrchestrator {
                 let orchestrator_workspace = self.workspace_root.clone();
                 let orchestrator_artifact = self.artifact_root.clone();
                 let web_research = self.web_research.clone();
+                let mcp_live = self.mcp_live.clone();
 
                 let handle = tokio::spawn(async move {
                     let orchestrator = ToolOrchestrator::with_artifact_root(
@@ -140,7 +158,8 @@ impl ToolOrchestrator {
                         orchestrator_workspace,
                         orchestrator_artifact,
                     )
-                    .with_optional_web_research(web_research);
+                    .with_optional_web_research(web_research)
+                    .with_optional_mcp_live(mcp_live);
                     orchestrator.process_single_tool(tool_call, &runtime).await
                 });
                 handles.push(handle);
@@ -171,11 +190,27 @@ impl ToolOrchestrator {
         self
     }
 
+    fn with_optional_mcp_live(
+        mut self,
+        bridge: Option<Arc<crate::mcp_live::McpLiveBridge>>,
+    ) -> Self {
+        self.mcp_live = bridge;
+        self
+    }
+
     async fn process_single_tool(
         &self,
         tool_call: crate::ToolCall,
         runtime: &Arc<AgentRuntime>,
     ) -> ToolObservation {
+        if self
+            .mcp_live
+            .as_ref()
+            .is_some_and(|bridge| bridge.contains(&tool_call.name))
+        {
+            return self.execute_mcp_tool(tool_call, runtime).await;
+        }
+
         let arguments_summary = summarize_arguments(&tool_call.arguments);
         // Step 1: Normalize tool call into Action
         let action = match self.normalize_tool_call(&tool_call) {
@@ -350,6 +385,134 @@ impl ToolOrchestrator {
                 String::new(),
                 None,
                 Some(error.to_string()),
+            ),
+        }
+    }
+
+    async fn execute_mcp_tool(
+        &self,
+        tool_call: crate::ToolCall,
+        runtime: &Arc<AgentRuntime>,
+    ) -> ToolObservation {
+        let arguments_summary = summarize_arguments(&tool_call.arguments);
+        let Some(bridge) = &self.mcp_live else {
+            return Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Error,
+                String::new(),
+                None,
+                Some("MCP live bridge is unavailable".into()),
+            );
+        };
+
+        let entry = match bridge.validate_arguments(&tool_call.name, &tool_call.arguments) {
+            Ok(entry) => entry.clone(),
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+        };
+
+        let mutating = matches!(
+            entry.semantics,
+            crate::module::ExecutionSemantics::Mutating
+                | crate::module::ExecutionSemantics::NonReplayable
+        );
+        if mutating && contains_sensitive_value(&tool_call.arguments) {
+            return Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Denied,
+                String::new(),
+                None,
+                Some("mutating MCP tool arguments contain sensitive material".into()),
+            );
+        }
+
+        // Read-only → workspace_read (Allow). Mutating → process_spawn (NeedsApproval).
+        let effect = if mutating {
+            crate::NormalizedEffect::process_spawn(
+                ActionOrigin::Agent,
+                format!("{} via mcp", entry.catalog_name),
+                self.workspace_root.display().to_string(),
+            )
+        } else {
+            crate::NormalizedEffect::workspace_read(
+                ActionOrigin::Agent,
+                format!("{} via mcp", entry.catalog_name),
+                self.workspace_root.display().to_string(),
+            )
+        };
+        let seam = EffectSeam::with_sandbox(
+            self.policy.clone(),
+            Sandbox::workspace(&self.workspace_root),
+        );
+        match seam.decide(&effect) {
+            crate::EffectDecision::Allow => {}
+            crate::EffectDecision::NeedsApproval { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::ApprovalRequired,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+            crate::EffectDecision::Deny { reason } => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Denied,
+                    String::new(),
+                    None,
+                    Some(reason),
+                );
+            }
+        }
+
+        match bridge
+            .call(&tool_call.name, tool_call.arguments.clone())
+            .await
+        {
+            crate::mcp_live::McpLiveCallResult::Ok { preview } => Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Success,
+                preview,
+                None,
+                None,
+            ),
+            crate::mcp_live::McpLiveCallResult::Failed { message } => Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Error,
+                String::new(),
+                None,
+                Some(message),
+            ),
+            crate::mcp_live::McpLiveCallResult::Unknown { message } => Self::record_observation(
+                runtime,
+                tool_call,
+                arguments_summary,
+                ToolOutcomeStatus::Error,
+                String::new(),
+                None,
+                Some(message),
             ),
         }
     }
@@ -1395,5 +1558,153 @@ mod tests {
 
         assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
         assert!(observations[0].preview.contains("hello"));
+    }
+
+    struct ScriptedMcpCaller {
+        result: crate::mcp_live::McpLiveCallResult,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::mcp_live::McpLiveCaller for ScriptedMcpCaller {
+        async fn call_tool(
+            &self,
+            _tool: &str,
+            _arguments: serde_json::Value,
+        ) -> crate::mcp_live::McpLiveCallResult {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.result.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn live_mcp_readonly_echo_goes_through_policy_sandbox_execution() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let tool = crate::mcp_adapter::McpTool {
+            name: "echo".into(),
+            description: "Echo".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }),
+            annotations: Some(serde_json::json!({"readOnlyHint": true})),
+        };
+        let caller = Arc::new(ScriptedMcpCaller {
+            result: crate::mcp_live::McpLiveCallResult::Ok {
+                preview: "echo:live".into(),
+            },
+            calls: AtomicUsize::new(0),
+        });
+        let bridge = Arc::new(crate::mcp_live::McpLiveBridge::from_tools(
+            "mock",
+            vec![tool],
+            caller.clone(),
+        ));
+        let orchestrator =
+            ToolOrchestrator::new(policy, workspace.path().to_path_buf()).with_mcp_live(bridge);
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "mcp-1".into(),
+                    name: "mcp:mock:echo".into(),
+                    arguments: serde_json::json!({"text": "live"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("mcp batch");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
+        assert_eq!(observations[0].preview, "echo:live");
+        assert_eq!(caller.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn live_mcp_mutating_requires_approval_before_call() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let tool = crate::mcp_adapter::McpTool {
+            name: "sum".into(),
+            description: "Sum".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            annotations: None,
+        };
+        let caller = Arc::new(ScriptedMcpCaller {
+            result: crate::mcp_live::McpLiveCallResult::Ok {
+                preview: "3".into(),
+            },
+            calls: AtomicUsize::new(0),
+        });
+        let bridge = Arc::new(crate::mcp_live::McpLiveBridge::from_tools(
+            "mock",
+            vec![tool],
+            caller.clone(),
+        ));
+        let orchestrator =
+            ToolOrchestrator::new(policy, workspace.path().to_path_buf()).with_mcp_live(bridge);
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "mcp-mut".into(),
+                    name: "mcp:mock:sum".into(),
+                    arguments: serde_json::json!({"a": 1, "b": 2}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("mcp batch");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::ApprovalRequired);
+        assert_eq!(caller.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn live_mcp_end_to_end_discover_and_call_via_mock_server() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        let (adapter, server_task) = crate::mcp_adapter::tests::duplex_adapter().await;
+        let bridge = Arc::new(
+            crate::mcp_live::McpLiveBridge::discover("mock", adapter)
+                .await
+                .expect("discover"),
+        );
+        assert!(bridge.contains("mcp:mock:echo"));
+        let orchestrator =
+            ToolOrchestrator::new(policy, workspace.path().to_path_buf()).with_mcp_live(bridge);
+
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "mcp-e2e".into(),
+                    name: "mcp:mock:echo".into(),
+                    arguments: serde_json::json!({"text": "e2e"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("mcp e2e");
+
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::Success);
+        assert_eq!(observations[0].preview, "echo:e2e");
+        server_task.abort();
     }
 }

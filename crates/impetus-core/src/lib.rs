@@ -35,6 +35,7 @@ pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
 pub mod mcp_adapter;
+pub mod mcp_live;
 pub mod mock_provider;
 pub mod model_router;
 pub mod module;
@@ -150,6 +151,7 @@ pub use instructions::{
 };
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
 pub use mcp_adapter::McpAdapter;
+pub use mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveToolEntry};
 pub use mock_provider::{MockProvider, MockStreamItem as MockProviderItem};
 pub use observations::{
     DiffHunk, DiffObservation, DiffSource, PipelineJob, PipelineObservation, SearchMatch,
@@ -205,7 +207,7 @@ pub use tool_orchestrator::{
 };
 pub use tool_schema::{
     BuiltinToolSchema, ToolArgError, builtin_tool_schemas, canonical_tool_name, schema_for_tool,
-    validate_tool_arguments,
+    validate_arguments_with_schema, validate_tool_arguments,
 };
 pub use tools::{
     ARTIFACT_CHUNK_SIZE, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome,
