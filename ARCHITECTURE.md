@@ -94,7 +94,7 @@ impetusd  — authoritative daemon
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
 | Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` create/resume/stop/close + durable binding (#198); scheduler/workflows Planned |
-| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Import adapters exist; no InstallPlan/ownership store |
+| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run `InstallPlan` + ownership store; apply/CLI Planned |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote to policy/sandbox/tool; scopes/provenance still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities`; session/extension/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
