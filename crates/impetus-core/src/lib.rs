@@ -27,6 +27,7 @@ pub mod context_builder;
 pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod cursor_adapter;
+pub mod daemon_wiring;
 pub mod deepseek_harness_adapter;
 pub mod diagnostics;
 pub mod durable_artifacts;
@@ -159,6 +160,10 @@ pub use context_optimizer::{
     MemoryDescriptionSource, ToolStub, default_tool_stubs, system_messages_for_binding,
 };
 pub use cursor_adapter::CursorAdapter;
+pub use daemon_wiring::{
+    DaemonWiringError, build_explore_spawn_bridge, build_explore_spawn_bridge_for_harness,
+    load_daemon_mcp_runtime,
+};
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
 };

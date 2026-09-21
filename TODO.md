@@ -25,7 +25,9 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 - [x] AGENTS.md + CONTRIBUTING: read TODO+ARCHITECTURE; stale docs = bug
 - [x] Fix ARCHITECTURE Seatbelt spike-only vs Implemented; MCP runtime → Partial
       until `impetusd_autoload`; add Execution modes Partial row; sync roadmap
-- [ ] Second docs audit after modes/RiskGate land (acceptance gate §11)
+- [x] Second docs audit after modes/RiskGate/Explore/MCP land (#308 §11):
+      no prompt_prefix; Explore daemon Implemented; MCP Partial (autoload +
+      first-use connect); no `[x]`+Partial tails; CI warm ~85s recorded.
 
 ### CI speed
 
@@ -72,15 +74,11 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
 ### Runtime gaps (honest open items)
 
-- [ ] Wire `ExploreChildRunner` / parent-resume into **production** `impetusd`
-      provider path (`explore_spawn` today None). Library path done (#306).
-      **Done:** Explore request → daemon → restricted loop → ChildResultStore →
-      parent resume works without mock.
-- [ ] `impetusd` autoload MCP servers from disk config into
-      `ToolProviderRuntime` (`impetusd_autoload: false` today). Library bridge
-      done.
-      **Done:** config → start/connect/health → tools in AgentLoop; failure
-      surfaces structured events.
+- [x] Wire `ExploreChildRunner` / parent-resume into **production** `impetusd`
+      provider path (`explore_spawn` via daemon wiring + default provider).
+- [x] `impetusd` autoload MCP servers from disk config into
+      `ToolProviderRuntime` (`$IMPETUS_DATA_DIR/mcp/*.json`; fail closed on bad
+      config; `impetusd_autoload: true`).
 - [ ] Typed IPC `ReloadPolicyConfig` (startup file load already exists).
       **Done:** invalid reload keeps previous policy + durable/audit event.
 
@@ -144,7 +142,7 @@ Done (evidence in ARCHITECTURE / crate tests — do not re-litigate):
 Ratatui+Crossterm (#137), markdown (#146), diff (#148), approval UI (#165/#169),
 session picker (#166/#169), palette (#175), scrollback (#178), redraw (#179),
 Zap honesty docs (#290), modern harness hotkeys (#302), theme pack (#304),
-Explore **library** AgentLoop wire (#306; daemon still open in Now).
+Explore library + daemon AgentLoop wire (#306 / #308).
 
 ---
 

@@ -82,8 +82,9 @@ intents; cross-machine orchestration.
   [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
   ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
   schedule id / result slot, no live spawn);   Explore library slice (#306 — gate → restricted AgentLoop → durable child
-  result → parent-resume); production `impetusd` `explore_spawn` still `None`
-  (matrix row Explore child); live process spawn for other roles still Planned.
+  result → parent-resume); production `impetusd` wires `explore_spawn` via
+  `daemon_wiring` + default provider (#308); live process spawn for other roles
+  still Planned.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
   steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
@@ -156,9 +157,9 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` does **not** autoload MCP servers (`impetusd_autoload: false`; no marketplace/UI) — daemon MCP autoload still open (#308 Now) |
+| Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into `ToolProviderRuntime` at start (`impetusd_autoload: true`; fail closed on bad config; no marketplace/UI). Live connect/health on first tool use. |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
-| Explore child (production daemon) | Partial | **Library Implemented (#306):** `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `explore_spawn` still `None` — wire open (#308 Now) |
+| Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `wire_daemon_runtime` sets `explore_spawn` with default provider (#308). TUI child surfaces still open. |
 | `hook_prefilter` on process spawn | Partial | Catalog + `prefilter` API + tests (#257/#272/#276); not called from live `ProcessExecution` spawn path (#308 Now) |
 | `SteerRewrite` (live provider) | Partial | Passthrough + mock seam; harness hook on accept (#285); no live model rewrite (#308 Next) |
 | Auto `RiskGate` (post-policy, mode-aware) | Partial | `risk_gate.rs` + `DeterministicRiskGate` wired into `EffectSeam`; runtime/tool_orchestrator/process/harness read path (#308). Separate from `hook_prefilter`. |
@@ -175,7 +176,7 @@ impetusd  — authoritative daemon
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); execution modes via daemon IPC (Shift+Tab / F4 / slash; #308); more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
-| PR CI critical security E2E suite | Partial | Path-aware PR: macOS fmt/clippy/`--lib --bins`; Linux `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
+| PR CI critical security E2E suite | Partial | Path-aware PR: macOS clippy/`--lib --bins`; Linux fmt + `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
 
 ## Request path
 

@@ -356,6 +356,18 @@ impl Harness {
         &self.provider_registry
     }
 
+    pub fn default_provider_id(&self) -> &str {
+        &self.default_provider_id
+    }
+
+    pub fn has_explore_spawn(&self) -> bool {
+        self.explore_spawn.is_some()
+    }
+
+    pub fn has_tool_providers(&self) -> bool {
+        self.tool_providers.is_some()
+    }
+
     /// Resolve a single client request into a response.
     ///
     /// No global lock: EventStore and AgentRuntime use internal coordination.
@@ -2757,7 +2769,7 @@ mod tests {
         );
         assert_eq!(
             modules["extension_runtime"]["details"]["impetusd_autoload"],
-            false
+            true
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
         let caps = modules["capability_matrix"]["capabilities"]

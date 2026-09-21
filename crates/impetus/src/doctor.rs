@@ -769,7 +769,7 @@ mod tests {
             .expect("extension runtime probe");
         assert_eq!(ext["status"], "OK");
         assert_eq!(ext["details"]["mcp_live_tools_in_loop"], true);
-        assert_eq!(ext["details"]["impetusd_autoload"], false);
+        assert_eq!(ext["details"]["impetusd_autoload"], true);
 
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));

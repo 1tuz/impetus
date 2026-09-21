@@ -16,6 +16,7 @@ agent-client-protocol = "2.0.0"
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
