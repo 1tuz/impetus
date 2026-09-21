@@ -14,6 +14,7 @@ pub mod attachments;
 pub mod audit_log;
 pub mod budget;
 pub mod capability_truth;
+pub mod child_concurrency;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod codex_adapter;
@@ -106,6 +107,10 @@ pub use budget::{
 pub use capability_truth::{
     CAPABILITIES_SCHEMA_ID, CAPABILITIES_SCHEMA_VERSION, CapabilityEntry, CapabilityLevel,
     CapabilityTruthReport,
+};
+pub use child_concurrency::{
+    ChildConcurrencyConfig, ChildConcurrencyError, ChildConcurrencyGate,
+    DEFAULT_CHILD_CONCURRENCY_CAP,
 };
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
