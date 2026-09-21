@@ -36,9 +36,7 @@ pub enum SessionEvent {
     Created,
     WorkspaceRoot { workspace_root: std::path::PathBuf },
     Attached,
-    ExecutionModeChanged {
-        mode: crate::ExecutionMode,
-    },
+    ExecutionModeChanged { mode: crate::ExecutionMode },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
