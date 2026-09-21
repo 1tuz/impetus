@@ -22,7 +22,7 @@ use crate::model::{
 };
 use crate::render::{filtered_sessions, render};
 use crate::terminal::TerminalSession;
-use crate::theme::Theme;
+use crate::theme::{self, THEME_CATALOG};
 
 pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()> {
     let connection = backend
@@ -58,7 +58,8 @@ pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()>
         );
     }
 
-    terminal.draw(|frame| render(frame, &mut app, Theme::default()))?;
+    let theme = app.theme();
+    terminal.draw(|frame| render(frame, &mut app, theme))?;
     app.dirty = false;
     let mut last_draw = Instant::now();
 
@@ -107,7 +108,8 @@ pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()>
         if crate::model::should_coalesce_redraw(app.dirty, last_draw.elapsed(), options.tick_rate)
             && !app.should_quit
         {
-            terminal.draw(|frame| render(frame, &mut app, Theme::default()))?;
+            let theme = app.theme();
+            terminal.draw(|frame| render(frame, &mut app, theme))?;
             app.dirty = false;
             last_draw = Instant::now();
         }
@@ -874,6 +876,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 .unwrap_or(0);
             app.overlay = Overlay::Modes { selected };
         }
+        KeyCode::F(5) => open_theme_picker(app),
         KeyCode::PageUp => scroll_up(app, 10),
         KeyCode::PageDown => scroll_down(app, 10),
         KeyCode::Home if app.focus == Focus::Timeline => scroll_timeline_home(app),
@@ -908,6 +911,24 @@ fn open_session_picker(app: &mut AppState) {
         selected,
         query: String::new(),
     };
+}
+
+fn open_theme_picker(app: &mut AppState) {
+    app.overlay = Overlay::Themes {
+        selected: theme::theme_index(&app.theme_id),
+    };
+}
+
+fn apply_theme(app: &mut AppState, id: &str) {
+    app.set_theme_id(id);
+    let meta = theme::theme_meta(&app.theme_id);
+    let label = meta.map(|m| m.label).unwrap_or(app.theme_id.as_str());
+    let blurb = meta.map(|m| m.blurb).unwrap_or("");
+    app.show_toast(
+        format!("Theme: {label} — {blurb} (`{}`)", app.theme_id),
+        false,
+    );
+    app.overlay = Overlay::None;
 }
 
 fn scroll_timeline_home(app: &mut AppState) {
@@ -1037,6 +1058,22 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 }
             }
             _ => (Overlay::Modes { selected }, vec![]),
+        },
+        Overlay::Themes { mut selected } => match key.code {
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                (Overlay::Themes { selected }, vec![])
+            }
+            KeyCode::Down => {
+                selected = (selected + 1).min(THEME_CATALOG.len().saturating_sub(1));
+                (Overlay::Themes { selected }, vec![])
+            }
+            KeyCode::Enter => {
+                let id = THEME_CATALOG[selected.min(THEME_CATALOG.len() - 1)].id;
+                apply_theme(app, id);
+                (Overlay::None, vec![])
+            }
+            _ => (Overlay::Themes { selected }, vec![]),
         },
         Overlay::Approval { mut selected } => match key.code {
             KeyCode::Up => {
@@ -1193,6 +1230,11 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     ),
                     false,
                 );
+            }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                return execute_command(app, CommandAction::CycleTheme);
             }
             KeyCode::Char('p') => {
                 app.overlay = Overlay::Commands {
@@ -1382,6 +1424,27 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
         }
         CommandAction::Help => {
             app.overlay = Overlay::Help;
+            vec![]
+        }
+        CommandAction::ThemePicker => {
+            open_theme_picker(app);
+            vec![]
+        }
+        CommandAction::SetTheme(id) => {
+            apply_theme(app, &id);
+            vec![]
+        }
+        CommandAction::CycleTheme => {
+            app.cycle_theme();
+            let meta = theme::theme_meta(&app.theme_id);
+            let label = meta.map(|m| m.label).unwrap_or(app.theme_id.as_str());
+            app.show_toast(
+                format!(
+                    "Theme: {label} (`{}`) · /theme or Ctrl+Shift+T",
+                    app.theme_id
+                ),
+                false,
+            );
             vec![]
         }
         CommandAction::Quit => {

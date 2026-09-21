@@ -38,6 +38,9 @@ Authoritative help is in-app (`?` / F1). Summary:
 | Home / End | Timeline top / follow tail (timeline focus) |
 | PageUp / PageDown | Scroll |
 | Mouse | Click timeline item (double-click expand); click session to activate; click composer to focus; click approval Y/N/D |
+| `/theme` / F5 | Theme picker (Impetus Neon default + geek pack) |
+| Ctrl+Shift+T | Cycle theme |
+| `IMPETUS_TUI_THEME` | Start with a named theme id (`impetus`, `dracula`, `nord`, …) |
 
 Disable mouse with `IMPETUS_TUI_NO_MOUSE=1`.
 

@@ -99,9 +99,9 @@ Done (evidence in ARCHITECTURE / TUI crate tests; do not re-litigate here):
 Ratatui+Crossterm GO (#137), bounded markdown (#146), diff (#148), approval UI
 (#165/#169), session picker (#166/#169), command palette (#175), scrollback/
 status (#178), redraw coalesce + remediation (#179), Zap path honesty docs
-(#290), modern harness hotkeys + mouse hit-testing (#302: `?`/F1 help,
-Ctrl+O sessions, Ctrl+T steer, Ctrl+Shift+P intent cycle, N/Ctrl+N new
-session, Home→timeline top; click timeline/session/composer/approval).
+(#290), modern harness hotkeys + mouse hit-testing (#302), TUI theme pack
+(#304: Impetus Neon/Stars default + geek catalog; `/theme`, F5, Ctrl+Shift+T,
+`IMPETUS_TUI_THEME`).
 
 ---
 

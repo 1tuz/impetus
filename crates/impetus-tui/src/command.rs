@@ -96,6 +96,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: "F1 / ?",
     },
     CommandSpec {
+        name: "theme",
+        aliases: &["themes", "colors"],
+        description: "pick a TUI theme (Impetus neon / geek pack)",
+        shortcut: "Ctrl+Shift+T",
+    },
+    CommandSpec {
         name: "prompt",
         aliases: &[],
         description: "composer sends baseline Prompt intent",
@@ -136,6 +142,9 @@ pub enum CommandAction {
     Cancel,
     ClearViewport,
     Help,
+    ThemePicker,
+    SetTheme(String),
+    CycleTheme,
     Quit,
     Unknown(String),
 }
@@ -182,6 +191,19 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
         "cancel" => CommandAction::Cancel,
         "clear" => CommandAction::ClearViewport,
         "help" => CommandAction::Help,
+        "theme" => match argument.to_ascii_lowercase().as_str() {
+            "" => CommandAction::ThemePicker,
+            "next" | "cycle" => CommandAction::CycleTheme,
+            other => {
+                if crate::theme::theme_meta(other).is_some() {
+                    CommandAction::SetTheme(other.to_owned())
+                } else {
+                    CommandAction::Unknown(format!(
+                        "unknown theme `{other}` — try /theme or /theme next"
+                    ))
+                }
+            }
+        },
         "prompt" => {
             CommandAction::SetPromptIntent(impetus_client::protocol::UserPromptIntent::Prompt)
         }
@@ -290,6 +312,23 @@ mod tests {
             parse_command("/prompt"),
             Some(CommandAction::SetPromptIntent(UserPromptIntent::Prompt))
         );
+    }
+
+    #[test]
+    fn theme_commands_parse() {
+        assert_eq!(parse_command("/theme"), Some(CommandAction::ThemePicker));
+        assert_eq!(
+            parse_command("/theme next"),
+            Some(CommandAction::CycleTheme)
+        );
+        assert_eq!(
+            parse_command("/theme impetus-stars"),
+            Some(CommandAction::SetTheme("impetus-stars".into()))
+        );
+        assert!(matches!(
+            parse_command("/theme nope"),
+            Some(CommandAction::Unknown(_))
+        ));
     }
 
     #[test]

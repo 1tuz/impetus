@@ -26,6 +26,9 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub use model::RunOptions;
+pub use theme::{
+    DEFAULT_THEME_ID, THEME_CATALOG, Theme, ThemeMeta, resolve_theme, theme_id_from_env,
+};
 
 /// Launch the production TUI. Set `IMPETUS_TUI_DEMO=1` to run the same UI
 /// against the deterministic in-process demonstration backend.

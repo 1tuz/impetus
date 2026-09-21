@@ -470,7 +470,7 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &mut AppState, theme: The
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
-    let left = " ?/F1 help  Ctrl+P cmds  Ctrl+O sessions  Ctrl+Shift+P intent  Ctrl+Q quit";
+    let left = " ? help  Ctrl+P cmds  F5 theme  Ctrl+Shift+T cycle  Ctrl+Q quit";
     let right = format!(" {} ", format_status_strip(app));
     let available = area.width as usize;
     let right_width = right.chars().count();
@@ -542,6 +542,7 @@ fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
             render_command_picker(frame, selected, &query, theme)
         }
         Overlay::Modes { selected } => render_mode_picker(frame, app, selected, theme),
+        Overlay::Themes { selected } => render_theme_picker(frame, app, selected, theme),
         Overlay::Approval { selected } => render_approval(frame, app, selected, theme),
         Overlay::ApprovalDetail => render_approval_detail(frame, app, theme),
         Overlay::LargePaste => render_large_paste(frame, app, theme),
@@ -591,6 +592,9 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  F2 / Ctrl+O       session picker",
         "  F3                toggle inspector",
         "  F4                Plan / Ask / Auto-Safe modes",
+        "  /theme            theme picker (Impetus neon + geek pack)",
+        "  Ctrl+Shift+T      cycle theme",
+        "  F5                theme picker",
         "  Ctrl+C            cancel run or dismiss current input",
         "  Ctrl+L            clear local viewport",
         "  Ctrl+D            open selected diff/details",
@@ -788,6 +792,52 @@ fn render_mode_picker(frame: &mut Frame, app: &AppState, selected: usize, theme:
                 ]),
                 Line::from(Span::styled(
                     format!("  {}", mode.description()),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    state.select(Some(selected.min(items.len().saturating_sub(1))));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(theme.selected()),
+        inner,
+        &mut state,
+    );
+}
+
+fn render_theme_picker(frame: &mut Frame, app: &AppState, selected: usize, theme: Theme) {
+    use crate::theme::THEME_CATALOG;
+
+    let area = centered_rect(72, 72, frame.area());
+    frame.render_widget(Clear, area);
+    let block = panel_block(
+        " theme · Enter select · Ctrl+Shift+T cycle · Esc close ",
+        true,
+        theme,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let items = THEME_CATALOG
+        .iter()
+        .map(|meta| {
+            let active = app.theme_id == meta.id;
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        if active { "● " } else { "○ " },
+                        Style::default().fg(if active { theme.accent } else { theme.border }),
+                    ),
+                    Span::styled(
+                        format!("{:<18}", meta.label),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(meta.id, Style::default().fg(theme.cyan)),
+                ]),
+                Line::from(Span::styled(
+                    format!("  {}", meta.blurb),
                     Style::default().fg(theme.muted),
                 )),
             ])
