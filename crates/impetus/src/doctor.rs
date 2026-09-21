@@ -116,6 +116,9 @@ pub async fn run_diagnostics(socket_path: &str, json: bool, probe_network: bool)
     // Probe: impetus/impetusd versions
     probe_versions(&mut report);
 
+    // Offline capability matrix (ARCHITECTURE-aligned); refreshed after daemon diagnostics.
+    probe_capability_truth(&mut report, &[]);
+
     // Probe: daemon discovery, socket path, permissions
     probe_socket(&mut report, socket_path);
 
@@ -129,6 +132,59 @@ pub async fn run_diagnostics(socket_path: &str, json: bool, probe_network: bool)
     }
 
     Ok(())
+}
+
+fn probe_capability_truth(report: &mut DoctorReport, registered_providers: &[String]) {
+    report.probes.retain(|probe| {
+        probe.name != "capability_matrix" && !probe.name.starts_with("capability.")
+    });
+
+    let truth = impetus_core::CapabilityTruthReport::gather(registered_providers);
+    report.add(
+        ProbeResult::ok(
+            "capability_matrix",
+            format!(
+                "Capability matrix schema v{} ({} rows)",
+                truth.schema_version,
+                truth.capabilities.len()
+            ),
+        )
+        .with_details(serde_json::to_value(&truth).unwrap_or_default()),
+    );
+
+    for entry in &truth.capabilities {
+        let name = format!("capability.{}", entry.id);
+        let probe = match entry.level {
+            impetus_core::CapabilityLevel::Implemented => {
+                ProbeResult::ok(name, entry.summary.clone()).with_details(
+                    entry
+                        .details
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "level": "IMPLEMENTED" })),
+                )
+            }
+            impetus_core::CapabilityLevel::Partial => ProbeResult::warn(
+                name,
+                entry.summary.clone(),
+                "Partial: see details; do not treat as full production capability",
+            )
+            .with_details(
+                entry
+                    .details
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({ "level": "PARTIAL" })),
+            ),
+            impetus_core::CapabilityLevel::Missing => {
+                ProbeResult::unavailable(name, entry.summary.clone()).with_details(
+                    entry
+                        .details
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "level": "MISSING" })),
+                )
+            }
+        };
+        report.add(probe);
+    }
 }
 
 fn probe_versions(report: &mut DoctorReport) {
@@ -289,6 +345,14 @@ async fn probe_daemon_connection(
             // Probe: subsystem health via Diagnostics endpoint
             match client.request(impetus_core::IpcRequest::Diagnostics).await {
                 Ok(impetus_core::IpcResponse::Diagnostics { subsystems }) => {
+                    let providers = subsystems
+                        .provider_registry
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("providers"))
+                        .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+                        .unwrap_or_default();
+                    probe_capability_truth(report, &providers);
                     add_subsystem_probes(report, *subsystems);
 
                     // Live network probe if requested
@@ -360,6 +424,10 @@ fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::Sub
         subsystems.optional_modules,
     ));
     report.add(status_to_probe("disk_runtime", subsystems.disk_runtime));
+    report.add(status_to_probe(
+        "output_optimization",
+        subsystems.output_optimization,
+    ));
 
     let browser_status = subsystems
         .web_research
@@ -578,7 +646,123 @@ fn print_human_report(report: &DoctorReport) {
     println!("Overall: {}", summary);
 
     println!("\n{}", "=".repeat(26));
+    println!("Runtime Capability Matrix");
+    println!("{}", "=".repeat(26));
+    print_runtime_capability_matrix(report);
+
+    println!("\n{}", "=".repeat(26));
     println!("Extension Compatibility");
     println!("{}", "=".repeat(26));
     print_compatibility_matrix();
+}
+
+fn print_runtime_capability_matrix(report: &DoctorReport) {
+    let mut rows: Vec<_> = report
+        .probes
+        .iter()
+        .filter(|probe| probe.name.starts_with("capability."))
+        .collect();
+    rows.sort_by_key(|probe| probe.name.as_str());
+
+    if rows.is_empty() {
+        println!("  (no capability probes)");
+        return;
+    }
+
+    for probe in rows {
+        let icon = match probe.status {
+            ProbeStatus::Ok => "✓",
+            ProbeStatus::Warn => "⚠",
+            ProbeStatus::Error => "✗",
+            ProbeStatus::Unavailable => "○",
+        };
+        let id = probe
+            .name
+            .strip_prefix("capability.")
+            .unwrap_or(probe.name.as_str());
+        println!("{} {} — {}", icon, id, probe.message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_json_includes_honest_capability_matrix_shape() {
+        let mut report = DoctorReport::new();
+        probe_capability_truth(&mut report, &[]);
+
+        let json = serde_json::to_value(&report).expect("serialize doctor report");
+        assert_eq!(json["version"], 1);
+        let probes = json["probes"].as_array().expect("probes");
+        let matrix = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability_matrix")
+            .expect("capability_matrix probe");
+        assert_eq!(matrix["details"]["schema_version"], 1);
+
+        let seatbelt = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability.seatbelt_process_wrap")
+            .expect("seatbelt probe");
+        assert_eq!(seatbelt["status"], "WARN");
+        assert_eq!(seatbelt["details"]["seatbelt_process_wrap"], false);
+
+        let durable = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability.durable_artifact_store")
+            .expect("durable probe");
+        assert_eq!(durable["status"], "OK");
+        assert_eq!(durable["details"]["durable"], true);
+
+        let schema = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability.tool_schema_validation")
+            .expect("schema probe");
+        assert_eq!(schema["status"], "OK");
+        assert_eq!(schema["details"]["gate"], true);
+
+        let native = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability.openai_native_chat_completions")
+            .expect("native openai probe");
+        assert_eq!(native["status"], "WARN");
+
+        let ext = probes
+            .iter()
+            .find(|probe| probe["name"] == "capability.extension_runtime")
+            .expect("extension runtime probe");
+        assert_eq!(ext["status"], "WARN");
+        assert_eq!(ext["details"]["mcp_live_tools_in_loop"], false);
+
+        let blob = json.to_string();
+        assert!(!blob.contains("sk-"));
+        assert!(!blob.to_lowercase().contains("password"));
+    }
+
+    #[test]
+    fn capability_probe_refresh_replaces_rows() {
+        let mut report = DoctorReport::new();
+        probe_capability_truth(&mut report, &[]);
+        let first_count = report
+            .probes
+            .iter()
+            .filter(|p| p.name.starts_with("capability"))
+            .count();
+        probe_capability_truth(&mut report, &["openai".into()]);
+        let second_count = report
+            .probes
+            .iter()
+            .filter(|p| p.name.starts_with("capability"))
+            .count();
+        assert_eq!(first_count, second_count);
+
+        let native = report
+            .probes
+            .iter()
+            .find(|p| p.name == "capability.openai_native_chat_completions")
+            .expect("native");
+        assert_eq!(native.status, ProbeStatus::Ok);
+    }
 }

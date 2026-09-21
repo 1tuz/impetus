@@ -27,6 +27,15 @@ Stubs and placeholder responses do not count as done.
 
 ---
 
+## P0 §6 — Capability truth generation
+
+- [x] `impetus doctor --json` (and human doctor) reflects real capability matrix
+      (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime,
+      tool_schema gate) via `CapabilityTruthReport`
+- [ ] Prefer generating/checking docs claims from doctor JSON where practical
+
+---
+
 ## Phase 0 — Foundation (done)
 
 - [x] Headless runtime with SQLite WAL and durable Event Log
