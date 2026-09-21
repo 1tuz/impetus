@@ -281,7 +281,10 @@ Do **not** invent a new hard-coded agent type per workflow.
       - Harness routes via `UserIntentRouter` (Steer/FollowUp: durable event only)
       - TUI: `/prompt` · `/steer` · `/follow-up` set composer intent
 - [ ] LLM prompt rewrite for Steer
-- [ ] WorkflowEngine cancel/replace race / follow-up drain on run complete
+- [x] Follow-up drain on session-run Completed/Cancelled — Partial (#271)
+      - Per-session in-memory queue; dequeue → Prompt turn (origin preserved)
+      - Cancel/replace: at-most-once drain via matching `active_run_id`
+      - Full WorkflowEngine cancel/replace race still open
 - [x] Multi-session fanout — Partial
       (`UserIntentRouter::fanout(intent, session_ids[])`; rejects empty list;
       independent per-session submit; ok/err map; no cross-machine / IPC yet)
