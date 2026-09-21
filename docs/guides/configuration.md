@@ -61,3 +61,13 @@ that loads this example automatically.
 
 `config/agent-backends.example.json` is a planning catalog, not a runtime
 configuration file consumed by the daemon.
+
+## TUI appearance
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `IMPETUS_TUI_THEME` | `impetus` | Named theme id (or label). Catalog: Impetus Neon, Impetus Stars, Dracula, Nord, Gruvbox, Tokyo Night, Catppuccin Mocha, Solarized Dark, Monokai, One Dark, Matrix, Zinc. |
+| `IMPETUS_TUI_NO_MOUSE` | unset | Disable mouse capture when set to `1`/`true`. |
+
+In the TUI: `/theme` or F5 opens the picker; Ctrl+Shift+T cycles. Live keymap:
+`?` / F1.

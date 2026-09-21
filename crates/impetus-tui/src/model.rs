@@ -446,6 +446,7 @@ pub fn format_status_strip(app: &AppState) -> String {
     if app.budget.warning.is_some() {
         parts.push("budget!".to_owned());
     }
+    parts.push(app.theme_id.clone());
     parts.join(" · ")
 }
 
@@ -490,6 +491,9 @@ pub enum Overlay {
     Modes {
         selected: usize,
     },
+    Themes {
+        selected: usize,
+    },
     Approval {
         selected: usize,
     },
@@ -524,6 +528,8 @@ pub struct AppState {
     pub composer: Composer,
     pub focus: Focus,
     pub mode: ExecutionMode,
+    /// Active color theme id (`THEME_CATALOG` / `IMPETUS_TUI_THEME`).
+    pub theme_id: String,
     /// Composer Prompt / Steer / FollowUp selection (sent on submit).
     pub prompt_intent: impetus_client::protocol::UserPromptIntent,
     pub run_state: RunState,
@@ -565,6 +571,7 @@ impl AppState {
             composer: Composer::default(),
             focus: Focus::Composer,
             mode: ExecutionMode::Ask,
+            theme_id: crate::theme::theme_id_from_env().to_owned(),
             prompt_intent: impetus_client::protocol::UserPromptIntent::Prompt,
             run_state: RunState::Idle,
             budget: BudgetState::default(),
@@ -637,6 +644,23 @@ impl AppState {
             expires_at: Instant::now() + Duration::from_secs(if error { 7 } else { 4 }),
         });
         self.dirty = true;
+    }
+
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::resolve_theme(&self.theme_id)
+    }
+
+    pub fn set_theme_id(&mut self, id: &str) {
+        let resolved = crate::theme::theme_meta(id)
+            .map(|meta| meta.id)
+            .unwrap_or(crate::theme::DEFAULT_THEME_ID);
+        self.theme_id = resolved.to_owned();
+        self.dirty = true;
+    }
+
+    pub fn cycle_theme(&mut self) {
+        let next = crate::theme::cycle_theme_id(&self.theme_id);
+        self.set_theme_id(next);
     }
 
     pub fn expire_transients(&mut self) {
