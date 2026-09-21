@@ -1,3 +1,4 @@
+mod api_search;
 mod bing;
 mod browser;
 pub mod doctor;
@@ -11,6 +12,11 @@ mod service;
 mod tool_adapter;
 mod types;
 
+pub use api_search::{
+    ABSENT_API_SEARCH_REASON, API_SEARCH_HTTP_NOT_IMPLEMENTED, AbsentApiSearchBackend,
+    ApiSearchBackendModule, ApiSearchCredentialRef, ApiSearchProviderKind, MockSearchBackend,
+    OptionalApiSearchSlot,
+};
 pub use bing::BingHtmlSearchBackend;
 pub use browser::{
     ABSENT_BROWSER_REASON, AbsentBrowserService, BROWSER_PROVIDER_PROTOCOL_VERSION,
