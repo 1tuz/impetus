@@ -4,6 +4,8 @@
 //! `destination exists + no matching Impetus ownership record = do not overwrite`
 //! and do not silently claim that path as Impetus-owned.
 //! Uninstall removes a path only when Impetus can prove ownership (path + owner + digest).
+//! Repair never overwrites on-disk content whose digest no longer matches the
+//! ownership record unless an explicit force/approval flag is passed.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -192,6 +194,47 @@ impl OwnershipStore {
 
         std::fs::remove_file(path)?;
         self.delete_record(&key)?;
+        Ok(())
+    }
+
+    /// Repair managed content at `path` with `new_content`, updating the stored digest.
+    ///
+    /// When on-disk bytes no longer match the ownership record digest (unrelated
+    /// user edits), refuse unless `force` is true (explicit policy/approval).
+    /// Missing files with an existing record may be restored without `force`.
+    pub fn repair(
+        &self,
+        path: &Path,
+        new_content: &[u8],
+        force: bool,
+    ) -> Result<OwnershipRecord, OwnershipError> {
+        let key = path_key(path)?;
+        let mut record = match self.get_by_path(&key)? {
+            Some(record) => record,
+            None => return Err(OwnershipError::NotOwned(key)),
+        };
+
+        if path.exists() {
+            let bytes = std::fs::read(path)?;
+            let actual = content_digest(&bytes);
+            if actual != record.digest && !force {
+                return Err(OwnershipError::DigestMismatch(key));
+            }
+        }
+
+        std::fs::write(path, new_content)?;
+        let new_digest = content_digest(new_content);
+        self.update_digest(&key, &new_digest)?;
+        record.digest = new_digest;
+        Ok(record)
+    }
+
+    fn update_digest(&self, path_key: &str, digest: &str) -> Result<(), OwnershipError> {
+        let conn = self.conn.lock().expect("ownership db lock");
+        conn.execute(
+            "UPDATE ownership_records SET digest = ?1 WHERE path = ?2",
+            params![digest, path_key],
+        )?;
         Ok(())
     }
 
@@ -453,5 +496,92 @@ mod tests {
             .expect_err("owner mismatch");
         assert!(matches!(err, OwnershipError::OwnerMismatch(_)));
         assert!(dest.exists(), "owner mismatch must not delete file");
+    }
+
+    #[test]
+    fn repair_refuses_digest_mismatch_without_force() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        let record = register_then_write(&store, &dest, b"owned");
+        std::fs::write(&dest, b"user-edited").expect("user edit");
+
+        let err = store
+            .repair(&dest, b"repaired", false)
+            .expect_err("must refuse silent overwrite of user changes");
+        assert!(matches!(err, OwnershipError::DigestMismatch(_)));
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read"),
+            "user-edited",
+            "file must stay untouched without force"
+        );
+        let kept = store
+            .get_by_path(&record.path)
+            .expect("lookup")
+            .expect("present");
+        assert_eq!(kept.digest, record.digest, "digest must stay unchanged");
+    }
+
+    #[test]
+    fn repair_overwrites_digest_mismatch_with_force() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        let record = register_then_write(&store, &dest, b"owned");
+        std::fs::write(&dest, b"user-edited").expect("user edit");
+
+        let updated = store
+            .repair(&dest, b"repaired", true)
+            .expect("force allows overwrite after approval");
+        assert_eq!(std::fs::read_to_string(&dest).expect("read"), "repaired");
+        assert_eq!(updated.digest, content_digest(b"repaired"));
+        assert_ne!(updated.digest, record.digest);
+        let stored = store
+            .get_by_path(&record.path)
+            .expect("lookup")
+            .expect("present");
+        assert_eq!(stored.digest, content_digest(b"repaired"));
+    }
+
+    #[test]
+    fn repair_when_digest_matches_updates_without_force() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        register_then_write(&store, &dest, b"owned");
+
+        let updated = store
+            .repair(&dest, b"repaired", false)
+            .expect("matching digest may repair without force");
+        assert_eq!(std::fs::read_to_string(&dest).expect("read"), "repaired");
+        assert_eq!(updated.digest, content_digest(b"repaired"));
+    }
+
+    #[test]
+    fn repair_restores_missing_owned_file_without_force() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        let record = register_then_write(&store, &dest, b"owned");
+        std::fs::remove_file(&dest).expect("remove");
+
+        let updated = store
+            .repair(&dest, b"restored", false)
+            .expect("missing owned file may restore without force");
+        assert_eq!(std::fs::read_to_string(&dest).expect("read"), "restored");
+        assert_eq!(updated.path, record.path);
+        assert_eq!(updated.digest, content_digest(b"restored"));
+    }
+
+    #[test]
+    fn repair_refuses_unowned_path() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("user-file.txt");
+        std::fs::write(&dest, b"pre-existing").expect("write");
+
+        let err = store
+            .repair(&dest, b"nope", true)
+            .expect_err("unowned path must not repair even with force");
+        assert!(matches!(err, OwnershipError::NotOwned(_)));
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read"),
+            "pre-existing"
+        );
     }
 }
