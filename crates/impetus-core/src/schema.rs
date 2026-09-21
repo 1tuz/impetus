@@ -389,7 +389,7 @@ mod tests {
             },
             "harness": {
                 "harness_id": "impetusd",
-                "seatbelt_process_wrap": false
+                "seatbelt_process_wrap": true
             }
         });
         let spec = validate_envelope(SCHEMA_CAPABILITIES.id, &value).expect("nested ok");

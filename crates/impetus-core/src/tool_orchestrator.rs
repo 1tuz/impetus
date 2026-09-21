@@ -65,6 +65,7 @@ pub struct ToolOrchestrator {
     web_research: Option<Arc<dyn crate::web_research::WebResearchService>>,
     mcp_live: Option<Arc<crate::mcp_live::McpLiveBridge>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
+    allowed_tools: Option<Vec<String>>,
 }
 
 impl ToolOrchestrator {
@@ -84,7 +85,27 @@ impl ToolOrchestrator {
             web_research: None,
             mcp_live: None,
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
+            allowed_tools: None,
         }
+    }
+
+    /// Build a restricted orchestrator for Explore subagents.
+    ///
+    /// `allowed_tools` uses Explore labels (`list`/`read`/`search`). Call-time
+    /// checks also accept mapped schema names (`list_files`/`read_file`/`search`).
+    /// Empty allowlist means everything denied.
+    pub fn for_explore(
+        policy: PolicyEngine,
+        workspace_root: PathBuf,
+        allowed_tools: &[String],
+    ) -> Self {
+        Self::with_artifact_root(policy, workspace_root, crate::default_artifact_root())
+            .with_allowed_tools(allowed_tools.to_vec())
+    }
+
+    pub fn with_allowed_tools(mut self, allowed: Vec<String>) -> Self {
+        self.allowed_tools = Some(allowed);
+        self
     }
 
     /// Attach the daemon-owned semantic web service. Provider details stay outside the agent loop.
@@ -160,9 +181,10 @@ impl ToolOrchestrator {
                 let web_research = self.web_research.clone();
                 let mcp_live = self.mcp_live.clone();
                 let coding_tools = self.coding_tools.clone();
+                let allowed_tools = self.allowed_tools.clone();
 
                 let handle = tokio::spawn(async move {
-                    let orchestrator = ToolOrchestrator::with_artifact_root(
+                    let mut orchestrator = ToolOrchestrator::with_artifact_root(
                         orchestrator_policy,
                         orchestrator_workspace,
                         orchestrator_artifact,
@@ -170,6 +192,9 @@ impl ToolOrchestrator {
                     .with_optional_web_research(web_research)
                     .with_optional_mcp_live(mcp_live)
                     .with_coding_tools(coding_tools);
+                    if let Some(allowed) = allowed_tools {
+                        orchestrator = orchestrator.with_allowed_tools(allowed);
+                    }
                     orchestrator.process_single_tool(tool_call, &runtime).await
                 });
                 handles.push(handle);
@@ -210,9 +235,35 @@ impl ToolOrchestrator {
 
     async fn process_single_tool(
         &self,
-        tool_call: crate::ToolCall,
+        mut tool_call: crate::ToolCall,
         runtime: &Arc<AgentRuntime>,
     ) -> ToolObservation {
+        // Step 0: Explore allowlist — accept explore labels and mapped schema names.
+        if let Some(allowed) = &self.allowed_tools {
+            if !explore_tool_allowed(allowed, &tool_call.name) {
+                return Self::record_observation(
+                    runtime,
+                    tool_call.clone(),
+                    summarize_arguments(&tool_call.arguments),
+                    ToolOutcomeStatus::Denied,
+                    String::new(),
+                    None,
+                    Some(format!(
+                        "tool `{}` not in Explore allowlist",
+                        tool_call.name
+                    )),
+                );
+            }
+
+            // Map Explore labels to internal tool names
+            tool_call.name = match tool_call.name.as_str() {
+                "list" => "list_files".to_string(),
+                "read" => "read_file".to_string(),
+                "search" => "search".to_string(),
+                name => name.to_string(),
+            };
+        }
+
         if self
             .mcp_live
             .as_ref()
@@ -456,6 +507,7 @@ impl ToolOrchestrator {
         }
 
         // Read-only → workspace_read (Allow). Mutating → process_spawn (NeedsApproval).
+        // Do not auto-trust readOnlyHint beyond semantics_from_annotations (missing → Mutating).
         let effect = if mutating {
             crate::NormalizedEffect::process_spawn(
                 ActionOrigin::Agent,
@@ -1021,7 +1073,9 @@ impl ToolOrchestrator {
             ActionOrigin::Agent,
             request.intent_revision,
         )
-        .with_working_dir(workspace.clone());
+        .with_working_dir(workspace.clone())
+        .with_workspace_root(workspace.clone())
+        .with_allow_network(runtime.policy().scope().allow_network);
         let seam = EffectSeam::with_sandbox(runtime.policy(), Sandbox::workspace(&workspace));
         let execution = seam
             .execute_after_approval_with_admission(
@@ -1083,6 +1137,25 @@ impl ToolOrchestrator {
             error,
         ))
     }
+}
+
+fn explore_canonical_tool_name(name: &str) -> Option<&'static str> {
+    match name.trim() {
+        "list" | "list_files" => Some("list_files"),
+        "read" | "read_file" => Some("read_file"),
+        "search" => Some("search"),
+        _ => None,
+    }
+}
+
+/// Allow Explore labels and mapped provider/schema names interchangeably.
+fn explore_tool_allowed(allowed: &[String], called: &str) -> bool {
+    let Some(called_canonical) = explore_canonical_tool_name(called) else {
+        return false;
+    };
+    allowed.iter().any(|entry| {
+        explore_canonical_tool_name(entry).is_some_and(|name| name == called_canonical)
+    })
 }
 
 fn summarize_arguments(arguments: &serde_json::Value) -> String {

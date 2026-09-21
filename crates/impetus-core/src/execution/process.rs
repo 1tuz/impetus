@@ -5,12 +5,21 @@ use crate::{
     EffectSeam, NormalizedEffect,
 };
 use serde::{Deserialize, Serialize};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::time::timeout;
+
+#[cfg(not(target_os = "macos"))]
+use std::process::Stdio;
+#[cfg(not(target_os = "macos"))]
+use tokio::process::Command;
+
+#[cfg(target_os = "macos")]
+use super::sandbox::{
+    PreparedSandboxCommand, SandboxCommandRequest, SandboxError, production_sandbox_provider,
+};
 
 /// Maximum UTF-8 bytes kept inline in process stdout/stderr preview (and in the
 /// combined observation body). Full captured output is stored as a durable
@@ -39,6 +48,10 @@ pub enum ProcessExecutionError {
     Timeout(Duration),
     #[error("artifact store error: {0}")]
     Artifact(String),
+    #[error("sandbox backend unavailable")]
+    SandboxUnavailable,
+    #[error("sandbox denied: {0}")]
+    SandboxDenied(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -64,7 +77,10 @@ pub struct ProcessOutput {
 pub struct ProcessExecutionRequest {
     pub command: String,
     pub args: Vec<String>,
-    pub working_dir: Option<std::path::PathBuf>,
+    pub working_dir: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
+    /// When true, macOS Seatbelt allows `network*`. Default false for shell.
+    pub allow_network: bool,
     pub env: Vec<(String, String)>,
     pub origin: ActionOrigin,
     pub intent_revision: u64,
@@ -82,6 +98,8 @@ impl ProcessExecutionRequest {
             command: command.into(),
             args,
             working_dir: None,
+            workspace_root: None,
+            allow_network: false,
             env: Vec::new(),
             origin,
             intent_revision,
@@ -89,8 +107,18 @@ impl ProcessExecutionRequest {
         }
     }
 
-    pub fn with_working_dir(mut self, dir: std::path::PathBuf) -> Self {
+    pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.working_dir = Some(dir);
+        self
+    }
+
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root = Some(root);
+        self
+    }
+
+    pub fn with_allow_network(mut self, allow: bool) -> Self {
+        self.allow_network = allow;
         self
     }
 
@@ -132,30 +160,17 @@ impl ProcessExecutionRequest {
     /// exceed [`MAX_PROCESS_PREVIEW_BYTES`] (or hit the capture ceiling) are stored
     /// in `artifacts`; the returned strings stay preview-sized.
     /// Requires AdmittedOperation token proving the effect passed admission.
+    ///
+    /// On macOS, spawn goes through Seatbelt (`production_sandbox_provider`).
+    /// Non-macOS keeps path-scope admission only (direct spawn).
     pub async fn execute(
         &self,
         _admission: &crate::AdmittedOperation,
         artifacts: &DurableArtifactStore,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let start = std::time::Instant::now();
-
-        let mut cmd = Command::new(&self.command);
-        cmd.args(&self.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Some(dir) = &self.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        for (key, value) in &self.env {
-            cmd.env(key, value);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProcessExecutionError::ExecutionFailed(e.to_string()))?;
+        let mut spawned = self.spawn_child()?;
+        let child = &mut spawned.child;
 
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -195,6 +210,94 @@ impl ProcessExecutionRequest {
             duration_ms,
             artifacts,
         )
+    }
+
+    fn spawn_child(&self) -> Result<SpawnedChild, ProcessExecutionError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.spawn_sandboxed()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.spawn_direct()
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn spawn_direct(&self) -> Result<SpawnedChild, ProcessExecutionError> {
+        let mut cmd = Command::new(&self.command);
+        cmd.args(&self.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        for (key, value) in &self.env {
+            cmd.env(key, value);
+        }
+
+        let child = cmd
+            .spawn()
+            .map_err(|e| ProcessExecutionError::ExecutionFailed(e.to_string()))?;
+        Ok(SpawnedChild {
+            child,
+            _sandbox: None,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_sandboxed(&self) -> Result<SpawnedChild, ProcessExecutionError> {
+        let workspace_root = self.workspace_root.as_ref().ok_or_else(|| {
+            ProcessExecutionError::SandboxDenied(
+                "workspace_root required for macOS Seatbelt spawn".into(),
+            )
+        })?;
+        let working_dir = self.working_dir.as_ref().unwrap_or(workspace_root);
+
+        let request = SandboxCommandRequest {
+            executable: &self.command,
+            args: &self.args,
+            workspace_root,
+            working_dir,
+            explicit_env: &self.env,
+            allow_network: self.allow_network,
+        };
+
+        let mut prepared = production_sandbox_provider()
+            .prepare(&request)
+            .map_err(map_sandbox_error)?;
+        let child = prepared
+            .command_mut()
+            .spawn()
+            .map_err(|e| ProcessExecutionError::ExecutionFailed(e.to_string()))?;
+        Ok(SpawnedChild {
+            child,
+            _sandbox: Some(prepared),
+        })
+    }
+}
+
+/// Holds the child and optional Seatbelt session temp until capture finishes.
+struct SpawnedChild {
+    child: tokio::process::Child,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    _sandbox: Option<SandboxKeepAlive>,
+}
+
+#[cfg(target_os = "macos")]
+type SandboxKeepAlive = PreparedSandboxCommand;
+
+#[cfg(not(target_os = "macos"))]
+type SandboxKeepAlive = ();
+
+#[cfg(target_os = "macos")]
+fn map_sandbox_error(error: SandboxError) -> ProcessExecutionError {
+    match error {
+        SandboxError::Unavailable => ProcessExecutionError::SandboxUnavailable,
+        other => ProcessExecutionError::SandboxDenied(other.to_string()),
     }
 }
 
@@ -326,15 +429,25 @@ mod tests {
     use crate::{PolicyEngine, Sandbox, SandboxScope};
 
     fn test_seam() -> EffectSeam {
-        let workspace = std::env::temp_dir();
+        let workspace = test_workspace();
         let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.clone()));
         EffectSeam::with_sandbox(policy, Sandbox::workspace(workspace))
+    }
+
+    fn test_workspace() -> PathBuf {
+        std::env::temp_dir()
     }
 
     fn temp_artifacts() -> (tempfile::TempDir, DurableArtifactStore) {
         let root = tempfile::tempdir().expect("artifact root");
         let store = DurableArtifactStore::open(root.path()).expect("open artifact store");
         (root, store)
+    }
+
+    fn user_request(command: &str, args: Vec<String>) -> ProcessExecutionRequest {
+        ProcessExecutionRequest::new(command, args, ActionOrigin::User, 1)
+            .with_workspace_root(test_workspace())
+            .with_working_dir(test_workspace())
     }
 
     #[test]
@@ -361,8 +474,7 @@ mod tests {
     async fn process_execution_captures_output() {
         let seam = test_seam();
         let (_root, artifacts) = temp_artifacts();
-        let request =
-            ProcessExecutionRequest::new("echo", vec!["hello".into()], ActionOrigin::User, 1);
+        let request = user_request("echo", vec!["hello".into()]);
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -384,7 +496,7 @@ mod tests {
     async fn process_execution_handles_failure() {
         let seam = test_seam();
         let (_root, artifacts) = temp_artifacts();
-        let request = ProcessExecutionRequest::new("false", vec![], ActionOrigin::User, 1);
+        let request = user_request("false", vec![]);
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -404,8 +516,7 @@ mod tests {
         let seam = test_seam();
         let (_root, artifacts) = temp_artifacts();
         let request =
-            ProcessExecutionRequest::new("sleep", vec!["10".into()], ActionOrigin::User, 1)
-                .with_timeout(Duration::from_millis(100));
+            user_request("sleep", vec!["10".into()]).with_timeout(Duration::from_millis(100));
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -491,7 +602,9 @@ mod tests {
             ],
             ActionOrigin::User,
             1,
-        );
+        )
+        .with_workspace_root(test_workspace())
+        .with_working_dir(test_workspace());
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {
@@ -526,8 +639,7 @@ mod tests {
     async fn small_stdout_stays_inline_without_artifact() {
         let seam = test_seam();
         let (_root, artifacts) = temp_artifacts();
-        let request =
-            ProcessExecutionRequest::new("printf", vec!["tiny".into()], ActionOrigin::User, 1);
+        let request = user_request("printf", vec!["tiny".into()]);
 
         let admission = request.request(&seam).unwrap();
         let token = match admission {

@@ -33,6 +33,7 @@ pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
 pub mod execution;
+pub mod explore_agent_loop;
 pub mod explore_child;
 pub mod extension_adapter;
 pub mod extension_compat;
@@ -88,6 +89,7 @@ pub mod subagent_metadata;
 pub mod supervisor;
 pub mod tempo_importer;
 pub mod tool_orchestrator;
+pub mod tool_provider_runtime;
 pub mod tool_schema;
 pub mod tools;
 pub mod user_intent;
@@ -173,16 +175,22 @@ pub use events::{
     RunEvent, SessionEvent, ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
-    MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, ProcessExecution, ProcessExecutionError,
-    ProcessExecutionRequest, ProcessOutput, PtySession, PtySessionError, PtySessionId,
-    PtySessionManager, PtySessionRecord, PtySessionState, PtySessionStore, PtySessionStoreError,
-    SqlitePtySessionStore,
+    MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, MacosSeatbeltSandbox,
+    PreparedSandboxCommand, ProcessExecution, ProcessExecutionError, ProcessExecutionRequest,
+    ProcessOutput, PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord,
+    PtySessionState, PtySessionStore, PtySessionStoreError, SandboxCommandRequest, SandboxDecision,
+    SandboxDecisionState, SandboxError, SandboxProvider, SqlitePtySessionStore,
+    UnavailableSandboxProvider, production_sandbox_provider,
+};
+pub use explore_agent_loop::{
+    AgentLoopExploreExecutor, explore_provider_tool_names, explore_provider_tool_schemas,
 };
 pub use explore_child::{
     EXPLORE_ALLOWED_TOOLS, ExploreChildEnv, ExploreChildError, ExploreChildExecutor,
     ExploreChildOutcome, ExploreChildRequest, ExploreChildRunner, ExploreExecutorError,
-    ExploreExecutorOutput, MockExploreExecutor, ReadOnlyExploreExecutor, is_explore_forbidden_tool,
-    validate_explore_allowed_tools,
+    ExploreExecutorOutput, ExploreSpawnBridge, HarnessExploreSpawn, MockExploreExecutor,
+    ReadOnlyExploreExecutor, intersect_explore_tools, is_explore_forbidden_tool,
+    resume_parent_after_explore, validate_explore_allowed_tools,
 };
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
 pub use extension_compat::{
@@ -307,6 +315,9 @@ pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tempo_importer::{TempoImporter, TempoImporterConfig, TempoWorklog};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
+};
+pub use tool_provider_runtime::{
+    McpServerSpec, ToolProviderRuntime, filter_mcp_catalog, parse_mcp_catalog_name,
 };
 pub use tool_schema::{
     BuiltinToolSchema, ToolArgError, builtin_tool_schemas, canonical_tool_name, schema_for_tool,

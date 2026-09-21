@@ -166,9 +166,14 @@ fn classify_transport_error(message: &str) -> McpLiveCallResult {
 }
 
 /// Session catalog of discovered MCP tools + call backend.
+///
+/// Multi-server merges keep a per-catalog-name caller so `tools/call` routes to
+/// the owning server (tool names alone are not unique across servers).
 pub struct McpLiveBridge {
     tools: HashMap<String, McpLiveToolEntry>,
     caller: Arc<dyn McpLiveCaller>,
+    /// Optional overrides keyed by catalog name (`mcp:server:tool`).
+    entry_callers: HashMap<String, Arc<dyn McpLiveCaller>>,
 }
 
 impl McpLiveBridge {
@@ -181,7 +186,48 @@ impl McpLiveBridge {
                 (entry.catalog_name.clone(), entry)
             })
             .collect();
-        Self { tools, caller }
+        Self {
+            tools,
+            caller,
+            entry_callers: HashMap::new(),
+        }
+    }
+
+    /// Build from a pre-merged entry map with per-entry callers.
+    pub fn from_entries(
+        tools: HashMap<String, McpLiveToolEntry>,
+        entry_callers: HashMap<String, Arc<dyn McpLiveCaller>>,
+        fallback: Arc<dyn McpLiveCaller>,
+    ) -> Self {
+        Self {
+            tools,
+            caller: fallback,
+            entry_callers,
+        }
+    }
+
+    /// Merge per-server bridges into one catalog that routes calls by entry.
+    pub fn merge(servers: HashMap<String, Arc<McpLiveBridge>>) -> Self {
+        let mut tools = HashMap::new();
+        let mut entry_callers = HashMap::new();
+        let fallback = servers
+            .values()
+            .next()
+            .map(|bridge| bridge.caller.clone())
+            .unwrap_or_else(|| Arc::new(UnavailableMcpCaller));
+
+        for bridge in servers.values() {
+            for (name, entry) in &bridge.tools {
+                tools.insert(name.clone(), entry.clone());
+                let caller = bridge
+                    .entry_callers
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| bridge.caller.clone());
+                entry_callers.insert(name.clone(), caller);
+            }
+        }
+        Self::from_entries(tools, entry_callers, fallback)
     }
 
     /// Discover via `tools/list` and wrap the adapter as the caller.
@@ -205,6 +251,29 @@ impl McpLiveBridge {
         self.tools.contains_key(catalog_name)
     }
 
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// Keep only catalog names in `allowed` (child ⊆ parent allowlist).
+    pub fn with_allowlist(self, allowed: &[String]) -> Self {
+        let tools: HashMap<String, McpLiveToolEntry> = self
+            .tools
+            .into_iter()
+            .filter(|(name, _)| allowed.iter().any(|a| a == name))
+            .collect();
+        let entry_callers: HashMap<_, _> = self
+            .entry_callers
+            .into_iter()
+            .filter(|(name, _)| tools.contains_key(name))
+            .collect();
+        Self {
+            tools,
+            caller: self.caller,
+            entry_callers,
+        }
+    }
+
     pub fn validate_arguments(
         &self,
         catalog_name: &str,
@@ -218,13 +287,20 @@ impl McpLiveBridge {
         Ok(entry)
     }
 
+    fn caller_for(&self, catalog_name: &str) -> &Arc<dyn McpLiveCaller> {
+        self.entry_callers.get(catalog_name).unwrap_or(&self.caller)
+    }
+
     pub async fn call(&self, catalog_name: &str, arguments: Value) -> McpLiveCallResult {
         let Some(entry) = self.tools.get(catalog_name) else {
             return McpLiveCallResult::Failed {
                 message: format!("unknown MCP tool `{catalog_name}`"),
             };
         };
-        let result = self.caller.call_tool(&entry.tool, arguments).await;
+        let result = self
+            .caller_for(catalog_name)
+            .call_tool(&entry.tool, arguments)
+            .await;
         if matches!(result, McpLiveCallResult::Unknown { .. }) {
             let policy = UnknownOutcomePolicy::new(entry.semantics);
             if !policy.can_retry(OperationOutcome::Unknown) {
@@ -237,6 +313,18 @@ impl McpLiveBridge {
             }
         }
         result
+    }
+}
+
+/// Fallback when merging an empty server map (should not happen in practice).
+struct UnavailableMcpCaller;
+
+#[async_trait]
+impl McpLiveCaller for UnavailableMcpCaller {
+    async fn call_tool(&self, tool: &str, _arguments: Value) -> McpLiveCallResult {
+        McpLiveCallResult::Failed {
+            message: format!("no MCP caller available for `{tool}`"),
+        }
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "id": "codex-acp",
+  "display_name": "Codex ACP",
+  "command": "/opt/homebrew/bin/codex-acp",
+  "args": [],
+  "env": {
+    "NO_BROWSER": "1"
+  },
+  "auth_method_id": "api-key",
+  "credential_strategy": { "kind": "agent_owned" }
+}

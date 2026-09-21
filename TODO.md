@@ -14,17 +14,23 @@ import-only adapters stay open / Partial in the matrix.
 
 Real open work that should happen next.
 
-- [ ] Wire `ExploreChildRunner` into production `AgentLoop` / `impetusd`
-      (Foundation slice exists; model-provider binding still open) (#296)
-- [ ] Wire live MCP tools into production `AgentLoop` / `impetusd`
-      (`McpLiveBridge` + orchestrator hook exist; capability truth
-      `mcp_live_tools_in_loop: false`)
-- [ ] Production macOS Seatbelt wrap into `execution/process.rs`
+- [x] Wire `ExploreChildRunner` into `AgentLoop` library path (`AgentLoopExploreExecutor`,
+      Harness `spawn_explore` / `complete_explore_and_gate`; MockProvider E2E) (#306)
+      — **Partial:** `impetusd` still leaves `explore_spawn` None (no provider-bound
+      daemon wire yet)
+- [x] Wire live MCP tools into production `AgentLoop` via `ToolProviderRuntime`
+      (library harness inject; capability `mcp_live_tools_in_loop: true`)
+      — **Partial:** `impetusd` does not autoload MCP servers from disk
+      (`impetusd_autoload: false`)
+- [x] Production macOS Seatbelt wrap into `execution/process.rs`
       (spike / `macos_sandbox_spike` exist; path-scope sandbox already live)
-- [ ] Default IPC / CLI / `impetusd` path to load + reload user `PolicyConfig`
-      (engine + JSON format exist; #9 leftover)
-- [ ] Parent-resume gate wired to live Explore child completion
-      (beyond in-memory Explore slice / `gate_parent_resume` stub)
+- [x] Default `impetusd` startup path loads user `PolicyConfig`
+      (`--policy-config PATH` / `IMPETUS_POLICY_CONFIG` / `$IMPETUS_DATA_DIR/policy.json`)
+      — **Partial:** live IPC reload still library-only (`AgentRuntime::reload_policy_config*`);
+      no typed `ReloadPolicyConfig` IPC yet (#9 leftover)
+- [x] Parent-resume gate wired to Explore child completion (library /
+      `resume_parent_after_explore` + harness gate helper) (#306)
+      — **Partial:** daemon entry still unwired
 
 ---
 

@@ -8,13 +8,15 @@ This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
-1. **Now** — work that unblocks daily production use: Explore→daemon,
-   live MCP in the loop, Seatbelt process wrap, PolicyConfig default load/reload,
-   live Explore parent-resume.
+1. **Now** — work that unblocks daily production use: Explore→daemon entry,
+   live MCP in the loop, PolicyConfig IPC reload, live Explore parent-resume
+   on daemon path. (Seatbelt macOS process wrap + PolicyConfig startup load
+   + Explore library E2E are in tree — see capability matrix.)
 2. **Next** — operator / orchestration runtime and optional modules: live
    WorkflowEngine spawn + cancel, other subagent roles, `PolicyStore`, hooks on
    process spawn, Steer live rewrite, real LSP/search/browser backends, policy
-   operator UX.
+   operator UX. Capability leases / RepoMap: design only —
+   [capability-leases-and-repomap.md](capability-leases-and-repomap.md).
 3. **Later** — marketplaces, multi-harness portability, deep vendor runtime
    parity, large swarm/team loops, Ubuntu clean-machine automation, full Zap
    authorize, ACP dependency invert, thin-client split, CLI migration.
@@ -38,9 +40,9 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
 - **Linux**: PR CI compile guard (`ubuntu-24.04` `cargo check`); install target;
   sandbox/Keychain parity Planned.
 - **Path-scope sandbox**: Implemented and fail-closed.
-- **Seatbelt profiles**: spike/evidence only until wired into process execution.
-  **Priority:** production macOS Seatbelt matters more than broad cross-platform
-  sandbox backends.
+- **Seatbelt profiles**: Implemented on macOS process spawn
+  (`execution/sandbox.rs`); non-macOS path-scope only. Linux/Windows OS wrap
+  Planned.
 - **Linux x86_64**: install target; sandbox/Keychain parity Planned.
   Clean-machine Ubuntu 24.04 smoke proofs vs PR CI:
   [ubuntu-smoke.md](../guides/ubuntu-smoke.md) (#293; automated

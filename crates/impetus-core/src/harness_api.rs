@@ -81,6 +81,10 @@ pub struct Harness {
     coding_tools: Arc<dyn crate::CodingToolsService>,
     /// Steer prompt rewrite seam (default passthrough; live LLM wire deferred).
     steer_rewrite: Arc<dyn SteerRewrite>,
+    /// Optional explore-child infrastructure (gate + store + executor bridge).
+    explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
+    /// Optional session MCP tool providers (lazy connect; not used by Explore).
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
 }
 
 impl Harness {
@@ -109,6 +113,8 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            explore_spawn: None,
+            tool_providers: None,
         }
     }
 
@@ -128,6 +134,59 @@ impl Harness {
     pub fn with_steer_rewrite(mut self, rewriter: Arc<dyn SteerRewrite>) -> Self {
         self.steer_rewrite = rewriter;
         self
+    }
+
+    /// Attach Explore spawn bridge (gate + store + executor). Default is None.
+    pub fn with_explore_spawn(
+        mut self,
+        bridge: Arc<dyn crate::explore_child::ExploreSpawnBridge>,
+    ) -> Self {
+        self.explore_spawn = Some(bridge);
+        self
+    }
+
+    /// Attach session MCP tool provider runtime (lazy connect). Default is None.
+    /// Explore children must not receive this — keep Explore allowlist MCP-free.
+    pub fn with_tool_providers(
+        mut self,
+        runtime: Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>,
+    ) -> Self {
+        self.tool_providers = Some(runtime);
+        self
+    }
+
+    /// Spawn one Explore child via configured bridge.
+    pub fn spawn_explore(
+        &self,
+        request: crate::ExploreChildRequest,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<crate::ExploreChildOutcome, crate::ExploreChildError> {
+        self.explore_spawn
+            .as_ref()
+            .ok_or(crate::ExploreChildError::NotConfigured)?
+            .spawn_explore(request, cancel)
+    }
+
+    /// Gate parent resume after Explore children and return joined summary labels.
+    pub fn complete_explore_and_gate(
+        &self,
+        parent_session_id: &str,
+        child_ids: &[&str],
+    ) -> Result<String, crate::ExploreChildError> {
+        let bridge = self
+            .explore_spawn
+            .as_ref()
+            .ok_or(crate::ExploreChildError::NotConfigured)?;
+        let results = crate::explore_child::resume_parent_after_explore(
+            bridge.child_results(),
+            parent_session_id,
+            child_ids,
+        )?;
+        Ok(results
+            .into_iter()
+            .map(|r| r.summary_label)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     #[cfg(test)]
@@ -159,6 +218,8 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            explore_spawn: None,
+            tool_providers: None,
         }
     }
 
@@ -222,6 +283,8 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            explore_spawn: None,
+            tool_providers: None,
         }
     }
 
@@ -275,6 +338,8 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            explore_spawn: None,
+            tool_providers: None,
         }
     }
 
@@ -310,6 +375,7 @@ impl Harness {
             self.intent_router.clone(),
             self.coding_tools.clone(),
             self.steer_rewrite.clone(),
+            self.tool_providers.clone(),
             request,
         )
     }
@@ -331,6 +397,7 @@ fn handle_request(
     intent_router: Arc<Mutex<UserIntentRouter>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
     steer_rewrite: Arc<dyn SteerRewrite>,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -555,6 +622,7 @@ fn handle_request(
                         policy.clone(),
                         session_coordinator.clone(),
                         artifact_root,
+                        tool_providers.clone(),
                     )?;
                     runtime.status()
                 },
@@ -610,6 +678,7 @@ fn handle_request(
                             intent_router.clone(),
                             session_coordinator.clone(),
                             uploads.artifact_root().to_path_buf(),
+                            tool_providers.clone(),
                             session_id,
                             run_id,
                             false,
@@ -744,6 +813,7 @@ fn handle_request(
                         policy.clone(),
                         session_coordinator.clone(),
                         uploads.artifact_root().to_path_buf(),
+                        tool_providers.clone(),
                     )?;
                 }
                 Ok(session_id)
@@ -885,6 +955,7 @@ fn handle_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
     runtime: Arc<AgentRuntime>,
     run_id: uuid::Uuid,
@@ -893,6 +964,7 @@ async fn run_agent_loop(
     _credential_resolver: Arc<dyn CredentialResolver>,
     messages: Vec<ProviderMessage>,
     cancellation: CancellationToken,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
 ) -> bool {
     let provider = match provider_registry.get(&provider_id) {
         Ok(p) => p,
@@ -906,7 +978,19 @@ async fn run_agent_loop(
         Err(_) => return false,
     };
 
-    let result = AgentLoop::new(runtime.clone())
+    let agent_loop = match build_agent_loop(runtime.clone(), tool_providers).await {
+        Ok(agent) => agent,
+        Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
+            let _ = runtime.finish_run(crate::RunEvent::Failed {
+                run_id,
+                reason: format!("tool providers failed: {error}"),
+            });
+            return false;
+        }
+        Err(_) => return false,
+    };
+
+    let result = agent_loop
         .execute(run_id, provider, messages, cancellation.clone())
         .await;
 
@@ -930,6 +1014,43 @@ async fn run_agent_loop(
     }
 }
 
+/// Build AgentLoop with optional MCP injection from ToolProviderRuntime.
+/// Explore path never passes tool_providers — stays MCP-free.
+async fn build_agent_loop(
+    runtime: Arc<AgentRuntime>,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+) -> anyhow::Result<AgentLoop> {
+    let Some(providers) = tool_providers else {
+        return Ok(AgentLoop::new(runtime));
+    };
+
+    let bridge = {
+        let mut guard = providers.lock().await;
+        // Connect all registered module-backed servers once before the loop.
+        guard.ensure_all_registered().await?;
+        guard.bridge(None)
+    };
+
+    let policy = runtime.policy();
+    let workspace_root = runtime
+        .workspace_root()
+        .expect("runtime always has a workspace root");
+    let mut web_research =
+        crate::web_research::WebResearchEngine::production(policy.egress_policy());
+    if let Ok(artifacts) = crate::DurableArtifactStore::open(crate::default_artifact_root()) {
+        web_research = web_research.with_artifact_store(
+            Arc::new(artifacts),
+            crate::web_research::ArtifactPolicy::default(),
+        );
+    }
+    let mut orchestrator = crate::ToolOrchestrator::new(policy, workspace_root)
+        .with_web_research(Arc::new(web_research));
+    if let Some(bridge) = bridge {
+        orchestrator = orchestrator.with_mcp_live(bridge);
+    }
+    Ok(AgentLoop::with_tool_orchestrator(runtime, orchestrator))
+}
+
 /// Record model selection notice and spawn the agent loop; on Completed drain
 /// the next FollowUp into a Prompt turn.
 #[allow(clippy::too_many_arguments)]
@@ -947,6 +1068,7 @@ fn launch_agent_run(
     policy: PolicyEngine,
     session_coordinator: SessionCoordinator,
     artifact_root: PathBuf,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
 ) -> Result<(), RuntimeError> {
     let runtime_session_id = runtime.session_id();
     let requirements = crate::model_router::CapabilityRequirements {
@@ -994,6 +1116,7 @@ fn launch_agent_run(
     let task_default_provider_id = default_provider_id.to_owned();
     let task_model_router = model_router.clone();
     let task_artifact_root = artifact_root;
+    let task_tool_providers = tool_providers;
 
     tokio::spawn(async move {
         let completed = run_agent_loop(
@@ -1004,6 +1127,7 @@ fn launch_agent_run(
             task_credential_resolver.clone(),
             provider_messages,
             cancellation,
+            task_tool_providers.clone(),
         )
         .await;
         if let Ok(mut active) = task_cancellations.lock()
@@ -1025,6 +1149,7 @@ fn launch_agent_run(
                 task_intent_router,
                 task_session_coordinator,
                 task_artifact_root,
+                task_tool_providers,
                 runtime_session_id,
                 run_id,
                 true,
@@ -1048,6 +1173,7 @@ fn start_drained_follow_up_if_any(
     intent_router: Arc<Mutex<UserIntentRouter>>,
     session_coordinator: SessionCoordinator,
     artifact_root: PathBuf,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
     session_id: uuid::Uuid,
     finished_run_id: uuid::Uuid,
     acquire_session_lock: bool,
@@ -1106,6 +1232,7 @@ fn start_drained_follow_up_if_any(
         policy,
         session_coordinator,
         artifact_root,
+        tool_providers,
     );
 }
 
@@ -1397,14 +1524,14 @@ fn gather_subsystem_health(
         )
     };
 
-    // Path-scope admission is production. Seatbelt process wrap is spike-only (false).
+    // Path-scope admission is production. Seatbelt process wrap is wired on macOS.
     let sandbox =
-        SubsystemStatus::ok("Path-scope sandbox fail-closed; Seatbelt process wrap not wired")
+        SubsystemStatus::ok("Path-scope sandbox fail-closed; Seatbelt process wrap on macOS")
             .with_details(serde_json::json!({
                 "platform": std::env::consts::OS,
                 "fail_closed": true,
                 "admission": "path_scope",
-                "seatbelt_process_wrap": false,
+                "seatbelt_process_wrap": true,
                 "capability": capability_truth.entry("seatbelt_process_wrap"),
             }));
 
@@ -2560,13 +2687,13 @@ mod tests {
             gather_subsystem_health(&store, &policy, &ProviderRegistry::new(), workspace.path());
 
         let sandbox = health.sandbox.details.expect("sandbox details");
-        assert_eq!(sandbox["seatbelt_process_wrap"], false);
+        assert_eq!(sandbox["seatbelt_process_wrap"], true);
         assert_eq!(sandbox["admission"], "path_scope");
         assert!(
             health
                 .sandbox
                 .message
-                .contains("Seatbelt process wrap not wired")
+                .contains("Seatbelt process wrap on macOS")
         );
 
         let artifacts = health.artifact_store.details.expect("artifact details");
@@ -2579,9 +2706,13 @@ mod tests {
         assert_eq!(tools["provider_http_tools"], true);
 
         let modules = health.optional_modules.details.expect("modules details");
-        assert_eq!(modules["extension_runtime"]["level"], "PARTIAL");
+        assert_eq!(modules["extension_runtime"]["level"], "IMPLEMENTED");
         assert_eq!(
             modules["extension_runtime"]["details"]["mcp_live_tools_in_loop"],
+            true
+        );
+        assert_eq!(
+            modules["extension_runtime"]["details"]["impetusd_autoload"],
             false
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
@@ -2590,7 +2721,7 @@ mod tests {
             .expect("capabilities array");
         assert!(
             caps.iter()
-                .any(|c| c["id"] == "seatbelt_process_wrap" && c["level"] == "PARTIAL")
+                .any(|c| c["id"] == "seatbelt_process_wrap" && c["level"] == "IMPLEMENTED")
         );
         assert!(
             caps.iter()
@@ -3264,5 +3395,80 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn build_agent_loop_injects_mcp_bridge_from_tool_providers() {
+        use crate::mcp_adapter::McpTool;
+        use crate::mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveCaller};
+        use async_trait::async_trait;
+        use serde_json::{Value, json};
+
+        struct OkCaller;
+        #[async_trait]
+        impl McpLiveCaller for OkCaller {
+            async fn call_tool(&self, _tool: &str, _arguments: Value) -> McpLiveCallResult {
+                McpLiveCallResult::Ok {
+                    preview: "from-runtime".into(),
+                }
+            }
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+
+        let tool = McpTool {
+            name: "echo".into(),
+            description: "Echo".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }),
+            annotations: Some(json!({"readOnlyHint": true})),
+        };
+        let mut providers = crate::ToolProviderRuntime::new();
+        providers.register_live_bridge(
+            "mock",
+            Arc::new(McpLiveBridge::from_tools(
+                "mock",
+                vec![tool],
+                Arc::new(OkCaller),
+            )),
+        );
+        let providers = Arc::new(tokio::sync::Mutex::new(providers));
+
+        // Harness stores the runtime handle.
+        let harness = Harness::new(Arc::new(MemoryEventStore::default()), policy.clone())
+            .with_tool_providers(providers.clone());
+        assert!(harness.tool_providers.is_some());
+
+        // build_agent_loop connects/merges and returns a loop (MCP outside AgentLoop).
+        let _agent = build_agent_loop(runtime.clone(), Some(providers.clone()))
+            .await
+            .expect("build loop with MCP");
+
+        // Prove the same runtime bridge still serves tools to the orchestrator.
+        let bridge = providers.lock().await.bridge(None).expect("bridge");
+        let orch = crate::ToolOrchestrator::new(policy, workspace.path().to_path_buf())
+            .with_mcp_live(bridge);
+        let observations = orch
+            .process_tool_calls(
+                uuid::Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "mcp-1".into(),
+                    name: "mcp:mock:echo".into(),
+                    arguments: json!({"text": "hi"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("mcp");
+        assert_eq!(observations[0].outcome, crate::ToolOutcomeStatus::Success);
+        assert_eq!(observations[0].preview, "from-runtime");
     }
 }

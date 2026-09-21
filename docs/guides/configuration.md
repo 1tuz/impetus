@@ -1,20 +1,50 @@
 # Configuration
 
-Daemon `impetusd` accepts one optional command-line argument:
+Daemon `impetusd` accepts optional flags:
 
 ```text
-impetusd [--provider-profile PATH]
+impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]
 ```
 
-Without that argument, Impetus uses its mock streaming provider. The daemon
-rejects unknown arguments and profiles with unknown fields.
+Without a provider/ACP flag, Impetus uses its mock streaming provider. Exactly
+one backend flag may be set. `--policy-config` must appear before the backend
+flag when both are used. The daemon rejects unknown arguments and profiles with
+unknown fields.
+
+## PolicyConfig
+
+User JSON overrides on top of fail-closed defaults
+([`policy_config.rs`](../../crates/impetus-core/src/policy_config.rs)).
+
+Resolution order at daemon start:
+
+1. `--policy-config PATH` (required file; bad JSON refuses start)
+2. `IMPETUS_POLICY_CONFIG` (same — explicit, refuse on error)
+3. `$IMPETUS_DATA_DIR/policy.json` (optional; missing = empty overrides)
+
+Example:
+
+```json
+{
+  "version": 1,
+  "overrides": {
+    "write_file": "allow",
+    "spawn_process": "deny",
+    "network_connect": "needs_approval"
+  }
+}
+```
+
+In-process reload remains a library API (`PolicyEngine::reload_config*` /
+`AgentRuntime::reload_policy_config*`). Typed IPC reload is still open.
 
 ## Data and socket paths
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `IMPETUS_DATA_DIR` | `~/Library/Application Support/Impetus` | SQLite event store directory. |
+| `IMPETUS_DATA_DIR` | `~/Library/Application Support/Impetus` | SQLite event store directory; optional `policy.json`. |
 | `IMPETUS_SOCKET` | `<data-dir>/harness.sock` | Unix-socket path used by daemon, `impetus` CLI, and Zap adapter. |
+| `IMPETUS_POLICY_CONFIG` | (unset) | Explicit PolicyConfig JSON path (see above). |
 
 The daemon creates the Unix socket with mode `0600`. It refuses to replace an
 existing socket path, so stop the old daemon before starting another one at the
@@ -53,14 +83,29 @@ fixture. The profile is an opaque locator, not a secret store.
 
 ## ACP profiles
 
-`config/acp-profile.example.json` describes an external ACP agent executable.
-Its `command` must be an absolute path. With `agent_owned` credentials, the
-agent CLI owns its login and `credential_ref` must be absent. The ACP gateway is
-a library and test surface; this repository does not provide a daemon command
-that loads this example automatically.
+[`docs/examples/acp-profile.example.json`](../examples/acp-profile.example.json)
+describes an external ACP agent executable for:
 
-`config/agent-backends.example.json` is a planning catalog, not a runtime
-configuration file consumed by the daemon.
+```text
+impetusd --acp-profile PATH
+```
+
+Rules:
+
+- `command` must be an absolute path (for Codex: `codex-acp`, not plain `codex`).
+- `credential_strategy` must be `{ "kind": "agent_owned" }`; no Keychain / raw
+  tokens / secret env names on the Impetus profile.
+- When the agent advertises auth methods, set `auth_method_id` explicitly
+  (Codex ACP: `"api-key"` for API-key / custom-provider login, or `"chat-gpt"`
+  for ChatGPT login). Impetus never picks a method implicitly.
+- Codex credentials live in the agent's own home (`~/.codex`). Impetus inherits
+  the process environment and does not inject API keys. If Codex `auth_mode` is
+  `apikey`, `~/.codex/config.toml` must point `model_provider` at a provider
+  whose `base_url` matches that key (otherwise Codex hits `api.openai.com` and
+  fails with 401).
+
+`config/agent-backends.example.json` (if present) is a planning catalog, not a
+runtime file consumed by the daemon.
 
 ## TUI appearance
 

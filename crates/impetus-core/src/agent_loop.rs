@@ -80,6 +80,18 @@ impl AgentLoop {
         }
     }
 
+    /// Build a loop with a pre-configured orchestrator (e.g. for restricted subagents).
+    pub fn with_tool_orchestrator(
+        runtime: Arc<AgentRuntime>,
+        orchestrator: ToolOrchestrator,
+    ) -> Self {
+        Self {
+            policy: runtime.policy(),
+            runtime,
+            tool_orchestrator: orchestrator,
+        }
+    }
+
     /// Execute the autonomous agent loop for a single run.
     ///
     /// Returns when:

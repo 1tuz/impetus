@@ -64,7 +64,8 @@ Module links:
 - Supporting: [`subagent_metadata.rs`](crates/impetus-core/src/subagent_metadata.rs),
   [`child_concurrency.rs`](crates/impetus-core/src/child_concurrency.rs),
   [`child_result_store.rs`](crates/impetus-core/src/child_result_store.rs),
-  [`explore_child.rs`](crates/impetus-core/src/explore_child.rs) (#296)
+  [`explore_child.rs`](crates/impetus-core/src/explore_child.rs) /
+  [`explore_agent_loop.rs`](crates/impetus-core/src/explore_agent_loop.rs) (#306)
 
 **Still Planned / open on this stack:** live agent process spawn (beyond
 ExploreChildRunner slice); WorkflowEngine cancel/replace wired to session-run
@@ -81,9 +82,10 @@ intents; cross-machine orchestration.
   [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
   ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
   schedule id / result slot, no live spawn); minimal Explore runtime slice
-  ([`ExploreChildRunner`](crates/impetus-core/src/explore_child.rs), #296 —
-  gate → injectable executor → durable child result → parent-resume; AgentLoop
-  wire still open); live process spawn for other roles still Planned.
+  ([`ExploreChildRunner`](crates/impetus-core/src/explore_child.rs) +
+  [`AgentLoopExploreExecutor`](crates/impetus-core/src/explore_agent_loop.rs), #306 —
+  gate → restricted AgentLoop → durable child result → parent-resume; `impetusd`
+  explore_spawn still None); live process spawn for other roles still Planned.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
   steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
@@ -131,9 +133,9 @@ impetusd  — authoritative daemon
 | --- | --- | --- |
 | Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
-| PolicyConfig JSON load / reload | Partial | Format + engine/runtime reload (#193/#201); no IPC/CLI/daemon default path yet — see § Policy customization (#9) |
+| PolicyConfig JSON load / reload | Partial | Format + engine reload (#193/#201); `impetusd` startup load (`--policy-config` / env / `policy.json`) wired; typed IPC reload still open — see § Policy customization (#9) |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
-| macOS Seatbelt (`sandbox-exec`) in tool/process exec | Partial | Spike only: `tests/macos_sandbox_spike.rs`; **not** wired in `execution/process.rs`. Production Seatbelt on macOS outranks broad cross-platform sandbox backends. |
+| macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS fmt/clippy/tests (`--lib --bins`) + Linux `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
@@ -153,14 +155,14 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial | Skills via `InstructionResolver`; `McpLiveBridge` + ToolOrchestrator hook (tests); production AgentLoop/`impetusd` not wired (no marketplace/UI) |
+| Extension **runtime** in agent loop (live MCP tools, etc.) | Implemented | Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (library harness inject); `impetusd` does **not** autoload MCP servers (`impetusd_autoload: false`; no marketplace/UI) |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267) + optional `LspBackendModule` runtime path hint (#282); mock/absent fail-closed; no real LSP process / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation [x]:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); intents/Steer/fanout/hooks Partial as before (`user_intent`, #247/#263/#271/#285/#275; `hook_prefilter` #257/#272/#276; `builtin_ids` #260). **Runtime Partial:** `ExploreChildRunner` minimal vertical (gate → injectable executor → `ChildResultStore` → parent-resume; read-only tools; AgentLoop wire still open) (#296). **Runtime [ ]:** live agent spawn for other roles; WorkflowEngine cancel/replace on session-run; live provider Steer |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation [x]:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); intents/Steer/fanout/hooks Partial as before (`user_intent`, #247/#263/#271/#285/#275; `hook_prefilter` #257/#272/#276; `builtin_ids` #260). **Runtime Partial:** `ExploreChildRunner` + `AgentLoopExploreExecutor` library E2E (gate → restricted AgentLoop → `ChildResultStore` → parent-resume; Harness `spawn_explore` / `complete_explore_and_gate`; `impetusd` explore_spawn still None) (#306). **Runtime [ ]:** live agent spawn for other roles; WorkflowEngine cancel/replace on session-run; live provider Steer |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
 | MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
 | PolicyStore (governed instructions) | Planned | Named in trust-model docs only — **no** `PolicyStore` type/module yet |
@@ -322,9 +324,8 @@ Shipped under #9: contract (#189/#191), TUI approval UI (#165/#169).
 
 Honest list (no new runtime in this docs slice):
 
-- Typed IPC / daemon CLI to load or reload PolicyConfig (library +
-  `AgentRuntime` API only today)
-- Default `impetusd` startup path that reads a user policy file
+- Typed IPC to reload PolicyConfig mid-session (startup load exists on
+  `impetusd`; library `AgentRuntime::reload_policy_config*` still the reload API)
 - Operator UX to edit/customize policy (out of scope for harness UI rewrite)
 - Optional: register PolicyConfig in the shared `impetus.*.v1` schema registry
 - Non-TUI clients (Zap adapter and others) consuming ApprovalDetail beyond the

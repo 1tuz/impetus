@@ -1,7 +1,8 @@
 //! Runtime capability truth for `impetus doctor` / Diagnostics.
 //!
 //! Values mirror the architecture capability matrix: code-backed claims only.
-//! Seatbelt process wrap stays false until production exec wires `sandbox-exec`.
+//! Seatbelt process wrap is wired on macOS via `execution/sandbox.rs` +
+//! `execution/process.rs`; non-macOS remains path-scope admission only.
 //!
 //! Docs drift guard: `tests/docs_capability_claims.rs` checks a redacted claim
 //! list in `tests/fixtures/docs_capability_claims.json` against [`CapabilityTruthReport::gather`].
@@ -93,12 +94,12 @@ impl CapabilityTruthReport {
                 ),
                 entry(
                     "seatbelt_process_wrap",
-                    CapabilityLevel::Partial,
-                    "macOS Seatbelt spike only; not wired in process/tool exec",
+                    CapabilityLevel::Implemented,
+                    "macOS Seatbelt wraps process spawn; non-macOS path-scope only",
                     Some(serde_json::json!({
-                        "seatbelt_process_wrap": false,
-                        "spike": "crates/impetus-core/tests/macos_sandbox_spike.rs",
-                        "production_exec": "execution/process.rs",
+                        "seatbelt_process_wrap": true,
+                        "platform": "macos",
+                        "non_macos": "path_scope_only",
                     })),
                 ),
                 entry(
@@ -186,13 +187,15 @@ impl CapabilityTruthReport {
                 ),
                 entry(
                     "extension_runtime",
-                    CapabilityLevel::Partial,
-                    "Skills via InstructionResolver; MCP live library + ToolOrchestrator hook; AgentLoop/daemon not wired",
+                    CapabilityLevel::Implemented,
+                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop (library); impetusd does not autoload MCP servers",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "mcp_live_library": true,
                         "mcp_live_orchestrator_hook": true,
-                        "mcp_live_tools_in_loop": false,
+                        "mcp_live_tools_in_loop": true,
+                        "harness_inject": true,
+                        "impetusd_autoload": false,
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
                         "lifecycle_cli_plan_install": true,
@@ -230,13 +233,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capability_truth_seatbelt_wrap_false_and_durable_artifacts() {
+    fn capability_truth_seatbelt_wrap_wired_and_durable_artifacts() {
         let report = CapabilityTruthReport::gather(&[]);
         let seatbelt = report.entry("seatbelt_process_wrap").expect("seatbelt row");
-        assert_eq!(seatbelt.level, CapabilityLevel::Partial);
+        assert_eq!(seatbelt.level, CapabilityLevel::Implemented);
         assert_eq!(
             seatbelt.details.as_ref().unwrap()["seatbelt_process_wrap"],
-            false
+            true
+        );
+        assert_eq!(seatbelt.details.as_ref().unwrap()["platform"], "macos");
+        assert_eq!(
+            seatbelt.details.as_ref().unwrap()["non_macos"],
+            "path_scope_only"
         );
 
         let durable = report.entry("durable_artifact_store").expect("durable row");
@@ -268,11 +276,13 @@ mod tests {
         );
 
         let ext_rt = report.entry("extension_runtime").expect("ext runtime");
-        assert_eq!(ext_rt.level, CapabilityLevel::Partial);
+        assert_eq!(ext_rt.level, CapabilityLevel::Implemented);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_tools_in_loop"],
-            false
+            true
         );
+        assert_eq!(ext_rt.details.as_ref().unwrap()["harness_inject"], true);
+        assert_eq!(ext_rt.details.as_ref().unwrap()["impetusd_autoload"], false);
         assert_eq!(ext_rt.details.as_ref().unwrap()["mcp_live_library"], true);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_orchestrator_hook"],
