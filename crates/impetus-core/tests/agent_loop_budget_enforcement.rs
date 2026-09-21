@@ -18,6 +18,7 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let mut runtime = AgentRuntime::new(store.clone(), policy.clone());
@@ -122,6 +123,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let mut runtime = AgentRuntime::new(store.clone(), policy.clone());
@@ -211,6 +213,7 @@ async fn budget_events_emitted_on_approaching_limit() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let mut runtime = AgentRuntime::new(store.clone(), policy.clone());

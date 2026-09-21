@@ -161,7 +161,7 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
 ### Safety & policy
 
 - [x] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
-- [ ] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
+- [x] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
 - [x] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
 - [x] Validate initial URL, DNS resolution, redirect chain, final destination
 - [ ] LAN/internal targets — separate capability, not default `web.read`

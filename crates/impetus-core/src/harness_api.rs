@@ -1050,6 +1050,7 @@ fn gather_subsystem_health(
     let web_research = SubsystemStatus::ok("Native web research contract available").with_details(
         serde_json::json!({
             "internet_access": policy.scope().allow_network,
+            "web_outbound": policy.scope().allow_web_outbound,
             "web_fetch": true,
             "search_backends": web_report.search_backends,
             "browser_provider": web_report.browser,
@@ -2117,6 +2118,7 @@ mod tests {
         assert!(health.web_research.available);
         let details = health.web_research.details.expect("web details");
         assert_eq!(details["internet_access"], false);
+        assert_eq!(details["web_outbound"], false);
         assert_eq!(details["web_fetch"], true);
         assert_eq!(details["search_backends"][0]["id"], "bing_html");
         assert_eq!(details["search_backends"][1]["id"], "duckduckgo");

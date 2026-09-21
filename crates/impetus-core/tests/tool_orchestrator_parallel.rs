@@ -18,6 +18,7 @@ async fn multiple_read_file_calls_execute_in_parallel() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let store = Arc::new(impetus_core::MemoryEventStore::default());
@@ -93,6 +94,7 @@ async fn write_operations_remain_sequential() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let store = Arc::new(impetus_core::MemoryEventStore::default());
@@ -169,6 +171,7 @@ async fn mixed_parallel_and_sequential_execution() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let store = Arc::new(impetus_core::MemoryEventStore::default());
@@ -243,6 +246,7 @@ async fn partial_failures_handled_correctly() {
         workspace_root: workspace.clone(),
         allow_network: false,
         allowed_hosts: vec![],
+        allow_web_outbound: false,
     };
     let policy = PolicyEngine::new(scope);
     let store = Arc::new(impetus_core::MemoryEventStore::default());
