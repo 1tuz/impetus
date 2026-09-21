@@ -18,12 +18,21 @@
 //! Derived indexes are disposable: rebuild anytime from entries, or delete the
 //! on-disk `derived-index/` tree under a store root. Index I/O refuses paths
 //! that escape the store root via `..` or symlink traversal.
+//!
+//! Human-readable source formats ([`MemoryStore::export_jsonl`] /
+//! [`MemoryStore::export_markdown`]) carry labels + content only. Import goes
+//! through create-only [`MemoryStore::remember`] so secret filtering still runs.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{EffectCapability, PolicyDecision, PolicyEngine, SandboxScope};
+
+/// Markdown entry header prefix: `### impetus-memory: <id>`.
+const MD_ENTRY_HEADER: &str = "### impetus-memory: ";
 
 /// Relative directory under a memory store root for disposable derived index files.
 pub const DERIVED_INDEX_DIR: &str = "derived-index";
@@ -32,7 +41,8 @@ pub const DERIVED_INDEX_DIR: &str = "derived-index";
 const DERIVED_INDEX_BY_ID: &str = "by-id.txt";
 
 /// Visibility boundary for a memory entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MemoryScope {
     Project,
     Team,
@@ -40,12 +50,21 @@ pub enum MemoryScope {
 }
 
 /// Labels describing where an entry came from. Never holds secrets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryProvenance {
     /// Producer label, e.g. `"user"`, `"agent-summary"`, `"import:notes"`.
     pub source: String,
     /// Content kind label, e.g. `"note"`, `"summary"`.
     pub kind: String,
+}
+
+/// Wire shape for JSONL lines (labels + content; no secret fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MemoryEntryWire {
+    id: String,
+    scope: MemoryScope,
+    content: String,
+    provenance: MemoryProvenance,
 }
 
 /// One unit of contextual knowledge. Content is untrusted text only.
@@ -66,6 +85,8 @@ pub enum MemoryStoreError {
     UnsafeStorePath(String),
     /// Filesystem failure while reading/writing disposable index.
     Io(String),
+    /// JSONL / markdown source parse or serialize failure.
+    InvalidSource(String),
 }
 
 impl std::fmt::Display for MemoryStoreError {
@@ -81,7 +102,40 @@ impl std::fmt::Display for MemoryStoreError {
                 )
             }
             Self::Io(msg) => write!(f, "memory store io error: {msg}"),
+            Self::InvalidSource(msg) => write!(f, "memory source format error: {msg}"),
         }
+    }
+}
+
+fn scope_label(scope: MemoryScope) -> &'static str {
+    match scope {
+        MemoryScope::Project => "project",
+        MemoryScope::Team => "team",
+        MemoryScope::User => "user",
+    }
+}
+
+fn parse_scope_label(label: &str) -> Result<MemoryScope, MemoryStoreError> {
+    match label {
+        "project" => Ok(MemoryScope::Project),
+        "team" => Ok(MemoryScope::Team),
+        "user" => Ok(MemoryScope::User),
+        other => Err(MemoryStoreError::InvalidSource(format!(
+            "unknown scope label: {other}"
+        ))),
+    }
+}
+
+fn parse_md_meta_line(line: Option<&str>, key: &str) -> Result<String, MemoryStoreError> {
+    let line = line.ok_or_else(|| {
+        MemoryStoreError::InvalidSource(format!("missing markdown meta `- {key}:`"))
+    })?;
+    let prefix = format!("- {key}: ");
+    match line.strip_prefix(&prefix) {
+        Some(rest) => Ok(rest.to_string()),
+        None => Err(MemoryStoreError::InvalidSource(format!(
+            "expected `{prefix}<value>`, got: {line}"
+        ))),
     }
 }
 
@@ -330,6 +384,139 @@ impl MemoryStore {
             })?;
         }
         Ok(())
+    }
+
+    /// Export entries as JSONL (one object per line). Labels + content only.
+    pub fn export_jsonl(&self) -> Result<String, MemoryStoreError> {
+        let mut out = String::new();
+        for entry in &self.entries {
+            let wire = MemoryEntryWire {
+                id: entry.id.clone(),
+                scope: entry.scope,
+                content: entry.content.clone(),
+                provenance: entry.provenance.clone(),
+            };
+            let line = serde_json::to_string(&wire).map_err(|err| {
+                MemoryStoreError::InvalidSource(format!("jsonl serialize: {err}"))
+            })?;
+            out.push_str(&line);
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// Import JSONL lines via create-only [`Self::remember`] (secret filtering).
+    ///
+    /// Blank lines skipped. Duplicate ids refuse with [`MemoryStoreError::AlreadyExists`].
+    pub fn import_jsonl(&mut self, text: &str) -> Result<usize, MemoryStoreError> {
+        let mut count = 0;
+        for (lineno, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let wire: MemoryEntryWire = serde_json::from_str(line).map_err(|err| {
+                MemoryStoreError::InvalidSource(format!("jsonl line {}: {err}", lineno + 1))
+            })?;
+            self.remember(wire.id, wire.scope, wire.content, wire.provenance)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Build a store from JSONL source.
+    pub fn from_jsonl(text: &str) -> Result<Self, MemoryStoreError> {
+        let mut store = Self::new();
+        store.import_jsonl(text)?;
+        Ok(store)
+    }
+
+    /// Export entries as readable markdown blocks (labels as list items).
+    pub fn export_markdown(&self) -> String {
+        let mut out = String::new();
+        for entry in &self.entries {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(MD_ENTRY_HEADER);
+            out.push_str(&entry.id);
+            out.push('\n');
+            out.push_str("- scope: ");
+            out.push_str(scope_label(entry.scope));
+            out.push('\n');
+            out.push_str("- source: ");
+            out.push_str(&entry.provenance.source);
+            out.push('\n');
+            out.push_str("- kind: ");
+            out.push_str(&entry.provenance.kind);
+            out.push('\n');
+            out.push('\n');
+            out.push_str(&entry.content);
+            if !entry.content.is_empty() && !entry.content.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Import markdown blocks via create-only [`Self::remember`] (secret filtering).
+    pub fn import_markdown(&mut self, text: &str) -> Result<usize, MemoryStoreError> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        let mut count = 0;
+
+        while i < lines.len() {
+            if lines[i].trim().is_empty() {
+                i += 1;
+                continue;
+            }
+            let header = lines[i];
+            let id = header.strip_prefix(MD_ENTRY_HEADER).ok_or_else(|| {
+                MemoryStoreError::InvalidSource(format!(
+                    "expected `{MD_ENTRY_HEADER}<id>`, got: {header}"
+                ))
+            })?;
+            let id = id.trim();
+            if id.is_empty() {
+                return Err(MemoryStoreError::InvalidSource(
+                    "empty memory entry id in markdown header".into(),
+                ));
+            }
+            i += 1;
+
+            while i < lines.len() && lines[i].trim().is_empty() {
+                i += 1;
+            }
+
+            let scope = parse_scope_label(&parse_md_meta_line(lines.get(i).copied(), "scope")?)?;
+            i += 1;
+            let source = parse_md_meta_line(lines.get(i).copied(), "source")?;
+            i += 1;
+            let kind = parse_md_meta_line(lines.get(i).copied(), "kind")?;
+            i += 1;
+
+            if i < lines.len() && lines[i].trim().is_empty() {
+                i += 1;
+            }
+
+            let content_start = i;
+            while i < lines.len() && !lines[i].starts_with(MD_ENTRY_HEADER) {
+                i += 1;
+            }
+            let content = lines[content_start..i].join("\n");
+
+            self.remember(id, scope, content, MemoryProvenance { source, kind })?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Build a store from markdown source.
+    pub fn from_markdown(text: &str) -> Result<Self, MemoryStoreError> {
+        let mut store = Self::new();
+        store.import_markdown(text)?;
+        Ok(store)
     }
 }
 
@@ -732,5 +919,119 @@ mod tests {
             matches!(err, MemoryStoreError::UnsafeStorePath(_)),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn jsonl_round_trip_preserves_labels_and_content() {
+        let mut memory = MemoryStore::new();
+        memory
+            .remember(
+                "proj-1",
+                MemoryScope::Project,
+                "prefer rebase",
+                MemoryProvenance {
+                    source: "user".into(),
+                    kind: "note".into(),
+                },
+            )
+            .expect("create");
+        memory
+            .remember(
+                "team-1",
+                MemoryScope::Team,
+                "deploy checklist",
+                MemoryProvenance {
+                    source: "import:runbooks".into(),
+                    kind: "summary".into(),
+                },
+            )
+            .expect("create");
+
+        let jsonl = memory.export_jsonl().expect("export");
+        assert!(jsonl.lines().count() >= 2);
+        assert!(!jsonl.contains("token"));
+        assert!(!jsonl.contains("secret"));
+
+        let restored = MemoryStore::from_jsonl(&jsonl).expect("import");
+        assert_eq!(restored.entries(), memory.entries());
+    }
+
+    #[test]
+    fn markdown_round_trip_preserves_labels_and_content() {
+        let mut memory = MemoryStore::new();
+        memory
+            .remember(
+                "user-1",
+                MemoryScope::User,
+                "line one\nline two",
+                MemoryProvenance {
+                    source: "agent-summary".into(),
+                    kind: "summary".into(),
+                },
+            )
+            .expect("create");
+
+        let md = memory.export_markdown();
+        assert!(md.contains("### impetus-memory: user-1"));
+        assert!(md.contains("- scope: user"));
+        assert!(md.contains("- source: agent-summary"));
+
+        let restored = MemoryStore::from_markdown(&md).expect("import");
+        assert_eq!(restored.entries(), memory.entries());
+    }
+
+    #[test]
+    fn import_jsonl_redacts_fake_secret_tokens() {
+        let jsonl = concat!(
+            r#"{"id":"leak","scope":"user","content":"API_TOKEN=fake-jsonl-token-abc\nok","provenance":{"source":"user","kind":"note"}}"#,
+            "\n"
+        );
+        let store = MemoryStore::from_jsonl(jsonl).expect("import");
+        let content = &store.entries()[0].content;
+        assert!(!content.contains("fake-jsonl-token-abc"));
+        assert!(content.contains("[REDACTED]"));
+        assert!(content.contains("ok"));
+        assert_eq!(store.entries()[0].provenance.source, "user");
+    }
+
+    #[test]
+    fn import_markdown_redacts_fake_secret_tokens() {
+        let md = "### impetus-memory: leak\n\
+- scope: project\n\
+- source: import:notes\n\
+- kind: note\n\
+\n\
+Authorization: Bearer fake-md-bearer-xyz\n\
+safe-line\n";
+        let store = MemoryStore::from_markdown(md).expect("import");
+        let content = &store.entries()[0].content;
+        assert!(!content.contains("fake-md-bearer-xyz"));
+        assert!(content.contains("[REDACTED]"));
+        assert!(content.contains("safe-line"));
+    }
+
+    #[test]
+    fn import_jsonl_refuses_duplicate_id() {
+        let mut memory = MemoryStore::new();
+        memory
+            .remember("same", MemoryScope::Project, "first", note_provenance())
+            .expect("create");
+        let jsonl = concat!(
+            r#"{"id":"same","scope":"team","content":"second","provenance":{"source":"x","kind":"note"}}"#,
+            "\n"
+        );
+        let err = memory.import_jsonl(jsonl).expect_err("duplicate");
+        assert_eq!(err, MemoryStoreError::AlreadyExists("same".into()));
+        assert_eq!(memory.entries().len(), 1);
+        assert_eq!(memory.entries()[0].content, "first");
+    }
+
+    #[test]
+    fn import_rejects_invalid_source() {
+        let err = MemoryStore::from_jsonl("{not-json\n").expect_err("bad jsonl");
+        assert!(matches!(err, MemoryStoreError::InvalidSource(_)));
+
+        let err = MemoryStore::from_markdown("### wrong-header: x\n").expect_err("bad md");
+        assert!(matches!(err, MemoryStoreError::InvalidSource(_)));
     }
 }
