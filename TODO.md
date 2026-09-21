@@ -251,7 +251,7 @@ Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SH
 - [x] Bracketed paste support
 - [x] Large paste UX (`[Pasted text · N KB · M lines]`)
 - [x] Streaming output rendering
-- [ ] Markdown rendering (bounded)
+- [x] Markdown rendering (bounded)
 - [ ] Diff view
 - [ ] Approval UI (typed approvals from harness)
 - [ ] Session picker / list
