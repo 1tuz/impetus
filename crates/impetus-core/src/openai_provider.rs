@@ -16,6 +16,24 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
 
+/// OpenAI Chat Completions `tools` array from [`crate::builtin_tool_schemas`].
+pub fn openai_tools_payload() -> serde_json::Value {
+    let tools: Vec<serde_json::Value> = crate::builtin_tool_schemas()
+        .iter()
+        .map(|schema| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": schema.name,
+                    "description": schema.description,
+                    "parameters": schema.parameters.clone(),
+                }
+            })
+        })
+        .collect();
+    serde_json::Value::Array(tools)
+}
+
 /// Accumulates streaming tool call chunks from OpenAI SSE.
 #[derive(Debug, Default)]
 struct ToolCallAccumulator {
@@ -104,6 +122,8 @@ impl OpenAiProvider {
                 "model": self.profile.model,
                 "messages": messages,
                 "stream": true,
+                "tools": openai_tools_payload(),
+                "tool_choice": "auto",
             }));
 
             if let Some(token) = credential {
@@ -391,5 +411,42 @@ mod tests {
         assert_eq!(budget.max_attempts, 2);
         assert_eq!(budget.retry_delay, Duration::from_millis(100));
         assert_eq!(budget.request_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn openai_tools_payload_matches_builtin_schemas() {
+        let tools = openai_tools_payload();
+        let arr = tools.as_array().expect("tools array");
+        let schemas = crate::builtin_tool_schemas();
+        assert_eq!(arr.len(), schemas.len());
+        for (entry, schema) in arr.iter().zip(schemas.iter()) {
+            assert_eq!(entry["type"], "function");
+            assert_eq!(entry["function"]["name"], schema.name);
+            assert_eq!(entry["function"]["description"], schema.description);
+            assert_eq!(entry["function"]["parameters"], schema.parameters);
+        }
+        let names: Vec<&str> = arr
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+    }
+
+    #[test]
+    fn chat_completions_request_body_includes_tools() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "tools": openai_tools_payload(),
+            "tool_choice": "auto",
+        });
+        assert_eq!(body["tool_choice"], "auto");
+        let tools = body["tools"].as_array().expect("tools");
+        assert!(!tools.is_empty());
+        assert_eq!(tools[0]["type"], "function");
+        assert!(tools[0]["function"]["parameters"].is_object());
     }
 }

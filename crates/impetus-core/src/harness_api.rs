@@ -1101,7 +1101,7 @@ fn gather_subsystem_health(
                 "builtin_tools": ["bash", "read", "write", "edit", "search"],
                 "module_registry": "available",
                 "tool_schema_gate": true,
-                "provider_http_tools": false,
+                "provider_http_tools": true,
                 "capability": capability_truth.entry("tool_schema_validation"),
             }));
 
@@ -2244,7 +2244,7 @@ mod tests {
 
         let tools = health.tools_capabilities.details.expect("tools details");
         assert_eq!(tools["tool_schema_gate"], true);
-        assert_eq!(tools["provider_http_tools"], false);
+        assert_eq!(tools["provider_http_tools"], true);
 
         let modules = health.optional_modules.details.expect("modules details");
         assert_eq!(modules["extension_runtime"]["level"], "PARTIAL");

@@ -38,8 +38,9 @@ Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.
       (`tool_schema::validate_tool_arguments` in `ToolOrchestrator::normalize_tool_call`)
 - [x] Reject malformed args without reaching executor (typed `ToolArgError` /
       `OrchestratorError::InvalidArguments`; no silent coercion at the schema gate)
-- [ ] Provider HTTP `tools` schemas — Planned; today prompt-only catalog +
-      `builtin_tool_schemas()` for a future wire-up
+- [x] Provider HTTP `tools` schemas — OpenAI Chat Completions + Anthropic
+      Messages `tools` from `builtin_tool_schemas()` (`openai_tools_payload` /
+      `anthropic_tools_payload`; `provider_http_tools: true` in capability truth)
 
 ### 3. Single durable ArtifactStore semantics
 

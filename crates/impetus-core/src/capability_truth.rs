@@ -116,7 +116,7 @@ impl CapabilityTruthReport {
                     Some(serde_json::json!({
                         "gate": true,
                         "builtin_schema_count": schema_count,
-                        "provider_http_tools": false,
+                        "provider_http_tools": true,
                     })),
                 ),
                 entry(

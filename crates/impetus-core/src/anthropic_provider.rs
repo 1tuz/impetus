@@ -17,6 +17,21 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
 
+/// Anthropic Messages API `tools` array from [`crate::builtin_tool_schemas`].
+pub fn anthropic_tools_payload() -> serde_json::Value {
+    let tools: Vec<serde_json::Value> = crate::builtin_tool_schemas()
+        .iter()
+        .map(|schema| {
+            serde_json::json!({
+                "name": schema.name,
+                "description": schema.description,
+                "input_schema": schema.parameters.clone(),
+            })
+        })
+        .collect();
+    serde_json::Value::Array(tools)
+}
+
 /// Accumulates streaming tool call input from Anthropic SSE.
 #[derive(Debug, Default)]
 struct ToolCallAccumulator {
@@ -119,6 +134,7 @@ impl AnthropicProvider {
             "messages": anthropic_messages,
             "stream": true,
             "max_tokens": 8192,
+            "tools": anthropic_tools_payload(),
         });
 
         if !system_parts.is_empty() {
@@ -480,5 +496,21 @@ mod tests {
         assert_eq!(budget.max_attempts, 2);
         assert_eq!(budget.retry_delay, Duration::from_millis(100));
         assert_eq!(budget.request_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn anthropic_tools_payload_matches_builtin_schemas() {
+        let tools = anthropic_tools_payload();
+        let arr = tools.as_array().expect("tools array");
+        let schemas = crate::builtin_tool_schemas();
+        assert_eq!(arr.len(), schemas.len());
+        for (entry, schema) in arr.iter().zip(schemas.iter()) {
+            assert_eq!(entry["name"], schema.name);
+            assert_eq!(entry["description"], schema.description);
+            assert_eq!(entry["input_schema"], schema.parameters);
+        }
+        let names: Vec<&str> = arr.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
     }
 }
