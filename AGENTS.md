@@ -10,6 +10,14 @@ Style (caveman), YAGNI/ponytail, **RTK**, and token reduction — see Codewhale 
 
 This file covers product boundaries and verification for this repo only.
 
+## Persistent project memory
+
+Before non-trivial work read `TODO.md` and `ARCHITECTURE.md`.
+After implementation update their status in the same change.
+Stale documentation is a bug. `TODO.md` = open work only (no `[x]` with
+Partial tails). `ARCHITECTURE.md` = Implemented only when production
+daemon/client path works end-to-end.
+
 ## Immovable Boundaries
 
 - Harness-first: current stage — standalone Rust runtime and CLI. Standalone TUI — first-class planned client; do not start a custom PTY/ANSI terminal emulator without a documented unmet requirement.

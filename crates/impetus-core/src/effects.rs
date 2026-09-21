@@ -6,9 +6,11 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, ApprovalRequest, ApprovalResolution, ApprovalResolver,
-    ApprovalState, PolicyDecision, PolicyEngine, SandboxScope,
+    ApprovalState, ExecutionMode, PolicyDecision, PolicyEngine, RiskContext, RiskGate,
+    RiskGateDecision, SandboxScope, default_risk_gate, is_mutating_effect, is_read_only_effect,
 };
 use std::path::Path;
+use std::sync::Arc;
 
 /// Capability version tracks breaking changes to action structure or semantics.
 /// Approval fingerprints include capability version so old approvals cannot be
@@ -126,6 +128,61 @@ impl NormalizedEffect {
             },
         }
     }
+}
+
+/// Map a policy [`Action`] into a normalized effect for seam admission.
+pub fn normalized_effect_from_action(
+    action: &Action,
+    capability_version: Option<u32>,
+) -> Option<NormalizedEffect> {
+    let version = CapabilityVersion(capability_version.unwrap_or(1));
+    let target = action.target.clone().unwrap_or_default();
+    Some(match action.kind {
+        ActionKind::ReadFile => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::WorkspaceRead,
+            version,
+            action: action.clone(),
+        },
+        ActionKind::WriteFile => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::WorkspaceWrite,
+            version,
+            action: action.clone(),
+        },
+        ActionKind::SpawnProcess | ActionKind::TmuxAttach => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::ProcessSpawn,
+            version,
+            action: action.clone(),
+        },
+        ActionKind::NetworkConnect => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::NetworkConnect,
+            version,
+            action: action.clone(),
+        },
+        ActionKind::SshConnect => {
+            NormalizedEffect::ssh_connect(action.origin, action.summary.clone(), target)
+        }
+        ActionKind::SftpTransfer => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::NetworkConnect,
+            version,
+            action: action.clone(),
+        },
+        ActionKind::WebSearch
+        | ActionKind::WebFetch
+        | ActionKind::WebDownload
+        | ActionKind::WebBrowser
+        | ActionKind::WebSubmit
+        | ActionKind::WebUpload => NormalizedEffect {
+            origin: action.origin,
+            capability: EffectCapability::NetworkConnect,
+            version,
+            action: action.clone(),
+        },
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,14 +326,19 @@ impl Sandbox {
                 // Process spawn allowed within workspace scope
             }
             EffectCapability::NetworkConnect => {
-                if effect.action.kind != ActionKind::NetworkConnect
-                    && effect.action.kind != ActionKind::SshConnect
-                    && effect.action.kind != ActionKind::SftpTransfer
-                {
-                    return Err(
-                        "NetworkConnect capability requires NetworkConnect, SshConnect, or SftpTransfer action"
-                            .into(),
-                    );
+                if !matches!(
+                    effect.action.kind,
+                    ActionKind::NetworkConnect
+                        | ActionKind::SshConnect
+                        | ActionKind::SftpTransfer
+                        | ActionKind::WebSearch
+                        | ActionKind::WebFetch
+                        | ActionKind::WebDownload
+                        | ActionKind::WebBrowser
+                        | ActionKind::WebSubmit
+                        | ActionKind::WebUpload
+                ) {
+                    return Err("NetworkConnect capability requires network or web action".into());
                 }
                 if !scope.allow_network {
                     return Err("network is disabled in this sandbox scope".into());
@@ -288,55 +350,165 @@ impl Sandbox {
 }
 
 /// Fixed order for capability execution:
-/// normalized effect -> policy decision -> sandbox -> capability -> execution.
-#[derive(Debug, Clone)]
+/// sandbox -> policy (hard Deny) -> execution mode -> RiskGate -> capability.
+#[derive(Clone)]
 pub struct EffectSeam {
     policy: PolicyEngine,
     sandbox: Sandbox,
+    execution_mode: ExecutionMode,
+    risk_gate: Arc<dyn RiskGate>,
     #[cfg(test)]
     require_test_approval: bool,
+}
+
+impl std::fmt::Debug for EffectSeam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EffectSeam")
+            .field("policy", &self.policy)
+            .field("sandbox", &self.sandbox)
+            .field("execution_mode", &self.execution_mode)
+            .field("risk_gate", &"<dyn RiskGate>")
+            .finish()
+    }
 }
 
 impl EffectSeam {
     pub fn workspace_read(root: impl Into<std::path::PathBuf>) -> Self {
         let root = root.into();
-        Self {
-            policy: PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
-            sandbox: Sandbox::workspace(root),
-            #[cfg(test)]
-            require_test_approval: false,
-        }
+        Self::with_admission(
+            PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
+            Sandbox::workspace(root),
+            ExecutionMode::Ask,
+            default_risk_gate(),
+        )
     }
 
     pub fn workspace_full(root: impl Into<std::path::PathBuf>) -> Self {
         let root = root.into();
-        Self {
-            policy: PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
-            sandbox: Sandbox::workspace(root),
-            #[cfg(test)]
-            require_test_approval: false,
-        }
+        Self::with_admission(
+            PolicyEngine::new(SandboxScope::local_workspace(root.clone())),
+            Sandbox::workspace(root),
+            ExecutionMode::Ask,
+            default_risk_gate(),
+        )
     }
 
     pub fn with_sandbox(policy: PolicyEngine, sandbox: Sandbox) -> Self {
+        Self::with_admission(policy, sandbox, ExecutionMode::Ask, default_risk_gate())
+    }
+
+    pub fn with_admission(
+        policy: PolicyEngine,
+        sandbox: Sandbox,
+        execution_mode: ExecutionMode,
+        risk_gate: Arc<dyn RiskGate>,
+    ) -> Self {
         Self {
             policy,
             sandbox,
+            execution_mode,
+            risk_gate,
             #[cfg(test)]
             require_test_approval: false,
         }
     }
 
+    pub fn with_execution_mode(mut self, execution_mode: ExecutionMode) -> Self {
+        self.execution_mode = execution_mode;
+        self
+    }
+
     pub fn decide(&self, effect: &NormalizedEffect) -> EffectDecision {
-        // Sandbox check first: fail-closed
+        self.decide_with_argv(effect, None)
+    }
+
+    pub fn decide_with_argv(
+        &self,
+        effect: &NormalizedEffect,
+        argv: Option<&[String]>,
+    ) -> EffectDecision {
+        self.admit(effect, argv)
+    }
+
+    fn admit(&self, effect: &NormalizedEffect, argv: Option<&[String]>) -> EffectDecision {
         if let Err(reason) = self.sandbox.admit(effect) {
             return EffectDecision::Deny { reason };
         }
 
-        match self.policy_decision(&effect.action) {
+        let policy = self.policy_decision(&effect.action);
+        if let PolicyDecision::Deny { reason } = policy {
+            return EffectDecision::Deny { reason };
+        }
+
+        if !self.execution_mode.is_mutating_tool_allowed() && is_mutating_effect(effect) {
+            return EffectDecision::Deny {
+                reason: "execution mode PLAN denies mutating effects".into(),
+            };
+        }
+
+        let risk = self.risk_gate.classify(&RiskContext {
+            mode: self.execution_mode,
+            effect,
+            argv,
+        });
+        let decision = self.combine(policy, risk, effect);
+        self.maybe_force_test_approval(effect, decision)
+    }
+
+    fn maybe_force_test_approval(
+        &self,
+        _effect: &NormalizedEffect,
+        decision: EffectDecision,
+    ) -> EffectDecision {
+        #[cfg(test)]
+        {
+            if self.require_test_approval
+                && _effect.action.kind == ActionKind::ReadFile
+                && matches!(decision, EffectDecision::Allow)
+            {
+                return EffectDecision::NeedsApproval {
+                    reason: "test-only approval gate".into(),
+                };
+            }
+        }
+        decision
+    }
+
+    fn combine(
+        &self,
+        policy: PolicyDecision,
+        risk: RiskGateDecision,
+        effect: &NormalizedEffect,
+    ) -> EffectDecision {
+        // Hard RiskGate Deny always wins (sudo, destructive git, path escape).
+        if let RiskGateDecision::Deny { reason } = risk {
+            return EffectDecision::Deny { reason };
+        }
+        match policy {
             PolicyDecision::Deny { reason } => EffectDecision::Deny { reason },
-            PolicyDecision::NeedsApproval { reason } => EffectDecision::NeedsApproval { reason },
+            // Explicit policy Allow (e.g. PolicyConfig override) is authoritative;
+            // soft RiskGate NeedsHumanApproval must not undo operator allow.
             PolicyDecision::Allow => EffectDecision::Allow,
+            PolicyDecision::NeedsApproval { reason } => match risk {
+                RiskGateDecision::Allow if self.risk_auto_allows_policy_deferral(effect) => {
+                    EffectDecision::Allow
+                }
+                RiskGateDecision::NeedsHumanApproval {
+                    reason: risk_reason,
+                } => EffectDecision::NeedsApproval {
+                    reason: risk_reason,
+                },
+                RiskGateDecision::Allow => EffectDecision::NeedsApproval { reason },
+                RiskGateDecision::Deny { .. } => unreachable!("deny handled above"),
+            },
+        }
+    }
+
+    fn risk_auto_allows_policy_deferral(&self, effect: &NormalizedEffect) -> bool {
+        match self.execution_mode {
+            ExecutionMode::AcceptEdits | ExecutionMode::Auto | ExecutionMode::Bypass => true,
+            ExecutionMode::Ask => is_read_only_effect(effect),
+            ExecutionMode::Plan => false,
         }
     }
 
@@ -345,17 +517,20 @@ impl EffectSeam {
     /// be presented to a human before any sandbox or capability code runs.
     /// `Allow` returns an AdmittedOperation token proving the effect passed admission.
     pub fn request(&self, effect: NormalizedEffect, intent_revision: u64) -> EffectAdmission {
-        // Sandbox check first: fail-closed
-        if let Err(reason) = self.sandbox.admit(&effect) {
-            return EffectAdmission::Deny { reason };
-        }
+        self.request_with_argv(effect, intent_revision, None)
+    }
 
-        match self.policy_decision(&effect.action) {
-            PolicyDecision::Deny { reason } => EffectAdmission::Deny { reason },
-            PolicyDecision::Allow => {
+    pub fn request_with_argv(
+        &self,
+        effect: NormalizedEffect,
+        intent_revision: u64,
+        argv: Option<&[String]>,
+    ) -> EffectAdmission {
+        match self.admit(&effect, argv) {
+            EffectDecision::Allow => {
                 EffectAdmission::Allow(AdmittedOperation::new(effect, intent_revision))
             }
-            PolicyDecision::NeedsApproval { reason } => {
+            EffectDecision::NeedsApproval { reason } => {
                 EffectAdmission::NeedsApproval(DeferredEffect {
                     approval: ApprovalRequest::pending_with_version(
                         effect.action.clone(),
@@ -366,6 +541,7 @@ impl EffectSeam {
                     effect,
                 })
             }
+            EffectDecision::Deny { reason } => EffectAdmission::Deny { reason },
         }
     }
 
@@ -428,6 +604,10 @@ impl EffectSeam {
         }
 
         Ok(match self.policy_decision(&deferred.effect.action) {
+            PolicyDecision::Deny { reason } => EffectExecution::Denied { reason },
+            PolicyDecision::Allow => EffectExecution::Denied {
+                reason: "policy decision changed before approved execution".into(),
+            },
             PolicyDecision::NeedsApproval { .. } => match self.sandbox.admit(&deferred.effect) {
                 Ok(()) => {
                     let admission =
@@ -436,10 +616,6 @@ impl EffectSeam {
                 }
                 Err(reason) => EffectExecution::Denied { reason },
             },
-            PolicyDecision::Allow => EffectExecution::Denied {
-                reason: "policy decision changed before approved execution".into(),
-            },
-            PolicyDecision::Deny { reason } => EffectExecution::Denied { reason },
         })
     }
 
@@ -689,5 +865,73 @@ mod tests {
         };
         assert_eq!(deferred.effect(), &effect);
         assert_eq!(deferred.approval().intent_revision, 42);
+    }
+
+    #[test]
+    fn plan_mode_denies_workspace_write_before_execution() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root).with_execution_mode(ExecutionMode::Plan);
+        let effect =
+            NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
+        assert!(matches!(
+            seam.decide(&effect),
+            EffectDecision::Deny { reason } if reason.contains("PLAN")
+        ));
+    }
+
+    #[test]
+    fn auto_mode_allows_agent_write_without_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root).with_execution_mode(ExecutionMode::Auto);
+        let effect =
+            NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
+        assert_eq!(seam.decide(&effect), EffectDecision::Allow);
+    }
+
+    #[test]
+    fn auto_mode_allows_safe_read_spawn_without_approval() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root).with_execution_mode(ExecutionMode::Auto);
+        let effect =
+            NormalizedEffect::process_spawn(ActionOrigin::Agent, "git status", "git status");
+        assert_eq!(seam.decide(&effect), EffectDecision::Allow);
+    }
+
+    #[test]
+    fn bypass_cannot_override_sandbox_escape() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root).with_execution_mode(ExecutionMode::Bypass);
+        let effect = NormalizedEffect::workspace_write(
+            ActionOrigin::Agent,
+            "write outside",
+            "/etc/forbidden",
+        );
+        assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn bypass_still_denies_sudo_via_risk_gate() {
+        let root = workspace();
+        let seam = EffectSeam::workspace_full(&root).with_execution_mode(ExecutionMode::Bypass);
+        let effect =
+            NormalizedEffect::process_spawn(ActionOrigin::Agent, "sudo apt", "sudo apt update");
+        assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_config_allow_not_undone_by_ask_risk_needs() {
+        use crate::PolicyConfig;
+        let root = workspace();
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#).unwrap();
+        let seam = EffectSeam::with_admission(
+            crate::PolicyEngine::with_config(crate::SandboxScope::local_workspace(&root), config),
+            crate::Sandbox::workspace(&root),
+            ExecutionMode::Ask,
+            Arc::new(crate::DeterministicRiskGate),
+        );
+        let effect =
+            NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
+        assert_eq!(seam.decide(&effect), EffectDecision::Allow);
     }
 }

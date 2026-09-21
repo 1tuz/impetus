@@ -128,65 +128,30 @@ impl SessionSummary {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExecutionMode {
-    Plan,
-    #[default]
-    Ask,
-    AutoSafe,
-    AcceptEdits,
-    FullAuto,
+pub use impetus_client::protocol::ExecutionMode;
+
+pub const EXECUTION_MODE_ALL: [ExecutionMode; 5] = [
+    ExecutionMode::Ask,
+    ExecutionMode::Plan,
+    ExecutionMode::AcceptEdits,
+    ExecutionMode::Auto,
+    ExecutionMode::Bypass,
+];
+
+pub fn execution_mode_description(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::Plan => "Research and plan only; daemon denies mutating tools.",
+        ExecutionMode::Ask => "Proceed normally; show every daemon-requested approval.",
+        ExecutionMode::AcceptEdits => "Scoped grant for file edits; requires daemon capability.",
+        ExecutionMode::Auto => "Policy-allowed autonomy; risky paths still approval-gated.",
+        ExecutionMode::Bypass => "Broad grant; requires approval_scope_full_auto capability.",
+    }
 }
 
-impl ExecutionMode {
-    pub const ALL: [Self; 5] = [
-        Self::Plan,
-        Self::Ask,
-        Self::AutoSafe,
-        Self::AcceptEdits,
-        Self::FullAuto,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Plan => "PLAN",
-            Self::Ask => "ASK",
-            Self::AutoSafe => "AUTO-SAFE",
-            Self::AcceptEdits => "ACCEPT EDITS",
-            Self::FullAuto => "FULL AUTO",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Plan => "Research and plan only; do not request mutating tools.",
-            Self::Ask => "Proceed normally and show every daemon-requested approval.",
-            Self::AutoSafe => {
-                "Run policy-allowed read-only work; mutations still require approval."
-            }
-            Self::AcceptEdits => "Future scoped grant for file edits; requires daemon capability.",
-            Self::FullAuto => "Future broad grant; disabled until the daemon owns a durable scope.",
-        }
-    }
-
-    pub fn is_available(self, capabilities: &BTreeSet<String>) -> bool {
-        match self {
-            Self::Plan | Self::Ask | Self::AutoSafe => true,
-            Self::AcceptEdits => capabilities.contains("approval_scope_file_edits"),
-            Self::FullAuto => capabilities.contains("approval_scope_full_auto"),
-        }
-    }
-
-    pub fn prompt_prefix(self) -> Option<&'static str> {
-        match self {
-            Self::Plan => Some(
-                "[Impetus UI mode: PLAN. Produce a concrete plan and inspect safely. Do not request mutating tools until the user switches mode.]\n\n",
-            ),
-            Self::AutoSafe => Some(
-                "[Impetus UI mode: AUTO-SAFE. Proceed autonomously with read-only or daemon-policy-allowed actions. Mutating, network, process and other approval-gated actions still require explicit daemon approval.]\n\n",
-            ),
-            Self::Ask | Self::AcceptEdits | Self::FullAuto => None,
-        }
+pub fn execution_mode_is_available(mode: ExecutionMode, capabilities: &BTreeSet<String>) -> bool {
+    match mode.required_ipc_capability() {
+        None => true,
+        Some(cap) => capabilities.contains(cap),
     }
 }
 
@@ -310,6 +275,9 @@ pub enum UiEventKind {
         workspace: String,
     },
     SessionAttached,
+    ExecutionModeChanged {
+        mode: ExecutionMode,
+    },
     UserInput {
         text: String,
     },

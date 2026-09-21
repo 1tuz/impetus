@@ -1,6 +1,6 @@
 use crate::{
     AgentEvent, ApprovalEvent, ApprovalRequest, EVENT_SCHEMA_VERSION, Event, EventPayload,
-    IntentEvent, PlanEvent, RunEvent, ToolEvent,
+    ExecutionMode, IntentEvent, PlanEvent, RunEvent, ToolEvent,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,6 +23,7 @@ pub struct SessionProjection {
     pub active_run_id: Option<Uuid>,
     pub last_run_id: Option<Uuid>,
     pub outcome: Option<RunEvent>,
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         active_run_id: None,
         last_run_id: None,
         outcome: None,
+        execution_mode: ExecutionMode::default(),
     };
     for (index, event) in events.iter().enumerate() {
         if event.schema_version != EVENT_SCHEMA_VERSION {
@@ -79,6 +81,9 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
         match &event.payload {
             EventPayload::Session(crate::SessionEvent::WorkspaceRoot { workspace_root }) => {
                 projection.workspace_root = Some(workspace_root.clone());
+            }
+            EventPayload::Session(crate::SessionEvent::ExecutionModeChanged { mode }) => {
+                projection.execution_mode = *mode;
             }
             EventPayload::Intent(IntentEvent { text, .. }) => {
                 projection.latest_intent = Some(text.clone());
@@ -162,6 +167,29 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
 mod tests {
     use super::*;
     use crate::{EventPayload, IntentEvent};
+
+    #[test]
+    fn execution_mode_replay_is_deterministic() {
+        let session_id = Uuid::new_v4();
+        let events = vec![
+            Event::new(
+                session_id,
+                1,
+                EventPayload::Session(crate::SessionEvent::ExecutionModeChanged {
+                    mode: ExecutionMode::Auto,
+                }),
+            ),
+            Event::new(
+                session_id,
+                2,
+                EventPayload::Session(crate::SessionEvent::ExecutionModeChanged {
+                    mode: ExecutionMode::Plan,
+                }),
+            ),
+        ];
+        let projection = reduce(&events).expect("replay").expect("projection");
+        assert_eq!(projection.execution_mode, ExecutionMode::Plan);
+    }
 
     #[test]
     fn replay_is_deterministic() {

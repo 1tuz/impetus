@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use super::{UiBackend, UiEventStream};
 use crate::model::{
-    ApprovalCard, ApprovalDetailView, BudgetState, ConnectionInfo, SessionSummary, UiEvent,
-    UiEventKind,
+    ApprovalCard, ApprovalDetailView, BudgetState, ConnectionInfo, ExecutionMode, SessionSummary,
+    UiEvent, UiEventKind,
 };
 
 #[derive(Clone)]
@@ -30,6 +30,7 @@ impl Default for MockBackend {
 
 struct MockInner {
     sessions: Mutex<Vec<SessionSummary>>,
+    execution_modes: Mutex<HashMap<Uuid, ExecutionMode>>,
     subscribers: Mutex<HashMap<Uuid, Vec<mpsc::Sender<Vec<UiEvent>>>>>,
     approval_details: Mutex<HashMap<Uuid, ApprovalDetailView>>,
     sequence: AtomicU64,
@@ -55,6 +56,7 @@ impl MockBackend {
                         workspace: Some("~/dev/impetus".to_owned()),
                     },
                 ]),
+                execution_modes: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(HashMap::new()),
                 approval_details: Mutex::new(HashMap::new()),
                 sequence: AtomicU64::new(1),
@@ -381,6 +383,30 @@ impl UiBackend for MockBackend {
             "provider_registry": { "status": "demo" }
         })
         .to_string())
+    }
+
+    async fn get_execution_mode(&self, session_id: Uuid) -> Result<ExecutionMode> {
+        Ok(self
+            .inner
+            .execution_modes
+            .lock()
+            .await
+            .get(&session_id)
+            .copied()
+            .unwrap_or(ExecutionMode::Ask))
+    }
+
+    async fn set_execution_mode(
+        &self,
+        session_id: Uuid,
+        mode: ExecutionMode,
+    ) -> Result<ExecutionMode> {
+        self.inner
+            .execution_modes
+            .lock()
+            .await
+            .insert(session_id, mode);
+        Ok(mode)
     }
 
     async fn subscribe(

@@ -1,7 +1,8 @@
 use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
-    BudgetChecker, BudgetConfig, DeferredEffect, Event, EventPayload, EventStore, IntentEvent,
-    NoticeEvent, PolicyDecision, PolicyEngine, ProjectionError, RunEvent, ToolEvent, reduce,
+    BudgetChecker, BudgetConfig, DeferredEffect, EffectSeam, Event, EventPayload, EventStore,
+    ExecutionMode, IntentEvent, NoticeEvent, PolicyEngine, ProjectionError, RunEvent, Sandbox,
+    ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -391,6 +392,53 @@ impl AgentRuntime {
         self.policy.clone()
     }
 
+    pub fn execution_mode(&self) -> Result<ExecutionMode, RuntimeError> {
+        Ok(self.projection()?.execution_mode)
+    }
+
+    pub fn session_sandbox(&self) -> Result<Sandbox, RuntimeError> {
+        let workspace = self.workspace_root()?;
+        let mut scope = self.policy.scope().clone();
+        scope.workspace_root = workspace;
+        Ok(Sandbox::Provisioned { scope })
+    }
+
+    pub fn effect_seam(&self) -> Result<EffectSeam, RuntimeError> {
+        Ok(EffectSeam::with_admission(
+            self.policy(),
+            self.session_sandbox()?,
+            self.execution_mode()?,
+            default_risk_gate(),
+        ))
+    }
+
+    pub fn effect_seam_with_sandbox(&self, sandbox: Sandbox) -> Result<EffectSeam, RuntimeError> {
+        Ok(EffectSeam::with_admission(
+            self.policy(),
+            sandbox,
+            self.execution_mode()?,
+            default_risk_gate(),
+        ))
+    }
+
+    fn action_admission(
+        &self,
+        action: &Action,
+        capability_version: Option<u32>,
+    ) -> Result<crate::EffectDecision, RuntimeError> {
+        // Every ActionKind maps to a NormalizedEffect — always admit via EffectSeam
+        // (sandbox → hard policy → execution mode → RiskGate). Never policy-only.
+        let effect =
+            normalized_effect_from_action(action, capability_version).ok_or_else(|| {
+                RuntimeError::Denied(format!(
+                    "action kind {:?} has no normalized effect for admission",
+                    action.kind
+                ))
+            })?;
+        let seam = self.effect_seam()?;
+        Ok(seam.decide(&effect))
+    }
+
     /// Replace live policy overrides without restarting the runtime.
     pub fn reload_policy_config(&mut self, config: crate::PolicyConfig) {
         self.policy.reload_config(config);
@@ -519,18 +567,18 @@ impl AgentRuntime {
         action: Action,
         capability_version: Option<u32>,
     ) -> Result<RuntimeStatus, RuntimeError> {
-        match self.policy.evaluate(&action) {
-            PolicyDecision::Allow => {
+        match self.action_admission(&action, capability_version)? {
+            crate::EffectDecision::Allow => {
                 self.record(EventPayload::Notice(NoticeEvent::PolicyAllowed))?;
                 Ok(RuntimeStatus::Idle)
             }
-            PolicyDecision::Deny { reason } => {
+            crate::EffectDecision::Deny { reason } => {
                 self.record(EventPayload::Notice(NoticeEvent::PolicyDenied {
                     reason: reason.clone(),
                 }))?;
                 Err(RuntimeError::Denied(reason))
             }
-            PolicyDecision::NeedsApproval { reason } => {
+            crate::EffectDecision::NeedsApproval { reason } => {
                 let intent_revision = self
                     .projection()?
                     .latest_intent_revision
@@ -739,6 +787,93 @@ mod tests {
                     event.payload,
                     EventPayload::Approval(ApprovalEvent::Requested { .. })
                 ))
+        );
+    }
+
+    #[test]
+    fn plan_mode_denies_agent_write_via_effect_seam() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .record_event(EventPayload::Session(
+                crate::SessionEvent::ExecutionModeChanged {
+                    mode: ExecutionMode::Plan,
+                },
+            ))
+            .expect("set plan mode");
+        runtime.submit_intent("plan only").expect("record intent");
+        let error = runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "write config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect_err("plan must deny write");
+        assert!(matches!(error, RuntimeError::Denied(reason) if reason.contains("PLAN")));
+    }
+
+    #[test]
+    fn auto_mode_allows_agent_write_without_approval_event() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        runtime
+            .record_event(EventPayload::Session(
+                crate::SessionEvent::ExecutionModeChanged {
+                    mode: ExecutionMode::Auto,
+                },
+            ))
+            .expect("set auto mode");
+        runtime.submit_intent("auto edits").expect("record intent");
+        let status = runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "write config".into(),
+                target: Some("Cargo.toml".into()),
+            })
+            .expect("auto write allowed");
+        assert_eq!(status, RuntimeStatus::Idle);
+        assert!(
+            !runtime
+                .events()
+                .expect("events")
+                .iter()
+                .any(|event| matches!(
+                    event.payload,
+                    EventPayload::Approval(ApprovalEvent::Requested { .. })
+                ))
+        );
+    }
+
+    #[test]
+    fn web_submit_in_ask_mode_requests_approval_not_deny() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut scope = SandboxScope::local_workspace(workspace.path());
+        scope.allow_network = true;
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(scope),
+        );
+        runtime.submit_intent("submit").expect("intent");
+        let decision = runtime
+            .action_admission(
+                &Action {
+                    origin: ActionOrigin::Agent,
+                    kind: ActionKind::WebSubmit,
+                    summary: "web_submit via agent".into(),
+                    target: Some("example.com".into()),
+                },
+                Some(1),
+            )
+            .expect("admission");
+        assert!(
+            matches!(decision, crate::EffectDecision::NeedsApproval { .. }),
+            "{decision:?}"
         );
     }
 

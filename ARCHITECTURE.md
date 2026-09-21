@@ -81,11 +81,10 @@ intents; cross-machine orchestration.
   + parent-resume gate stub (#250, labels only); in-memory role scheduler wired into
   [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
   ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
-  schedule id / result slot, no live spawn); minimal Explore runtime slice
-  ([`ExploreChildRunner`](crates/impetus-core/src/explore_child.rs) +
-  [`AgentLoopExploreExecutor`](crates/impetus-core/src/explore_agent_loop.rs), #306 —
-  gate → restricted AgentLoop → durable child result → parent-resume; `impetusd`
-  explore_spawn still None); live process spawn for other roles still Planned.
+  schedule id / result slot, no live spawn);   Explore library slice (#306 — gate → restricted AgentLoop → durable child
+  result → parent-resume); production `impetusd` wires `explore_spawn` via
+  `daemon_wiring` + default provider (#308); live process spawn for other roles
+  still Planned.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
   steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
@@ -100,11 +99,14 @@ intents; cross-machine orchestration.
   `builtin_tool_schemas()`.
 - **Hook prefilter** — cheap in-process label match
   ([`hook_prefilter`](crates/impetus-core/src/hook_prefilter.rs), #257/#272/#276)
-  before any spawn stub (`AllowContinue` / `SkipSpawn` / `Deny`); rules carry
-  `HookTrustLevel` (`InDaemon` / `External`); security-critical patterns require
-  InDaemon — External matcher for those → clear Deny/error; catalog
-  `try_new`/`add_rule` refuse exact duplicates (same pattern + action) with
-  conflicting rule ids in the error — pattern subsumption YAGNI. Full
+  (`AllowContinue` / `SkipSpawn` / `Deny`); rules carry `HookTrustLevel`
+  (`InDaemon` / `External`); security-critical patterns require InDaemon —
+  External matcher for those → clear Deny/error; catalog `try_new`/`add_rule`
+  refuse exact duplicates (same pattern + action) with conflicting rule ids in
+  the error — pattern subsumption YAGNI. **Implemented** on live
+  `ProcessExecutionRequest::execute` (always calls `spawn_stub` before OS spawn;
+  empty default catalog or `with_hook_prefilter` inject). Performance hook only —
+  not RiskGate. Daemon-owned catalog file load still open (Next). Full
   hook/plugin ABI still Planned.
 - **Built-in id hygiene** — small shipped inventory + duplicate detect
   ([`builtin_ids`](crates/impetus-core/src/builtin_ids.rs), #260); doctor
@@ -133,11 +135,12 @@ impetusd  — authoritative daemon
 | --- | --- | --- |
 | Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
-| PolicyConfig JSON load / reload | Partial | Format + engine reload (#193/#201); `impetusd` startup load (`--policy-config` / env / `policy.json`) wired; typed IPC reload still open — see § Policy customization (#9) |
+| PolicyConfig JSON load / reload | Implemented | **Startup load** in `impetusd` (`--policy-config` / env / `policy.json`). **IPC v7** `ReloadPolicyConfig` (`reload_policy_config` capability) applies live overrides without daemon restart; invalid reload keeps prior policy + audit Notice. Library `AgentRuntime::reload_policy_config*`. |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
-| Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS fmt/clippy/tests (`--lib --bins`) + Linux `cargo check` |
-| Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` |
+| Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
+| Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Default daemon / CI use `NoCredentialResolver`. `CI` / `IMPETUS_NONINTERACTIVE` fail closed without Keychain GUI (#308). |
+| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Implemented | Daemon IPC `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI Shift+Tab/F4/slash via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
@@ -155,22 +158,26 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** in agent loop (live MCP tools, etc.) | Implemented | Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (library harness inject); `impetusd` does **not** autoload MCP servers (`impetusd_autoload: false`; no marketplace/UI) |
+| Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into `ToolProviderRuntime` at start (`impetusd_autoload: true`; fail closed on bad config; no marketplace/UI). Live connect/health on first tool use. |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
+| Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `wire_daemon_runtime` sets `explore_spawn` with default provider (#308). TUI child surfaces still open. |
+| `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn; default empty catalog or `with_hook_prefilter`). Not RiskGate. Daemon catalog file load → Next. |
+| `SteerRewrite` (live provider) | Partial | Passthrough + mock seam; harness hook on accept (#285); no live model rewrite (#308 Next) |
+| Auto `RiskGate` (post-policy, mode-aware) | Implemented | `DeterministicRiskGate` in `EffectSeam`; all `AgentRuntime::request_action` via seam; process argv; tool_orchestrator; remote/PTY helpers use `with_sandbox` (Ask + RiskGate). Separate from `hook_prefilter`. |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267) + optional `LspBackendModule` runtime path hint (#282); mock/absent fail-closed; no real LSP process / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation [x]:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); intents/Steer/fanout/hooks Partial as before (`user_intent`, #247/#263/#271/#285/#275; `hook_prefilter` #257/#272/#276; `builtin_ids` #260). **Runtime Partial:** `ExploreChildRunner` + `AgentLoopExploreExecutor` library E2E (gate → restricted AgentLoop → `ChildResultStore` → parent-resume; Harness `spawn_explore` / `complete_explore_and_gate`; `impetusd` explore_spawn still None) (#306). **Runtime [ ]:** live agent spawn for other roles; WorkflowEngine cancel/replace on session-run; live provider Steer |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); `user_intent` / fanout (#247/#263/#271/#275); `builtin_ids` (#260). **Runtime open:** live agent spawn for non-Explore roles; WorkflowEngine cancel/replace on session-run. Explore + Steer + hooks + modes: see dedicated matrix rows |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
 | MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
 | PolicyStore (governed instructions) | Planned | Named in trust-model docs only — **no** `PolicyStore` type/module yet |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
-| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); more Phase 7 open |
+| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); execution modes via daemon IPC (Shift+Tab / F4 / slash; #308); more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
-| PR CI critical security E2E suite | Partial | Path-aware PR: macOS fmt/clippy/`--lib --bins`; Linux `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
+| PR CI critical security E2E suite | Partial | Path-aware PR: macOS clippy/`--lib --bins`; Linux fmt + `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
 
 ## Request path
 
@@ -226,7 +233,8 @@ map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
 
 **Still Planned / open on this path:** live provider wire for Steer rewrite;
 WorkflowEngine cancel/replace on intent; fanout over IPC / cross-machine;
-Seatbelt wired into process exec (spike only today).
+daemon-owned hook_prefilter catalog file load (execute path already live).
+(Daemon-owned execution modes + RiskGate admission are Implemented — see matrix.)
 
 ## Storage
 
@@ -324,8 +332,7 @@ Shipped under #9: contract (#189/#191), TUI approval UI (#165/#169).
 
 Honest list (no new runtime in this docs slice):
 
-- Typed IPC to reload PolicyConfig mid-session (startup load exists on
-  `impetusd`; library `AgentRuntime::reload_policy_config*` still the reload API)
+- Operator UX to hot-reload PolicyConfig beyond typed IPC (file watcher / CLI sugar)
 - Operator UX to edit/customize policy (out of scope for harness UI rewrite)
 - Optional: register PolicyConfig in the shared `impetus.*.v1` schema registry
 - Non-TUI clients (Zap adapter and others) consuming ApprovalDetail beyond the

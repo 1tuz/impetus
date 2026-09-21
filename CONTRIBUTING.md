@@ -5,10 +5,12 @@ with the harness-first boundary.
 
 ## Before you start
 
-1. Read [README.md](README.md) and the relevant guide in `docs/`.
-2. Check the current [roadmap](docs/architecture/roadmap.md) so planned work is not presented
+1. Read [TODO.md](TODO.md) and [ARCHITECTURE.md](ARCHITECTURE.md) — open work and
+   capability truth. Stale docs are a bug; update both in the same change.
+2. Read [README.md](README.md) and the relevant guide in `docs/`.
+3. Check the current [roadmap](docs/architecture/roadmap.md) so planned work is not presented
    as a completed capability.
-3. Discuss a substantial design or public-protocol change in an issue before
+4. Discuss a substantial design or public-protocol change in an issue before
    investing in an implementation.
 
 ## Local setup and checks

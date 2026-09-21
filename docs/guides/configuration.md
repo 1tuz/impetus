@@ -36,7 +36,10 @@ Example:
 ```
 
 In-process reload remains a library API (`PolicyEngine::reload_config*` /
-`AgentRuntime::reload_policy_config*`). Typed IPC reload is still open.
+`AgentRuntime::reload_policy_config*`). Typed IPC reload: negotiate
+`reload_policy_config`, then `ReloadPolicyConfig` with `path` **or** `config_json`
+(IPC v7). Invalid reload returns an error, keeps the prior overrides, and
+appends a durable `Notice` on active sessions.
 
 ## Data and socket paths
 
@@ -45,6 +48,22 @@ In-process reload remains a library API (`PolicyEngine::reload_config*` /
 | `IMPETUS_DATA_DIR` | `~/Library/Application Support/Impetus` | SQLite event store directory; optional `policy.json`. |
 | `IMPETUS_SOCKET` | `<data-dir>/harness.sock` | Unix-socket path used by daemon, `impetus` CLI, and Zap adapter. |
 | `IMPETUS_POLICY_CONFIG` | (unset) | Explicit PolicyConfig JSON path (see above). |
+| `IMPETUS_NONINTERACTIVE` | (unset) | When truthy (`1`/`true`/`yes`/`on`), Keychain resolver fails closed (no GUI). `CI=true` implies the same. |
+| `IMPETUS_CREDENTIAL_BACKEND` | `keychain` | With `--provider-profile`: `mock` = `NoCredentialResolver`; `keychain` = macOS Keychain (only when interactive). |
+
+## Explore + MCP autoload (daemon)
+
+At startup `impetusd` always wires production Explore (`explore_spawn`) using the
+daemon default provider (mock, `--provider-profile`, or `--acp-profile`). Child
+runs use a restricted AgentLoop (`list`/`read`/`search` only); durable results
+live in `$IMPETUS_DATA_DIR/child_results.sqlite3` and parent resume goes through
+`Harness::complete_explore_and_gate`.
+
+Optional MCP servers autoload from `$IMPETUS_DATA_DIR/mcp/*.json` (each file is
+an [`McpModule`](../../crates/impetus-core/src/extension_compat.rs) JSON config).
+Missing `mcp/` directory is fine (no MCP). Any present file must parse and
+validate (`impetus.mcp.v1`); bad config refuses daemon start. Servers connect
+lazily on first tool use (no marketplace).
 
 The daemon creates the Unix socket with mode `0600`. It refuses to replace an
 existing socket path, so stop the old daemon before starting another one at the

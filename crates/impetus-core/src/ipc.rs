@@ -4,7 +4,7 @@ use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 5;
+pub const IPC_VERSION: u16 = 7;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
@@ -26,6 +26,10 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "artifact_upload",
     // Coding-tools IPC: definition (paths/ranges only; no secrets).
     "coding_definition",
+    "execution_mode",
+    "reload_policy_config",
+    "approval_scope_file_edits",
+    "approval_scope_full_auto",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,6 +134,21 @@ pub enum IpcRequest {
         line: u32,
         character: u32,
     },
+    SetExecutionMode {
+        session_id: Uuid,
+        mode: crate::ExecutionMode,
+    },
+    GetExecutionMode {
+        session_id: Uuid,
+    },
+    /// Replace live PolicyConfig overrides without daemon restart.
+    /// Supply `path` or `config_json`, not both.
+    ReloadPolicyConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<std::path::PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_json: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -208,6 +227,13 @@ pub enum IpcResponse {
     /// Definition locations (workspace paths + ranges only).
     Definition {
         locations: Vec<crate::SourceLocation>,
+    },
+    ExecutionMode {
+        session_id: Uuid,
+        mode: crate::ExecutionMode,
+    },
+    PolicyConfig {
+        config: crate::PolicyConfig,
     },
     Incompatible {
         supported_version: u16,
@@ -337,6 +363,81 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&stored).unwrap()).unwrap(),
             stored
+        );
+    }
+
+    #[test]
+    fn execution_mode_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        for mode in [
+            crate::ExecutionMode::Ask,
+            crate::ExecutionMode::Plan,
+            crate::ExecutionMode::AcceptEdits,
+            crate::ExecutionMode::Auto,
+            crate::ExecutionMode::Bypass,
+        ] {
+            let set = IpcRequest::SetExecutionMode { session_id, mode };
+            assert_eq!(
+                serde_json::from_str::<IpcRequest>(&serde_json::to_string(&set).unwrap()).unwrap(),
+                set
+            );
+            let get = IpcRequest::GetExecutionMode { session_id };
+            assert_eq!(
+                serde_json::from_str::<IpcRequest>(&serde_json::to_string(&get).unwrap()).unwrap(),
+                get
+            );
+            let response = IpcResponse::ExecutionMode { session_id, mode };
+            assert_eq!(
+                serde_json::from_str::<IpcResponse>(&serde_json::to_string(&response).unwrap())
+                    .unwrap(),
+                response
+            );
+        }
+    }
+
+    #[test]
+    fn reload_policy_config_messages_round_trip() {
+        let request = IpcRequest::ReloadPolicyConfig {
+            path: Some(std::path::PathBuf::from("/tmp/policy.json")),
+            config_json: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
+            request
+        );
+        let inline = IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":1}"#.into()),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&inline).unwrap()).unwrap(),
+            inline
+        );
+        let response = IpcResponse::PolicyConfig {
+            config: crate::PolicyConfig::parse(r#"{"version":1}"#).expect("config"),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&response).unwrap())
+                .unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn hello_includes_execution_mode_capabilities() {
+        let request = IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec![
+                "execution_mode".into(),
+                "approval_scope_file_edits".into(),
+                "approval_scope_full_auto".into(),
+            ],
+        };
+        let encoded = serde_json::to_string(&request).expect("encode");
+        assert!(encoded.contains("execution_mode"));
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&encoded).expect("decode"),
+            request
         );
     }
 

@@ -27,12 +27,14 @@ pub mod context_builder;
 pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod cursor_adapter;
+pub mod daemon_wiring;
 pub mod deepseek_harness_adapter;
 pub mod diagnostics;
 pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
 pub mod execution;
+pub mod execution_mode;
 pub mod explore_agent_loop;
 pub mod explore_child;
 pub mod extension_adapter;
@@ -76,6 +78,7 @@ pub mod provider_trait;
 pub mod reference_store;
 pub mod reference_tools;
 pub mod remote;
+pub mod risk_gate;
 pub mod rtk_adapter;
 pub mod runtime;
 pub mod schema;
@@ -157,6 +160,10 @@ pub use context_optimizer::{
     MemoryDescriptionSource, ToolStub, default_tool_stubs, system_messages_for_binding,
 };
 pub use cursor_adapter::CursorAdapter;
+pub use daemon_wiring::{
+    DaemonWiringError, build_explore_spawn_bridge, build_explore_spawn_bridge_for_harness,
+    load_daemon_mcp_runtime,
+};
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
 };
@@ -168,6 +175,7 @@ pub use durable_artifacts::{
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
+    normalized_effect_from_action,
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, CompactionStructuralState,
@@ -182,6 +190,7 @@ pub use execution::{
     SandboxDecisionState, SandboxError, SandboxProvider, SqlitePtySessionStore,
     UnavailableSandboxProvider, production_sandbox_provider,
 };
+pub use execution_mode::ExecutionMode;
 pub use explore_agent_loop::{
     AgentLoopExploreExecutor, explore_provider_tool_names, explore_provider_tool_schemas,
 };
@@ -289,6 +298,11 @@ pub use remote::{
     SftpSessionManager, SqliteSSHApprovalStore, SqliteTmuxSessionStore, TmuxError, TmuxSession,
     TmuxSessionId, TmuxSessionManager, TmuxSessionRecord, TmuxSessionRequest, TmuxSessionState,
     TmuxSessionStore, TmuxSessionStoreError,
+};
+pub use risk_gate::{
+    DeterministicRiskGate, RiskContext, RiskGate, RiskGateDecision, command_text,
+    default_risk_gate, is_mutating_effect, is_opaque_shell, is_read_only_effect,
+    is_safe_readonly_command,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{

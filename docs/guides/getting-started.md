@@ -45,6 +45,19 @@ task client -- --help
 
 `stream` prints stored events; this is not an interactive TUI.
 
+## Desktop client (macOS)
+
+Sibling app **Impetus Desktop** (Tauri) — same Unix socket as CLI/TUI. Repo:
+`../impetus-desktop`. Adapter crate: `impetus-desktop-adapter` (#310).
+
+```zsh
+# after installing Impetus Desktop.app to /Applications
+open -a "Impetus Desktop"
+# or (once merged): impetus desktop
+```
+
+Requires running `impetusd`. No Accessibility / Full Disk Access for normal IPC.
+
 ## Provider profile
 
 Example — loopback OpenAI-compatible endpoint without credential:

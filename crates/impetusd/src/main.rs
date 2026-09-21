@@ -2,10 +2,12 @@ use anyhow::{Context, Result, bail};
 use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
-    OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine, ProviderError, ProviderProfile,
-    SandboxScope, SqliteEventStore,
+    NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine,
+    ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
+    build_explore_spawn_bridge_for_harness, load_daemon_mcp_runtime,
 };
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -32,7 +34,11 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(parent).context("create harness data directory")?;
     std::fs::create_dir_all(&data_root).context("create harness event-store directory")?;
     let store = SqliteEventStore::open(data_root.join("events.sqlite3"))?;
-    let harness = Arc::new(configured_harness(store)?);
+    let harness = Arc::new(configured_harness(
+        store,
+        &data_root,
+        std::env::args_os().skip(1),
+    )?);
     let listener = UnixListener::bind(&socket_path).context("bind harness Unix socket")?;
     set_socket_permissions(&socket_path)?;
     loop {
@@ -56,8 +62,12 @@ async fn main() -> Result<()> {
 ///
 /// PolicyConfig resolution order: `--policy-config PATH` → `IMPETUS_POLICY_CONFIG`
 /// → `$IMPETUS_DATA_DIR/policy.json` (optional; missing = empty overrides).
-fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harness> {
-    let mut arguments = std::env::args_os().skip(1).peekable();
+fn configured_harness(
+    store: Arc<dyn impetus_core::EventStore>,
+    data_root: &Path,
+    cli_args: impl IntoIterator<Item = OsString>,
+) -> Result<Harness> {
+    let mut arguments = cli_args.into_iter().peekable();
     let mut explicit_policy_path: Option<PathBuf> = None;
 
     if arguments
@@ -72,63 +82,87 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
 
     let policy = startup_policy(explicit_policy_path.as_deref())?;
 
-    let Some(flag) = arguments.next() else {
-        return Ok(Harness::new(store, policy));
+    let harness = match arguments.next() {
+        None => Harness::new(store, policy),
+        Some(flag) => {
+            let flag_str = flag.to_str().context("invalid UTF-8 in command flag")?;
+            match flag_str {
+                "--provider-profile" => {
+                    let profile_path = arguments
+                        .next()
+                        .context("--provider-profile requires PATH")?;
+                    if arguments.next().is_some() {
+                        bail!(
+                            "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+                        );
+                    }
+                    let profile_bytes =
+                        std::fs::read(profile_path).context("read provider profile")?;
+                    let profile: ProviderProfile = serde_json::from_slice(&profile_bytes).context(
+                        "provider profile must contain only the documented non-secret fields",
+                    )?;
+                    let provider = OpenAiProvider::new(profile, OpenAiRetryBudget::default())
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    Harness::with_openai_provider_and_resolver(
+                        store,
+                        policy,
+                        provider,
+                        provider_credential_resolver()?,
+                    )
+                }
+                "--acp-profile" => {
+                    let profile_path = arguments.next().context("--acp-profile requires PATH")?;
+                    if arguments.next().is_some() {
+                        bail!(
+                            "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+                        );
+                    }
+                    let profile_bytes = std::fs::read(profile_path).context("read acp profile")?;
+                    let profile: AcpProfile = serde_json::from_slice(&profile_bytes).context(
+                        "acp profile must contain only the documented non-secret fields",
+                    )?;
+                    profile.validate().context("invalid acp profile")?;
+
+                    let config = profile
+                        .to_agent_config()
+                        .context("invalid acp launch config")?;
+
+                    Harness::with_acp_gateway(
+                        store,
+                        policy,
+                        config,
+                        profile.auth_method_id,
+                        profile.id,
+                        profile.display_name,
+                    )
+                }
+                "--policy-config" => bail!("--policy-config must appear before provider/acp flags"),
+                _ => bail!(
+                    "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+                ),
+            }
+        }
     };
 
-    let flag_str = flag.to_str().context("invalid UTF-8 in command flag")?;
+    wire_daemon_runtime(harness, data_root)
+}
 
-    match flag_str {
-        "--provider-profile" => {
-            let profile_path = arguments
-                .next()
-                .context("--provider-profile requires PATH")?;
-            if arguments.next().is_some() {
-                bail!(
-                    "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
-                );
-            }
-            let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
-            let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
-                .context("provider profile must contain only the documented non-secret fields")?;
-            let provider = OpenAiProvider::new(profile, OpenAiRetryBudget::default())
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            Ok(Harness::with_openai_provider_and_resolver(
-                store,
-                policy,
-                provider,
-                Arc::new(MacosKeychainResolver),
-            ))
-        }
-        "--acp-profile" => {
-            let profile_path = arguments.next().context("--acp-profile requires PATH")?;
-            if arguments.next().is_some() {
-                bail!(
-                    "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
-                );
-            }
-            let profile_bytes = std::fs::read(profile_path).context("read acp profile")?;
-            let profile: AcpProfile = serde_json::from_slice(&profile_bytes)
-                .context("acp profile must contain only the documented non-secret fields")?;
-            profile.validate().context("invalid acp profile")?;
+/// Attach production Explore spawn + optional MCP autoload from `data_root`.
+fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
+    let explore = build_explore_spawn_bridge_for_harness(
+        data_root,
+        harness.provider_registry(),
+        harness.default_provider_id(),
+        harness.policy(),
+    )
+    .context("wire Explore spawn bridge")?;
+    let harness = harness.with_explore_spawn(explore);
 
-            let config = profile
-                .to_agent_config()
-                .context("invalid acp launch config")?;
-
-            Ok(Harness::with_acp_gateway(
-                store,
-                policy,
-                config,
-                profile.auth_method_id,
-                profile.id,
-                profile.display_name,
-            ))
-        }
-        "--policy-config" => bail!("--policy-config must appear before provider/acp flags"),
-        _ => bail!(
-            "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
-        ),
+    let mcp_runtime = load_daemon_mcp_runtime(data_root).context("load MCP autoload config")?;
+    if mcp_runtime.registered_ids().is_empty() {
+        Ok(harness)
+    } else {
+        Ok(harness.with_tool_providers(Arc::new(tokio::sync::Mutex::new(mcp_runtime))))
     }
 }
 
@@ -157,6 +191,27 @@ fn startup_policy(explicit: Option<&Path>) -> Result<PolicyEngine> {
     ))
 }
 
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// CI and scripted runs must not open the Keychain GUI or block on authorization.
+fn is_noninteractive_env() -> bool {
+    env_truthy("CI") || env_truthy("IMPETUS_NONINTERACTIVE")
+}
+
+fn provider_credential_resolver() -> Result<Arc<dyn CredentialResolver>> {
+    match std::env::var("IMPETUS_CREDENTIAL_BACKEND").as_deref() {
+        Ok("mock") => Ok(Arc::new(NoCredentialResolver)),
+        Ok("keychain") | Err(_) => Ok(Arc::new(MacosKeychainResolver)),
+        Ok(other) => {
+            bail!("unknown IMPETUS_CREDENTIAL_BACKEND `{other}` (expected `mock` or `keychain`)")
+        }
+    }
+}
+
 /// The daemon owns the macOS Keychain lookup. The resolver returns only a
 /// transient request credential and intentionally suppresses platform errors,
 /// so neither a Keychain detail nor a credential can enter an event or log.
@@ -173,16 +228,38 @@ impl CredentialResolver for MacosKeychainResolver {
     }
 }
 
+type KeychainPasswordFetcher = fn(&str, &str) -> Result<Vec<u8>, ()>;
+
 #[cfg(target_os = "macos")]
-fn read_keychain_credential(service: &str, account: &str) -> Result<String, ProviderError> {
-    let bytes = security_framework::passwords::get_generic_password(service, account)
-        .map_err(|_| ProviderError::MissingCredential)?;
-    String::from_utf8(bytes).map_err(|_| ProviderError::MissingCredential)
+fn platform_keychain_fetch(service: &str, account: &str) -> Result<Vec<u8>, ()> {
+    security_framework::passwords::get_generic_password(service, account).map_err(|_| ())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credential(_service: &str, _account: &str) -> Result<String, ProviderError> {
-    Err(ProviderError::MissingCredential)
+fn platform_keychain_fetch(_service: &str, _account: &str) -> Result<Vec<u8>, ()> {
+    Err(())
+}
+
+fn read_keychain_credential(service: &str, account: &str) -> Result<String, ProviderError> {
+    read_keychain_credential_with(
+        service,
+        account,
+        platform_keychain_fetch,
+        is_noninteractive_env(),
+    )
+}
+
+fn read_keychain_credential_with(
+    service: &str,
+    account: &str,
+    fetch: KeychainPasswordFetcher,
+    noninteractive: bool,
+) -> Result<String, ProviderError> {
+    if noninteractive {
+        return Err(ProviderError::MissingCredential);
+    }
+    let bytes = fetch(service, account).map_err(|_| ProviderError::MissingCredential)?;
+    String::from_utf8(bytes).map_err(|_| ProviderError::MissingCredential)
 }
 
 async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
@@ -327,6 +404,10 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
+        IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
+            "execution_mode"
+        }
+        IpcRequest::ReloadPolicyConfig { .. } => "reload_policy_config",
     }
 }
 
@@ -401,6 +482,7 @@ mod tests {
         EventPayload, EventStore, IPC_VERSION, MemoryEventStore, NoticeEvent, ReadOnlyToolKind,
         RuntimeStatus, ToolOutcome,
     };
+    use tokio_util::sync::CancellationToken;
 
     fn test_temp_dir(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -413,12 +495,124 @@ mod tests {
     }
 
     #[test]
+    fn noninteractive_keychain_read_fails_closed_without_platform_access() {
+        assert_eq!(
+            read_keychain_credential_with(
+                "impetus.test",
+                "api-key",
+                |_, _| panic!("keychain must not be accessed in non-interactive mode"),
+                true,
+            ),
+            Err(ProviderError::MissingCredential),
+        );
+    }
+
+    #[test]
+    fn interactive_keychain_read_uses_fetcher_when_noninteractive_false() {
+        assert_eq!(
+            read_keychain_credential_with(
+                "impetus.test",
+                "api-key",
+                |service, account| {
+                    assert_eq!(service, "impetus.test");
+                    assert_eq!(account, "api-key");
+                    Ok(b"token".to_vec())
+                },
+                false,
+            ),
+            Ok("token".to_string()),
+        );
+    }
+
+    #[test]
     fn startup_policy_optional_default_is_empty_overrides() {
         let dir = test_temp_dir("policy-optional");
         let path = dir.join("policy.json");
         let config = PolicyConfig::load_optional(&path).expect("missing ok");
         let engine = PolicyEngine::with_config(SandboxScope::local_workspace("."), config);
         assert!(engine.config().overrides.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_harness_wires_explore_spawn_with_default_mock_provider() {
+        let dir = test_temp_dir("explore-wire");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness =
+            configured_harness(store, &dir, []).expect("configured harness with explore spawn");
+        assert!(harness.has_explore_spawn());
+
+        let workspace = std::env::current_dir().expect("cwd");
+        let outcome = harness
+            .spawn_explore(
+                impetus_core::ExploreChildRequest {
+                    parent_session_id: "parent-daemon".into(),
+                    child_id: "child-daemon".into(),
+                    cwd: workspace,
+                    allowed_tools: impetus_core::EXPLORE_ALLOWED_TOOLS
+                        .iter()
+                        .map(|tool| tool.to_string())
+                        .collect(),
+                    context_label: "daemon explore smoke".into(),
+                    max_tokens: 2_000,
+                    max_time_ms: 10_000,
+                    max_depth: 1,
+                },
+                CancellationToken::new(),
+            )
+            .expect("explore spawn");
+        assert_eq!(outcome.parent_session_id, "parent-daemon");
+        assert_eq!(outcome.child_id, "child-daemon");
+        let resumed = harness
+            .complete_explore_and_gate("parent-daemon", &["child-daemon"])
+            .expect("parent resume");
+        assert!(resumed.contains("Mock response"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_mcp_autoload_fails_closed_on_invalid_config() {
+        let dir = test_temp_dir("mcp-bad");
+        let mcp_dir = dir.join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("mcp dir");
+        std::fs::write(mcp_dir.join("broken.json"), b"{").expect("write bad json");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let err = configured_harness(store, &dir, [])
+            .err()
+            .expect("bad mcp config should fail");
+        assert!(err.to_string().contains("MCP autoload"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_mcp_autoload_registers_valid_config() {
+        let dir = test_temp_dir("mcp-ok");
+        let mcp_dir = dir.join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("mcp dir");
+        std::fs::write(
+            mcp_dir.join("echo.json"),
+            br#"{
+                "name": "echo",
+                "command": "true",
+                "args": [],
+                "env": {},
+                "transport": "stdio",
+                "capabilities": { "tools": true, "resources": false, "prompts": false, "sampling": false }
+            }"#,
+        )
+        .expect("write mcp");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("mcp autoload harness");
+        assert!(harness.has_tool_providers());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -440,6 +634,29 @@ mod tests {
             Some(impetus_core::PolicyConfigDecision::Deny)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reload_policy_config_via_ipc_updates_live_policy() {
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(store, impetus_core::harness_api::policy());
+        let IpcResponse::PolicyConfig { config } = harness.handle(IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":1,"overrides":{"spawn_process":"deny"}}"#.into()),
+        }) else {
+            panic!("reload policy config");
+        };
+        assert_eq!(
+            config.override_for(impetus_core::ActionKind::SpawnProcess),
+            Some(impetus_core::PolicyConfigDecision::Deny)
+        );
+        assert_eq!(
+            harness
+                .policy()
+                .config()
+                .override_for(impetus_core::ActionKind::SpawnProcess),
+            Some(impetus_core::PolicyConfigDecision::Deny)
+        );
     }
 
     #[test]

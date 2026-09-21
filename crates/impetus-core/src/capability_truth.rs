@@ -188,14 +188,14 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Implemented,
-                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop (library); impetusd does not autoload MCP servers",
+                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads MCP from $IMPETUS_DATA_DIR/mcp/*.json",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "mcp_live_library": true,
                         "mcp_live_orchestrator_hook": true,
                         "mcp_live_tools_in_loop": true,
                         "harness_inject": true,
-                        "impetusd_autoload": false,
+                        "impetusd_autoload": true,
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
                         "lifecycle_cli_plan_install": true,
@@ -282,7 +282,7 @@ mod tests {
             true
         );
         assert_eq!(ext_rt.details.as_ref().unwrap()["harness_inject"], true);
-        assert_eq!(ext_rt.details.as_ref().unwrap()["impetusd_autoload"], false);
+        assert_eq!(ext_rt.details.as_ref().unwrap()["impetusd_autoload"], true);
         assert_eq!(ext_rt.details.as_ref().unwrap()["mcp_live_library"], true);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_orchestrator_hook"],

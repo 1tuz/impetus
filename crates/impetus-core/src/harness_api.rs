@@ -8,19 +8,20 @@
 //! the client.
 
 use crate::{
-    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventStore,
-    IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
-    MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
-    ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope,
-    SteerActiveContext, SteerRewrite, TokenBudget, ToolOutcome, UserIntentRouter,
-    UserIntentSubmission, UserPromptIntent,
+    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore,
+    EventPayload, EventStore, IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode,
+    IpcRequest, IpcResponse, MockProvider, NoCredentialResolver, NoticeEvent, OpenAiNativeAdapter,
+    OpenAiProvider, PolicyConfig, PolicyEngine, Profile, ProviderMessage, ProviderRegistry,
+    QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError,
+    RuntimeStatus, SandboxScope, SessionEvent, SteerActiveContext, SteerRewrite, TokenBudget,
+    ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
     default_steer_rewrite,
     model_router::{ModelRouter, ModelRouterConfig},
     policy::ActionOrigin,
+    reduce,
     user_intent::UserIntentError,
 };
 use anyhow::Result;
@@ -66,7 +67,7 @@ impl SessionCoordinator {
 /// Uses a ProviderRegistry for model routing instead of a concrete enum.
 pub struct Harness {
     store: Arc<dyn EventStore>,
-    policy: PolicyEngine,
+    policy: Arc<Mutex<PolicyEngine>>,
     provider_registry: ProviderRegistry,
     default_provider_id: String,
     model_router: ModelRouter,
@@ -100,7 +101,7 @@ impl Harness {
         let model_router = ModelRouter::new(router_config);
         Self {
             store,
-            policy,
+            policy: Arc::new(Mutex::new(policy)),
             provider_registry: registry,
             default_provider_id: "mock".to_string(),
             model_router,
@@ -205,7 +206,7 @@ impl Harness {
         let model_router = ModelRouter::new(router_config);
         Self {
             store,
-            policy,
+            policy: Arc::new(Mutex::new(policy)),
             provider_registry: registry,
             default_provider_id,
             model_router,
@@ -270,7 +271,7 @@ impl Harness {
 
         Self {
             store,
-            policy,
+            policy: Arc::new(Mutex::new(policy)),
             provider_registry: registry,
             default_provider_id: provider_id,
             model_router,
@@ -325,7 +326,7 @@ impl Harness {
 
         Self {
             store,
-            policy,
+            policy: Arc::new(Mutex::new(policy)),
             provider_registry: registry,
             default_provider_id: provider_id,
             model_router,
@@ -344,7 +345,7 @@ impl Harness {
     }
 
     pub fn policy(&self) -> PolicyEngine {
-        self.policy.clone()
+        policy_snapshot(&self.policy)
     }
 
     pub fn store(&self) -> Arc<dyn EventStore> {
@@ -353,6 +354,18 @@ impl Harness {
 
     pub fn provider_registry(&self) -> &ProviderRegistry {
         &self.provider_registry
+    }
+
+    pub fn default_provider_id(&self) -> &str {
+        &self.default_provider_id
+    }
+
+    pub fn has_explore_spawn(&self) -> bool {
+        self.explore_spawn.is_some()
+    }
+
+    pub fn has_tool_providers(&self) -> bool {
+        self.tool_providers.is_some()
     }
 
     /// Resolve a single client request into a response.
@@ -381,10 +394,43 @@ impl Harness {
     }
 }
 
+fn policy_snapshot(policy: &Arc<Mutex<PolicyEngine>>) -> PolicyEngine {
+    policy
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn audit_policy_reload_notice(store: &Arc<dyn EventStore>, message: impl Into<String>) {
+    let message = message.into();
+    if let Ok(sessions) = store.list_sessions() {
+        for session in sessions {
+            let _ = store.append_next(
+                session.id,
+                EventPayload::Notice(NoticeEvent::Runtime {
+                    message: message.clone(),
+                }),
+            );
+        }
+    }
+}
+
+fn resolve_reload_policy_config(
+    path: Option<&Path>,
+    config_json: Option<&str>,
+) -> Result<PolicyConfig, String> {
+    match (path, config_json) {
+        (None, None) => Err("path or config_json is required".into()),
+        (Some(_), Some(_)) => Err("specify path or config_json, not both".into()),
+        (Some(path), None) => PolicyConfig::load_from_path(path).map_err(|error| error.to_string()),
+        (None, Some(json)) => PolicyConfig::parse(json).map_err(|error| error.to_string()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_request(
     store: Arc<dyn EventStore>,
-    policy: PolicyEngine,
+    policy: Arc<Mutex<PolicyEngine>>,
     provider_registry: ProviderRegistry,
     default_provider_id: String,
     model_router: ModelRouter,
@@ -432,7 +478,11 @@ fn handle_request(
                 .collect(),
         },
         IpcRequest::CreateSession { workspace_root } => {
-            match AgentRuntime::create_with_workspace(store, policy, workspace_root) {
+            match AgentRuntime::create_with_workspace(
+                store,
+                policy_snapshot(&policy),
+                workspace_root,
+            ) {
                 Ok(runtime) => {
                     let session_id = runtime.session_id();
                     if let Ok(mut router) = intent_router.lock() {
@@ -447,7 +497,7 @@ fn handle_request(
             }
         }
         IpcRequest::Attach { session_id } => {
-            match AgentRuntime::attach(store, policy, session_id)
+            match AgentRuntime::attach(store, policy_snapshot(&policy), session_id)
                 .and_then(|runtime| Ok((runtime.session_id(), runtime.status()?)))
             {
                 Ok((session_id, status)) => {
@@ -469,13 +519,15 @@ fn handle_request(
         IpcRequest::ForkSession {
             session_id,
             up_to_sequence,
-        } => match AgentRuntime::fork(store, policy, session_id, up_to_sequence) {
-            Ok(runtime) => IpcResponse::Session {
-                session_id: runtime.session_id(),
-                status: RuntimeStatus::Idle,
-            },
-            Err(error) => runtime_error(error),
-        },
+        } => {
+            match AgentRuntime::fork(store, policy_snapshot(&policy), session_id, up_to_sequence) {
+                Ok(runtime) => IpcResponse::Session {
+                    session_id: runtime.session_id(),
+                    status: RuntimeStatus::Idle,
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
         IpcRequest::CreateCheckpoint {
             session_id,
             name,
@@ -502,7 +554,7 @@ fn handle_request(
             Err(error) => store_error(error),
         },
         IpcRequest::RestoreCheckpoint { checkpoint_id } => {
-            match AgentRuntime::restore_checkpoint(store, policy, checkpoint_id) {
+            match AgentRuntime::restore_checkpoint(store, policy_snapshot(&policy), checkpoint_id) {
                 Ok(runtime) => IpcResponse::Session {
                     session_id: runtime.session_id(),
                     status: RuntimeStatus::Idle,
@@ -513,13 +565,15 @@ fn handle_request(
         IpcRequest::Stream {
             session_id,
             after_sequence,
-        } => match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-            Ok(runtime
-                .events()?
-                .into_iter()
-                .filter(|event| event.sequence > after_sequence)
-                .collect())
-        }) {
+        } => match AgentRuntime::attach(store, policy_snapshot(&policy), session_id).and_then(
+            |runtime| {
+                Ok(runtime
+                    .events()?
+                    .into_iter()
+                    .filter(|event| event.sequence > after_sequence)
+                    .collect())
+            },
+        ) {
             Ok(events) => IpcResponse::Events { session_id, events },
             Err(error) => runtime_error(error),
         },
@@ -534,8 +588,8 @@ fn handle_request(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let artifact_root = uploads.artifact_root().to_path_buf();
-            match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
-                |runtime| {
+            match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id)
+                .and_then(|runtime| {
                     let runtime = Arc::new(runtime);
 
                     // Sync projection → router, then validate typed intent (no origin/policy bypass).
@@ -619,35 +673,35 @@ fn handle_request(
                         cancellations.clone(),
                         intent_router.clone(),
                         store.clone(),
-                        policy.clone(),
+                        policy_snapshot(&policy),
                         session_coordinator.clone(),
                         artifact_root,
                         tool_providers.clone(),
                     )?;
                     runtime.status()
-                },
-            ) {
+                }) {
                 Ok(status) => IpcResponse::Status { session_id, status },
                 Err(error) => runtime_error(error),
             }
         }
-        IpcRequest::Context { session_id } => match AgentRuntime::attach(store, policy, session_id)
-        {
-            Ok(runtime) => match runtime.workspace_root().and_then(|workspace_root| {
-                resolve_context(&workspace_root)
-                    .map_err(|error| RuntimeError::Denied(error.to_string()))
-            }) {
-                Ok(context) => IpcResponse::Context {
-                    session_id,
-                    context,
+        IpcRequest::Context { session_id } => {
+            match AgentRuntime::attach(store, policy_snapshot(&policy), session_id) {
+                Ok(runtime) => match runtime.workspace_root().and_then(|workspace_root| {
+                    resolve_context(&workspace_root)
+                        .map_err(|error| RuntimeError::Denied(error.to_string()))
+                }) {
+                    Ok(context) => IpcResponse::Context {
+                        session_id,
+                        context,
+                    },
+                    Err(error) => IpcResponse::Error {
+                        code: IpcErrorCode::Internal,
+                        message: error.to_string(),
+                    },
                 },
-                Err(error) => IpcResponse::Error {
-                    code: IpcErrorCode::Internal,
-                    message: error.to_string(),
-                },
-            },
-            Err(error) => runtime_error(error),
-        },
+                Err(error) => runtime_error(error),
+            }
+        }
         IpcRequest::Cancel { session_id } => {
             let session_lock = session_coordinator.lock_for(session_id);
             let _session_guard = session_lock
@@ -660,8 +714,8 @@ fn handle_request(
                 // outside durable events so no handle leaks through SQLite.
                 handle.token.cancel();
             }
-            match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
-                |runtime| {
+            match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id)
+                .and_then(|runtime| {
                     let finished_run_id = runtime.active_run_id()?;
                     let _ = runtime.cancel()?;
                     if let Some(run_id) = finished_run_id {
@@ -669,7 +723,7 @@ fn handle_request(
                         // Session lock already held — do not re-enter the mutex.
                         start_drained_follow_up_if_any(
                             store.clone(),
-                            policy.clone(),
+                            policy_snapshot(&policy),
                             provider_registry.clone(),
                             default_provider_id.clone(),
                             model_router.clone(),
@@ -685,8 +739,7 @@ fn handle_request(
                         );
                     }
                     runtime.status()
-                },
-            ) {
+                }) {
                 Ok(status) => IpcResponse::Status { session_id, status },
                 Err(error) => runtime_error(error),
             }
@@ -717,21 +770,20 @@ fn handle_request(
             // The harness derives origin from session context; no client-provided
             // origin is trusted.
             let origin = crate::ActionOrigin::User;
-            match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
-                let workspace_root = runtime.workspace_root()?;
-                let tools = ReadOnlyTools::new(&workspace_root);
-                let effect_seam = crate::EffectSeam::with_sandbox(
-                    runtime.policy(),
-                    Sandbox::workspace(&workspace_root),
-                );
-                tools
-                    .run_with_seam(tool, origin, &artifact_store, &effect_seam)
-                    .map_err(|e| RuntimeError::Denied(e.to_string()))
-                    .and_then(|outcome| {
-                        crate::tools::record_tool_outcome(&runtime, &outcome)?;
-                        Ok(outcome)
-                    })
-            }) {
+            match AgentRuntime::attach(store, policy_snapshot(&policy), session_id).and_then(
+                |runtime| {
+                    let workspace_root = runtime.workspace_root()?;
+                    let tools = ReadOnlyTools::new(&workspace_root);
+                    let effect_seam = runtime.effect_seam()?;
+                    tools
+                        .run_with_seam(tool, origin, &artifact_store, &effect_seam)
+                        .map_err(|e| RuntimeError::Denied(e.to_string()))
+                        .and_then(|outcome| {
+                            crate::tools::record_tool_outcome(&runtime, &outcome)?;
+                            Ok(outcome)
+                        })
+                },
+            ) {
                 Ok(outcome) => IpcResponse::ToolResult {
                     session_id,
                     outcome: redact_tool_outcome(outcome),
@@ -742,7 +794,7 @@ fn handle_request(
         IpcRequest::Subscribe {
             session_id,
             after_sequence: _,
-        } => match AgentRuntime::attach(store, policy, session_id)
+        } => match AgentRuntime::attach(store, policy_snapshot(&policy), session_id)
             .map(|runtime| runtime.session_id())
         {
             Ok(_) => IpcResponse::Subscribed { session_id },
@@ -752,8 +804,8 @@ fn handle_request(
             session_id,
             approval_id,
             accepted,
-        } => match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
-            |runtime| {
+        } => match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id)
+            .and_then(|runtime| {
                 let runtime = Arc::new(runtime);
                 let request = runtime
                     .pending_approval(approval_id)?
@@ -810,15 +862,14 @@ fn handle_request(
                         cancellations.clone(),
                         intent_router.clone(),
                         store.clone(),
-                        policy.clone(),
+                        policy_snapshot(&policy),
                         session_coordinator.clone(),
                         uploads.artifact_root().to_path_buf(),
                         tool_providers.clone(),
                     )?;
                 }
                 Ok(session_id)
-            },
-        ) {
+            }) {
             Ok(session_id) => IpcResponse::ApprovalResolved {
                 session_id,
                 approval_id,
@@ -847,16 +898,15 @@ fn handle_request(
         IpcRequest::GetApprovalDetail {
             session_id,
             approval_id,
-        } => match AgentRuntime::attach(store.clone(), policy.clone(), session_id).and_then(
-            |runtime| {
+        } => match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id)
+            .and_then(|runtime| {
                 let request = runtime
                     .pending_approval(approval_id)?
                     .ok_or(RuntimeError::MissingApproval(approval_id))?;
                 let session_workspace = runtime.workspace_root()?;
                 let detail = compute_approval_detail(request, &session_workspace, &attachments)?;
                 Ok((session_id, detail))
-            },
-        ) {
+            }) {
             Ok((session_id, detail)) => IpcResponse::ApprovalDetail {
                 session_id,
                 detail: Box::new(detail),
@@ -867,18 +917,20 @@ fn handle_request(
             session_id,
             declared_bytes,
             content_type: _,
-        } => match AgentRuntime::attach(store, policy, session_id).and_then(|_| {
-            uploads
-                .begin(session_id, declared_bytes)
-                .map_err(|error| RuntimeError::Denied(crate::upload_error_message(&error)))
-        }) {
-            Ok(upload_id) => IpcResponse::ArtifactUploadBegun {
-                upload_id,
-                max_bytes: crate::MAX_ARTIFACT_UPLOAD_BYTES,
-                max_chunk_bytes: crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES,
-            },
-            Err(error) => runtime_error(error),
-        },
+        } => {
+            match AgentRuntime::attach(store, policy_snapshot(&policy), session_id).and_then(|_| {
+                uploads
+                    .begin(session_id, declared_bytes)
+                    .map_err(|error| RuntimeError::Denied(crate::upload_error_message(&error)))
+            }) {
+                Ok(upload_id) => IpcResponse::ArtifactUploadBegun {
+                    upload_id,
+                    max_bytes: crate::MAX_ARTIFACT_UPLOAD_BYTES,
+                    max_chunk_bytes: crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES,
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
         IpcRequest::AppendArtifactChunk {
             upload_id,
             seq,
@@ -926,8 +978,13 @@ fn handle_request(
             },
         },
         IpcRequest::Diagnostics => {
-            let subsystems =
-                gather_subsystem_health(&store, &policy, &provider_registry, &workspace_root);
+            let policy_engine = policy_snapshot(&policy);
+            let subsystems = gather_subsystem_health(
+                &store,
+                &policy_engine,
+                &provider_registry,
+                &workspace_root,
+            );
             IpcResponse::Diagnostics {
                 subsystems: Box::new(subsystems),
             }
@@ -950,6 +1007,77 @@ fn handle_request(
                     code: IpcErrorCode::Internal,
                     message: error.to_string(),
                 },
+            }
+        }
+        IpcRequest::SetExecutionMode { session_id, mode } => {
+            if let Some(required) = mode.required_ipc_capability()
+                && !IPC_CAPABILITIES.contains(&required)
+            {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: format!(
+                        "execution mode {} requires harness capability `{required}`",
+                        mode.label()
+                    ),
+                };
+            }
+            match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id) {
+                Ok(runtime) => {
+                    match runtime.record_event(EventPayload::Session(
+                        SessionEvent::ExecutionModeChanged { mode },
+                    )) {
+                        Ok(()) => IpcResponse::ExecutionMode { session_id, mode },
+                        Err(error) => runtime_error(error),
+                    }
+                }
+                Err(error) => runtime_error(error),
+            }
+        }
+        IpcRequest::GetExecutionMode { session_id } => {
+            match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id) {
+                Ok(runtime) => match runtime.events() {
+                    Ok(events) => match reduce(&events) {
+                        Ok(Some(projection)) => IpcResponse::ExecutionMode {
+                            session_id,
+                            mode: projection.execution_mode,
+                        },
+                        Ok(None) => IpcResponse::Error {
+                            code: IpcErrorCode::MissingSession,
+                            message: format!("session {session_id} has no events"),
+                        },
+                        Err(error) => IpcResponse::Error {
+                            code: IpcErrorCode::Internal,
+                            message: error.to_string(),
+                        },
+                    },
+                    Err(error) => runtime_error(error),
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
+        IpcRequest::ReloadPolicyConfig { path, config_json } => {
+            match resolve_reload_policy_config(path.as_deref(), config_json.as_deref()) {
+                Ok(config) => {
+                    policy
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .reload_config(config);
+                    let applied = policy
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .config();
+                    IpcResponse::PolicyConfig { config: applied }
+                }
+                Err(message) => {
+                    audit_policy_reload_notice(
+                        &store,
+                        format!("policy config reload rejected: {message}"),
+                    );
+                    IpcResponse::Error {
+                        code: IpcErrorCode::InvalidRequest,
+                        message,
+                    }
+                }
             }
         }
     }
@@ -1784,8 +1912,8 @@ fn compute_approval_detail(
 mod tests {
     use super::*;
     use crate::{
-        CredentialStrategy, EventPayload, MemoryEventStore, OpenAiProvider, OpenAiRetryBudget,
-        ProviderError, ProviderProfile, mock_provider::MockStreamItem,
+        CredentialStrategy, EventPayload, ExecutionMode, MemoryEventStore, OpenAiProvider,
+        OpenAiRetryBudget, ProviderError, ProviderProfile, mock_provider::MockStreamItem,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -2713,7 +2841,7 @@ mod tests {
         );
         assert_eq!(
             modules["extension_runtime"]["details"]["impetusd_autoload"],
-            false
+            true
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
         let caps = modules["capability_matrix"]["capabilities"]
@@ -3470,5 +3598,204 @@ mod tests {
             .expect("mcp");
         assert_eq!(observations[0].outcome, crate::ToolOutcomeStatus::Success);
         assert_eq!(observations[0].preview, "from-runtime");
+    }
+
+    #[test]
+    fn execution_mode_defaults_to_ask_on_new_session() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::GetExecutionMode { session_id })
+        else {
+            panic!("get execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Ask);
+    }
+
+    #[test]
+    fn set_execution_mode_persists_via_durable_event() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::SetExecutionMode {
+                session_id,
+                mode: ExecutionMode::Plan,
+            })
+        else {
+            panic!("set execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Plan);
+
+        let events = store.list(session_id).expect("events");
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::Session(SessionEvent::ExecutionModeChanged {
+                mode: ExecutionMode::Plan
+            })
+        )));
+
+        let IpcResponse::ExecutionMode { mode, .. } =
+            harness.handle(IpcRequest::GetExecutionMode { session_id })
+        else {
+            panic!("get execution mode");
+        };
+        assert_eq!(mode, ExecutionMode::Plan);
+    }
+
+    #[test]
+    fn hello_advertises_execution_mode_capabilities() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let IpcResponse::Hello {
+            capabilities,
+            version,
+        } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec![
+                "execution_mode".into(),
+                "approval_scope_file_edits".into(),
+                "approval_scope_full_auto".into(),
+            ],
+        })
+        else {
+            panic!("hello");
+        };
+        assert_eq!(version, IPC_VERSION);
+        for cap in [
+            "execution_mode",
+            "approval_scope_file_edits",
+            "approval_scope_full_auto",
+        ] {
+            assert!(
+                capabilities.iter().any(|advertised| advertised == cap),
+                "missing capability {cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn reload_policy_config_via_ipc_applies_without_restart() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::PolicyConfig { config } = harness.handle(IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":1,"overrides":{"write_file":"allow"}}"#.into()),
+        }) else {
+            panic!("reload policy config");
+        };
+        assert_eq!(
+            config.override_for(crate::ActionKind::WriteFile),
+            Some(crate::PolicyConfigDecision::Allow)
+        );
+        assert_eq!(
+            harness
+                .policy()
+                .config()
+                .override_for(crate::ActionKind::WriteFile),
+            Some(crate::PolicyConfigDecision::Allow)
+        );
+    }
+
+    #[test]
+    fn reload_policy_config_invalid_keeps_prior_and_audits_notice() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::with_config(
+                SandboxScope::local_workspace(workspace.path()),
+                PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                    .expect("config"),
+            ),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let IpcResponse::Error { code, message } = harness.handle(IpcRequest::ReloadPolicyConfig {
+            path: None,
+            config_json: Some(r#"{"version":99}"#.into()),
+        }) else {
+            panic!("expected reload error");
+        };
+        assert_eq!(code, IpcErrorCode::InvalidRequest);
+        assert!(message.contains("99"));
+        assert_eq!(
+            harness
+                .policy()
+                .config()
+                .override_for(crate::ActionKind::WriteFile),
+            Some(crate::PolicyConfigDecision::Allow)
+        );
+        let events = store.list(session_id).expect("events");
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::Notice(crate::NoticeEvent::Runtime { message })
+                if message.contains("policy config reload rejected")
+        )));
+    }
+
+    #[test]
+    fn reload_policy_config_rejects_path_and_inline_together() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let IpcResponse::Error { code, message } = harness.handle(IpcRequest::ReloadPolicyConfig {
+            path: Some(std::path::PathBuf::from("/tmp/policy.json")),
+            config_json: Some(r#"{"version":1}"#.into()),
+        }) else {
+            panic!("expected reload error");
+        };
+        assert_eq!(code, IpcErrorCode::InvalidRequest);
+        assert!(message.contains("not both"));
+    }
+
+    #[test]
+    fn hello_advertises_reload_policy_config_capability() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec!["reload_policy_config".into()],
+        }) else {
+            panic!("hello");
+        };
+        assert!(
+            capabilities
+                .iter()
+                .any(|capability| capability == "reload_policy_config")
+        );
     }
 }

@@ -109,6 +109,24 @@ out="$(scope 'scripts/ci-affected.sh')"
 expect self rust true "$out"
 expect self workspace true "$out"
 
+# --- workflow change → full Rust workspace ---
+out="$(scope '.github/workflows/ci.yml')"
+expect workflow rust true "$out"
+expect workflow workspace true "$out"
+
+# --- site-only ---
+out="$(scope 'site/package.json')"
+expect site rust false "$out"
+expect site site true "$out"
+expect site docs_only false "$out"
+
+# --- reverse dependant: client change pulls tui into check_packages ---
+out="$(scope 'crates/impetus-client/src/lib.rs')"
+expect client rust true "$out"
+cp="$(val check_packages "$out")"
+contains client "$cp" "-p impetus-client"
+contains client "$cp" "-p impetus-tui"
+
 if [[ "$fail" -ne 0 ]]; then
   echo "ci-affected tests FAILED" >&2
   exit 1

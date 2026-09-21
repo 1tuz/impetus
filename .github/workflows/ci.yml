@@ -11,6 +11,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # PR CI: skip full debuginfo — faster compile, same assertions.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
 jobs:
   detect:
     name: Detect changes
@@ -28,13 +34,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Selector unit tests
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-affected.sh scripts/tests/ci-affected.sh
+          ./scripts/tests/ci-affected.sh
       - id: scope
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags --prune origin "${{ github.base_ref || 'main' }}"
           export BASE_REF="origin/${{ github.base_ref || 'main' }}"
-          chmod +x scripts/ci-affected.sh
           ./scripts/ci-affected.sh | tee /tmp/scope.txt
           while IFS= read -r line; do
             echo "$line" >> "$GITHUB_OUTPUT"
@@ -50,22 +60,19 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-macos
-          cache-targets: "false"
-      - name: Format
-        run: cargo fmt --all -- --check
+          cache-targets: "true"
       - name: Clippy (affected)
         # Prefer --lib --bins over --all-targets: PR CI skips heavy crates/*/tests/
         # (those stay local via task verify). Still deny warnings.
         run: cargo clippy ${{ needs.detect.outputs.packages }} --lib --bins -- -D warnings
       - name: Test (affected lib/bins)
         run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins
-      - name: Check dependants
-        if: needs.detect.outputs.check_packages != needs.detect.outputs.packages
-        run: cargo check ${{ needs.detect.outputs.check_packages }}
+      # Dependants compile guard lives on Linux (`check_packages`) — avoid a
+      # second full compile on the macOS critical path (~20–25s cold).
 
   linux:
     name: Linux
@@ -76,10 +83,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-linux
-          cache-targets: "false"
+          cache-targets: "true"
+      - name: Format
+        run: cargo fmt --all -- --check
       - name: Check (affected + dependants)
         run: cargo check ${{ needs.detect.outputs.check_packages }}
 
@@ -94,7 +105,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          # audit/deny need registry cache; target artifacts rarely help.
+          shared-key: ci-linux-security
           cache-targets: "false"
       - uses: taiki-e/install-action@v2
         with:

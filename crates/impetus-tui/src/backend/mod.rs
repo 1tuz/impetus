@@ -46,6 +46,15 @@ pub trait UiBackend: Send + Sync {
         approval_id: Uuid,
     ) -> Result<ApprovalDetailView>;
     async fn diagnostics(&self) -> Result<String>;
+    async fn get_execution_mode(
+        &self,
+        session_id: Uuid,
+    ) -> Result<impetus_client::protocol::ExecutionMode>;
+    async fn set_execution_mode(
+        &self,
+        session_id: Uuid,
+        mode: impetus_client::protocol::ExecutionMode,
+    ) -> Result<impetus_client::protocol::ExecutionMode>;
     async fn subscribe(
         &self,
         session_id: Uuid,

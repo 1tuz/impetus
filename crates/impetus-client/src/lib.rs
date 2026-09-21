@@ -207,6 +207,53 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Set the daemon-owned execution mode for a session (durable event).
+    async fn set_execution_mode(
+        &self,
+        session_id: uuid::Uuid,
+        mode: impetus_core::ExecutionMode,
+    ) -> Result<impetus_core::ExecutionMode> {
+        match self
+            .request(IpcRequest::SetExecutionMode { session_id, mode })
+            .await?
+        {
+            IpcResponse::ExecutionMode { mode, .. } => Ok(mode),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Read the confirmed daemon execution mode (defaults to Ask).
+    async fn get_execution_mode(
+        &self,
+        session_id: uuid::Uuid,
+    ) -> Result<impetus_core::ExecutionMode> {
+        match self
+            .request(IpcRequest::GetExecutionMode { session_id })
+            .await?
+        {
+            IpcResponse::ExecutionMode { mode, .. } => Ok(mode),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Replace live PolicyConfig overrides without restarting the daemon.
+    async fn reload_policy_config(
+        &self,
+        path: Option<PathBuf>,
+        config_json: Option<String>,
+    ) -> Result<impetus_core::PolicyConfig> {
+        match self
+            .request(IpcRequest::ReloadPolicyConfig { path, config_json })
+            .await?
+        {
+            IpcResponse::PolicyConfig { config } => Ok(config),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Stop at the next safe runtime boundary.
     async fn cancel(&self, session_id: uuid::Uuid) -> Result<impetus_core::RuntimeStatus> {
         match self.request(IpcRequest::Cancel { session_id }).await? {

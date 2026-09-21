@@ -6,6 +6,6 @@
 
 pub use impetus_core::{
     AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, DurableArtifactRef, Event,
-    EventPayload, IpcRequest, IpcResponse, MAX_ARTIFACT_UPLOAD_BYTES, NoticeEvent, RetryEvent,
-    RunEvent, SessionEvent, ToolEvent, UserPromptIntent,
+    EventPayload, ExecutionMode, IpcRequest, IpcResponse, MAX_ARTIFACT_UPLOAD_BYTES, NoticeEvent,
+    RetryEvent, RunEvent, SessionEvent, ToolEvent, UserPromptIntent,
 };
