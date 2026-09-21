@@ -168,7 +168,7 @@ pub use mcp_adapter::McpAdapter;
 pub use mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveToolEntry};
 pub use memory_store::{
     MemoryEntry, MemoryPromotionTarget, MemoryProvenance, MemoryScope, MemoryStore,
-    MemoryTrustError, evaluate_with_memory_context, granted_effect_capabilities,
+    MemoryStoreError, MemoryTrustError, evaluate_with_memory_context, granted_effect_capabilities,
     refuse_auto_promote, sandbox_scope_after_memory,
 };
 pub use mock_provider::{MockProvider, MockStreamItem as MockProviderItem};
