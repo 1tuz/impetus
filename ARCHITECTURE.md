@@ -41,7 +41,8 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   invent a new agent type per workflow.
 - **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
-  recovery.
+  recovery; Build-role bindings attach sandbox/write permissions to the isolated
+  worktree (`create_for_role` + `enforce_write`).
 - **ToolOrchestrator** — JSON Schema arg validation (`tool_schema`) before
   policy/sandbox/exec; OpenAI/Anthropic HTTP requests include `tools` from
   `builtin_tool_schemas()`.

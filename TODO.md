@@ -202,7 +202,9 @@ stale → close → salvage
 - [x] Worktree identity survives compaction/resume
       (`CompactionStructuralState.worktree_id` + `resolve_after_compaction`;
       attach restores id from CompactionCompleted)
-- [ ] Build-role agents prefer isolated worktrees with attached permissions
+- [x] Build-role agents prefer isolated worktrees with attached permissions
+      (`create_for_role(Build)` + durable `WorktreeAttachedPermissions`;
+      `enforce_write` / `to_sandbox_scope` hook; temp-dir tests)
 
 ### 6. WorkflowEngine + small recipes
 

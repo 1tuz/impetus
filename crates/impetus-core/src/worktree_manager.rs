@@ -1,11 +1,20 @@
 //! Managed git worktree lifecycle with durable session binding.
 //!
 //! Vertical slice (TODO P1 §5): create → resume → stop → close → stale → salvage;
-//! identity survives compaction via `CompactionStructuralState.worktree_id`.
+//! identity survives compaction via `CompactionStructuralState.worktree_id`;
+//! Build-role agents prefer isolated worktrees with attached permissions.
 //! Diff / merge-ready / conflict checks come later.
 //!
 //! Uses the system `git` CLI (no new git dependency). Bindings survive daemon
 //! restart via SQLite; `worktree_id` identity is retained through stop/close/stale.
+//!
+//! ## Build-role permissions hook
+//!
+//! [`WorktreeManager::create_for_role`] with [`AgentWorkRole::Build`] creates an
+//! isolated worktree and persists [`WorktreeAttachedPermissions`]. Callers that
+//! wire EffectSeam / PolicyEngine should use
+//! [`WorktreeAttachedPermissions::to_sandbox_scope`] or
+//! [`WorktreeManager::enforce_write`] so sandbox admission matches the binding.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -15,6 +24,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::SandboxScope;
 
 /// Lifecycle state for a managed worktree binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +78,83 @@ pub struct StaleReport {
     pub recoverable: bool,
 }
 
+/// Agent role that may own a managed worktree binding.
+///
+/// Only [`AgentWorkRole::Build`] prefers an isolated worktree; other roles are
+/// listed so callers can ask [`AgentWorkRole::prefers_isolated_worktree`] without
+/// inventing a parallel enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkRole {
+    Explore,
+    Research,
+    Build,
+    Review,
+}
+
+impl AgentWorkRole {
+    /// Build agents must not write the main tree; they get an isolated worktree.
+    pub fn prefers_isolated_worktree(self) -> bool {
+        matches!(self, Self::Build)
+    }
+}
+
+/// Permission / sandbox metadata attached to a worktree binding.
+///
+/// For Build role, `workspace_root` and `write_roots` default to the isolated
+/// worktree path so EffectSeam path-scope matches the binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeAttachedPermissions {
+    pub role: AgentWorkRole,
+    /// Primary sandbox workspace (isolated worktree path for Build).
+    pub workspace_root: PathBuf,
+    /// Paths where writes are admitted; Build defaults to `[workspace_root]`.
+    pub write_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub allow_network: bool,
+    #[serde(default)]
+    pub allow_web_outbound: bool,
+    #[serde(default)]
+    pub allow_private_network: bool,
+}
+
+impl WorktreeAttachedPermissions {
+    /// Build-role defaults: isolated worktree as sole sandbox + write root.
+    pub fn for_build(worktree_path: PathBuf) -> Self {
+        Self {
+            role: AgentWorkRole::Build,
+            write_roots: vec![worktree_path.clone()],
+            workspace_root: worktree_path,
+            allow_network: false,
+            allow_web_outbound: false,
+            allow_private_network: false,
+        }
+    }
+
+    /// Hook for EffectSeam / PolicyEngine wiring.
+    pub fn to_sandbox_scope(&self) -> SandboxScope {
+        SandboxScope {
+            workspace_root: self.workspace_root.clone(),
+            allow_network: self.allow_network,
+            allowed_hosts: vec![],
+            allow_web_outbound: self.allow_web_outbound,
+            allow_private_network: self.allow_private_network,
+        }
+    }
+
+    /// Path-scope write admission against attached `write_roots`.
+    pub fn admits_write(&self, candidate: &Path) -> bool {
+        self.write_roots
+            .iter()
+            .any(|root| SandboxScope::local_workspace(root).contains_write_target(candidate))
+    }
+
+    /// Path-scope read admission against attached `workspace_root`.
+    pub fn admits_read(&self, candidate: &Path) -> bool {
+        self.to_sandbox_scope().contains(candidate)
+    }
+}
+
 /// Durable session ↔ worktree binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeBinding {
@@ -77,6 +165,9 @@ pub struct WorktreeBinding {
     pub branch: String,
     pub repo_root: PathBuf,
     pub state: WorktreeLifecycleState,
+    /// Present when created via [`WorktreeManager::create_for_role`] (Build).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<WorktreeAttachedPermissions>,
 }
 
 #[derive(Debug, Error)]
@@ -106,6 +197,12 @@ pub enum WorktreeError {
     NotRecoverable(String),
     #[error("corrupt binding state: {0}")]
     CorruptState(String),
+    #[error("worktree binding has no attached permissions")]
+    MissingPermissions,
+    #[error("path outside attached worktree permissions: {0}")]
+    OutsidePermissions(String),
+    #[error("role {0:?} does not prefer isolated worktrees")]
+    RoleDoesNotPreferIsolated(AgentWorkRole),
 }
 
 /// Creates, stops, resumes, closes, detects stale, and salvages git worktrees.
@@ -137,10 +234,12 @@ impl WorktreeManager {
                 repo_root TEXT NOT NULL,
                 state TEXT NOT NULL,
                 created_unix_ms INTEGER NOT NULL,
-                updated_unix_ms INTEGER NOT NULL
+                updated_unix_ms INTEGER NOT NULL,
+                permissions_json TEXT
             )",
             [],
         )?;
+        Self::migrate_permissions_column(&conn)?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_worktree_bindings_session
              ON worktree_bindings(session_id)",
@@ -153,13 +252,83 @@ impl WorktreeManager {
         })
     }
 
+    /// Older DBs lack `permissions_json`; add it when missing.
+    fn migrate_permissions_column(conn: &Connection) -> Result<(), WorktreeError> {
+        let mut stmt = conn.prepare("PRAGMA table_info(worktree_bindings)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !cols.iter().any(|c| c == "permissions_json") {
+            conn.execute(
+                "ALTER TABLE worktree_bindings ADD COLUMN permissions_json TEXT",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Create a new git worktree bound to `session_id`.
     ///
     /// Fails if the session already has a non-closed binding.
+    /// No role permissions are attached — use [`Self::create_for_role`] for Build.
     pub fn create(
         &self,
         session_id: Uuid,
         repo_root: &Path,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        self.create_inner(session_id, repo_root, None)
+    }
+
+    /// Create an isolated worktree for a role that prefers isolation (Build).
+    ///
+    /// Attaches [`WorktreeAttachedPermissions`] so sandbox/write scope defaults
+    /// to the worktree path. Other roles return [`WorktreeError::RoleDoesNotPreferIsolated`].
+    pub fn create_for_role(
+        &self,
+        session_id: Uuid,
+        repo_root: &Path,
+        role: AgentWorkRole,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        if !role.prefers_isolated_worktree() {
+            return Err(WorktreeError::RoleDoesNotPreferIsolated(role));
+        }
+        self.create_inner(session_id, repo_root, Some(role))
+    }
+
+    /// Enforce write admission using the binding's attached permissions.
+    ///
+    /// Documented hook for EffectSeam / ToolOrchestrator: call before execution
+    /// when a build-role worktree binding is active.
+    pub fn enforce_write(binding: &WorktreeBinding, path: &Path) -> Result<(), WorktreeError> {
+        let perms = binding
+            .permissions
+            .as_ref()
+            .ok_or(WorktreeError::MissingPermissions)?;
+        if perms.admits_write(path) {
+            Ok(())
+        } else {
+            Err(WorktreeError::OutsidePermissions(
+                path.to_string_lossy().into_owned(),
+            ))
+        }
+    }
+
+    /// Sandbox scope from attached permissions (Build bindings).
+    pub fn attached_sandbox_scope(
+        binding: &WorktreeBinding,
+    ) -> Result<SandboxScope, WorktreeError> {
+        binding
+            .permissions
+            .as_ref()
+            .map(WorktreeAttachedPermissions::to_sandbox_scope)
+            .ok_or(WorktreeError::MissingPermissions)
+    }
+
+    fn create_inner(
+        &self,
+        session_id: Uuid,
+        repo_root: &Path,
+        role: Option<AgentWorkRole>,
     ) -> Result<WorktreeBinding, WorktreeError> {
         if let Some(existing) = self.get_open_by_session(session_id)? {
             return Err(WorktreeError::AlreadyBound(existing.session_id));
@@ -183,7 +352,20 @@ impl WorktreeManager {
             ],
         )?;
 
-        let now = now_unix_ms();
+        let permissions = role.map(|r| match r {
+            AgentWorkRole::Build => WorktreeAttachedPermissions::for_build(path.clone()),
+            AgentWorkRole::Explore | AgentWorkRole::Research | AgentWorkRole::Review => {
+                WorktreeAttachedPermissions {
+                    role: r,
+                    write_roots: vec![path.clone()],
+                    workspace_root: path.clone(),
+                    allow_network: false,
+                    allow_web_outbound: false,
+                    allow_private_network: false,
+                }
+            }
+        });
+
         let binding = WorktreeBinding {
             worktree_id: worktree_id.clone(),
             session_id,
@@ -191,29 +373,41 @@ impl WorktreeManager {
             branch: branch.clone(),
             repo_root: repo_root.clone(),
             state: WorktreeLifecycleState::Active,
+            permissions,
         };
 
-        {
-            let conn = self.conn.lock().expect("worktree db lock");
-            conn.execute(
-                "INSERT INTO worktree_bindings
-                    (worktree_id, session_id, path, branch, repo_root, state,
-                     created_unix_ms, updated_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    &binding.worktree_id,
-                    session_id.to_string(),
-                    path.to_string_lossy().as_ref(),
-                    &branch,
-                    repo_root.to_string_lossy().as_ref(),
-                    WorktreeLifecycleState::Active.as_str(),
-                    now as i64,
-                    now as i64,
-                ],
-            )?;
-        }
-
+        self.insert_binding(&binding)?;
         Ok(binding)
+    }
+
+    fn insert_binding(&self, binding: &WorktreeBinding) -> Result<(), WorktreeError> {
+        let now = now_unix_ms();
+        let permissions_json =
+            match &binding.permissions {
+                Some(p) => Some(serde_json::to_string(p).map_err(|e| {
+                    WorktreeError::CorruptState(format!("permissions serialize: {e}"))
+                })?),
+                None => None,
+            };
+        let conn = self.conn.lock().expect("worktree db lock");
+        conn.execute(
+            "INSERT INTO worktree_bindings
+                (worktree_id, session_id, path, branch, repo_root, state,
+                 created_unix_ms, updated_unix_ms, permissions_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &binding.worktree_id,
+                binding.session_id.to_string(),
+                binding.path.to_string_lossy().as_ref(),
+                &binding.branch,
+                binding.repo_root.to_string_lossy().as_ref(),
+                binding.state.as_str(),
+                now as i64,
+                now as i64,
+                permissions_json,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Resume a stopped (or still-active after restart) binding.
@@ -407,7 +601,7 @@ impl WorktreeManager {
         let conn = self.conn.lock().expect("worktree db lock");
         let row = conn
             .query_row(
-                "SELECT worktree_id, session_id, path, branch, repo_root, state
+                "SELECT worktree_id, session_id, path, branch, repo_root, state, permissions_json
                  FROM worktree_bindings
                  WHERE session_id = ?1
                  ORDER BY updated_unix_ms DESC
@@ -427,7 +621,7 @@ impl WorktreeManager {
         let conn = self.conn.lock().expect("worktree db lock");
         let row = conn
             .query_row(
-                "SELECT worktree_id, session_id, path, branch, repo_root, state
+                "SELECT worktree_id, session_id, path, branch, repo_root, state, permissions_json
                  FROM worktree_bindings WHERE worktree_id = ?1",
                 params![worktree_id],
                 row_to_binding,
@@ -521,7 +715,7 @@ impl WorktreeManager {
     fn list_non_closed(&self) -> Result<Vec<WorktreeBinding>, WorktreeError> {
         let conn = self.conn.lock().expect("worktree db lock");
         let mut stmt = conn.prepare(
-            "SELECT worktree_id, session_id, path, branch, repo_root, state
+            "SELECT worktree_id, session_id, path, branch, repo_root, state, permissions_json
              FROM worktree_bindings
              WHERE state != 'closed'
              ORDER BY updated_unix_ms ASC",
@@ -541,7 +735,7 @@ impl WorktreeManager {
         let conn = self.conn.lock().expect("worktree db lock");
         let row = conn
             .query_row(
-                "SELECT worktree_id, session_id, path, branch, repo_root, state
+                "SELECT worktree_id, session_id, path, branch, repo_root, state, permissions_json
                  FROM worktree_bindings
                  WHERE session_id = ?1 AND state != 'closed'
                  ORDER BY updated_unix_ms DESC
@@ -594,6 +788,20 @@ fn row_to_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeBinding> 
     let session_id = Uuid::parse_str(&session_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
     })?;
+    let permissions_json: Option<String> = row.get(6)?;
+    let permissions = match permissions_json {
+        Some(raw) if !raw.is_empty() => Some(serde_json::from_str(&raw).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    err.to_string(),
+                )),
+            )
+        })?),
+        _ => None,
+    };
     Ok(WorktreeBinding {
         worktree_id: row.get(0)?,
         session_id,
@@ -601,6 +809,7 @@ fn row_to_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeBinding> 
         branch: row.get(3)?,
         repo_root: PathBuf::from(row.get::<_, String>(4)?),
         state,
+        permissions,
     })
 }
 
@@ -979,5 +1188,107 @@ mod tests {
             .resolve_after_compaction(Uuid::new_v4(), &structural)
             .expect_err("foreign session");
         assert!(matches!(err, WorktreeError::NotFoundId(_)));
+    }
+
+    #[test]
+    fn build_role_creates_isolated_worktree_with_permissions() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager
+            .create_for_role(session, repo.path(), AgentWorkRole::Build)
+            .expect("create build");
+
+        assert_eq!(binding.state, WorktreeLifecycleState::Active);
+        assert!(binding.path.is_dir());
+        // Isolated: worktree path is not the repo root.
+        assert_ne!(
+            absolute_path(&binding.path).unwrap(),
+            absolute_path(repo.path()).unwrap()
+        );
+
+        let perms = binding.permissions.as_ref().expect("permissions");
+        assert_eq!(perms.role, AgentWorkRole::Build);
+        assert_eq!(perms.workspace_root, binding.path);
+        assert_eq!(perms.write_roots, vec![binding.path.clone()]);
+        assert!(!perms.allow_network);
+
+        let scope = WorktreeManager::attached_sandbox_scope(&binding).expect("scope");
+        assert_eq!(scope.workspace_root, binding.path);
+    }
+
+    #[test]
+    fn build_role_permissions_survive_reopen() {
+        let store_dir = tempfile::tempdir().expect("store");
+        let repo_dir = tempfile::tempdir().expect("repo");
+        init_git_repo(repo_dir.path());
+        let db = store_dir.path().join("worktrees.db");
+        let worktrees = store_dir.path().join("worktrees");
+        let session = Uuid::new_v4();
+        let worktree_id;
+        let path;
+
+        {
+            let manager = WorktreeManager::open(&db, &worktrees).expect("open");
+            let created = manager
+                .create_for_role(session, repo_dir.path(), AgentWorkRole::Build)
+                .expect("create");
+            worktree_id = created.worktree_id.clone();
+            path = created.path.clone();
+        }
+
+        let reopened = WorktreeManager::open(&db, &worktrees).expect("reopen");
+        let binding = reopened
+            .get_by_worktree_id(&worktree_id)
+            .expect("lookup")
+            .expect("present");
+        let perms = binding.permissions.as_ref().expect("permissions");
+        assert_eq!(perms.role, AgentWorkRole::Build);
+        assert_eq!(perms.workspace_root, path);
+        assert_eq!(perms.write_roots, vec![path]);
+    }
+
+    #[test]
+    fn enforce_write_admits_worktree_denies_outside() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager
+            .create_for_role(session, repo.path(), AgentWorkRole::Build)
+            .expect("create build");
+
+        let inside = binding.path.join("src/main.rs");
+        WorktreeManager::enforce_write(&binding, &inside).expect("inside ok");
+
+        let outside = repo.path().join("README");
+        let err = WorktreeManager::enforce_write(&binding, &outside).expect_err("outside");
+        assert!(matches!(err, WorktreeError::OutsidePermissions(_)));
+    }
+
+    #[test]
+    fn plain_create_has_no_permissions_enforce_fails() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager.create(session, repo.path()).expect("create");
+        assert!(binding.permissions.is_none());
+        let err =
+            WorktreeManager::enforce_write(&binding, &binding.path.join("x")).expect_err("missing");
+        assert!(matches!(err, WorktreeError::MissingPermissions));
+    }
+
+    #[test]
+    fn non_build_role_refuses_isolated_create() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        for role in [
+            AgentWorkRole::Explore,
+            AgentWorkRole::Research,
+            AgentWorkRole::Review,
+        ] {
+            let err = manager
+                .create_for_role(session, repo.path(), role)
+                .expect_err("non-build");
+            assert!(matches!(err, WorktreeError::RoleDoesNotPreferIsolated(_)));
+            assert!(!role.prefers_isolated_worktree());
+        }
+        assert!(AgentWorkRole::Build.prefers_isolated_worktree());
     }
 }
