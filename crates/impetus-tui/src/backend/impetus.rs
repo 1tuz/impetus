@@ -395,6 +395,7 @@ fn map_event(event: Event) -> UiEvent {
             title: "context compacted".to_owned(),
             message: format!("{compacted_to} tokens · compaction #{compaction_count}"),
             error: false,
+            remediation: None,
         },
         EventPayload::Budget(BudgetEvent::TurnLimitApproaching { limit, used }) => {
             UiEventKind::BudgetWarning {
@@ -410,22 +411,37 @@ fn map_event(event: Event) -> UiEvent {
             title: "policy".to_owned(),
             message: "action allowed".to_owned(),
             error: false,
+            remediation: None,
         },
         EventPayload::Notice(NoticeEvent::PolicyDenied { reason }) => UiEventKind::Notice {
             title: "policy denied".to_owned(),
             message: reason,
             error: true,
+            remediation: None,
         },
         EventPayload::Notice(NoticeEvent::Runtime { message }) => UiEventKind::Notice {
             title: "runtime".to_owned(),
             message,
             error: false,
+            remediation: None,
         },
-        EventPayload::Notice(NoticeEvent::Legacy { event_kind, body }) => UiEventKind::Notice {
-            title: format!("legacy event · {event_kind}"),
-            message: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
-            error: false,
-        },
+        EventPayload::Notice(NoticeEvent::Legacy { event_kind, body }) => {
+            let remediation = body
+                .get("remediation")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned);
+            let error = body
+                .get("error")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            UiEventKind::Notice {
+                title: format!("legacy event · {event_kind}"),
+                message: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+                error,
+                remediation,
+            }
+        }
         EventPayload::Retry(RetryEvent::Attempting {
             attempt,
             max_attempts,

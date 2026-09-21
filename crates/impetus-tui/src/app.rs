@@ -57,7 +57,7 @@ pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()>
         );
     }
 
-    terminal.draw(|frame| render(frame, &app, Theme::default()))?;
+    terminal.draw(|frame| render(frame, &mut app, Theme::default()))?;
     app.dirty = false;
     let mut last_draw = Instant::now();
 
@@ -101,8 +101,12 @@ pub async fn run(backend: Arc<dyn UiBackend>, options: RunOptions) -> Result<()>
             }
         }
 
-        if app.dirty && !app.should_quit && last_draw.elapsed() >= options.tick_rate {
-            terminal.draw(|frame| render(frame, &app, Theme::default()))?;
+        // High-frequency dirty flags coalesce into one paint per tick_rate
+        // (stream chunk coalesce is separate — see chunks_coalesce_into_one_assistant_item).
+        if crate::model::should_coalesce_redraw(app.dirty, last_draw.elapsed(), options.tick_rate)
+            && !app.should_quit
+        {
+            terminal.draw(|frame| render(frame, &mut app, Theme::default()))?;
             app.dirty = false;
             last_draw = Instant::now();
         }
@@ -724,6 +728,7 @@ fn handle_terminal_event(app: &mut AppState, event: TerminalEvent) -> Vec<Effect
             vec![]
         }
         TerminalEvent::Resize(_, _) | TerminalEvent::FocusGained | TerminalEvent::FocusLost => {
+            app.clamp_timeline_scroll();
             app.dirty = true;
             vec![]
         }
@@ -1344,11 +1349,14 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             app.run_state = RunState::Failed;
             set_active_session_status(app, "failed");
             app.status_message = "failed".to_owned();
-            app.push_item(
+            let hint = crate::model::remediation_hint("run failed", None);
+            push_or_coalesce_noise(
+                app,
                 TimelineItem::new(sequence, at, ItemKind::Error, "run failed")
-                    .with_body(reason)
-                    .with_details(format!("run_id: {run_id}")),
+                    .with_body(format!("{reason}\n→ {hint}"))
+                    .with_details(format!("run_id: {run_id}\nremediation: {hint}")),
             );
+            app.show_toast(format!("run failed → {hint}"), true);
         }
         UiEventKind::RunCancelled { run_id } => {
             app.flush_stream_to_timeline();
@@ -1365,11 +1373,16 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             app.run_state = RunState::Unknown;
             set_active_session_status(app, "unknown");
             app.status_message = "unknown outcome".to_owned();
-            app.push_item(
+            let hint = crate::model::remediation_hint("unknown outcome", None);
+            push_or_coalesce_noise(
+                app,
                 TimelineItem::new(sequence, at, ItemKind::Error, "unknown outcome")
-                    .with_body("The client disconnected before the daemon could prove completion. Do not retry non-replayable work automatically.")
-                    .with_details(format!("run_id: {run_id}")),
+                    .with_body(format!(
+                        "The client disconnected before the daemon could prove completion. Do not retry non-replayable work automatically.\n→ {hint}"
+                    ))
+                    .with_details(format!("run_id: {run_id}\nremediation: {hint}")),
             );
+            app.show_toast(format!("unknown outcome → {hint}"), true);
         }
         UiEventKind::AgentChunk {
             run_id,
@@ -1511,19 +1524,28 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             title,
             detail,
             healthy,
-        } => app.push_item(
-            TimelineItem::new(
-                sequence,
-                at,
-                if healthy {
-                    ItemKind::Notice
-                } else {
-                    ItemKind::Error
-                },
-                title,
-            )
-            .with_body(detail),
-        ),
+        } => {
+            let kind = if healthy {
+                ItemKind::Notice
+            } else {
+                ItemKind::Error
+            };
+            if healthy {
+                push_or_coalesce_noise(
+                    app,
+                    TimelineItem::new(sequence, at, kind, title).with_body(detail),
+                );
+            } else {
+                let hint = crate::model::remediation_hint(&title, None);
+                push_or_coalesce_noise(
+                    app,
+                    TimelineItem::new(sequence, at, kind, title.clone())
+                        .with_body(format!("{detail}\n→ {hint}"))
+                        .with_details(format!("remediation: {hint}")),
+                );
+                app.show_toast(format!("{title} → {hint}"), true);
+            }
+        }
         UiEventKind::BudgetUpdated(budget) => {
             app.budget = budget;
             app.last_sequence = sequence;
@@ -1531,7 +1553,8 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
         }
         UiEventKind::BudgetWarning { message } => {
             app.budget.warning = Some(message.clone());
-            app.push_item(
+            push_or_coalesce_noise(
+                app,
                 TimelineItem::new(sequence, at, ItemKind::Budget, "budget warning")
                     .with_body(message),
             );
@@ -1540,36 +1563,41 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             title,
             message,
             error,
-        } => app.push_item(
-            TimelineItem::new(
-                sequence,
-                at,
-                if error {
-                    ItemKind::Error
-                } else {
-                    ItemKind::Notice
-                },
-                title,
-            )
-            .with_body(message),
-        ),
+            remediation,
+        } => {
+            let kind = if error {
+                ItemKind::Error
+            } else {
+                ItemKind::Notice
+            };
+            let mut item = TimelineItem::new(sequence, at, kind, title.clone()).with_body(message);
+            if error {
+                let hint = crate::model::remediation_hint(&title, remediation.as_deref());
+                item.body = format!("{}\n→ {hint}", item.body);
+                item.details = format!("remediation: {hint}");
+                app.show_toast(format!("{title} → {hint}"), true);
+            }
+            push_or_coalesce_noise(app, item);
+        }
         UiEventKind::Retry {
             title,
             message,
             failed,
-        } => app.push_item(
-            TimelineItem::new(
-                sequence,
-                at,
-                if failed {
-                    ItemKind::Error
-                } else {
-                    ItemKind::Notice
-                },
-                title,
-            )
-            .with_body(message),
-        ),
+        } => {
+            let kind = if failed {
+                ItemKind::Error
+            } else {
+                ItemKind::Notice
+            };
+            let mut item = TimelineItem::new(sequence, at, kind, title.clone()).with_body(message);
+            if failed {
+                let hint = crate::model::remediation_hint(&title, None);
+                item.body = format!("{}\n→ {hint}", item.body);
+                item.details = format!("remediation: {hint}");
+                app.show_toast(format!("{title} → {hint}"), true);
+            }
+            push_or_coalesce_noise(app, item);
+        }
     }
 }
 
@@ -1579,6 +1607,33 @@ fn set_active_session_status(app: &mut AppState, status: &str) {
     {
         session.status = status.to_owned();
     }
+}
+
+/// Collapse consecutive same-title Notice/Error/Budget noise into one timeline row.
+fn push_or_coalesce_noise(app: &mut AppState, item: TimelineItem) {
+    let coalesce = matches!(
+        item.kind,
+        ItemKind::Notice | ItemKind::Error | ItemKind::Budget
+    );
+    if coalesce
+        && let Some(last) = app.timeline.back_mut()
+        && last.kind == item.kind
+        && last.title == item.title
+        && last.streaming_key.is_none()
+    {
+        last.sequence = item.sequence;
+        last.at_unix_ms = item.at_unix_ms;
+        last.body = item.body;
+        last.details = item.details;
+        app.last_sequence = app.last_sequence.max(last.sequence);
+        if app.follow_tail {
+            app.line_scroll_from_bottom = 0;
+            app.selected_item = app.timeline.len().checked_sub(1);
+        }
+        app.dirty = true;
+        return;
+    }
+    app.push_item(item);
 }
 
 fn strip_mode_prefix(text: &str) -> String {
@@ -1594,6 +1649,7 @@ fn strip_mode_prefix(text: &str) -> String {
 fn scroll_up(app: &mut AppState, lines: usize) {
     app.follow_tail = false;
     app.line_scroll_from_bottom = app.line_scroll_from_bottom.saturating_add(lines);
+    app.clamp_timeline_scroll();
     app.focus = Focus::Timeline;
     app.dirty = true;
 }
@@ -1772,6 +1828,7 @@ mod tests {
                 title: "once".to_owned(),
                 message: "body".to_owned(),
                 error: false,
+                remediation: None,
             },
         };
         ingest_event(&mut app, event.clone());
@@ -2082,5 +2139,95 @@ mod tests {
         let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(effects.as_slice(), [Effect::Cancel]));
         assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn page_keys_scroll_timeline_and_clamp_on_resize() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        for seq in 1..=20 {
+            app.push_item(TimelineItem::new(
+                seq,
+                seq,
+                ItemKind::Notice,
+                format!("event-{seq}"),
+            ));
+        }
+        app.note_timeline_metrics(5, 40);
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert!(!app.follow_tail);
+        assert!(app.line_scroll_from_bottom >= 10);
+        assert_eq!(app.focus, Focus::Timeline);
+
+        app.line_scroll_from_bottom = 100;
+        let _ = handle_terminal_event(&mut app, TerminalEvent::Resize(80, 20));
+        assert_eq!(app.line_scroll_from_bottom, 35);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn consecutive_notice_noise_coalesces_into_one_item() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        for seq in 1..=5 {
+            ingest_event(
+                &mut app,
+                UiEvent {
+                    sequence: seq,
+                    at_unix_ms: seq,
+                    kind: UiEventKind::BudgetWarning {
+                        message: format!("ctx rising · {seq}"),
+                    },
+                },
+            );
+        }
+        assert_eq!(app.timeline.len(), 1);
+        assert_eq!(app.timeline[0].title, "budget warning");
+        assert!(app.timeline[0].body.contains("5"));
+        assert_eq!(app.last_sequence, 5);
+    }
+
+    #[test]
+    fn error_notice_shows_explicit_or_static_remediation() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 1,
+                at_unix_ms: 1,
+                kind: UiEventKind::Notice {
+                    title: "provider down".to_owned(),
+                    message: "profile unreachable".to_owned(),
+                    error: true,
+                    remediation: Some("Re-select the provider profile in Keychain.".to_owned()),
+                },
+            },
+        );
+        assert_eq!(app.timeline.len(), 1);
+        assert_eq!(app.timeline[0].kind, ItemKind::Error);
+        assert!(
+            app.timeline[0]
+                .body
+                .contains("Re-select the provider profile in Keychain.")
+        );
+        assert!(app.toast.as_ref().is_some_and(
+            |toast| toast.error && toast.text.contains("Re-select the provider profile")
+        ));
+
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 2,
+                at_unix_ms: 2,
+                kind: UiEventKind::Notice {
+                    title: "policy denied".to_owned(),
+                    message: "write blocked".to_owned(),
+                    error: true,
+                    remediation: None,
+                },
+            },
+        );
+        assert_eq!(app.timeline.len(), 2);
+        assert!(app.timeline[1].body.contains("→ "));
+        assert!(app.timeline[1].body.to_ascii_lowercase().contains("policy"));
+        assert!(app.timeline[1].details.starts_with("remediation:"));
     }
 }
