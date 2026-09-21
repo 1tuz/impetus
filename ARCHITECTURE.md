@@ -92,6 +92,7 @@ impetusd  — authoritative daemon
 | --- | --- | --- |
 | Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
+| PolicyConfig JSON load / reload | Partial | Format + engine/runtime reload (#193/#201); no IPC/CLI/daemon default path yet — see § Policy customization (#9) |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Partial | Spike only: `tests/macos_sandbox_spike.rs`; **not** wired in `execution/process.rs` |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI is macOS-only |
@@ -188,7 +189,46 @@ ProviderProtocolAdapter → StreamEvent → ToolCall assembler
 5. Typed approvals for mutating/sensitive ops
 6. `UnknownOutcome`: no auto-retry of mutating/non-replayable work on alternate backends
 
-## ApprovalDetail IPC UI contract
+## Policy customization and approval UI contracts (#9)
+
+Classic issue #9: user **PolicyConfig** (JSON overrides) plus the versioned
+**ApprovalDetail** IPC UI contract. This section indexes what exists; it does
+not invent new runtime or change PolicyEngine semantics.
+
+### PolicyConfig (format + load / reload)
+
+JSON overrides on top of fail-closed defaults
+([`policy_config.rs`](crates/impetus-core/src/policy_config.rs)):
+
+- Document field: `version` must equal `POLICY_CONFIG_VERSION` (currently `1`)
+- Optional `overrides`: map of `ActionKind` (serde snake_case) →
+  `allow` | `deny` | `needs_approval`
+- Parse / load: `PolicyConfig::parse`, `PolicyConfig::load_from_path`
+- Apply: `PolicyEngine::with_config`, `reload_config`, `reload_config_from_path`
+  (failed path reload keeps prior overrides)
+- Runtime wrappers: `AgentRuntime::reload_policy_config` /
+  `reload_policy_config_from_path`
+- Fail-closed Denies (workspace path scope, network disabled, private-web hard
+  denies) stay **ahead** of overrides — config cannot soften them
+- Secrets: none in the format or fixed decision reason strings
+
+Example:
+
+```json
+{
+  "version": 1,
+  "overrides": {
+    "write_file": "allow",
+    "spawn_process": "deny",
+    "network_connect": "needs_approval"
+  }
+}
+```
+
+Not a shared `impetus.*.v1` registry schema today (separate `version: u32`).
+Shipped under #9: format (#193), in-process reload (#201).
+
+### ApprovalDetail IPC UI contract
 
 `GetApprovalDetail` / `IpcResponse::ApprovalDetail` returns
 [`ApprovalDetail`](crates/impetus-core/src/approval.rs) for client presentation
@@ -202,8 +242,25 @@ ProviderProtocolAdapter → StreamEvent → ToolCall assembler
 - Capability: `get_approval_detail` (Hello negotiation)
 - Secrets never appear in the payload — only labels/paths/opaque attachment
   UUIDs
+- TUI rendering: `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (#165)
 
-PolicyEngine rules and runtime policy reload remain separate follow-ups.
+Shipped under #9: contract (#189/#191), TUI approval UI (#165/#169).
+
+### Remaining gaps for #9
+
+Honest list (no new runtime in this docs slice):
+
+- Typed IPC / daemon CLI to load or reload PolicyConfig (library +
+  `AgentRuntime` API only today)
+- Default `impetusd` startup path that reads a user policy file
+- Operator UX to edit/customize policy (out of scope for harness UI rewrite)
+- Optional: register PolicyConfig in the shared `impetus.*.v1` schema registry
+- Non-TUI clients (Zap adapter and others) consuming ApprovalDetail beyond the
+  TUI overlay
+- `PolicyStore` (memory trust model) is a **different** surface — still Partial;
+  not the same as PolicyConfig action overrides
+
+Docs index for the shipped contracts: this section (#286).
 
 ## Canonical schema registry
 

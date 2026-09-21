@@ -368,6 +368,15 @@ TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
 - [x] Bounded markdown (#146)
 - [x] Diff view (#148)
 - [x] Approval UI — `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (`render_approval*`, ingest/resolve in `app.rs`; tests `approval_requested_then_approve_clears_queue_and_overlay`, `approval_deny_and_detail_paths`; #165 via #169)
+- Classic #9 (policy customization + approval UI contracts) — **Partial**:
+  - [x] PolicyConfig JSON format + `PolicyEngine` overrides (#193)
+  - [x] Runtime reload without restart (#201)
+  - [x] ApprovalDetail IPC `impetus.approval_detail.v1` (#189/#191)
+  - [x] TUI approval rendering (#165/#169)
+  - [x] Docs index of contracts + remaining gaps
+        ([ARCHITECTURE.md](ARCHITECTURE.md) § Policy customization…; #286)
+  - [ ] IPC / CLI / `impetusd` default path to load+reload user PolicyConfig
+  - [ ] Operator UX to edit/customize policy (not a harness UI rewrite)
 - [x] Session picker — `render_session_picker` + `SessionSummary` mapping (`model.rs` / `render.rs`; tests `session_picker_filters_and_activates_selected`, `session_summary_maps_fork_meta_and_optional_overrides`, `filtered_sessions_matches_label_id_and_workspace`; #166 via #169)
 - [x] Command palette — `render_command_picker` + `Overlay::Commands` (`command::suggestions`, Ctrl+P; tests `command_palette_opens_filters_and_runs_selected`, `command_palette_down_selects_and_runs_command`; #175)
 - [x] Scrollback/status polish — footer status strip (`format_status_strip`: connection +
