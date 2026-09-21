@@ -2,8 +2,10 @@
 //!
 //! Vertical slice (TODO P1 §5): create → resume → stop → close → stale → salvage;
 //! identity survives compaction via `CompactionStructuralState.worktree_id`;
-//! Build-role agents prefer isolated worktrees with attached permissions.
-//! Diff / merge-ready / conflict checks come later.
+//! Build-role agents prefer isolated worktrees with attached permissions;
+//! [`WorktreeManager::diff_summary`] / [`WorktreeManager::check_merge_ready`] /
+//! [`WorktreeManager::attempt_merge`] cover diff vs base, merge-ready, and
+//! conflict refusal before merge.
 //!
 //! Uses the system `git` CLI (no new git dependency). Bindings survive daemon
 //! restart via SQLite; `worktree_id` identity is retained through stop/close/stale.
@@ -76,6 +78,28 @@ pub struct StaleReport {
     pub reason: StaleReason,
     /// `true` when the worktree directory still exists and can be re-registered.
     pub recoverable: bool,
+}
+
+/// Diff summary of a managed worktree branch versus a base ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeDiffSummary {
+    pub base_ref: String,
+    pub branch: String,
+    pub files_changed: u64,
+    pub insertions: u64,
+    pub deletions: u64,
+}
+
+/// Pre-merge check of a managed worktree against a base ref.
+///
+/// `merge_ready` is true only when the worktree is clean and merging into
+/// `base_ref` would not conflict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeReadyReport {
+    pub merge_ready: bool,
+    pub has_conflicts: bool,
+    pub dirty: bool,
+    pub diff: WorktreeDiffSummary,
 }
 
 /// Agent role that may own a managed worktree binding.
@@ -203,6 +227,10 @@ pub enum WorktreeError {
     OutsidePermissions(String),
     #[error("role {0:?} does not prefer isolated worktrees")]
     RoleDoesNotPreferIsolated(AgentWorkRole),
+    #[error("worktree is not merge-ready: {0}")]
+    NotMergeReady(String),
+    #[error("merge into {base_ref} would conflict: {detail}")]
+    MergeConflict { base_ref: String, detail: String },
 }
 
 /// Creates, stops, resumes, closes, detects stale, and salvages git worktrees.
@@ -656,6 +684,129 @@ impl WorktreeManager {
         }
     }
 
+    /// Diff summary of the managed branch versus `base_ref` (`base...branch`).
+    pub fn diff_summary(
+        &self,
+        session_id: Uuid,
+        base_ref: &str,
+    ) -> Result<WorktreeDiffSummary, WorktreeError> {
+        let binding = self.require_merge_candidate(session_id)?;
+        self.diff_summary_for(&binding, base_ref)
+    }
+
+    /// Check whether the managed worktree is clean enough to merge into `base_ref`.
+    ///
+    /// Sets `merge_ready` when the worktree is clean and `git merge-tree` reports
+    /// no conflicts. Does not mutate git state.
+    pub fn check_merge_ready(
+        &self,
+        session_id: Uuid,
+        base_ref: &str,
+    ) -> Result<MergeReadyReport, WorktreeError> {
+        let binding = self.require_merge_candidate(session_id)?;
+        let diff = self.diff_summary_for(&binding, base_ref)?;
+        let dirty = worktree_is_dirty(&binding.path)?;
+        let has_conflicts = merge_would_conflict(&binding.repo_root, base_ref, &binding.branch)?;
+        Ok(MergeReadyReport {
+            merge_ready: !dirty && !has_conflicts,
+            has_conflicts,
+            dirty,
+            diff,
+        })
+    }
+
+    /// Merge the managed branch into `base_ref` at the repo root.
+    ///
+    /// Refuses with [`WorktreeError::MergeConflict`] when conflicts are detected,
+    /// or [`WorktreeError::NotMergeReady`] when the worktree is dirty / not ready.
+    pub fn attempt_merge(
+        &self,
+        session_id: Uuid,
+        base_ref: &str,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        let report = self.check_merge_ready(session_id, base_ref)?;
+        if report.has_conflicts {
+            return Err(WorktreeError::MergeConflict {
+                base_ref: base_ref.to_string(),
+                detail: format!("branch {} conflicts with {}", report.diff.branch, base_ref),
+            });
+        }
+        if !report.merge_ready {
+            let reason = if report.dirty {
+                "worktree has uncommitted changes".to_string()
+            } else {
+                "not merge-ready".to_string()
+            };
+            return Err(WorktreeError::NotMergeReady(reason));
+        }
+
+        let binding = self.require_merge_candidate(session_id)?;
+        // Ensure main tree is clean before checkout/merge.
+        if worktree_is_dirty(&binding.repo_root)? {
+            return Err(WorktreeError::NotMergeReady(
+                "repo root has uncommitted changes".into(),
+            ));
+        }
+        git(&binding.repo_root, &["checkout", "--quiet", base_ref])?;
+        let msg = format!("impetus: merge {}", binding.branch);
+        git(
+            &binding.repo_root,
+            &["merge", "--no-ff", "-m", &msg, &binding.branch],
+        )?;
+        self.get_by_worktree_id(&binding.worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFound(session_id))
+    }
+
+    fn require_merge_candidate(&self, session_id: Uuid) -> Result<WorktreeBinding, WorktreeError> {
+        let binding = self.require_open(session_id)?;
+        if !binding.path.exists() {
+            return Err(WorktreeError::PathMissing(
+                binding.path.to_string_lossy().into_owned(),
+            ));
+        }
+        Ok(binding)
+    }
+
+    fn diff_summary_for(
+        &self,
+        binding: &WorktreeBinding,
+        base_ref: &str,
+    ) -> Result<WorktreeDiffSummary, WorktreeError> {
+        ensure_commit_ref(&binding.repo_root, base_ref)?;
+        ensure_commit_ref(&binding.repo_root, &binding.branch)?;
+        let range = format!("{base_ref}...{}", binding.branch);
+        let numstat = git(&binding.repo_root, &["diff", "--numstat", &range])?;
+        let mut files_changed = 0u64;
+        let mut insertions = 0u64;
+        let mut deletions = 0u64;
+        for line in numstat.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(3, '\t');
+            let ins = parts.next().unwrap_or("0");
+            let del = parts.next().unwrap_or("0");
+            if parts.next().is_none() {
+                continue;
+            }
+            files_changed += 1;
+            if ins != "-" {
+                insertions += ins.parse::<u64>().unwrap_or(0);
+            }
+            if del != "-" {
+                deletions += del.parse::<u64>().unwrap_or(0);
+            }
+        }
+        Ok(WorktreeDiffSummary {
+            base_ref: base_ref.to_string(),
+            branch: binding.branch.clone(),
+            files_changed,
+            insertions,
+            deletions,
+        })
+    }
+
     fn classify_stale(
         &self,
         binding: &WorktreeBinding,
@@ -878,6 +1029,47 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, WorktreeError> {
         return Err(WorktreeError::Git(detail));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn ensure_commit_ref(repo_root: &Path, rev: &str) -> Result<(), WorktreeError> {
+    let spec = format!("{rev}^{{commit}}");
+    git(repo_root, &["rev-parse", "--verify", &spec]).map(|_| ())
+}
+
+fn worktree_is_dirty(path: &Path) -> Result<bool, WorktreeError> {
+    let status = git(path, &["status", "--porcelain"])?;
+    Ok(!status.trim().is_empty())
+}
+
+/// True when merging `branch` into `base_ref` would produce conflicts.
+///
+/// Uses `git merge-tree --write-tree` (exit 1 = conflicts). Does not touch
+/// working trees or the index.
+fn merge_would_conflict(
+    repo_root: &Path,
+    base_ref: &str,
+    branch: &str,
+) -> Result<bool, WorktreeError> {
+    ensure_commit_ref(repo_root, base_ref)?;
+    ensure_commit_ref(repo_root, branch)?;
+    let output = Command::new("git")
+        .args(["merge-tree", "--write-tree", "--quiet", base_ref, branch])
+        .current_dir(repo_root)
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            Err(WorktreeError::Git(if detail.is_empty() {
+                format!("merge-tree failed for {base_ref}..{branch}")
+            } else {
+                detail
+            }))
+        }
+    }
 }
 
 fn now_unix_ms() -> u64 {
@@ -1290,5 +1482,83 @@ mod tests {
             assert!(!role.prefers_isolated_worktree());
         }
         assert!(AgentWorkRole::Build.prefers_isolated_worktree());
+    }
+
+    #[test]
+    fn diff_summary_and_clean_merge_ready() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager.create(session, repo.path()).expect("create");
+
+        std::fs::write(binding.path.join("feature.txt"), b"hello").expect("write");
+        git(&binding.path, &["add", "feature.txt"]).expect("add");
+        git(&binding.path, &["commit", "-m", "feature"]).expect("commit");
+
+        let diff = manager.diff_summary(session, "main").expect("diff");
+        assert_eq!(diff.base_ref, "main");
+        assert_eq!(diff.branch, binding.branch);
+        assert_eq!(diff.files_changed, 1);
+        assert_eq!(diff.insertions, 1);
+        assert_eq!(diff.deletions, 0);
+
+        let ready = manager.check_merge_ready(session, "main").expect("ready");
+        assert!(ready.merge_ready);
+        assert!(!ready.has_conflicts);
+        assert!(!ready.dirty);
+        assert_eq!(ready.diff.files_changed, 1);
+
+        manager.attempt_merge(session, "main").expect("merge");
+        assert!(repo.path().join("feature.txt").is_file());
+        let log = git(repo.path(), &["log", "-1", "--pretty=%s"]).expect("log");
+        assert!(log.contains("impetus: merge"));
+    }
+
+    #[test]
+    fn attempt_merge_refuses_conflicts() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager.create(session, repo.path()).expect("create");
+
+        // Divergent edits to the same file on main and the worktree branch.
+        std::fs::write(repo.path().join("README"), b"main-side\n").expect("main write");
+        git(repo.path(), &["add", "README"]).expect("main add");
+        git(repo.path(), &["commit", "-m", "main edit"]).expect("main commit");
+
+        std::fs::write(binding.path.join("README"), b"worktree-side\n").expect("wt write");
+        git(&binding.path, &["add", "README"]).expect("wt add");
+        git(&binding.path, &["commit", "-m", "wt edit"]).expect("wt commit");
+
+        let ready = manager.check_merge_ready(session, "main").expect("ready");
+        assert!(!ready.merge_ready);
+        assert!(ready.has_conflicts);
+        assert!(!ready.dirty);
+
+        let err = manager
+            .attempt_merge(session, "main")
+            .expect_err("must refuse conflict");
+        assert!(matches!(
+            err,
+            WorktreeError::MergeConflict { ref base_ref, .. } if base_ref == "main"
+        ));
+        // Repo root must remain clean (no half-merge).
+        assert!(!worktree_is_dirty(repo.path()).expect("dirty check"));
+    }
+
+    #[test]
+    fn attempt_merge_refuses_dirty_worktree() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager.create(session, repo.path()).expect("create");
+        std::fs::write(binding.path.join("wip.txt"), b"uncommitted").expect("wip");
+
+        let ready = manager.check_merge_ready(session, "main").expect("ready");
+        assert!(!ready.merge_ready);
+        assert!(ready.dirty);
+        assert!(!ready.has_conflicts);
+
+        let err = manager
+            .attempt_merge(session, "main")
+            .expect_err("must refuse dirty");
+        assert!(matches!(err, WorktreeError::NotMergeReady(_)));
     }
 }
