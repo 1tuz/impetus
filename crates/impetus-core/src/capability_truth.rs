@@ -2,6 +2,9 @@
 //!
 //! Values mirror the architecture capability matrix: code-backed claims only.
 //! Seatbelt process wrap stays false until production exec wires `sandbox-exec`.
+//!
+//! Docs drift guard: `tests/docs_capability_claims.rs` checks a redacted claim
+//! list in `tests/fixtures/docs_capability_claims.json` against [`CapabilityTruthReport::gather`].
 
 use serde::{Deserialize, Serialize};
 
