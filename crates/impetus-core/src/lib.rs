@@ -14,6 +14,7 @@ pub mod artifact_upload;
 pub mod attachments;
 pub mod audit_log;
 pub mod budget;
+pub mod builtin_ids;
 pub mod capability_truth;
 pub mod child_concurrency;
 pub mod child_result_store;
@@ -111,6 +112,10 @@ pub use attachments::{Attachment, AttachmentError, AttachmentStore, StoreStats};
 pub use audit_log::{AuditEntry, AuditLog, AuditQuery};
 pub use budget::{
     BudgetChecker, BudgetConfig, BudgetError, BudgetState, CompactionPolicy, ReasoningEffort,
+};
+pub use builtin_ids::{
+    BuiltinIdAudit, BuiltinIdEntry, BuiltinKind, DuplicateBuiltinId, audit_builtin_ids,
+    audit_shipped_builtin_ids, find_duplicate_ids, shipped_builtin_ids, unused_builtin_ids_stub,
 };
 pub use capability_truth::{
     CAPABILITIES_SCHEMA_ID, CAPABILITIES_SCHEMA_VERSION, CapabilityEntry, CapabilityLevel,
