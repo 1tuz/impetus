@@ -8,15 +8,18 @@ This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
-1. **Now** — work that unblocks daily production use: Explore→daemon entry,
-   live MCP in the loop, PolicyConfig IPC reload, live Explore parent-resume
-   on daemon path. (Seatbelt macOS process wrap + PolicyConfig startup load
-   + Explore library E2E are in tree — see capability matrix.)
+1. **Now** ([#308](https://github.com/1tuz/impetus/issues/308)) — make daily use
+   coherent: faster PR CI (target cache / fmt off macOS critical path), honest
+   docs memory (no Implemented-unwired / `[x]`+Partial), **daemon-owned**
+   execution modes + Auto Risk Gate (not TUI prompt prefixes), Keychain
+   non-interactive hardening, wire Explore + MCP autoload + PolicyConfig IPC
+   reload into **production** `impetusd`. (Seatbelt macOS process wrap,
+   PolicyConfig startup load, Explore **library** E2E already in tree.)
 2. **Next** — operator / orchestration runtime and optional modules: live
    WorkflowEngine spawn + cancel, other subagent roles, `PolicyStore`, hooks on
-   process spawn, Steer live rewrite, real LSP/search/browser backends, policy
-   operator UX. Capability leases / RepoMap: design only —
-   [capability-leases-and-repomap.md](capability-leases-and-repomap.md).
+   process spawn (performance prefilter ≠ RiskGate), Steer live rewrite, real
+   LSP/search/browser backends, policy operator UX. Capability leases / RepoMap:
+   design only — [capability-leases-and-repomap.md](capability-leases-and-repomap.md).
 3. **Later** — marketplaces, multi-harness portability, deep vendor runtime
    parity, large swarm/team loops, Ubuntu clean-machine automation, full Zap
    authorize, ACP dependency invert, thin-client split, CLI migration.
@@ -34,10 +37,13 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   → ExtensionGateway
 ```
 
+Decision chain (target): hard Policy → ExecutionMode → RiskGate → Approval →
+Sandbox → Capability → Execution.
+
 ## Platform
 
-- **macOS**: primary development and PR CI (`macos-14` fmt/clippy/tests).
-- **Linux**: PR CI compile guard (`ubuntu-24.04` `cargo check`); install target;
+- **macOS**: primary development and PR CI (`macos-14` clippy + lib/bin tests).
+- **Linux**: PR CI fmt + `cargo check` (`ubuntu-24.04`); install target;
   sandbox/Keychain parity Planned.
 - **Path-scope sandbox**: Implemented and fail-closed.
 - **Seatbelt profiles**: Implemented on macOS process spawn

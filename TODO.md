@@ -1,113 +1,147 @@
 # Impetus backlog
 
-Executable open list. Architecture truth = [ARCHITECTURE.md](ARCHITECTURE.md)
-(capability matrix + evidence). Done work lives there — not duplicated as walls
-of checkboxes here. Short narrative: [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
-Doc map: [docs/README.md](docs/README.md).
+Executable open work + short context for the next agent.
+Architecture truth = [ARCHITECTURE.md](ARCHITECTURE.md) (capability matrix +
+evidence). Narrative direction = [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
+Doc map = [docs/README.md](docs/README.md).
 
-Rule: mark done only when the vertical slice works end-to-end. Types-only or
-import-only adapters stay open / Partial in the matrix.
+**Rules**
+
+- Mark `[x]` only when the vertical slice works end-to-end in production
+  daemon/client path (not library-only, not mock-only).
+- Never leave `[x]` with a Partial tail. Split into `[x]` done + `[ ]` remaining.
+- Before non-trivial work: read this file + ARCHITECTURE.md.
+- After implementation: update both in the same change. Stale docs = bug.
 
 ---
 
 ## Now
 
-Real open work that should happen next.
+Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
-- [x] Wire `ExploreChildRunner` into `AgentLoop` library path (`AgentLoopExploreExecutor`,
-      Harness `spawn_explore` / `complete_explore_and_gate`; MockProvider E2E) (#306)
-      — **Partial:** `impetusd` still leaves `explore_spawn` None (no provider-bound
-      daemon wire yet)
-- [x] Wire live MCP tools into production `AgentLoop` via `ToolProviderRuntime`
-      (library harness inject; capability `mcp_live_tools_in_loop: true`)
-      — **Partial:** `impetusd` does not autoload MCP servers from disk
-      (`impetusd_autoload: false`)
-- [x] Production macOS Seatbelt wrap into `execution/process.rs`
-      (spike / `macos_sandbox_spike` exist; path-scope sandbox already live)
-- [x] Default `impetusd` startup path loads user `PolicyConfig`
-      (`--policy-config PATH` / `IMPETUS_POLICY_CONFIG` / `$IMPETUS_DATA_DIR/policy.json`)
-      — **Partial:** live IPC reload still library-only (`AgentRuntime::reload_policy_config*`);
-      no typed `ReloadPolicyConfig` IPC yet (#9 leftover)
-- [x] Parent-resume gate wired to Explore child completion (library /
-      `resume_parent_after_explore` + harness gate helper) (#306)
-      — **Partial:** daemon entry still unwired
+### Docs truth (persistent memory)
+
+- [x] Rewrite `TODO.md` Now/Next/Later without `[x]`+Partial tails (#308)
+- [x] AGENTS.md + CONTRIBUTING: read TODO+ARCHITECTURE; stale docs = bug
+- [x] Fix ARCHITECTURE Seatbelt spike-only vs Implemented; MCP runtime → Partial
+      until `impetusd_autoload`; add Execution modes Partial row; sync roadmap
+- [ ] Second docs audit after modes/RiskGate land (acceptance gate §11)
+
+### CI speed
+
+- [x] Enable rust-cache **target** cache on macOS/Linux compile jobs;
+      Security stays `cache-targets: false` with separate key
+- [x] Move `cargo fmt --check` to Linux; drop macOS dependant `cargo check`
+      (Linux already checks `check_packages`)
+- [x] `CARGO_PROFILE_*_DEBUG=0` on PR jobs
+- [x] Run `scripts/tests/ci-affected.sh` in Detect; expand site/workflow/client cases
+- [ ] Measure warm-cache PR→Gate after push; A/B sccache only if still slow;
+      evaluate `macos-15`. **Done:** ≤ ~2 min warm (stretch 60–90s) or revert regressing knobs.
+
+### Daemon-owned execution modes
+
+- [ ] Typed execution mode as daemon/IPC state (not TUI `prompt_prefix`).
+      Modes: ASK, PLAN, ACCEPT_EDITS, AUTO; explicit opt-in BYPASS/FULL_AUTO
+      outside Shift+Tab cycle.
+      **Done:** TUI only selects/displays confirmed daemon state; PLAN denies
+      mutations daemon-side; prompt text cannot escalate permissions.
+- [ ] Shift+Tab cycles ASK → ACCEPT EDITS → PLAN → AUTO → ASK; Tab unchanged;
+      F4 mode picker secondary; slash `/mode` `/plan` `/ask` `/auto`.
+      **Done:** TUI tests for keymap; Help/F1 matches reality.
+
+### Auto Risk Gate
+
+- [ ] Daemon `RiskGate` after hard Policy + execution mode: Allow |
+      NeedsHumanApproval | Deny + structured reason (argv/effects aware;
+      opaque shell fail-closed). Separate from `hook_prefilter`.
+      **Done:** AUTO/ACCEPT_EDITS auto-allow safe reads + scoped workspace
+      edits; risky paths need approval; hard denies still win; adversarial tests.
+- [ ] Wire `hook_prefilter` into live `ProcessExecution` as performance hook
+      only (not security classifier).
+      **Done:** spawn path calls prefilter; docs say RiskGate ≠ HookPrefilter.
+
+### Keychain / non-interactive
+
+- [ ] Diagnose `impetusd` Keychain GUI prompt (service/account/ACL/signing);
+      tests/CI never open Keychain GUI; live creds opt-in; non-interactive
+      structured error (no hang). No permissive ACL / `-A` / plaintext.
+      **Done:** unit/integration use mock resolver; documented operator path.
+
+### Runtime gaps (honest open items)
+
+- [ ] Wire `ExploreChildRunner` / parent-resume into **production** `impetusd`
+      provider path (`explore_spawn` today None). Library path done (#306).
+      **Done:** Explore request → daemon → restricted loop → ChildResultStore →
+      parent resume works without mock.
+- [ ] `impetusd` autoload MCP servers from disk config into
+      `ToolProviderRuntime` (`impetusd_autoload: false` today). Library bridge
+      done.
+      **Done:** config → start/connect/health → tools in AgentLoop; failure
+      surfaces structured events.
+- [ ] Typed IPC `ReloadPolicyConfig` (startup file load already exists).
+      **Done:** invalid reload keeps previous policy + durable/audit event.
 
 ---
 
 ## Next
 
-Important, not blocking daily single-session use.
+Important after Now; not blocking daily single-session use.
 
-### Orchestration runtime
+### Orchestration
 
 - [ ] Live agent process spawn from `WorkflowEngine` / scheduler
-- [ ] `WorkflowEngine` cancel/replace wired to session-run intents
-      (follow-up drain race with cancel/replace still open)
-- [ ] Live child process / PTY spawn for Research / Build / Review roles
+- [ ] `WorkflowEngine` cancel/replace on session-run intents (drain race open)
+- [ ] Live child process / PTY for Research / Build / Review
 - [ ] Per-parent concurrency caps / fair scheduling
-- [ ] Cross-machine / IPC orchestration beyond in-process fanout
 
-### Trust / policy / hooks
+### Trust / policy / provider
 
 - [ ] `PolicyStore` type + governed-instruction surface
-      (not `PolicyConfig` overrides; `Runtime ≠ Memory ≠ Policy`)
+      (`Runtime ≠ Memory ≠ Policy`; not PolicyConfig overrides)
 - [ ] Operator UX to edit/customize policy (not a harness UI rewrite)
-- [ ] Wire `hook_prefilter` into live `ProcessExecution` spawn path
-- [ ] Live provider wire for `SteerRewrite` (passthrough default today) (#285)
+- [ ] Live provider wire for `SteerRewrite` (passthrough/mock today) (#285)
+- [ ] Clickable live subagent / child-run surfaces in TUI (needs Explore daemon)
 
-### Coding / research modules (optional backends)
+### Optional coding / research backends
 
-- [ ] Real LSP process spawn (rust-analyzer / clangd / …) — not a core dep (#282)
-- [ ] LSP / coding-tool TUI surface beyond IPC `GotoDefinition` (#267)
-- [ ] Real Tavily/Exa HTTP search clients (module seam exists) (#264)
+- [ ] Real LSP process spawn (not a core dep) (#282)
+- [ ] LSP / coding-tool TUI beyond IPC `GotoDefinition` (#267)
+- [ ] Real Tavily/Exa HTTP clients (seam exists) (#264)
 - [ ] Real browser automation behind `BrowserProvider` (seam exists) (#268)
 
 ---
 
 ## Later
 
-Deferred / explicit non-goals for the near term.
+Deferred / explicit non-goals near-term.
 
-- [ ] Large multi-team / swarm orchestration beyond small `WorkflowEngine` recipes
+- [ ] Cross-machine / IPC orchestration beyond in-process fanout
+- [ ] Large multi-team / swarm beyond small WorkflowEngine recipes
 - [ ] Plugin marketplace / large plugin ABI
 - [ ] Portable sessions between harnesses
-- [ ] Deep Claude/Codex/Cursor **runtime** compatibility
-      (import adapters already Partial)
+- [ ] Deep Claude/Codex/Cursor **runtime** compatibility (import adapters Partial)
 - [ ] Autonomous long-running planner/tester loops
-- [ ] Ubuntu 24.04 release tier + clean-machine smoke automation
-      (honesty checklist: [docs/guides/ubuntu-smoke.md](docs/guides/ubuntu-smoke.md); #293)
-- [ ] Full Zap discovery/authorize production protocol
-      (adapter checklist today: ARCHITECTURE.md § Zap path; #290 / classic #5)
+- [ ] Ubuntu 24.04 release tier + clean-machine smoke automation (#293)
+- [ ] Full Zap discovery/authorize production protocol (#290)
 - [ ] Invert `impetus-core` → `impetus-acp-gateway` dependency
-      (core should not own gateway as a library dep long-term)
-- [ ] Thin-client boundary / `harness_api` domain split
-      (Zap/TUI on protocol crate; recoverable errors ≠ daemon panic)
-- [ ] CLI migration: keep `impetus` primary; migrate `impetus-cli` callers
-      over time (do **not** delete the crate)
+- [ ] Thin-client / `harness_api` domain split (recoverable ≠ daemon panic)
+- [ ] CLI migration: keep `impetus` primary; migrate `impetus-cli` over time
+      (do **not** delete the crate)
 
 ---
 
 ## Frontends
 
-TUI talks `HarnessClient` only (`impetus-tui` boundary tests). Detail:
-[docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md). Help overlay
-(`?` / F1) lists the live keymap.
+TUI talks `HarnessClient` only. Detail:
+[docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md).
 
-Open:
+Open items above under Now (modes/hotkeys) and Next (policy UX, child surfaces).
 
-- [ ] Default path for PolicyConfig load/reload — see **Now**
-- [ ] Operator policy-edit UX — see **Next**
-- [ ] Full Zap discovery/authorize — see **Later** (#290)
-- [ ] Clickable live subagent / child-run surfaces in TUI (needs Explore→daemon
-      / child spawn from **Now** / **Next** first)
-
-Done (evidence in ARCHITECTURE / TUI crate tests; do not re-litigate here):
-Ratatui+Crossterm GO (#137), bounded markdown (#146), diff (#148), approval UI
-(#165/#169), session picker (#166/#169), command palette (#175), scrollback/
-status (#178), redraw coalesce + remediation (#179), Zap path honesty docs
-(#290), modern harness hotkeys + mouse hit-testing (#302), TUI theme pack
-(#304: Impetus Neon/Stars default + geek catalog; `/theme`, F5, Ctrl+Shift+T,
-`IMPETUS_TUI_THEME`).
+Done (evidence in ARCHITECTURE / crate tests — do not re-litigate):
+Ratatui+Crossterm (#137), markdown (#146), diff (#148), approval UI (#165/#169),
+session picker (#166/#169), palette (#175), scrollback (#178), redraw (#179),
+Zap honesty docs (#290), modern harness hotkeys (#302), theme pack (#304),
+Explore **library** AgentLoop wire (#306; daemon still open in Now).
 
 ---
 
@@ -120,13 +154,19 @@ status (#178), redraw coalesce + remediation (#179), Zap path honesty docs
 | [docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md) | Kernel rules |
 | [docs/guides/](docs/guides/) | Getting started, config, CI, Ubuntu smoke |
 | [docs/reference/](docs/reference/) | Protocols, TUI audit, components |
-| [docs/archive/](docs/archive/) | Historical audits/spikes (not current truth) |
+| [docs/archive/](docs/archive/) | Historical audits (not current truth) |
 
-Foundation walls formerly listed under runtime/extension/worktree/schema
-checklists are **done** — see ARCHITECTURE capability matrix (provider adapters,
-tool-arg schema gate, durable artifacts/compaction, PR security suite, doctor
-truth, schemas, extension lifecycle + ownership, memory trust, WorktreeManager,
-WorkflowEngine/subagent **Foundation**, steer/follow-up IPC, hooks prefilter,
-anti-sprawl, LSP/web seams).
+**Baseline CI (pre-#308, cold cache examples on recent Rust PRs):**
 
-Archaeology only: [docs/archive/todo-audit-2026-08-30.md](docs/archive/todo-audit-2026-08-30.md).
+| Run | PR→Gate | Detect | macOS | Linux |
+| --- | ---: | ---: | ---: | ---: |
+| #307 explore | ~176s | 7s | 153s | 80s |
+| #304 themes | ~222s | 6s | 198s | 70s |
+| #296 path | ~248s | 5s | 223s | 57s |
+| #296 ci-fast | ~153s | 6s | 131s | 64s |
+
+macOS #307 steps (cold, `cache-targets: false`): toolchain ~7s, rust-cache
+restore miss ~0s, fmt 1s, clippy 38s, test 63s, dependant check 24s, cache
+save ~11s. Critical path = macOS.
+
+Archaeology: [docs/archive/todo-audit-2026-08-30.md](docs/archive/todo-audit-2026-08-30.md).
