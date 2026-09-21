@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{
     command,
+    composer::ComposerLayoutMode,
     markdown::{render_markdown, render_plain_wrapped},
     model::{AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, short_id},
     theme::Theme,
@@ -23,7 +24,15 @@ pub fn render(frame: &mut Frame, app: &AppState, theme: Theme) {
     }
 
     let composer_width = area.width.saturating_sub(4);
-    let composer_rows = app.composer.view(composer_width, 7).total_rows.clamp(1, 7) as u16;
+    let composer_max_rows: u16 = match app.composer.layout_mode() {
+        ComposerLayoutMode::SingleLine => 1,
+        ComposerLayoutMode::MultiLine => 7,
+    };
+    let composer_rows = app
+        .composer
+        .view(composer_width, composer_max_rows)
+        .total_rows
+        .clamp(1, composer_max_rows as usize) as u16;
     let composer_height = composer_rows + 2;
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -323,9 +332,17 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme)
 
 fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
     let focus = app.focus == Focus::Composer && matches!(app.overlay, Overlay::None);
+    let mode = app.composer.layout_mode();
+    let newline_hint = match mode {
+        ComposerLayoutMode::SingleLine => "Alt+M multi",
+        ComposerLayoutMode::MultiLine => {
+            "Shift/Alt+Enter newline · \\+Enter continue · Alt+M single"
+        }
+    };
     let title = format!(
-        " task · {} · Enter send · Alt+Enter newline ",
-        app.mode.label()
+        " task · {} · {} · Enter send · {newline_hint} ",
+        app.mode.label(),
+        mode.label()
     );
     let block = panel_block(title, focus, theme);
     let inner = block.inner(area).inner(Margin {
@@ -333,9 +350,11 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) 
         vertical: 0,
     });
     frame.render_widget(block, area);
-    let view = app
-        .composer
-        .view(inner.width.saturating_sub(2), inner.height);
+    let max_rows = match mode {
+        ComposerLayoutMode::SingleLine => 1,
+        ComposerLayoutMode::MultiLine => inner.height,
+    };
+    let view = app.composer.view(inner.width.saturating_sub(2), max_rows);
     let mut lines = Vec::new();
     if app.composer.is_empty() {
         lines.push(Line::from(vec![
@@ -475,7 +494,10 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "",
         "COMPOSER",
         "  Enter             submit task",
-        "  Alt+Enter/Ctrl+J  newline",
+        "  Shift/Alt+Enter   newline (multiline mode)",
+        "  Ctrl+J            newline (multiline mode)",
+        "  \\ then Enter      continue line (multiline mode)",
+        "  Alt+M             toggle single-line / multiline",
         "  Up/Down           prompt history",
         "  Ctrl+A/E          line start/end",
         "  Ctrl+W            delete previous word",

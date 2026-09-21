@@ -1,9 +1,38 @@
 use unicode_width::UnicodeWidthChar;
 
+/// Visual/edit layout for the prompt box.
+///
+/// - [`SingleLine`]: Enter submits; newline keybinds do not insert `\n`.
+/// - [`MultiLine`]: Enter submits; Shift/Alt+Enter and Ctrl+J insert newline;
+///   a trailing `\` on the current line continues (strip `\` + newline).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComposerLayoutMode {
+    #[default]
+    SingleLine,
+    MultiLine,
+}
+
+impl ComposerLayoutMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SingleLine => "single",
+            Self::MultiLine => "multi",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::SingleLine => Self::MultiLine,
+            Self::MultiLine => Self::SingleLine,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Composer {
     text: String,
     cursor: usize,
+    layout_mode: ComposerLayoutMode,
     history: Vec<String>,
     history_index: Option<usize>,
     draft_before_history: Option<String>,
@@ -24,6 +53,14 @@ impl Composer {
 
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    pub fn layout_mode(&self) -> ComposerLayoutMode {
+        self.layout_mode
+    }
+
+    pub fn toggle_layout_mode(&mut self) {
+        self.layout_mode = self.layout_mode.toggle();
     }
 
     pub fn clear(&mut self) {
@@ -48,7 +85,32 @@ impl Composer {
     }
 
     pub fn newline(&mut self) {
+        if self.layout_mode == ComposerLayoutMode::SingleLine {
+            return;
+        }
         self.insert_char('\n');
+    }
+
+    /// If current line ends with `\`, strip it and insert a newline (multiline only).
+    /// Returns true when continuation was applied (caller must not submit).
+    pub fn try_backslash_continuation(&mut self) -> bool {
+        if self.layout_mode != ComposerLayoutMode::MultiLine {
+            return false;
+        }
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut end = self.cursor;
+        while end < chars.len() && chars[end] != '\n' {
+            end += 1;
+        }
+        if end == 0 || chars[end - 1] != '\\' {
+            return false;
+        }
+        let start = char_to_byte(&self.text, end - 1);
+        let stop = char_to_byte(&self.text, end);
+        self.text.replace_range(start..stop, "");
+        self.cursor = end - 1;
+        self.insert_char('\n');
+        true
     }
 
     pub fn backspace(&mut self) {
@@ -287,5 +349,60 @@ mod tests {
             composer.take_for_submit().as_deref(),
             Some("    fn main() {}\n")
         );
+    }
+
+    #[test]
+    fn single_line_mode_rejects_newline_key() {
+        let mut composer = Composer::default();
+        assert_eq!(composer.layout_mode(), ComposerLayoutMode::SingleLine);
+        composer.insert_str("hello");
+        composer.newline();
+        assert_eq!(composer.text(), "hello");
+        assert!(!composer.text().contains('\n'));
+    }
+
+    #[test]
+    fn multiline_mode_inserts_newline() {
+        let mut composer = Composer::default();
+        composer.toggle_layout_mode();
+        composer.insert_str("hello");
+        composer.newline();
+        composer.insert_str("world");
+        assert_eq!(composer.text(), "hello\nworld");
+    }
+
+    #[test]
+    fn toggle_layout_mode_round_trips() {
+        let mut composer = Composer::default();
+        composer.toggle_layout_mode();
+        assert_eq!(composer.layout_mode(), ComposerLayoutMode::MultiLine);
+        composer.toggle_layout_mode();
+        assert_eq!(composer.layout_mode(), ComposerLayoutMode::SingleLine);
+    }
+
+    #[test]
+    fn backslash_continuation_only_in_multiline() {
+        let mut single = Composer::default();
+        single.insert_str("line\\");
+        assert!(!single.try_backslash_continuation());
+        assert_eq!(single.text(), "line\\");
+
+        let mut multi = Composer::default();
+        multi.toggle_layout_mode();
+        multi.insert_str("line\\");
+        assert!(multi.try_backslash_continuation());
+        assert_eq!(multi.text(), "line\n");
+    }
+
+    #[test]
+    fn backslash_continuation_works_from_mid_line() {
+        let mut composer = Composer::default();
+        composer.toggle_layout_mode();
+        composer.insert_str("ab\\");
+        composer.move_left();
+        composer.move_left();
+        assert_eq!(composer.cursor, 1);
+        assert!(composer.try_backslash_continuation());
+        assert_eq!(composer.text(), "ab\n");
     }
 }
