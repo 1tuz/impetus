@@ -180,7 +180,9 @@ Runtime State ≠ Memory ≠ Policy
 | `PolicyStore` | Governed instructions and permissions |
 
 - [x] Memory never auto-promotes to policy or tool/sandbox capability
-- [ ] Scopes: project / team / user; provenance; secret filtering
+- [x] Scopes: project / team / user; provenance; secret filtering
+      (`MemoryScope` / `MemoryProvenance` on `MemoryEntry`; store path
+      reuses `tools::redact_text`; fake-token unit tests)
 - [ ] Create-only or append-safe semantics where appropriate
 - [ ] Derived indexes disposable/rebuildable; no unsafe symlink traversal
 - [ ] Human-readable source format where useful

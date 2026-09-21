@@ -96,7 +96,7 @@ impetusd  — authoritative daemon
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
 | Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); scheduler/workflows Planned |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run `InstallPlan` + `apply_install`/`ExtensionStateStore` + ownership; CLI Planned |
-| MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote to policy/sandbox/tool; scopes/provenance still Planned |
+| MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + `MemoryScope`/`MemoryProvenance` + `redact_text` on store; append-safe/indexes still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities`; session/extension/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; more Phase 7 open |
