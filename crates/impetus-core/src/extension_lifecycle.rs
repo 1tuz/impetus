@@ -5,13 +5,14 @@
 //!
 //! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
 //! dry-run plan, register-before-write ownership, and durable install state.
-//! CLI: `impetus extension plan | install | remove` (doctor/repair later).
+//! CLI: `impetus extension plan | install | remove | doctor` (repair later).
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule};
 use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -167,6 +168,24 @@ impl ExtensionStateStore {
             params![installation_id],
         )?;
         Ok(n > 0)
+    }
+
+    /// List all persisted install states (ordered by creation time).
+    pub fn list_all(&self) -> Result<Vec<ExtensionState>, ApplyError> {
+        let conn = self.conn.lock().expect("install state db lock");
+        let mut stmt = conn.prepare(
+            "SELECT state_json FROM extension_install_state ORDER BY created_unix_ms, installation_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row?;
+            let state = serde_json::from_str(&json).map_err(|e| {
+                ApplyError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
+            out.push(state);
+        }
+        Ok(out)
     }
 }
 
@@ -399,6 +418,137 @@ pub fn remove_install(
         installation_id: installation_id.to_string(),
         removed_paths,
     })
+}
+
+/// On-disk health of one owned path relative to its ownership record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PathHealthStatus {
+    Ok,
+    Missing,
+    DigestMismatch { expected: String, actual: String },
+    Unreadable { reason: String },
+}
+
+impl PathHealthStatus {
+    fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+}
+
+/// Health of a single owned path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathHealthReport {
+    pub path: String,
+    #[serde(flatten)]
+    pub status: PathHealthStatus,
+}
+
+/// Health of one installation (install state + ownership paths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallHealthReport {
+    pub installation_id: String,
+    pub state_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<ResolutionPlan>,
+    pub paths: Vec<PathHealthReport>,
+    pub healthy: bool,
+}
+
+/// Aggregate doctor report for one or more installations under a root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DoctorReport {
+    pub installations: Vec<InstallHealthReport>,
+    pub healthy: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum DoctorError {
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Ownership(#[from] OwnershipError),
+    #[error("no install state or ownership records for id: {0}")]
+    NotFound(String),
+}
+
+/// Report install-state + ownership health (read-only; no repair).
+///
+/// - `Some(id)` — one installation; errors if neither state nor ownership rows exist.
+/// - `None` — every row in the install-state store under the open DBs.
+pub fn doctor_install(
+    installation_id: Option<&str>,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<DoctorReport, DoctorError> {
+    let installations = match installation_id {
+        Some(id) => {
+            let report = doctor_one(id, ownership, state_store)?;
+            if !report.state_present && report.paths.is_empty() {
+                return Err(DoctorError::NotFound(id.to_string()));
+            }
+            vec![report]
+        }
+        None => {
+            let states = state_store.list_all()?;
+            let mut out = Vec::with_capacity(states.len());
+            for state in states {
+                out.push(doctor_one(&state.installation_id, ownership, state_store)?);
+            }
+            out
+        }
+    };
+    let healthy = installations.iter().all(|r| r.healthy);
+    Ok(DoctorReport {
+        installations,
+        healthy,
+    })
+}
+
+fn doctor_one(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<InstallHealthReport, DoctorError> {
+    let state = state_store.get(installation_id)?;
+    let records = ownership.list_by_installation_id(installation_id)?;
+    let paths: Vec<PathHealthReport> = records.iter().map(check_owned_path).collect();
+    let healthy = paths.iter().all(|p| p.status.is_ok());
+    Ok(InstallHealthReport {
+        installation_id: installation_id.to_string(),
+        state_present: state.is_some(),
+        resolution: state.map(|s| s.resolution),
+        paths,
+        healthy,
+    })
+}
+
+fn check_owned_path(record: &OwnershipRecord) -> PathHealthReport {
+    let path = PathBuf::from(&record.path);
+    let status = if !path.exists() {
+        PathHealthStatus::Missing
+    } else {
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let actual = content_digest(&bytes);
+                if actual == record.digest {
+                    PathHealthStatus::Ok
+                } else {
+                    PathHealthStatus::DigestMismatch {
+                        expected: record.digest.clone(),
+                        actual,
+                    }
+                }
+            }
+            Err(err) => PathHealthStatus::Unreadable {
+                reason: err.to_string(),
+            },
+        }
+    };
+    PathHealthReport {
+        path: record.path.clone(),
+        status,
+    }
 }
 
 fn provenance(resolution: &ResolutionPlan) -> String {
@@ -773,5 +923,97 @@ mod tests {
         let (ownership, state_store) = open_stores(target.path());
         let err = remove_install("missing-id", &ownership, &state_store).expect_err("missing");
         assert!(matches!(err, RemoveError::StateNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_ok_for_healthy_install() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "healthy-skill", "Stay healthy.");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill { path: skill_md },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+
+        let report =
+            doctor_install(Some(&state.installation_id), &ownership, &state_store).expect("doctor");
+        assert!(report.healthy);
+        assert_eq!(report.installations.len(), 1);
+        let one = &report.installations[0];
+        assert!(one.state_present);
+        assert!(one.healthy);
+        assert_eq!(one.paths.len(), 1);
+        assert!(matches!(one.paths[0].status, PathHealthStatus::Ok));
+    }
+
+    #[tokio::test]
+    async fn doctor_detects_missing_and_digest_mismatch() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "broken-skill", "Will break.");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill { path: skill_md },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let owned_path = PathBuf::from(&state.ownership[0].path);
+
+        fs::write(&owned_path, b"tampered").expect("tamper");
+        let mismatch = doctor_install(Some(&state.installation_id), &ownership, &state_store)
+            .expect("doctor mismatch");
+        assert!(!mismatch.healthy);
+        assert!(matches!(
+            mismatch.installations[0].paths[0].status,
+            PathHealthStatus::DigestMismatch { .. }
+        ));
+
+        fs::remove_file(&owned_path).expect("delete");
+        let missing = doctor_install(Some(&state.installation_id), &ownership, &state_store)
+            .expect("doctor missing");
+        assert!(!missing.healthy);
+        assert!(matches!(
+            missing.installations[0].paths[0].status,
+            PathHealthStatus::Missing
+        ));
+    }
+
+    #[tokio::test]
+    async fn doctor_lists_all_under_store() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let (ownership, state_store) = open_stores(target.path());
+
+        for name in ["a-skill", "b-skill"] {
+            let skill_md = write_skill(src.path(), name, "body");
+            let plan = plan_install(
+                &ExtensionInstallIntent::Skill { path: skill_md },
+                target.path(),
+            )
+            .await
+            .expect("plan");
+            apply_install(&plan, &ownership, &state_store).expect("apply");
+        }
+
+        let report = doctor_install(None, &ownership, &state_store).expect("doctor all");
+        assert!(report.healthy);
+        assert_eq!(report.installations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn doctor_unknown_id_errors() {
+        let target = tempfile::tempdir().expect("target");
+        let (ownership, state_store) = open_stores(target.path());
+        let err =
+            doctor_install(Some("missing-id"), &ownership, &state_store).expect_err("missing");
+        assert!(matches!(err, DoctorError::NotFound(_)));
     }
 }

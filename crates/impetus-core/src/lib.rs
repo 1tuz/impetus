@@ -151,9 +151,10 @@ pub use extension_compat::{
     McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
 };
 pub use extension_lifecycle::{
-    ApplyError, ExtensionInstallIntent, ExtensionState, ExtensionStateStore, InstallPlan,
-    PlanError, RemoveError, RemoveResult, ResolutionPlan, apply_install, plan_install,
-    remove_install,
+    ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionState,
+    ExtensionStateStore, InstallHealthReport, InstallPlan, PathHealthReport, PathHealthStatus,
+    PlanError, RemoveError, RemoveResult, ResolutionPlan, apply_install, doctor_install,
+    plan_install, remove_install,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{
