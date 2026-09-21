@@ -1247,13 +1247,21 @@ fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
         return vec![Effect::LoadApprovalDetail(approval.id)];
     }
     if let Some(item) = app.selected_item.and_then(|index| app.timeline.get(index)) {
+        let body = if crate::diff::looks_like_diff(&item.body) {
+            item.body.clone()
+        } else if item.details.is_empty() {
+            item.body.clone()
+        } else {
+            item.details.clone()
+        };
+        let title = if crate::diff::looks_like_diff(&body) {
+            format!(" diff · {} · event {} ", item.title, item.sequence)
+        } else {
+            format!(" {} · event {} ", item.title, item.sequence)
+        };
         app.overlay = Overlay::Message {
-            title: format!(" {} · event {} ", item.title, item.sequence),
-            body: if item.details.is_empty() {
-                item.body.clone()
-            } else {
-                item.details.clone()
-            },
+            title,
+            body,
             error: item.kind == ItemKind::Error,
         };
     } else {
@@ -1435,7 +1443,7 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
             let mut item = TimelineItem::new(sequence, at, kind, format!("tool · {name}"))
                 .with_body(preview)
                 .with_details(details);
-            if kind == ItemKind::Tool {
+            if kind == ItemKind::Tool && !crate::diff::looks_like_diff(&item.body) {
                 item = item.collapsed();
             }
             app.push_item(item);

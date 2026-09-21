@@ -252,7 +252,7 @@ Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SH
 - [x] Large paste UX (`[Pasted text · N KB · M lines]`)
 - [x] Streaming output rendering
 - [x] Markdown rendering (bounded)
-- [ ] Diff view
+- [x] Diff view
 - [ ] Approval UI (typed approvals from harness)
 - [ ] Session picker / list
 - [ ] Fuzzy search (sessions, commands)

@@ -115,6 +115,31 @@ impl MockBackend {
                 artifact: None,
                 error: None,
             }),
+            self.next_event(UiEventKind::ToolObserved {
+                call_id: "tool-002".to_owned(),
+                name: "git_diff".to_owned(),
+                arguments: "HEAD~1..HEAD".to_owned(),
+                outcome: "Success".to_owned(),
+                preview: concat!(
+                    "{\n",
+                    "  \"summary\": \"1 file changed, 2 insertions(+), 1 deletion(-)\",\n",
+                    "  \"files_changed\": 1,\n",
+                    "  \"insertions\": 2,\n",
+                    "  \"deletions\": 1,\n",
+                    "  \"hunks\": [{\n",
+                    "    \"file\": \"crates/impetus/src/tui.rs\",\n",
+                    "    \"old_start\": 10,\n",
+                    "    \"old_lines\": 3,\n",
+                    "    \"new_start\": 10,\n",
+                    "    \"new_lines\": 4,\n",
+                    "    \"preview\": \" pub async fn run(...) {\\n-    old_loop()\\n+    impetus_tui::run(...).await\\n+    // paced stream + diff view\\n }\"\n",
+                    "  }]\n",
+                    "}"
+                )
+                .to_owned(),
+                artifact: Some("artifact:diff-demo".to_owned()),
+                error: None,
+            }),
             self.next_event(UiEventKind::AgentFinal {
                 run_id,
                 text: "The UI shell is now isolated behind `UiBackend`. The real adapter uses `HarnessClient`; the demo adapter drives exactly the same widgets.\n\n```rust\npub trait UiBackend: Send + Sync {\n    async fn subscribe(&self, session: Uuid, after: u64) -> Result<Box<dyn UiEventStream>>;\n}\n```\n\nPress **F1** for the keymap, **F2** for sessions, **F4** for execution modes, or type `/` for commands.".to_owned(),
