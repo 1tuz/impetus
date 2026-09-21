@@ -13,9 +13,11 @@
     },
     {
       "id": "seatbelt_process_wrap",
-      "level": "PARTIAL",
+      "level": "IMPLEMENTED",
       "details": {
-        "seatbelt_process_wrap": false
+        "seatbelt_process_wrap": true,
+        "platform": "macos",
+        "non_macos": "path_scope_only"
       }
     },
     {
@@ -59,9 +61,11 @@
     },
     {
       "id": "extension_runtime",
-      "level": "PARTIAL",
+      "level": "IMPLEMENTED",
       "details": {
-        "mcp_live_tools_in_loop": false,
+        "mcp_live_tools_in_loop": true,
+        "harness_inject": true,
+        "impetusd_autoload": false,
         "mcp_live_library": true,
         "mcp_live_orchestrator_hook": true,
         "skills_instruction_resolver": true

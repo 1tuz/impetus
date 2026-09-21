@@ -298,7 +298,7 @@ impl AcpGatewayV2 {
                 Ok(())
             })
             .await
-            .map_err(|_| anyhow::anyhow!("ACP connection failed"));
+            .map_err(|e| anyhow::anyhow!("ACP connection failed: {e:#}"));
 
         *self.active_cancel.lock().await = None;
         *self.active_session.lock().await = None;

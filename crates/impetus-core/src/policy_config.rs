@@ -75,6 +75,21 @@ impl PolicyConfig {
     pub fn override_for(&self, kind: ActionKind) -> Option<PolicyConfigDecision> {
         self.overrides.get(&kind).copied()
     }
+
+    /// Load startup policy: missing file → empty overrides; present but invalid → error.
+    ///
+    /// Used by `impetusd` / CLI so PolicyConfig applies at process start, not only
+    /// as a library API. Callers pass an explicit path or a conventional default.
+    pub fn load_optional(path: impl AsRef<Path>) -> Result<Self, PolicyConfigError> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self {
+                version: POLICY_CONFIG_VERSION,
+                overrides: BTreeMap::new(),
+            });
+        }
+        Self::load_from_path(path)
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +180,23 @@ mod tests {
             assert!(!text.contains("sk-"));
             assert!(!text.contains("password"));
         }
+    }
+
+    #[test]
+    fn load_optional_missing_file_is_empty_overrides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("missing-policy.json");
+        let config = PolicyConfig::load_optional(&path).expect("optional");
+        assert_eq!(config.version, POLICY_CONFIG_VERSION);
+        assert!(config.overrides.is_empty());
+    }
+
+    #[test]
+    fn load_optional_rejects_invalid_present_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, r#"{"version":99}"#).expect("write");
+        let err = PolicyConfig::load_optional(&path).expect_err("bad version");
+        assert!(matches!(err, PolicyConfigError::UnsupportedVersion(99)));
     }
 }

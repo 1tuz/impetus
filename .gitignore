@@ -26,3 +26,5 @@ __pycache__/
 /site/node_modules/
 /docs/superpowers/
 *.zip
+.dual-graph/
+.dual-graph-context/

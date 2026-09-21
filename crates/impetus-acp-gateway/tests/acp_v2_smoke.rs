@@ -1,7 +1,16 @@
-//! Smoke test for ACP V2 integration with real agent.
+//! Smoke test for ACP V2 with real Codex ACP (`codex-acp`).
 //!
-//! Requires codex-acp and codex CLI installed.
-//! Run with: CODEX_API_KEY=... cargo test --test acp_v2_smoke -- --nocapture
+//! Agent-owned auth: inherits the user's Codex home (`~/.codex`) and credentials.
+//! The Impetus profile must select an advertised auth method (`api-key` when
+//! Codex is configured for API-key / custom provider auth).
+//!
+//! Prerequisites:
+//! - `codex-acp` on PATH
+//! - Working Codex login (`codex exec 'pong'` succeeds) — ChatGPT or API key
+//!   with a matching `model_provider` in `~/.codex/config.toml`
+//!
+//! Run:
+//! `cargo test -p impetus-acp-gateway --test acp_v2_smoke -- --ignored --nocapture`
 
 use agent_client_protocol::AcpAgentConfig;
 use impetus_acp_gateway::{AcpGatewayV2, GatewayState, StreamUpdate};
@@ -13,30 +22,26 @@ use tokio::time::timeout;
 #[tokio::test]
 #[ignore] // Requires external agent and credentials
 async fn smoke_test_codex_acp_session() {
-    // Check if codex-acp is available
     let codex_path = which::which("codex-acp").expect("codex-acp not found in PATH");
     println!("Found codex-acp at: {}", codex_path.display());
 
-    // Create config
-    let config = AcpAgentConfig::new(&codex_path);
-    let gateway = Arc::new(AcpGatewayV2::new(config));
+    // Inherit ~/.codex (do not override CODEX_HOME). TinyCast-style: agent owns login.
+    let config = AcpAgentConfig::new(&codex_path).env("NO_BROWSER", "1");
+    let gateway = Arc::new(AcpGatewayV2::new(config).with_auth_method(Some("api-key".into())));
 
-    // Check initial state
     assert_eq!(gateway.state().await, GatewayState::NotStarted);
 
-    // Start session
     let workspace = PathBuf::from("/tmp/acp-test-workspace");
     std::fs::create_dir_all(&workspace).expect("failed to create test workspace");
 
-    let prompt = "Echo 'hello from ACP V2 test'".to_string();
+    let prompt = "Reply with exactly: hello from ACP V2 test".to_string();
 
-    println!("Starting ACP session...");
+    println!("Starting ACP session (inherits user Codex auth)...");
     let session_handle = tokio::spawn({
         let gateway = Arc::clone(&gateway);
         async move { gateway.start_session(workspace, prompt).await }
     });
 
-    // Collect updates with timeout
     let text_chunks = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let chunks_clone = Arc::clone(&text_chunks);
 
@@ -77,8 +82,7 @@ async fn smoke_test_codex_acp_session() {
         }
     });
 
-    // Run with timeout
-    let result = timeout(Duration::from_secs(30), async {
+    let result = timeout(Duration::from_secs(90), async {
         session_handle
             .await
             .map_err(|e| anyhow::anyhow!("join: {}", e))?
@@ -92,15 +96,10 @@ async fn smoke_test_codex_acp_session() {
             println!("Collected {} text chunks", chunks.len());
             assert!(!chunks.is_empty(), "should receive at least one text chunk");
         }
-        Ok(Err(e)) => {
-            panic!("Session failed: {}", e);
-        }
-        Err(_) => {
-            panic!("Test timed out after 30s");
-        }
+        Ok(Err(e)) => panic!("Session failed: {e}"),
+        Err(_) => panic!("Test timed out after 90s"),
     }
 
-    // Cleanup spawned tasks
     update_task.abort();
     perm_task.abort();
 }

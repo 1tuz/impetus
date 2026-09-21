@@ -11,13 +11,12 @@
 //! - `allowed_tools` ⊆ {`list`, `read`, `search`} — write / spawn / network denied
 //! - worktree optional (not forced)
 //!
-//! **Stub:** live [`crate::AgentLoop`] / model provider binding. Production later
-//! injects an executor that drives AgentLoop; this slice proves harness
-//! restrictions + persistence + cancel/fail with a mockable executor, plus a
+//! Production AgentLoop binding lives in [`crate::explore_agent_loop`].
+//! This module owns harness restrictions, persistence, cancel/fail, and a
 //! narrow real [`ReadOnlyTools`] path (no network).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -113,6 +112,41 @@ pub struct ExploreChildOutcome {
     pub metadata: ChildRunMetadata,
 }
 
+/// Bridge between harness and child runner.
+pub trait ExploreSpawnBridge: Send + Sync {
+    fn spawn_explore(
+        &self,
+        request: ExploreChildRequest,
+        cancel: CancellationToken,
+    ) -> Result<ExploreChildOutcome, ExploreChildError>;
+
+    /// Durable child-result store used by parent-resume helpers.
+    fn child_results(&self) -> &ChildResultStore;
+}
+
+/// Harness-owned bridge implementation.
+pub struct HarnessExploreSpawn {
+    pub gate: Arc<Mutex<ChildConcurrencyGate>>,
+    pub store: Arc<ChildResultStore>,
+    pub executor: Arc<dyn ExploreChildExecutor>,
+}
+
+impl ExploreSpawnBridge for HarnessExploreSpawn {
+    fn spawn_explore(
+        &self,
+        request: ExploreChildRequest,
+        cancel: CancellationToken,
+    ) -> Result<ExploreChildOutcome, ExploreChildError> {
+        let mut gate = self.gate.lock().unwrap();
+        let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
+        runner.run(request, cancel, self.executor.as_ref())
+    }
+
+    fn child_results(&self) -> &ChildResultStore {
+        self.store.as_ref()
+    }
+}
+
 /// Failures on the Explore harness path.
 #[derive(Debug, Error)]
 pub enum ExploreChildError {
@@ -134,6 +168,8 @@ pub enum ExploreChildError {
     WriteRootsForbidden,
     #[error("explore child role must be Explore, got {0}")]
     WrongRole(String),
+    #[error("explore spawn is not configured on this harness")]
+    NotConfigured,
 }
 
 /// Validate tool allowlist structurally for Explore.
@@ -153,6 +189,61 @@ pub fn validate_explore_allowed_tools(tools: &[String]) -> Result<(), ExploreChi
 /// Reject write / spawn / network-style tool names before any executor runs.
 pub fn is_explore_forbidden_tool(name: &str) -> bool {
     !EXPLORE_ALLOWED_TOOLS.contains(&name.trim())
+}
+
+/// Intersect requested Explore tools with parent ceiling ∩ EXPLORE allowlist.
+///
+/// `parent_allowed` None or empty → ceiling is full [`EXPLORE_ALLOWED_TOOLS`]
+/// (never broader than Explore). Result ⊆ EXPLORE ∩ requested ∩ parent.
+pub fn intersect_explore_tools(
+    parent_allowed: Option<&[String]>,
+    requested: &[String],
+) -> Result<Vec<String>, ExploreChildError> {
+    validate_explore_allowed_tools(requested)?;
+
+    let parent_ceiling: Vec<&str> = match parent_allowed {
+        None | Some([]) => EXPLORE_ALLOWED_TOOLS.to_vec(),
+        Some(tools) => tools
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty() && EXPLORE_ALLOWED_TOOLS.contains(t))
+            .collect(),
+    };
+
+    let mut out = Vec::with_capacity(requested.len());
+    for tool in requested {
+        let name = tool.trim();
+        if !parent_ceiling.contains(&name) {
+            return Err(ExploreChildError::ToolNotAllowed(tool.clone()));
+        }
+        if !out.iter().any(|existing: &String| existing == name) {
+            out.push(name.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(ExploreChildError::EmptyAllowedTools);
+    }
+    Ok(out)
+}
+
+/// Re-check parent resume after Explore children recorded durable results.
+pub fn resume_parent_after_explore(
+    store: &ChildResultStore,
+    parent_id: &str,
+    child_ids: &[&str],
+) -> Result<Vec<ChildResult>, ExploreChildError> {
+    store.gate_parent_resume(parent_id, child_ids)?;
+    let mut out = Vec::with_capacity(child_ids.len());
+    for child_id in child_ids {
+        let result = store.load_result(child_id)?.ok_or_else(|| {
+            ExploreChildError::ResultStore(ChildResultError::MissingChildResults {
+                parent_id: parent_id.to_string(),
+                missing: vec![(*child_id).to_string()],
+            })
+        })?;
+        out.push(result);
+    }
+    Ok(out)
 }
 
 /// Orchestrates one Explore child: admit → execute → persist → resume gate.
@@ -467,6 +558,29 @@ mod tests {
         ));
         assert!(is_explore_forbidden_tool("shell"));
         assert!(!is_explore_forbidden_tool("search"));
+    }
+
+    #[test]
+    fn intersect_explore_tools_respects_parent_ceiling() {
+        let full = intersect_explore_tools(None, &["list".into(), "read".into()]).expect("full");
+        assert_eq!(full, vec!["list", "read"]);
+
+        let empty_parent =
+            intersect_explore_tools(Some(&[]), &["search".into()]).expect("empty parent");
+        assert_eq!(empty_parent, vec!["search"]);
+
+        let narrowed = intersect_explore_tools(
+            Some(&["list".into(), "read".into()]),
+            &["list".into(), "search".into()],
+        );
+        assert!(matches!(
+            narrowed,
+            Err(ExploreChildError::ToolNotAllowed(_))
+        ));
+
+        let ok = intersect_explore_tools(Some(&["list".into(), "read".into()]), &["read".into()])
+            .expect("subset");
+        assert_eq!(ok, vec!["read"]);
     }
 
     #[test]

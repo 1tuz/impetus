@@ -22,6 +22,7 @@ Human map for Impetus documentation. Architecture truth stays in repo-root
 | [binary-topology.md](architecture/binary-topology.md) | Binary / crate layout |
 | [kernel-invariants.md](architecture/kernel-invariants.md) | Kernel rules |
 | [roadmap.md](architecture/roadmap.md) | Now / Next / Later narrative |
+| [capability-leases-and-repomap.md](architecture/capability-leases-and-repomap.md) | Design-only notes (leases / RepoMap) |
 
 ## Reference
 

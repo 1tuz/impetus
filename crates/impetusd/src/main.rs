@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail};
 use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
-    OpenAiProvider, OpenAiRetryBudget, ProviderError, ProviderProfile, SqliteEventStore,
+    OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine, ProviderError, ProviderProfile,
+    SandboxScope, SqliteEventStore,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -49,12 +50,30 @@ async fn main() -> Result<()> {
 ///
 /// Usage:
 ///   impetusd                                  # mock provider only
+///   impetusd --policy-config PATH             # load PolicyConfig JSON at startup
 ///   impetusd --provider-profile PATH          # OpenAI-compatible direct provider
 ///   impetusd --acp-profile PATH               # External ACP agent (Codex, Cursor, etc.)
+///
+/// PolicyConfig resolution order: `--policy-config PATH` → `IMPETUS_POLICY_CONFIG`
+/// → `$IMPETUS_DATA_DIR/policy.json` (optional; missing = empty overrides).
 fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harness> {
-    let mut arguments = std::env::args_os().skip(1);
+    let mut arguments = std::env::args_os().skip(1).peekable();
+    let mut explicit_policy_path: Option<PathBuf> = None;
+
+    if arguments
+        .peek()
+        .and_then(|flag| flag.to_str())
+        .is_some_and(|flag| flag == "--policy-config")
+    {
+        arguments.next();
+        let path = arguments.next().context("--policy-config requires PATH")?;
+        explicit_policy_path = Some(PathBuf::from(path));
+    }
+
+    let policy = startup_policy(explicit_policy_path.as_deref())?;
+
     let Some(flag) = arguments.next() else {
-        return Ok(Harness::new(store, impetus_core::harness_api::policy()));
+        return Ok(Harness::new(store, policy));
     };
 
     let flag_str = flag.to_str().context("invalid UTF-8 in command flag")?;
@@ -65,7 +84,9 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
                 .next()
                 .context("--provider-profile requires PATH")?;
             if arguments.next().is_some() {
-                bail!("usage: impetusd [--provider-profile PATH]");
+                bail!(
+                    "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+                );
             }
             let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
             let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
@@ -74,7 +95,7 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             Ok(Harness::with_openai_provider_and_resolver(
                 store,
-                impetus_core::harness_api::policy(),
+                policy,
                 provider,
                 Arc::new(MacosKeychainResolver),
             ))
@@ -82,7 +103,9 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
         "--acp-profile" => {
             let profile_path = arguments.next().context("--acp-profile requires PATH")?;
             if arguments.next().is_some() {
-                bail!("usage: impetusd [--acp-profile PATH]");
+                bail!(
+                    "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+                );
             }
             let profile_bytes = std::fs::read(profile_path).context("read acp profile")?;
             let profile: AcpProfile = serde_json::from_slice(&profile_bytes)
@@ -95,15 +118,43 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
 
             Ok(Harness::with_acp_gateway(
                 store,
-                impetus_core::harness_api::policy(),
+                policy,
                 config,
                 profile.auth_method_id,
                 profile.id,
                 profile.display_name,
             ))
         }
-        _ => bail!("usage: impetusd [--provider-profile PATH | --acp-profile PATH]"),
+        "--policy-config" => bail!("--policy-config must appear before provider/acp flags"),
+        _ => bail!(
+            "usage: impetusd [--policy-config PATH] [--provider-profile PATH | --acp-profile PATH]"
+        ),
     }
+}
+
+/// Build the daemon PolicyEngine from an optional explicit path or conventional defaults.
+fn startup_policy(explicit: Option<&Path>) -> Result<PolicyEngine> {
+    let path = if let Some(path) = explicit {
+        path.to_path_buf()
+    } else if let Some(env_path) = std::env::var_os("IMPETUS_POLICY_CONFIG") {
+        PathBuf::from(env_path)
+    } else {
+        data_root()?.join("policy.json")
+    };
+
+    let config = if explicit.is_some() || std::env::var_os("IMPETUS_POLICY_CONFIG").is_some() {
+        // Explicit path must exist and parse — refuse start on bad config.
+        PolicyConfig::load_from_path(&path)
+            .with_context(|| format!("load PolicyConfig from {}", path.display()))?
+    } else {
+        PolicyConfig::load_optional(&path)
+            .with_context(|| format!("load optional PolicyConfig from {}", path.display()))?
+    };
+
+    Ok(PolicyEngine::with_config(
+        SandboxScope::local_workspace("."),
+        config,
+    ))
 }
 
 /// The daemon owns the macOS Keychain lookup. The resolver returns only a
@@ -350,6 +401,46 @@ mod tests {
         EventPayload, EventStore, IPC_VERSION, MemoryEventStore, NoticeEvent, ReadOnlyToolKind,
         RuntimeStatus, ToolOutcome,
     };
+
+    fn test_temp_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "impetusd-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn startup_policy_optional_default_is_empty_overrides() {
+        let dir = test_temp_dir("policy-optional");
+        let path = dir.join("policy.json");
+        let config = PolicyConfig::load_optional(&path).expect("missing ok");
+        let engine = PolicyEngine::with_config(SandboxScope::local_workspace("."), config);
+        assert!(engine.config().overrides.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_policy_explicit_file_applies_override() {
+        let dir = test_temp_dir("policy-explicit");
+        let path = dir.join("policy.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"overrides":{"spawn_process":"deny"}}"#,
+        )
+        .expect("write");
+        let config = PolicyConfig::load_from_path(&path).expect("load");
+        let engine = PolicyEngine::with_config(SandboxScope::local_workspace("."), config);
+        assert_eq!(
+            engine
+                .config()
+                .override_for(impetus_core::ActionKind::SpawnProcess),
+            Some(impetus_core::PolicyConfigDecision::Deny)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn protocol_rejects_unknown_version() {

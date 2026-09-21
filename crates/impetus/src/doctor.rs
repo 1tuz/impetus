@@ -740,8 +740,8 @@ mod tests {
             .iter()
             .find(|probe| probe["name"] == "capability.seatbelt_process_wrap")
             .expect("seatbelt probe");
-        assert_eq!(seatbelt["status"], "WARN");
-        assert_eq!(seatbelt["details"]["seatbelt_process_wrap"], false);
+        assert_eq!(seatbelt["status"], "OK");
+        assert_eq!(seatbelt["details"]["seatbelt_process_wrap"], true);
 
         let durable = probes
             .iter()
@@ -767,8 +767,9 @@ mod tests {
             .iter()
             .find(|probe| probe["name"] == "capability.extension_runtime")
             .expect("extension runtime probe");
-        assert_eq!(ext["status"], "WARN");
-        assert_eq!(ext["details"]["mcp_live_tools_in_loop"], false);
+        assert_eq!(ext["status"], "OK");
+        assert_eq!(ext["details"]["mcp_live_tools_in_loop"], true);
+        assert_eq!(ext["details"]["impetusd_autoload"], false);
 
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));

@@ -76,8 +76,8 @@ pub enum ApprovalResponse {
 
 Execution requires explicit sandbox admission. **Today** that is path/network
 **scope** enforcement in `EffectSeam` / `Sandbox::admit` (workspace roots,
-`allow_network`, web grants). macOS Seatbelt (`sandbox-exec`) exists as a
-**spike/evidence** test only and is not yet the production process wrapper.
+`allow_network`, web grants), plus macOS Seatbelt (`sandbox-exec`) wrapping
+process spawn in `execution/process.rs` (non-macOS remains path-scope only).
 
 ```rust
 pub enum SandboxProfile {
@@ -89,8 +89,7 @@ pub enum SandboxProfile {
 ```
 
 **Invariant:** Custom modules cannot escape sandbox boundaries or elevate privileges.
-Seatbelt wiring is a Now/Next hardening target; docs must not claim it is already
-the live executor boundary.
+Seatbelt on macOS is the live process wrapper; Linux/Windows OS-level wrap stays Planned.
 
 ### 5. Durable Outcome
 
