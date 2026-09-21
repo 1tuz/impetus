@@ -282,7 +282,10 @@ Do **not** invent a new hard-coded agent type per workflow.
       - TUI: `/prompt` · `/steer` · `/follow-up` set composer intent
 - [ ] LLM prompt rewrite for Steer
 - [ ] WorkflowEngine cancel/replace race / follow-up drain on run complete
-- [ ] Multi-session fanout
+- [x] Multi-session fanout — Partial
+      (`UserIntentRouter::fanout(intent, session_ids[])`; rejects empty list;
+      independent per-session submit; ok/err map; no cross-machine / IPC yet)
+      (#275)
 
 ### 9. Hooks (only if needed; performance-first)
 

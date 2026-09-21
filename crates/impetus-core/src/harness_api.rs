@@ -1108,6 +1108,9 @@ fn runtime_error(error: RuntimeError) -> IpcResponse {
         RuntimeError::Denied(message) if message.contains("steer rejected") => {
             IpcErrorCode::Conflict
         }
+        RuntimeError::Denied(message) if message.contains("fanout rejected") => {
+            IpcErrorCode::InvalidRequest
+        }
         _ => IpcErrorCode::Internal,
     };
     IpcResponse::Error {
@@ -1121,6 +1124,9 @@ fn user_intent_to_runtime(error: UserIntentError) -> RuntimeError {
         UserIntentError::UnknownSession(id) => RuntimeError::MissingSession(id),
         UserIntentError::NoActiveRun(id) => {
             RuntimeError::Denied(format!("steer rejected: session {id} has no active run"))
+        }
+        UserIntentError::EmptyFanout => {
+            RuntimeError::Denied("fanout rejected: empty session id list".into())
         }
     }
 }

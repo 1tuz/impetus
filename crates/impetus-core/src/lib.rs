@@ -294,8 +294,8 @@ pub use tools::{
     ToolProvenance, ToolResult,
 };
 pub use user_intent::{
-    QueuedFollowUp, UserIntentAccepted, UserIntentError, UserIntentRouter, UserIntentSubmission,
-    UserPromptIntent,
+    FanoutResults, QueuedFollowUp, UserIntentAccepted, UserIntentError, UserIntentFanout,
+    UserIntentRouter, UserIntentSubmission, UserPromptIntent,
 };
 pub use workflow_engine::{
     StepCheckpoint, StepStatus, WorkflowBudget, WorkflowEngine, WorkflowError, WorkflowRecipe,
