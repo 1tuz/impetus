@@ -1,18 +1,21 @@
-//! Extension install planning (dry-run).
+//! Extension install planning and apply.
 //!
 //! Lifecycle (TODO P1 §2):
 //! `Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState`
 //!
-//! This module covers **ResolutionPlan → InstallPlan** only: resolve an install
-//! intent via existing adapters and report created/modified paths **without**
-//! writing. Apply / CLI / persist install state are out of scope.
+//! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
+//! dry-run plan, register-before-write ownership, and durable install state.
+//! CLI/IPC (`extension plan | install | …`) stays out of scope.
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule};
-use crate::ownership::path_key;
+use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Intent to install an extension from a local source path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +57,107 @@ pub enum PlanError {
     InvalidMcpConfig(String),
     #[error("path key error: {0}")]
     PathKey(String),
+}
+
+/// Durable result of applying an [`InstallPlan`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionState {
+    pub installation_id: String,
+    pub resolution: ResolutionPlan,
+    pub created_paths: Vec<PathBuf>,
+    pub modified_paths: Vec<PathBuf>,
+    /// Ownership rows written or updated for this install.
+    pub ownership: Vec<OwnershipRecord>,
+}
+
+#[derive(Debug, Error)]
+pub enum ApplyError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("ownership error: {0}")]
+    Ownership(#[from] OwnershipError),
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("install state already exists for id: {0}")]
+    StateExists(String),
+    #[error("path key error: {0}")]
+    PathKey(String),
+}
+
+/// SQLite-backed install-state store (lookup by `installation_id`).
+pub struct ExtensionStateStore {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl ExtensionStateStore {
+    /// Open or create the install-state database at `db_path`.
+    pub fn open(db_path: impl AsRef<Path>) -> Result<Self, ApplyError> {
+        let db_path = db_path.as_ref();
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let conn = Connection::open(db_path)?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS extension_install_state (
+                installation_id TEXT PRIMARY KEY NOT NULL,
+                state_json TEXT NOT NULL,
+                created_unix_ms INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    /// Persist a completed install state.
+    pub fn put(&self, state: &ExtensionState) -> Result<(), ApplyError> {
+        let json = serde_json::to_string(state)
+            .map_err(|e| ApplyError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let created_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_millis() as i64;
+
+        let conn = self.conn.lock().expect("install state db lock");
+        match conn.execute(
+            "INSERT INTO extension_install_state
+                (installation_id, state_json, created_unix_ms)
+             VALUES (?1, ?2, ?3)",
+            params![&state.installation_id, &json, created_unix_ms],
+        ) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(ApplyError::StateExists(state.installation_id.clone()))
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Lookup install state by `installation_id`.
+    pub fn get(&self, installation_id: &str) -> Result<Option<ExtensionState>, ApplyError> {
+        let conn = self.conn.lock().expect("install state db lock");
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT state_json FROM extension_install_state WHERE installation_id = ?1",
+                params![installation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match row {
+            Some(json) => {
+                let state = serde_json::from_str(&json).map_err(|e| {
+                    ApplyError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 /// Plan install destinations under `target_root` without writing anything.
@@ -176,9 +280,92 @@ fn classify_plan(
     })
 }
 
+const OWNER_IMPETUS: &str = "impetus";
+
+/// Apply a dry-run plan: write files, record ownership, persist install state.
+///
+/// Register-before-write for new paths. Owned modified paths go through
+/// [`OwnershipStore::repair`] (digest must still match unless unrelated edits).
+/// Unowned destinations refuse overwrite via [`OwnershipStore::ensure_can_overwrite`].
+pub fn apply_install(
+    plan: &InstallPlan,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<ExtensionState, ApplyError> {
+    let installation_id = Uuid::new_v4().to_string();
+    let bytes = std::fs::read(&plan.resolution.source_path)?;
+    let digest = content_digest(&bytes);
+    let source = provenance(&plan.resolution);
+    let mut ownership_records = Vec::new();
+
+    for dest in &plan.created_paths {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let key = path_key(dest).map_err(|e| ApplyError::PathKey(e.to_string()))?;
+        let record = OwnershipRecord {
+            path: key,
+            owner: OWNER_IMPETUS.into(),
+            source: source.clone(),
+            digest: digest.clone(),
+            version: plan.resolution.version.clone(),
+            installation_id: installation_id.clone(),
+        };
+        ownership.create(&record)?;
+        std::fs::write(dest, &bytes)?;
+        ownership_records.push(record);
+    }
+
+    for dest in &plan.modified_paths {
+        ownership.ensure_can_overwrite(dest)?;
+        let updated = ownership.repair(dest, &bytes, false)?;
+        ownership.rebind_installation(
+            &updated.path,
+            &installation_id,
+            &source,
+            &plan.resolution.version,
+        )?;
+        let rebound = ownership
+            .get_by_path(&updated.path)?
+            .ok_or_else(|| OwnershipError::NotOwned(updated.path.clone()))?;
+        ownership_records.push(rebound);
+    }
+
+    ownership_records.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let state = ExtensionState {
+        installation_id,
+        resolution: plan.resolution.clone(),
+        created_paths: plan.created_paths.clone(),
+        modified_paths: plan.modified_paths.clone(),
+        ownership: ownership_records,
+    };
+    state_store.put(&state)?;
+    Ok(state)
+}
+
+fn provenance(resolution: &ResolutionPlan) -> String {
+    let source = match &resolution.source {
+        ExtensionSource::Native => "native",
+        ExtensionSource::AgentSkills => "agent_skills",
+        ExtensionSource::Mcp => "mcp",
+        ExtensionSource::AgentPlugins => "agent_plugins",
+        ExtensionSource::ClaudeCode => "claude_code",
+        ExtensionSource::Codex => "codex",
+        ExtensionSource::Cursor => "cursor",
+        ExtensionSource::DeepSeekHarness => "deepseek_harness",
+        ExtensionSource::Custom(name) => name.as_str(),
+    };
+    format!(
+        "extension://{}/{}/{}",
+        source, resolution.module_id, resolution.version
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ownership::{OwnershipError, OwnershipStore, content_digest};
     use std::fs;
     use std::time::SystemTime;
 
@@ -324,5 +511,126 @@ mod tests {
             plan.created_paths[0]
         );
         assert!(!plan.created_paths[0].exists());
+    }
+
+    fn open_stores(dir: &Path) -> (OwnershipStore, ExtensionStateStore) {
+        let ownership = OwnershipStore::open(dir.join("ownership.db")).expect("ownership store");
+        let state = ExtensionStateStore::open(dir.join("install_state.db")).expect("state store");
+        (ownership, state)
+    }
+
+    #[tokio::test]
+    async fn skill_apply_writes_ownership_and_persists_state() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "Do the thing.");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+
+        assert_eq!(state.created_paths, plan.created_paths);
+        assert!(state.modified_paths.is_empty());
+        assert_eq!(state.ownership.len(), 1);
+        assert!(!state.installation_id.is_empty());
+
+        let dest = &state.created_paths[0];
+        assert!(dest.exists(), "apply must write skill file");
+        let written = fs::read_to_string(dest).expect("read dest");
+        assert!(written.contains("Do the thing."));
+
+        let owned = ownership
+            .get_by_path(&state.ownership[0].path)
+            .expect("lookup")
+            .expect("owned");
+        assert_eq!(owned.installation_id, state.installation_id);
+        assert_eq!(owned.digest, content_digest(&fs::read(dest).unwrap()));
+
+        let listed = ownership
+            .list_by_installation_id(&state.installation_id)
+            .expect("list");
+        assert_eq!(listed, state.ownership);
+
+        let loaded = state_store
+            .get(&state.installation_id)
+            .expect("get state")
+            .expect("present");
+        assert_eq!(loaded, state);
+    }
+
+    #[tokio::test]
+    async fn mcp_apply_writes_and_lookup_by_installation_id() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let config = write_mcp_config(src.path(), "filesystem");
+        let (ownership, state_store) = open_stores(target.path());
+
+        let plan = plan_install(
+            &ExtensionInstallIntent::McpConfig {
+                path: config.clone(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let dest = &state.created_paths[0];
+        assert!(dest.exists());
+        assert_eq!(
+            fs::read(dest).unwrap(),
+            fs::read(&config).unwrap(),
+            "MCP config must be copied byte-for-byte"
+        );
+
+        let loaded = state_store
+            .get(&state.installation_id)
+            .expect("get")
+            .expect("present");
+        assert_eq!(loaded.resolution.module_id, "filesystem");
+        assert_eq!(
+            ownership
+                .list_by_installation_id(&state.installation_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_refuses_unowned_existing_destination() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "v2");
+        let dest = skill_dest(target.path(), "demo-skill");
+        fs::create_dir_all(dest.parent().unwrap()).expect("dest dir");
+        fs::write(&dest, "pre-existing user").expect("seed");
+
+        let (ownership, state_store) = open_stores(target.path());
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.clone(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        assert_eq!(plan.modified_paths.len(), 1);
+
+        let err = apply_install(&plan, &ownership, &state_store).expect_err("unowned");
+        assert!(matches!(
+            err,
+            ApplyError::Ownership(OwnershipError::UnownedDestination(_))
+        ));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "pre-existing user");
+        assert!(state_store.get("anything").unwrap().is_none());
     }
 }

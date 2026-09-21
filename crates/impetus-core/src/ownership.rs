@@ -150,6 +150,34 @@ impl OwnershipStore {
         Ok(row)
     }
 
+    /// List all ownership records for an install operation.
+    pub fn list_by_installation_id(
+        &self,
+        installation_id: &str,
+    ) -> Result<Vec<OwnershipRecord>, OwnershipError> {
+        let conn = self.conn.lock().expect("ownership db lock");
+        let mut stmt = conn.prepare(
+            "SELECT path, owner, source, digest, version, installation_id
+             FROM ownership_records WHERE installation_id = ?1
+             ORDER BY path",
+        )?;
+        let rows = stmt.query_map(params![installation_id], |row| {
+            Ok(OwnershipRecord {
+                path: row.get(0)?,
+                owner: row.get(1)?,
+                source: row.get(2)?,
+                digest: row.get(3)?,
+                version: row.get(4)?,
+                installation_id: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Refuse writes when the destination exists on disk without a matching record.
     ///
     /// Matching = a stored ownership row whose path key equals the normalized destination.
@@ -227,6 +255,27 @@ impl OwnershipStore {
         self.update_digest(&key, &new_digest)?;
         record.digest = new_digest;
         Ok(record)
+    }
+
+    /// Update install metadata after a successful repair/reinstall.
+    pub fn rebind_installation(
+        &self,
+        path: &str,
+        installation_id: &str,
+        source: &str,
+        version: &str,
+    ) -> Result<(), OwnershipError> {
+        let conn = self.conn.lock().expect("ownership db lock");
+        let updated = conn.execute(
+            "UPDATE ownership_records
+             SET installation_id = ?1, source = ?2, version = ?3
+             WHERE path = ?4",
+            params![installation_id, source, version, path],
+        )?;
+        if updated == 0 {
+            return Err(OwnershipError::NotOwned(path.to_string()));
+        }
+        Ok(())
     }
 
     fn update_digest(&self, path_key: &str, digest: &str) -> Result<(), OwnershipError> {
@@ -582,6 +631,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&dest).expect("read"),
             "pre-existing"
+        );
+    }
+
+    #[test]
+    fn list_by_installation_id_returns_matching_records() {
+        let (dir, store) = temp_store();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        let other = dir.path().join("other.txt");
+
+        let mut rec_a = sample_record(&a, b"a");
+        rec_a.installation_id = "install-shared".into();
+        let mut rec_b = sample_record(&b, b"b");
+        rec_b.installation_id = "install-shared".into();
+        let mut rec_other = sample_record(&other, b"c");
+        rec_other.installation_id = "install-other".into();
+
+        store.create(&rec_a).expect("create a");
+        store.create(&rec_b).expect("create b");
+        store.create(&rec_other).expect("create other");
+
+        let listed = store
+            .list_by_installation_id("install-shared")
+            .expect("list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].path, rec_a.path);
+        assert_eq!(listed[1].path, rec_b.path);
+        assert!(
+            store
+                .list_by_installation_id("missing")
+                .expect("empty")
+                .is_empty()
         );
     }
 }

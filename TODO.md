@@ -145,8 +145,9 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
       (`extension_lifecycle::plan_install`: ResolutionPlan + InstallPlan for
       Skill / MCP config intents; no write; create vs modify classification)
 - [ ] CLI/IPC equivalents: `extension plan | install | doctor | repair | remove`
-- [ ] Persist install state: created paths, modified paths, source, version/digest,
+- [x] Persist install state: created paths, modified paths, source, version/digest,
       ownership, installation ID
+      (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)
 - [x] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
 - [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
 - [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
