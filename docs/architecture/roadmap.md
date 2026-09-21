@@ -1,21 +1,23 @@
 # Roadmap
 
-Canonical **task list**: [TODO.md](../TODO.md) (P0 / P1 / P2).
+Canonical **task list**: [TODO.md](../../TODO.md) (Now / Next / Later).
 
-Canonical **architecture + capability matrix**: [ARCHITECTURE.md](../ARCHITECTURE.md).
+Canonical **architecture + capability matrix**: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
-1. **P0 — Runtime correctness** — provider-native wiring, arg validation, artifact
-   durability truth, durable compaction, PR-critical security tests, honest doctor.
-2. **P1 — Operator / extension / orchestration** — versioned schemas, extension
-   lifecycle with ownership, `Runtime ≠ Memory ≠ Policy`, WorktreeManager,
-   WorkflowEngine + small recipes, small role set (Explore/Research/Build/Review),
-   live MCP, LSP, anti-sprawl.
-3. **P2 — Advanced orchestration** — marketplaces, multi-harness portability,
-   deep vendor runtime parity, large swarm/team loops.
+1. **Now** — work that unblocks daily production use: Explore→daemon,
+   live MCP in the loop, Seatbelt process wrap, PolicyConfig default load/reload,
+   live Explore parent-resume.
+2. **Next** — operator / orchestration runtime and optional modules: live
+   WorkflowEngine spawn + cancel, other subagent roles, `PolicyStore`, hooks on
+   process spawn, Steer live rewrite, real LSP/search/browser backends, policy
+   operator UX.
+3. **Later** — marketplaces, multi-harness portability, deep vendor runtime
+   parity, large swarm/team loops, Ubuntu clean-machine automation, full Zap
+   authorize, ACP dependency invert, thin-client split, CLI migration.
 
 ## Kernel (do not dilute)
 
@@ -41,7 +43,7 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   sandbox backends.
 - **Linux x86_64**: install target; sandbox/Keychain parity Planned.
   Clean-machine Ubuntu 24.04 smoke proofs vs PR CI:
-  [ubuntu-smoke-checklist.md](ubuntu-smoke-checklist.md) (#293; automated
+  [ubuntu-smoke.md](../guides/ubuntu-smoke.md) (#293; automated
   smoke still Planned).
 - **Windows**: not a current target.
 
@@ -54,4 +56,4 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
 ## Known debt (postponed)
 
 - Prefer invert `impetus-core` → `impetus-acp-gateway` dependency; large refactor
-  postponed. See [TODO.md](../TODO.md) P2.
+  postponed. See [TODO.md](../../TODO.md) Later.

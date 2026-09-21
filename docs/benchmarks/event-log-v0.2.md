@@ -100,4 +100,4 @@ ancestor prefix scans. Optimization backlog (not done here): avoid re-list insid
 
 - Issue: https://github.com/1tuz/impetus/issues/16
 - Bench source: `crates/impetus-core/benches/event_log.rs`
-- Historical idle RSS snapshot: [v0.1.md](./v0.1.md)
+- Historical idle RSS snapshot: [benchmarks-v0.1-gpui-preview.md](../archive/benchmarks-v0.1-gpui-preview.md)

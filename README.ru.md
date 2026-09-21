@@ -86,16 +86,17 @@ clean-machine smoke и update/uninstall docs. Это roadmap, а не текущ
 
 Impetus — не port/fork другого coding agent. Маленький trusted kernel
 (events, artifacts, policy, approval, sandbox, executor) и replaceable layers.
-См. [References](docs/REFERENCES.md).
+См. [References](docs/reference/design-references.md).
 
 ## Документация
 
+- [Docs map](docs/README.md) — guides, architecture, reference, archive.
 - [Architecture](ARCHITECTURE.md) — capability matrix (code-backed).
-- [TODO](TODO.md) — P0/P1/P2 roadmap.
-- [Roadmap](docs/ROADMAP.md) — краткий priority narrative.
-- [References](docs/REFERENCES.md) — protocols и libraries.
-- [Getting started](docs/getting-started.md) — source-checkout setup.
-- [Development](docs/development.md) — workspace checks и CI.
+- [TODO](TODO.md) — Now / Next / Later backlog.
+- [Roadmap](docs/architecture/roadmap.md) — краткий priority narrative.
+- [References](docs/reference/design-references.md) — protocols и libraries.
+- [Getting started](docs/guides/getting-started.md) — source-checkout setup.
+- [Development](docs/guides/development.md) — workspace checks и CI.
 
 ## Лицензия
 

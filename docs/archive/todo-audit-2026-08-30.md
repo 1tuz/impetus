@@ -1,7 +1,7 @@
 # TODO.md Phase Status Audit — 2026-08-30
 
-> **Superseded.** Dated snapshot. Current truth: [ARCHITECTURE.md](../ARCHITECTURE.md)
-> and [TODO.md](../TODO.md) (P0/P1/P2). Do not use this file to mark capabilities done.
+> **Superseded.** Dated snapshot. Current truth: [ARCHITECTURE.md](../../ARCHITECTURE.md)
+> and [TODO.md](../../TODO.md) (Now / Next / Later). Do not use this file to mark capabilities done.
 
 ## Summary
 

@@ -6,7 +6,7 @@ with the harness-first boundary.
 ## Before you start
 
 1. Read [README.md](README.md) and the relevant guide in `docs/`.
-2. Check the current [roadmap](docs/ROADMAP.md) so planned work is not presented
+2. Check the current [roadmap](docs/architecture/roadmap.md) so planned work is not presented
    as a completed capability.
 3. Discuss a substantial design or public-protocol change in an issue before
    investing in an implementation.

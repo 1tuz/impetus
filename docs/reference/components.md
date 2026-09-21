@@ -4,8 +4,8 @@
 
 Components in Impetus include:
 - **Built-in tools** (bash, read, write, edit, search) — always available, bundled with `impetus-core`
-- **External modules** (P1+) — optional extensions loaded via Module Runtime
-- **Compatibility adapters** (P1+) — bridges to external formats (MCP, Agent Plugins, etc.)
+- **External modules** — optional extensions loaded via Module Runtime (aspirational lockfile below)
+- **Compatibility adapters** — bridges to external formats (MCP, Agent Plugins, etc.)
 
 **CLI note:** `impetus components list|status` prints the static built-in tool
 catalog only. It does not query `impetusd` or the live module registry. Use
@@ -58,8 +58,8 @@ catalog only. It does not query `impetusd` or the live module registry. Use
 - ✗ Requires digest calculation and storage
 - ✗ Manual lock update on intentional component upgrade
 
-**Phase 1 status:** Concept defined, implementation deferred to Module Runtime
-(see [TODO.md](../TODO.md) P1).
+**Phase 1 status:** Concept defined; lockfile / external-module lifecycle still
+open — see [TODO.md](../../TODO.md) Later (marketplace) and Next (live modules).
 
 ---
 
@@ -81,7 +81,7 @@ catalog only. It does not query `impetusd` or the live module registry. Use
 - Updated via `impetus` / `impetusd` upgrade (Cargo, Homebrew, release binary)
 - No independent versioning (tied to harness version)
 
-**External modules (P1+):**
+**External modules (aspirational):**
 1. User discovers module (docs, community, local development)
 2. User registers module descriptor (file path or URL) with harness
 3. Harness probes compatibility, permissions, health
@@ -127,7 +127,7 @@ catalog only. It does not query `impetusd` or the live module registry. Use
 - `impetus components list` — static built-in tool catalog (not live IPC)
 - `impetus components status [id]` — catalog entry lookup; live health via `doctor`
 
-**Deferred to Module Runtime (TODO.md P1):**
+**Deferred (see TODO.md Later / Next):**
 - External module registration, loading, isolation
 - Update check/apply flows
 - Enable/disable/remove operations
@@ -135,12 +135,12 @@ catalog only. It does not query `impetusd` or the live module registry. Use
 - Note: extension install IDs are allowlisted (`extension_id`, #296) where
   lifecycle writes under project `.impetus/` roots.
 
-**Phase 1 completion criterion:** Concept documented, built-in introspection working.
+**Completion criterion:** Concept documented, built-in introspection working.
 
 ---
 
 ## References
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md) § Module Runtime
-- [TODO.md](../TODO.md) P1 (extension lifecycle / Module Runtime)
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) § Module Runtime
+- [TODO.md](../../TODO.md) (extension lifecycle / Module Runtime)
 - `impetus components --help` for CLI usage

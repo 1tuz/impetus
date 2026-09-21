@@ -9,7 +9,7 @@ use super::{
 };
 
 /// Semantic protocol version aligned with the audited JCode draft (`0.1`).
-/// See `docs/BROWSER_PROVIDER_PROTOCOL.md`.
+/// See `docs/reference/browser-provider-protocol.md`.
 pub const BROWSER_PROVIDER_PROTOCOL_VERSION: &str = "0.1";
 
 pub const ABSENT_BROWSER_REASON: &str = "no browser provider registered (optional track)";
@@ -133,7 +133,7 @@ pub struct BrowserNavigateResult {
 /// by Module Runtime so discovery, health, compatibility and isolation stay out of Agent Loop.
 ///
 /// Negotiation / health / session ops follow the JCode Browser Provider Protocol reference
-/// (`docs/BROWSER_PROVIDER_PROTOCOL.md`) without mandating Chromium/Playwright/Node.
+/// (`docs/reference/browser-provider-protocol.md`) without mandating Chromium/Playwright/Node.
 #[async_trait]
 pub trait BrowserProvider: Send + Sync {
     fn browser_descriptor(&self) -> BrowserProviderDescriptor;

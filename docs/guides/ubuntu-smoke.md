@@ -1,20 +1,20 @@
 # Ubuntu 24.04 release-tier smoke checklist
 
-Docs slice for [TODO.md](../TODO.md) P2 item **Ubuntu 24.04 release tier +
+Docs slice for [TODO.md](../../TODO.md) Later item **Ubuntu 24.04 release tier +
 clean-machine smoke** (#293). Indexes what a clean Ubuntu 24.04 machine must
 prove before calling Linux a release tier, and what PR CI already covers.
 
 Status of **this document**: Implemented (honesty index only).
 
 Status of **automated Ubuntu clean-machine smoke / packaging matrix**:
-**Planned**. Do not mark the P2 TODO item Implemented because this file exists.
+**Planned**. Do not mark the Later TODO item Implemented because this file exists.
 
-Labels match [ARCHITECTURE.md](../ARCHITECTURE.md): **Implemented** /
+Labels match [ARCHITECTURE.md](../../ARCHITECTURE.md): **Implemented** /
 **Partial** / **Planned**.
 
 ## What PR CI already covers
 
-Workflow: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Detail:
+Workflow: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). Detail:
 [development.md](development.md) § Pull request CI.
 
 | Surface | Runner | What it proves today | Status |
@@ -94,8 +94,8 @@ appears in durable or diagnostic output.
 
 ## Related
 
-- [TODO.md](../TODO.md) — P2 Ubuntu release tier item (remains open)
-- [docs/ROADMAP.md](ROADMAP.md) — Platform: Linux install target; sandbox/Keychain parity Planned
-- [docs/development.md](development.md) — PR CI vs `task verify`
-- [docs/getting-started.md](getting-started.md) — macOS-first developer path
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — capability matrix; Linux sandbox Planned
+- [TODO.md](../../TODO.md) — Later Ubuntu release tier item (remains open)
+- [roadmap.md](../architecture/roadmap.md) — Platform: Linux install target; sandbox/Keychain parity Planned
+- [development.md](development.md) — PR CI vs `task verify`
+- [getting-started.md](getting-started.md) — macOS-first developer path
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) — capability matrix; Linux sandbox Planned

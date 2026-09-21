@@ -5,7 +5,7 @@ Canonical архитектурный контракт. Отделяет **тек
 | Документ | Роль |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Инварианты, границы, ownership, module model |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы и gates |
+| [docs/architecture/roadmap.md](docs/architecture/roadmap.md) | Now / Next / Later narrative |
 | [TODO.md](TODO.md) | Исполнимые задачи |
 
 ## Product invariant
@@ -465,7 +465,7 @@ concern.
 
 JCode ([1jehuang/jcode](https://github.com/1jehuang/jcode)) — primary **UX
 reference** для standalone TUI; не runtime dependency и не fork source.
-Source audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (SHA pinned;
+Source audit: [docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md) (SHA pinned;
 `ADAPT | REIMPLEMENT | SKIP` locked). TUI → только `HarnessClient`.
 
 ```text
@@ -479,7 +479,7 @@ search, command palette, scrolling, resize, status/usage, redraw coalescing).
 Не переносить: Agent Runtime, providers, session/tool authority, auth state.
 
 Codex — secondary UX reference (composer, large paste, doctor, approvals,
-errors/remediation). Детальный audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md).
+errors/remediation). Детальный audit: [docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md).
 
 ### Large paste
 

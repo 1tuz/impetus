@@ -49,7 +49,7 @@ Selector self-check: `bash scripts/tests/ci-affected.sh`.
 
 Ubuntu 24.04 PR CI is a **compile guard** (`cargo check`), not a clean-machine
 release smoke. What smoke must still prove (doctor, daemon, no secrets in
-logs, Linux data-dir override): [ubuntu-smoke-checklist.md](ubuntu-smoke-checklist.md).
+logs, Linux data-dir override): [ubuntu-smoke.md](ubuntu-smoke.md).
 
 ## Docs capability claims check
 
@@ -135,4 +135,4 @@ Integration tests under `crates/*/tests/` are intentionally outside the PR gate.
 - Treat process, PTY, network, and filesystem effects as harness capabilities;
   clients do not own policy or the SQLite connection.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md).
+See [CONTRIBUTING.md](../../CONTRIBUTING.md).

@@ -4,12 +4,13 @@
 > Impetus is **not** a fork of JCode and does not vendor browser bridges.
 
 **Upstream:** [1jehuang/jcode](https://github.com/1jehuang/jcode)
-`docs/BROWSER_PROVIDER_PROTOCOL.md`
+`docs/BROWSER_PROVIDER_PROTOCOL.md` (upstream path; Impetus copy lives at
+`docs/reference/browser-provider-protocol.md`)
 
 **Audited commit:** `2a4edaa02057ac994a601311c4f03ed450e1b3c9`
 (master tip when issue #133 was implemented; re-audit before copying new shapes)
 
-**Audited path:** `docs/BROWSER_PROVIDER_PROTOCOL.md`
+**Audited path:** upstream `docs/BROWSER_PROVIDER_PROTOCOL.md` → this file
 
 **Impetus protocol id:** `0.1` (same semantic major as upstream draft; own Rust trait surface)
 

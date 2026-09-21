@@ -10,6 +10,7 @@ use crate::{
     command,
     composer::ComposerLayoutMode,
     diff::{looks_like_diff, render_diff_view},
+    hit::{HitKind, HitTarget, RectHit},
     markdown::{render_markdown, render_plain_wrapped},
     model::{
         AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, format_status_strip, short_id,
@@ -18,6 +19,7 @@ use crate::{
 };
 
 pub fn render(frame: &mut Frame, app: &mut AppState, theme: Theme) {
+    app.hit_targets.clear();
     let area = frame.area();
     frame.render_widget(Block::default().style(theme.base()), area);
 
@@ -143,7 +145,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) 
     }
 }
 
-fn render_sessions_panel(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
+fn render_sessions_panel(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) {
     let items = app
         .sessions
         .iter()
@@ -178,7 +180,8 @@ fn render_sessions_panel(frame: &mut Frame, area: Rect, app: &AppState, theme: T
             ListItem::new(lines)
         })
         .collect::<Vec<_>>();
-    let block = panel_block(" sessions · F2 ", false, theme);
+    let block = panel_block(" sessions · F2/Ctrl+O ", false, theme);
+    let inner = block.inner(area);
     let list = List::new(items)
         .block(block)
         .highlight_style(theme.selected());
@@ -188,6 +191,21 @@ fn render_sessions_panel(frame: &mut Frame, area: Rect, app: &AppState, theme: T
         .and_then(|active| app.sessions.iter().position(|session| session.id == active));
     state.select(selected);
     frame.render_stateful_widget(list, area, &mut state);
+
+    let row_height = 2u16;
+    for index in 0..app.sessions.len() {
+        let y = inner
+            .y
+            .saturating_add((index as u16).saturating_mul(row_height));
+        if y >= inner.y.saturating_add(inner.height) {
+            break;
+        }
+        let height = row_height.min(inner.y.saturating_add(inner.height).saturating_sub(y));
+        app.hit_targets.push(HitTarget {
+            rect: RectHit::new(inner.x, y, inner.width, height),
+            kind: HitKind::SessionPanelRow { index },
+        });
+    }
 }
 
 fn render_timeline(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) {
@@ -202,7 +220,7 @@ fn render_timeline(frame: &mut Frame, area: Rect, app: &mut AppState, theme: The
         return;
     }
 
-    let lines = build_timeline_lines(app, inner.width as usize, theme);
+    let (lines, line_items) = build_timeline_lines(app, inner.width as usize, theme);
     let height = inner.height as usize;
     app.note_timeline_metrics(height, lines.len());
     let offset = app.line_scroll_from_bottom.min(lines.len());
@@ -210,6 +228,21 @@ fn render_timeline(frame: &mut Frame, area: Rect, app: &mut AppState, theme: The
     let start = end.saturating_sub(height);
     let visible = lines[start..end].to_vec();
     frame.render_widget(Paragraph::new(Text::from(visible)), inner);
+
+    for (row_offset, item_index) in line_items[start..end].iter().enumerate() {
+        let Some(index) = *item_index else {
+            continue;
+        };
+        app.hit_targets.push(HitTarget {
+            rect: RectHit::new(
+                inner.x,
+                inner.y.saturating_add(row_offset as u16),
+                inner.width,
+                1,
+            ),
+            kind: HitKind::TimelineItem { index },
+        });
+    }
 
     if lines.len() > height {
         let indicator = if app.follow_tail {
@@ -230,9 +263,15 @@ fn render_timeline(frame: &mut Frame, area: Rect, app: &mut AppState, theme: The
     }
 }
 
-fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<'static>> {
+/// Build painted timeline lines plus a parallel item-index map for hit-testing.
+fn build_timeline_lines(
+    app: &AppState,
+    width: usize,
+    theme: Theme,
+) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
     let width = width.max(8);
     let mut lines = Vec::new();
+    let mut line_items = Vec::new();
     for (index, item) in app.timeline.iter().enumerate() {
         let selected = app.selected_item == Some(index);
         let accent = theme.item_color(item.kind);
@@ -260,6 +299,7 @@ fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<
                 Style::default().fg(theme.muted),
             ),
         ]));
+        line_items.push(Some(index));
         if !item.collapsed && (!item.body.is_empty() || item.streaming_key.is_some()) {
             let body_width = width.saturating_sub(3);
             let body_lines = if looks_like_diff(&item.body) {
@@ -283,9 +323,11 @@ fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<
                 ];
                 spans.extend(line.spans);
                 lines.push(Line::from(spans));
+                line_items.push(Some(index));
             }
         }
         lines.push(Line::from(""));
+        line_items.push(Some(index));
     }
     if lines.is_empty() {
         lines.extend([
@@ -299,8 +341,10 @@ fn build_timeline_lines(app: &AppState, width: usize, theme: Theme) -> Vec<Line<
                 Style::default().fg(theme.border),
             )),
         ]);
+        line_items.extend([None, None, None]);
     }
-    lines
+    debug_assert_eq!(lines.len(), line_items.len());
+    (lines, line_items)
 }
 
 fn render_inspector(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
@@ -366,7 +410,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme)
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
+fn render_composer(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) {
     let focus = app.focus == Focus::Composer && matches!(app.overlay, Overlay::None);
     let mode = app.composer.layout_mode();
     let newline_hint = match mode {
@@ -419,10 +463,14 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) 
             inner.y + view.cursor_row.min(inner.height.saturating_sub(1)),
         ));
     }
+    app.hit_targets.push(HitTarget {
+        rect: RectHit::new(area.x, area.y, area.width, area.height),
+        kind: HitKind::Composer,
+    });
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
-    let left = " F1 help  PageUp/Dn scroll  End follow  Ctrl+Q quit";
+    let left = " ?/F1 help  Ctrl+P cmds  Ctrl+O sessions  Ctrl+Shift+P intent  Ctrl+Q quit";
     let right = format!(" {} ", format_status_strip(app));
     let available = area.width as usize;
     let right_width = right.chars().count();
@@ -481,31 +529,33 @@ fn render_inline_command_palette(
     );
 }
 
-fn render_overlay(frame: &mut Frame, app: &AppState, theme: Theme) {
-    match &app.overlay {
+fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
+    // Clone so hit recording can mutably borrow `app` while matching overlay.
+    let overlay = app.overlay.clone();
+    match overlay {
         Overlay::None => {}
         Overlay::Help => render_help(frame, theme),
         Overlay::Sessions { selected, query } => {
-            render_session_picker(frame, app, *selected, query, theme)
+            render_session_picker(frame, app, selected, &query, theme)
         }
         Overlay::Commands { selected, query } => {
-            render_command_picker(frame, *selected, query, theme)
+            render_command_picker(frame, selected, &query, theme)
         }
-        Overlay::Modes { selected } => render_mode_picker(frame, app, *selected, theme),
-        Overlay::Approval { selected } => render_approval(frame, app, *selected, theme),
+        Overlay::Modes { selected } => render_mode_picker(frame, app, selected, theme),
+        Overlay::Approval { selected } => render_approval(frame, app, selected, theme),
         Overlay::ApprovalDetail => render_approval_detail(frame, app, theme),
         Overlay::LargePaste => render_large_paste(frame, app, theme),
         Overlay::Diagnostics { text } => render_text_modal(
             frame,
             " diagnostics · redacted ",
-            text,
+            &text,
             84,
             80,
             false,
             theme,
         ),
         Overlay::Message { title, body, error } => {
-            render_text_modal(frame, title, body, 70, 55, *error, theme)
+            render_text_modal(frame, &title, &body, 70, 55, error, theme)
         }
     }
 }
@@ -514,9 +564,12 @@ fn render_help(frame: &mut Frame, theme: Theme) {
     let body = [
         "NAVIGATION",
         "  PageUp/PageDown   scroll durable event history",
+        "  Home              scroll timeline to top (when timeline focused)",
         "  End               resume following the newest events",
         "  Alt+Up/Down       select event for inspector",
         "  Enter             collapse/expand selected event when timeline focused",
+        "  Tab               cycle focus Composer → Timeline → Inspector",
+        "  click event       select timeline item; double-click toggle collapse",
         "",
         "COMPOSER",
         "  Enter             submit task",
@@ -528,13 +581,28 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  Ctrl+A/E          line start/end",
         "  Ctrl+W            delete previous word",
         "  Ctrl+P            command palette",
+        "  Ctrl+Shift+P      cycle intent Prompt → Steer → FollowUp",
+        "  Ctrl+T            set Steer intent (active run) or show hint",
         "  /prompt /steer /follow-up   composer intent",
+        "  click composer    focus input",
         "",
         "HARNESS",
-        "  F2 sessions       attach durable session",
-        "  F4 mode           Plan / Ask / Auto-Safe",
+        "  ? / F1            keymap help ( ? only when composer empty )",
+        "  F2 / Ctrl+O       session picker",
+        "  F3                toggle inspector",
+        "  F4                Plan / Ask / Auto-Safe modes",
         "  Ctrl+C            cancel run or dismiss current input",
+        "  Ctrl+L            clear local viewport",
+        "  Ctrl+D            open selected diff/details",
+        "  Ctrl+Q            quit client (daemon sessions keep running)",
         "  Y / N             approve once / reject exact pending action",
+        "  click session     activate (picker or side panel)",
+        "  click Y / N       resolve approval when overlay open",
+        "",
+        "SESSION PICKER",
+        "  Enter             attach selected session",
+        "  N / Ctrl+N        create new durable session",
+        "  type              filter by label / id / workspace",
         "",
         "SAFETY",
         "  The TUI never decides that an action is safe. It only displays the",
@@ -544,19 +612,23 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "Esc closes this window.",
     ]
     .join("\n");
-    render_text_modal(frame, " help · keymap ", &body, 82, 82, false, theme);
+    render_text_modal(frame, " help · keymap ", &body, 86, 90, false, theme);
 }
 
 fn render_session_picker(
     frame: &mut Frame,
-    app: &AppState,
+    app: &mut AppState,
     selected: usize,
     query: &str,
     theme: Theme,
 ) {
     let area = centered_rect(78, 76, frame.area());
     frame.render_widget(Clear, area);
-    let block = panel_block(" sessions · Enter attach · N new · Esc close ", true, theme);
+    let block = panel_block(
+        " sessions · Enter attach · N/Ctrl+N new · Esc close ",
+        true,
+        theme,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = Layout::default()
@@ -609,6 +681,27 @@ fn render_session_picker(
         rows[1],
         &mut state,
     );
+
+    let list_area = rows[1];
+    let row_height = 2u16;
+    for index in 0..filtered.len() {
+        let y = list_area
+            .y
+            .saturating_add((index as u16).saturating_mul(row_height));
+        if y >= list_area.y.saturating_add(list_area.height) {
+            break;
+        }
+        let height = row_height.min(
+            list_area
+                .y
+                .saturating_add(list_area.height)
+                .saturating_sub(y),
+        );
+        app.hit_targets.push(HitTarget {
+            rect: RectHit::new(list_area.x, y, list_area.width, height),
+            kind: HitKind::SessionPickerRow { index },
+        });
+    }
 }
 
 fn render_command_picker(frame: &mut Frame, selected: usize, query: &str, theme: Theme) {
@@ -711,7 +804,7 @@ fn render_mode_picker(frame: &mut Frame, app: &AppState, selected: usize, theme:
     );
 }
 
-fn render_approval(frame: &mut Frame, app: &AppState, selected: usize, theme: Theme) {
+fn render_approval(frame: &mut Frame, app: &mut AppState, selected: usize, theme: Theme) {
     let area = centered_rect(82, 70, frame.area());
     frame.render_widget(Clear, area);
     let count = app.approval_queue.len();
@@ -802,6 +895,21 @@ fn render_approval(frame: &mut Frame, app: &AppState, selected: usize, theme: Th
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(option_lines), rows[1]);
+    let option_kinds = [
+        HitKind::ApprovalAccept,
+        HitKind::ApprovalReject,
+        HitKind::ApprovalInspect,
+    ];
+    for (index, kind) in option_kinds.into_iter().enumerate() {
+        let y = rows[1].y.saturating_add(index as u16);
+        if y >= rows[1].y.saturating_add(rows[1].height) {
+            break;
+        }
+        app.hit_targets.push(HitTarget {
+            rect: RectHit::new(rows[1].x, y, rows[1].width, 1),
+            kind,
+        });
+    }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Esc does not approve; it leaves the request pending.",

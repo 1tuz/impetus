@@ -1,459 +1,126 @@
-# TODO — Impetus
+# Impetus backlog
 
-Executable roadmap. **Code is source of truth.** Status labels:
+Executable open list. Architecture truth = [ARCHITECTURE.md](ARCHITECTURE.md)
+(capability matrix + evidence). Done work lives there — not duplicated as walls
+of checkboxes here. Short narrative: [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
+Doc map: [docs/README.md](docs/README.md).
 
-- **Implemented** — production path + tests
-- **Partial** — library/import exists; gaps remain
-- **Planned** — not started or deferred
-
-Detail and evidence: [ARCHITECTURE.md](ARCHITECTURE.md).
-Narrative: [docs/ROADMAP.md](docs/ROADMAP.md).
-
-Rule: mark Implemented only when the vertical slice works end-to-end. Types-only
-or import-only adapters are Partial.
+Rule: mark done only when the vertical slice works end-to-end. Types-only or
+import-only adapters stay open / Partial in the matrix.
 
 ---
 
-## P0 — Runtime correctness (now)
+## Now
 
-Gate before P1 product features.
+Real open work that should happen next.
 
-### 1. Provider-native protocol adapters
-
-- [x] Wire `OpenAiProvider` (Chat Completions SSE + tool-call assembly) into
-      `impetusd` / `Harness` via `OpenAiNativeAdapter`
-- [x] Fix stream end handling so accumulated tool calls emit before
-      `[DONE]` / `message_stop` early-return
-- [x] Export `AnthropicProvider` (still optional / not default daemon path)
-- [x] Keep legacy OpenAI-compatible text adapter in tree for compatibility
-- [x] Explicit `ProviderProtocolAdapter` trait boundary (shared assembler)
-      (`provider_protocol_adapter.rs`: trait + `ToolCallAssembler`; used by
-      `openai_provider.rs` + `anthropic_provider.rs`)
-- [x] OpenAI Responses API (`/v1/responses`) — Partial (opt-in via profile
-      `openai_http_api=responses`; Chat Completions remains default; shared
-      `ToolCallAssembler`; fixture SSE unit tests)
-
-Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `openai_responses.rs`,
-`anthropic_provider.rs`, `provider_protocol_adapter.rs`, `impetusd` `--provider-profile`.
-
-### 2. Mandatory tool argument validation
-
-- [x] Validate model tool args against tool JSON Schema **before** policy/execution
-      (`tool_schema::validate_tool_arguments` in `ToolOrchestrator::normalize_tool_call`)
-- [x] Reject malformed args without reaching executor (typed `ToolArgError` /
-      `OrchestratorError::InvalidArguments`; no silent coercion at the schema gate)
-- [x] Provider HTTP `tools` schemas — OpenAI Chat Completions + Anthropic
-      Messages `tools` from `builtin_tool_schemas()` (`openai_tools_payload` /
-      `anthropic_tools_payload`; `provider_http_tools: true` in capability truth)
-
-### 3. Single durable ArtifactStore semantics
-
-- [x] Doctor text: distinguish path-scope sandbox vs Seatbelt process wrap
-- [x] Wire measured provider usage into `BudgetChecker::record_usage` via
-      `record_turn_with_usage`
-- [x] Process/shell stdout/stderr → durable artifact when large
-      (`ProcessExecutionRequest::execute` + preview/`ArtifactRef` on bash path)
-- [x] Ephemeral `AttachmentStore` for approval previews (keep; document as non-durable)
-- [x] `DurableArtifactStore` for truncated tool/web/paste bodies
-
-### 4. Context engine + durable compaction
-
-- [x] HOT/WARM/COLD + lazy descriptions + token-budgeted assemble
-- [x] ContextBuilder chunked artifact summarize
-- [x] Shared-prefix fork + named checkpoints
-- [x] Wire measured provider usage into `BudgetChecker::record_usage`
-- [x] Compaction as durable events (`CompactionStarted` / range / summary refs /
-      `CompactionCompleted`) executed from agent loop — not silent history rewrite
-- [x] Structural state (permissions, cwd, budgets, parent, worktree) never only in
-      text summary (`CompactionStructuralState` on `CompactionCompleted`)
-
-### 5. Security / runtime E2E in PR CI
-
-Keep suite small. PR CI today (path-aware; see `docs/development.md`):
-
-- macOS: `fmt` + Clippy + `cargo test` on affected packages with `--lib --bins`
-- Linux: `cargo check` on affected + dependants
-- Docs-only / site-only skip Rust; `Cargo.toml`/`Cargo.lock` broaden to workspace
-
-- [x] Add focused lib/bin tests (or tiny PR-safe suite) covering:
-  - [x] approve → execute; reject — `security_runtime_pr` + harness
-        `approval_resume_*` / `rejected_approval_*` (#174; full-flow #15
-        accepted via same Memory+MockProvider harness lib tests — no
-        duplicate under `crates/impetus-core/tests/`; see
-        `docs/development.md` § Full request-flow coverage)
-  - [x] cancel — harness `cancellation_stops_an_active_agent_run_*` (lib)
-  - [x] reconnect / attach after daemon restart (where feasible without Seatbelt)
-        — runtime `attach_recovers_pending_approval_*` /
-        `reattach_recovers_the_exact_deferred_tool_arguments` (lib; no daemon
-        process restart / Seatbelt)
-  - [x] sandbox deny → no execution — `security_runtime_pr` + `effects` path-scope
-        fail-closed (lib). Seatbelt process wrap still out of PR path.
-  - [x] `UnknownOutcome` / retry blocked for mutating — `security_runtime_pr` +
-        `module_fallback` (lib)
-  - [x] secret redaction — `redact_tool_outcome` + tools
-        `client_visible_tool_output_redacts_*` (lib). Deeper audit-log IPC
-        fixtures stay in `tests/audit_log_redaction.rs` (not `--lib`).
-  - [x] durable artifact restore — `security_runtime_pr` reopen +
-        `tool_orchestrator` large_*_survives_store_reopen (lib)
-- [x] Do **not** move full Seatbelt integration into every PR; keep nightly/manual
-      (`tests/macos_sandbox_spike.rs` / Seatbelt remain non-PR)
-
-### 6. Capability truth generation
-
-- [x] `impetus doctor --json` (and human doctor) reflects real capability matrix
-      (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime,
-      tool_schema gate) via `CapabilityTruthReport`
-- [x] Prefer generating/checking docs claims from doctor JSON where practical
-      (`crates/impetus-core/tests/docs_capability_claims.rs` +
-      `tests/fixtures/docs_capability_claims.json` vs `CapabilityTruthReport::gather`)
+- [ ] Wire `ExploreChildRunner` into production `AgentLoop` / `impetusd`
+      (Foundation slice exists; model-provider binding still open) (#296)
+- [ ] Wire live MCP tools into production `AgentLoop` / `impetusd`
+      (`McpLiveBridge` + orchestrator hook exist; capability truth
+      `mcp_live_tools_in_loop: false`)
+- [ ] Production macOS Seatbelt wrap into `execution/process.rs`
+      (spike / `macos_sandbox_spike` exist; path-scope sandbox already live)
+- [ ] Default IPC / CLI / `impetusd` path to load + reload user `PolicyConfig`
+      (engine + JSON format exist; #9 leftover)
+- [ ] Parent-resume gate wired to live Explore child completion
+      (beyond in-memory Explore slice / `gate_parent_resume` stub)
 
 ---
 
-## P1 — Operator / extension / orchestration layer
+## Next
 
-Start after P0 foundations are solid. Keep the **built-in agent set small**; prefer
-composable primitives over a catalog of overlapping skills/commands/hooks.
+Important, not blocking daily single-session use.
 
-Orchestration stack (names may vary if cleaner boundaries exist):
+### Orchestration runtime
 
-```text
-AgentScheduler + WorkflowEngine + WorktreeManager
-```
-
-Agents remain **execution roles**. Workflows own step ordering. Worktrees are
-**managed resources** with durable ownership — not “spawn git worktree and hope”.
-
-### 1. Versioned canonical schemas
-
-- [x] Shared schema registry (`schema` module): ids + `schema_version` convention
-- [x] Stable schemas with deterministic validation (partial — registry slice):
-  - [x] `impetus.session.v1` (nest-shape slice: common + `provider`/`harness`;
-        full session catalog still Planned)
-  - [x] `impetus.extension.v1` (minimal manifest: id/kind/version/digest/capabilities;
-        wired into `plan_install` / `InstallPlan`)
-  - [x] `impetus.mcp.v1` (minimal local MCP config: id/transport/command/args/
-        capabilities/env_keys; wired into `plan_mcp_config`)
-  - [x] `impetus.capabilities.v1`
-  - [x] `impetus.approval_detail.v1` wired into shared registry (#189/#191 pattern)
-- [x] Provider/harness-specific details nested; do not leak into common fields
-      (`reject_leaked_nested_fields` + nest containers on capabilities/session/
-      approval_detail; #239)
-- [x] Compatibility evolution (version field + reject unknown critical fields)
-  (registry helpers; full payload coverage still growing)
-
-### 2. Extension lifecycle (not file copy)
-
-Lifecycle:
-
-```text
-Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
-```
-
-- [x] Dry-run plan before filesystem mutations where practical
-      (`extension_lifecycle::plan_install`: ResolutionPlan + InstallPlan for
-      Skill / MCP config intents; no write; create vs modify classification)
-- [x] CLI: `extension plan | install` (wraps `plan_install` / `apply_install`;
-      project DBs under `{root}/.impetus/`; extension IDs allowlisted —
-      `extension_id` / `normalize_extension_id`, #296)
-- [x] CLI: `extension remove` (ownership uninstall + install-state delete by
-      `installation_id`)
-- [x] CLI: `extension doctor` (install-state + ownership health: missing /
-      digest mismatch)
-- [x] CLI/IPC: `extension repair` (`repair_install` + CLI `--force` for digest
-      mismatch; missing restores without force)
-- [x] Persist install state: created paths, modified paths, source, version/digest,
-      ownership, installation ID
-      (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)
-- Live MCP tools — **Partial** (Foundation vs Runtime):
-  - [x] Foundation: `McpLiveBridge` + `ToolOrchestrator::with_mcp_live` (unit tests)
-  - [ ] Runtime: wire into production `AgentLoop` / `impetusd` (not done;
-        capability truth `mcp_live_tools_in_loop: false`)
-- [x] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
-      (`extension_manifest` + `impetus.extension.v1`; validated on `plan_install`)
-- [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
-- [x] MCP **import** adapter (JSON-RPC client library)
-
-### 3. Ownership safety (first-class invariant)
-
-Default:
-
-`destination exists + no matching Impetus ownership record = do not overwrite`
-
-- [x] Ownership records: path, owner, source, digest, version, installation ID
-- [x] Uninstall removes **only** resources Impetus can prove it owns
-- [x] Repair never overwrites unrelated user changes without explicit policy/approval
-      (`OwnershipStore::repair`; digest mismatch refuses unless `force`)
-- [x] Pre-existing user files never silently become Impetus-owned
-
-### 4. Memory trust model
-
-Separate explicitly:
-
-```text
-Runtime State ≠ Memory ≠ Policy
-```
-
-| Store | Role |
-| --- | --- |
-| `EventStore` | Authoritative runtime/session state |
-| `MemoryStore` | Contextual knowledge (untrusted by default) |
-| `PolicyStore` | Governed instructions and permissions — **Planned** (name only; no type yet) |
-
-- [x] Memory never auto-promotes to policy or tool/sandbox capability
-- [x] Scopes: project / team / user; provenance; secret filtering
-      (`MemoryScope` / `MemoryProvenance` on `MemoryEntry`; store path
-      reuses `tools::redact_text`; fake-token unit tests)
-- [x] Create-only or append-safe semantics where appropriate
-      (`remember` create-only / `append` append-safe; `MemoryStoreError::AlreadyExists`;
-      no silent overwrite; unit tests)
-- [x] Derived indexes disposable/rebuildable; no unsafe symlink traversal
-      (`MemoryDerivedIndex` / `rebuild_index` / `persist_derived_index`;
-      `resolve_index_path` refuses `..` and symlink escape; unit tests)
-- [x] Human-readable source format where useful
-      (`export_jsonl` / `export_markdown` / `import_*` / `from_*`;
-      labels only; import via create-only `remember` + redaction; unit tests)
-- [ ] `PolicyStore` type + governed-instruction surface (not PolicyConfig overrides)
-
-### 5. WorktreeManager
-
-Managed resource lifecycle (persist + recover after daemon restart):
-
-create → resume → pause → stop → diff → review → merge-ready → conflict →
-stale → close → salvage
-
-- [x] Create/resume/stop/close with durable session ↔ worktree binding
-      (`WorktreeManager` + SQLite bindings; git CLI; temp-dir tests)
-- [x] Diff / merge-ready / conflict checks before merge attempts
-      (`diff_summary` / `check_merge_ready` / `attempt_merge`; `merge-tree`
-      conflict refuse; temp-repo tests)
-- [x] Safe cleanup + abandoned/stale detection
-      (`detect_stale` / `mark_stale` / `cleanup_stale`; path-missing +
-      not-registered; temp-repo tests)
-- [x] Salvage path for recoverable abandoned worktrees
-      (`salvage` re-registers + preserves on-disk files; same `worktree_id`)
-- [x] Worktree identity survives compaction/resume
-      (`CompactionStructuralState.worktree_id` + `resolve_after_compaction`;
-      attach restores id from CompactionCompleted)
-- [x] Build-role agents prefer isolated worktrees with attached permissions
-      (`create_for_role(Build)` + durable `WorktreeAttachedPermissions`;
-      `enforce_write` / `to_sandbox_scope` hook; temp-dir tests)
-
-### 6. WorkflowEngine + small recipes — Partial
-
-Do **not** invent a new hard-coded agent type per workflow.
-
-Honest split: **Foundation** (in-memory library) vs **Runtime** (live spawn /
-production AgentLoop wire).
-
-**Foundation**
-
-- [x] Declarative recipes (examples):
-  - [x] Feature: Research → Plan → Tests → Implement → Review → Approval
-        (`WorkflowEngine::feature_skeleton_recipe`)
-  - [x] Bug: Reproduce → Failing regression → Fix → Review
-        (`WorkflowEngine::bug_skeleton_recipe`)
-  - [x] Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
-        (`WorkflowEngine::refactor_skeleton_recipe`)
-- [x] Engine owns: step order, dependencies, budgets (token/wall stubs),
-      checkpoints, cancellation, result propagation, minimal per-step retry
-      (`workflow_engine` — in-memory; `max_retries` workflow/step + fail→Pending
-      then Failed checkpoint; concurrency still open)
-- [x] Reject self-deps and multi-node dependency cycles at recipe validate
-      (`reject_dependency_cycles` Kahn sort; #296)
-- [x] AgentScheduler schedules roles; WorkflowEngine sequences steps
-      (`InMemoryAgentScheduler` + `begin_step_with_scheduler` /
-      `complete_step_with_scheduler`; schedule id / result slot on checkpoint;
-      no live spawn)
-
-**Runtime**
-
-- [ ] Live agent process spawn from WorkflowEngine / scheduler
-- [ ] WorkflowEngine cancel/replace wired to session-run intents
+- [ ] Live agent process spawn from `WorkflowEngine` / scheduler
+- [ ] `WorkflowEngine` cancel/replace wired to session-run intents
+      (follow-up drain race with cancel/replace still open)
+- [ ] Live child process / PTY spawn for Research / Build / Review roles
+- [ ] Per-parent concurrency caps / fair scheduling
 - [ ] Cross-machine / IPC orchestration beyond in-process fanout
 
-### 7. Subagents (explicit roles, not a swarm) — Partial
+### Trust / policy / hooks
 
-Same Foundation vs Runtime split as §6.
+- [ ] `PolicyStore` type + governed-instruction surface
+      (not `PolicyConfig` overrides; `Runtime ≠ Memory ≠ Policy`)
+- [ ] Operator UX to edit/customize policy (not a harness UI rewrite)
+- [ ] Wire `hook_prefilter` into live `ProcessExecution` spawn path
+- [ ] Live provider wire for `SteerRewrite` (passthrough default today) (#285)
 
-**Foundation**
+### Coding / research modules (optional backends)
 
-- [x] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
-      Review (read-only diff/tests)
-      (`subagent_metadata::SubagentRole` + capability intent; no live spawn)
-- [x] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
-      `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
-      (`ChildRunMetadata` validated; in-memory scheduler wired in #253;
-      live spawn still open)
-- [x] Persist child results before parent resume
-      (`ChildResultStore` SQLite + `gate_parent_resume` stub; no live spawn /
-      AgentScheduler wiring — #250)
-- [x] Concurrency caps enforced in harness
-      (`child_concurrency::ChildConcurrencyGate` global counter; default cap 4;
-      admit / reject-at-cap / release on complete|cancel; no live spawn;
-      per-parent caps / fair scheduling still open)
-
-**Runtime**
-
-- [x] ExploreChildRunner minimal vertical — **Partial** (#296):
-      parent → validate Explore metadata → `ChildConcurrencyGate` → injectable
-      `ExploreChildExecutor` → durable `ChildResultStore` → `gate_parent_resume`;
-      allowed tools ⊆ {list,read,search}; optional `ReadOnlyTools` path;
-      AgentLoop / model provider binding still open (`explore_child.rs`)
-- [ ] Live child process / PTY spawn for other roles
-- [ ] Parent-resume gate wired to live child completion (beyond Explore slice)
-- [ ] Per-parent caps / fair scheduling
-- [ ] Wire ExploreChildRunner into production AgentLoop / daemon
-
-### 8. Steer vs follow-up
-
-- [x] Typed intents distinct from a normal user message:
-      `UserPromptIntent::{Prompt, Steer, FollowUp}` + in-memory
-      `UserIntentRouter` stubs (`user_intent`)
-      - Steer → active run only (rejected when none)
-      - FollowUp → enqueue after current (OK when session exists)
-      - Prompt → baseline when session exists
-      - Neither Steer nor FollowUp rewrites `ActionOrigin` or bypasses Policy
-- [x] TUI/IPC wiring for intent discriminant — Partial (#263)
-      - `IpcRequest::Prompt.intent` + `IntentEvent.intent` (serde default Prompt)
-      - Harness routes via `UserIntentRouter` (Steer/FollowUp: durable event only)
-      - TUI: `/prompt` · `/steer` · `/follow-up` set composer intent
-- [x] LLM prompt rewrite for Steer — Partial (#285)
-      - `SteerRewrite` seam: (active context + steer text) → fragment/messages
-      - Default `PassthroughSteerRewrite` (offline); `MockSteerRewrite` for tests
-      - Harness calls rewriter on Steer accept; durable Intent keeps user text
-      - Live provider wire deferred; origin/Policy unchanged; active run still required
-- [x] Follow-up drain on session-run Completed/Cancelled — Partial (#271)
-      - Per-session in-memory queue; dequeue → Prompt turn (origin preserved)
-      - Cancel/replace: at-most-once drain via matching `active_run_id`
-      - Full WorkflowEngine cancel/replace race still open
-- [x] Multi-session fanout — Partial
-      (`UserIntentRouter::fanout(intent, session_ids[])`; rejects empty list;
-      independent per-session submit; ok/err map; no cross-machine / IPC yet)
-      (#275)
-
-### 9. Hooks (only if needed; performance-first)
-
-- [x] Cheap match/filter **before** spawning expensive processes — Partial
-      (`hook_prefilter`: typed `HookRule` + `prefilter(label)` + spawn stub;
-      unit tests for skip/deny/no-match; not wired into live `ProcessExecution`)
-      (#257)
-- [x] Security-critical hooks prefer in-daemon / trusted runtime — Partial
-      (`HookTrustLevel::InDaemon` / `External`; security-critical rules require
-      InDaemon; External matcher for critical action → clear Deny/error;
-      unit tests labels-only; no plugin ABI / script runner) (#272)
-- [x] Measure per-tool-call overhead; add perf tests if hooks land — Partial
-      (`HookPrefilter::prefilter` smoke: 64 rules × 2k labels, generous
-      wall-clock assert in unit tests; Criterion already in crate for event
-      log — not duplicated here; live `ProcessExecution` spawn wiring still
-      separate / out of scope) (#279)
-- [x] Avoid large overlapping hook catalogs — Partial
-      (`hook_prefilter`: `try_new` / `add_rule` refuse exact duplicates —
-      same pattern + action; clear error lists conflicting rule ids/patterns;
-      subsumption YAGNI while patterns are exact equality; no marketplace)
-      (#276)
-- [x] Event log query baselines (append_next / list / cursor backfill) — Criterion
-      benches + `docs/benchmarks/v0.2.md`; local `task bench` only, not PR CI gate
-      (#16)
-
-### 10. Anti-sprawl
-
-- [x] Keep built-in agent/skill/command set small; detect unused/duplicates
-      (`builtin_ids`: shipped inventory = 4 `SubagentRole` agents; no first-party
-      skills/commands in core; `find_duplicate_ids` + doctor `builtin_ids` probe;
-      unused cross-ref stub always empty — Planned) (#260)
-- [x] No features solely for vendor parity or feature-count optics
-      (ARCHITECTURE/AGENTS policy note) (#283)
-
-### 11. LSP
-
-- [x] Typed coding-tool seam + mock (definition / references / diagnostics /
-      symbols / hover); no LSP binary required at compile time (#261)
-- [x] Real LSP backend spawn (rust-analyzer / clangd / …) — optional, not core dep —
-      Partial: `LspBackendModule` + runtime path hint + Mock/Absent fail-closed;
-      real process spawn Planned (not core deps) (#282)
-- [x] Wire coding tools into agent loop / IPC / TUI — Partial: `goto_definition`
-      tool via ToolOrchestrator + IPC `GotoDefinition`/`Definition` (mock/absent
-      fail-closed); real LSP + TUI surface still Planned (#267)
-
-### 12. Web / research
-
-- [x] Search + fetch + SSRF + citations/provenance (core path)
-- [x] Session outbound / private-network grants
-- [x] Optional API search backends (Tavily/Exa) as replaceable modules only —
-      Partial: `SearchBackend` + Keychain-label modules + mock/absent fail-closed;
-      real Tavily/Exa HTTP clients Planned (not core deps) (#264)
-- [x] Real browser providers (Firefox/Chrome/…) — optional, not core deps —
-      Partial: `BrowserProvider` seam + Firefox/Chrome modules + Mock/Absent/
-      Optional fail-closed; no compile-time binary path; real automation Planned
-      (not core deps) (#268)
+- [ ] Real LSP process spawn (rust-analyzer / clangd / …) — not a core dep (#282)
+- [ ] LSP / coding-tool TUI surface beyond IPC `GotoDefinition` (#267)
+- [ ] Real Tavily/Exa HTTP search clients (module seam exists) (#264)
+- [ ] Real browser automation behind `BrowserProvider` (seam exists) (#268)
 
 ---
 
-## P2 — Advanced orchestration (explicitly deferred)
+## Later
 
-- [ ] Large multi-team / swarm orchestration beyond small WorkflowEngine recipes
+Deferred / explicit non-goals for the near term.
+
+- [ ] Large multi-team / swarm orchestration beyond small `WorkflowEngine` recipes
 - [ ] Plugin marketplace / large plugin ABI
 - [ ] Portable sessions between harnesses
-- [ ] Deep Claude/Codex/Cursor compatibility **runtime** (imports already Partial)
+- [ ] Deep Claude/Codex/Cursor **runtime** compatibility
+      (import adapters already Partial)
 - [ ] Autonomous long-running planner/tester loops
-- [ ] Ubuntu 24.04 release tier + clean-machine smoke
-      Honesty checklist (docs; #293):
-      [docs/ubuntu-smoke-checklist.md](docs/ubuntu-smoke-checklist.md) —
-      PR CI vs required clean-machine proofs; automated smoke / packaging
-      still Planned (do not mark this row Implemented for docs alone)
+- [ ] Ubuntu 24.04 release tier + clean-machine smoke automation
+      (honesty checklist: [docs/guides/ubuntu-smoke.md](docs/guides/ubuntu-smoke.md); #293)
 - [ ] Full Zap discovery/authorize production protocol
-      Honesty docs for classic #5 (adapter today vs Planned): ARCHITECTURE.md
-      § Zap path (#290); protocol impl still open
-- [ ] Production macOS Seatbelt wire into `execution/process.rs` (spike exists;
-      macOS confinement priority > broad Linux/Windows sandbox backends)
-- [ ] Prefer invert `impetus-core` → `impetus-acp-gateway` dependency (core should
-      not own gateway as a library dep long-term); large refactor postponed
-- [ ] Thin-client boundary / `harness_api` domain split (Zap/TUI on protocol crate;
-      recoverable errors not daemon panic) — postponed
-- [ ] CLI migration: keep `impetus` primary; migrate `impetus-cli` callers over
-      time (do **not** delete the crate)
+      (adapter checklist today: ARCHITECTURE.md § Zap path; #290 / classic #5)
+- [ ] Invert `impetus-core` → `impetus-acp-gateway` dependency
+      (core should not own gateway as a library dep long-term)
+- [ ] Thin-client boundary / `harness_api` domain split
+      (Zap/TUI on protocol crate; recoverable errors ≠ daemon panic)
+- [ ] CLI migration: keep `impetus` primary; migrate `impetus-cli` callers
+      over time (do **not** delete the crate)
 
 ---
 
-## Frontends (ongoing; not blocking P0)
+## Frontends
 
-TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
+TUI talks `HarnessClient` only (`impetus-tui` boundary tests). Detail:
+[docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md). Help overlay
+(`?` / F1) lists the live keymap.
 
-- [x] Classic #5 Zap path honesty + adapter checklist (docs; #290) — production
-      discovery/authorize still open (P2)
-- [x] Ratatui/Crossterm adopted; composer single/multi; large paste upload; streaming
-- [x] Bounded markdown (#146)
-- [x] Diff view (#148)
-- [x] Approval UI — `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (`render_approval*`, ingest/resolve in `app.rs`; tests `approval_requested_then_approve_clears_queue_and_overlay`, `approval_deny_and_detail_paths`; #165 via #169)
-- Classic #9 (policy customization + approval UI contracts) — **Partial**:
-  - [x] PolicyConfig JSON format + `PolicyEngine` overrides (#193)
-  - [x] Runtime reload without restart (#201)
-  - [x] ApprovalDetail IPC `impetus.approval_detail.v1` (#189/#191)
-  - [x] TUI approval rendering (#165/#169)
-  - [x] Docs index of contracts + remaining gaps
-        ([ARCHITECTURE.md](ARCHITECTURE.md) § Policy customization…; #286)
-  - [ ] IPC / CLI / `impetusd` default path to load+reload user PolicyConfig
-  - [ ] Operator UX to edit/customize policy (not a harness UI rewrite)
-- [x] Session picker — `render_session_picker` + `SessionSummary` mapping (`model.rs` / `render.rs`; tests `session_picker_filters_and_activates_selected`, `session_summary_maps_fork_meta_and_optional_overrides`, `filtered_sessions_matches_label_id_and_workspace`; #166 via #169)
-- [x] Command palette — `render_command_picker` + `Overlay::Commands` (`command::suggestions`, Ctrl+P; tests `command_palette_opens_filters_and_runs_selected`, `command_palette_down_selects_and_runs_command`; #175)
-- [x] Scrollback/status polish — footer status strip (`format_status_strip`: connection +
-      run + budget from `UiEvent`/`BudgetState`); PageUp/Dn + resize clamp
-      (`clamp_timeline_scroll` / `note_timeline_metrics`); tests
-      `status_strip_includes_connection_run_and_budget`,
-      `page_keys_scroll_timeline_and_clamp_on_resize`, `scroll_clamp_caps_offset_after_shrink`
-      (#178)
-- [x] Redraw coalescing; error + remediation UX — tick-gated paint via
-      `should_coalesce_redraw` (stream text still
-      `chunks_coalesce_into_one_assistant_item`); timeline noise coalesce
-      (`push_or_coalesce_noise`); error notices show explicit or static remediation hint
-      + toast; tests `consecutive_notice_noise_coalesces_into_one_item`,
-      `error_notice_shows_explicit_or_static_remediation`, `redraw_coalesce_waits_for_tick`
-      (#179)
+Open:
+
+- [ ] Default path for PolicyConfig load/reload — see **Now**
+- [ ] Operator policy-edit UX — see **Next**
+- [ ] Full Zap discovery/authorize — see **Later** (#290)
+- [ ] Clickable live subagent / child-run surfaces in TUI (needs Explore→daemon
+      / child spawn from **Now** / **Next** first)
+
+Done (evidence in ARCHITECTURE / TUI crate tests; do not re-litigate here):
+Ratatui+Crossterm GO (#137), bounded markdown (#146), diff (#148), approval UI
+(#165/#169), session picker (#166/#169), command palette (#175), scrollback/
+status (#178), redraw coalesce + remediation (#179), Zap path honesty docs
+(#290), modern harness hotkeys + mouse hit-testing (#302: `?`/F1 help,
+Ctrl+O sessions, Ctrl+T steer, Ctrl+Shift+P intent cycle, N/Ctrl+N new
+session, Home→timeline top; click timeline/session/composer/approval).
 
 ---
 
-## Historical checklist (superseded)
+## Notes
 
-Older Phase 0–10 checkboxes lived here and over-marked “done”. Prefer P0/P1/P2
-above. For archaeology see git history and `docs/TODO_AUDIT_2026-08-30.md`
-(dated; do not treat as current).
+| Doc | Role |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Capability matrix + invariants |
+| [docs/architecture/roadmap.md](docs/architecture/roadmap.md) | Now / Next / Later narrative |
+| [docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md) | Kernel rules |
+| [docs/guides/](docs/guides/) | Getting started, config, CI, Ubuntu smoke |
+| [docs/reference/](docs/reference/) | Protocols, TUI audit, components |
+| [docs/archive/](docs/archive/) | Historical audits/spikes (not current truth) |
+
+Foundation walls formerly listed under runtime/extension/worktree/schema
+checklists are **done** — see ARCHITECTURE capability matrix (provider adapters,
+tool-arg schema gate, durable artifacts/compaction, PR security suite, doctor
+truth, schemas, extension lifecycle + ownership, memory trust, WorktreeManager,
+WorkflowEngine/subagent **Foundation**, steer/follow-up IPC, hooks prefilter,
+anti-sprawl, LSP/web seams).
+
+Archaeology only: [docs/archive/todo-audit-2026-08-30.md](docs/archive/todo-audit-2026-08-30.md).

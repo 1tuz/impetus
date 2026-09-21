@@ -14,7 +14,7 @@ list of projects copied from.
 | [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) / [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | External coding-agent adapter (ACP). |
 | [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) | Streaming + tool-call shapes (Chat Completions path). |
 | [Anthropic Messages API](https://docs.anthropic.com/en/api/messages) | Streaming + `tool_use` shapes. |
-| [Ratatui](https://crates.io/crates/ratatui) `0.30.2` + [Crossterm](https://crates.io/crates/crossterm) `0.29.0` | Adopted for `impetus-tui` ([RATATUI_SPIKE.md](RATATUI_SPIKE.md)). |
+| [Ratatui](https://crates.io/crates/ratatui) `0.30.2` + [Crossterm](https://crates.io/crates/crossterm) `0.29.0` | Adopted for `impetus-tui` ([ratatui-spike.md](../archive/ratatui-spike.md)). |
 | [russh](https://github.com/Eugeny/russh) | Candidate SSH transport (remote tier). |
 | [portable-pty](https://crates.io/crates/portable-pty) | Candidate controlled PTY capability. |
 

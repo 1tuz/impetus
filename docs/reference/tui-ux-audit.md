@@ -17,7 +17,29 @@ Impetus → own thin TUI client (Ratatui + Crossterm)
 **Codex** — secondary reference for composer, large paste, doctor/diagnostics,
 approval UX, errors/remediation.
 
-**Baseline stack:** Ratatui + Crossterm — **GO** (evaluation: [RATATUI_SPIKE.md](RATATUI_SPIKE.md), #137).
+**Baseline stack:** Ratatui + Crossterm — **GO**. Spike (#137) confirmed keep
+current stack, no alternate TUI kit, no custom PTY/ANSI emulator in harness, and
+TUI stays on `HarnessClient` only (evaluation:
+[ratatui-spike.md](../archive/ratatui-spike.md)).
+
+## Live Impetus keymap (#302)
+
+Authoritative help is in-app (`?` / F1). Summary:
+
+| Binding | Action |
+| --- | --- |
+| `?` / F1 | Help |
+| Ctrl+P | Command palette |
+| Ctrl+Shift+P | Cycle prompt intent (Prompt → Steer → FollowUp) |
+| Ctrl+T | Steer (when a run is active) |
+| F2 / Ctrl+O | Session picker |
+| N / Ctrl+N | New session (in picker) |
+| Ctrl+C | Cancel run / clear composer |
+| Home / End | Timeline top / follow tail (timeline focus) |
+| PageUp / PageDown | Scroll |
+| Mouse | Click timeline item (double-click expand); click session to activate; click composer to focus; click approval Y/N/D |
+
+Disable mouse with `IMPETUS_TUI_NO_MOUSE=1`.
 
 ---
 

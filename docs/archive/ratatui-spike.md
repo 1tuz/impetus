@@ -6,7 +6,7 @@
 > Date: 2026-09-21 · Issue: #137 · Crate: `crates/impetus-tui`
 
 JCode UX audit (#135, merged) is separate. This spike does **not** restate
-ADAPT | REIMPLEMENT | SKIP rows; see [TUI_REFERENCE.md](TUI_REFERENCE.md).
+ADAPT | REIMPLEMENT | SKIP rows; see [tui-ux-audit.md](../reference/tui-ux-audit.md).
 
 ---
 

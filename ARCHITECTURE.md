@@ -35,7 +35,7 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   → ExtensionGateway
 ```
 
-### Orchestration stack (P1)
+### Orchestration stack (Next)
 
 In-memory orchestration today — recipes, role schedule handles, and worktree
 lifecycle. Not a live multi-process swarm.
@@ -129,7 +129,7 @@ impetusd  — authoritative daemon
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/v0.2.md` (#16) |
+| Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
 | PolicyConfig JSON load / reload | Partial | Format + engine/runtime reload (#193/#201); no IPC/CLI/daemon default path yet — see § Policy customization (#9) |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
@@ -375,7 +375,7 @@ to stdout for a Zap-like terminal host.
 | OSC notification hooks (777 / 9 / 0) | Partial | `osc.rs` — terminal hooks only; not typed IPC |
 | Live session status bar via OSC | Partial | `status_bar.rs` — Running / Idle / NeedsApproval hints |
 | Capability negotiation / Hello / `Incompatible` handling | Planned | Not implemented in adapter |
-| Zap discovery / Connect / Authorize production protocol | Planned | Classic #5 remaining; listed under P2 in [TODO.md](TODO.md) |
+| Zap discovery / Connect / Authorize production protocol | Planned | Classic #5 remaining; listed under Later in [TODO.md](TODO.md) |
 | Bidirectional interactive approvals from Zap UI | Planned | Adapter TODO; approvals are render-only today |
 | Consume `impetus.approval_detail.v1` as non-TUI client | Planned | Gap under § Policy customization (#9) |
 | Embed Zap/Warp renderer or PTY emulator in harness | Out of scope | Client concern; AGENTS.md immovable boundary |
@@ -497,20 +497,21 @@ Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of sco
 ## Known postponed debt
 
 - Prefer invert `impetus-core` → `impetus-acp-gateway` (core should not depend on
-  the gateway crate long-term). Large refactor postponed — see TODO.md P2.
+  the gateway crate long-term). Large refactor postponed — see TODO.md Later.
 - `impetus` is primary CLI; `impetus-cli` is legacy/secondary (keep; migrate).
 
 ## Documentation
 
-- Executable roadmap: [TODO.md](TODO.md) (P0/P1/P2)
-- Short phase narrative: [docs/ROADMAP.md](docs/ROADMAP.md)
-- Kernel invariants: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
+- Docs map: [docs/README.md](docs/README.md)
+- Executable backlog: [TODO.md](TODO.md) (Now / Next / Later)
+- Short narrative: [docs/architecture/roadmap.md](docs/architecture/roadmap.md)
+- Kernel invariants: [docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md)
 - Agent rules: [AGENTS.md](AGENTS.md)
 - ACP hardening checklist (#66): [this file § ACP](#acp-production-hardening-checklist-66)
-- TUI notes: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
+- TUI notes: [docs/reference/tui-ux-audit.md](docs/reference/tui-ux-audit.md)
 - Zap path honesty (#5): § Zap path vs standalone CLI/TUI above
 - Ubuntu 24.04 smoke honesty (#293):
-  [docs/ubuntu-smoke-checklist.md](docs/ubuntu-smoke-checklist.md)
-- Design references (principles, not copy claims): [docs/REFERENCES.md](docs/REFERENCES.md)
+  [docs/guides/ubuntu-smoke.md](docs/guides/ubuntu-smoke.md)
+- Design references: [docs/reference/design-references.md](docs/reference/design-references.md)
 
-Historical audits under `docs/` may lag; prefer this file + `TODO.md`.
+Prefer this file + `TODO.md` over anything under `docs/archive/`.
