@@ -173,11 +173,24 @@ fn nest_under_for_key(key: &str) -> Option<&'static str> {
     }
 }
 
+fn schema_uses_nests(spec: &SchemaSpec) -> bool {
+    spec.critical_fields
+        .iter()
+        .any(|f| *f == NEST_PROVIDER || *f == NEST_HARNESS)
+}
+
 /// Reject provider/harness-owned keys when they appear as common top-level fields.
+///
+/// No-op for schemas that do not declare nest containers in `critical_fields`
+/// (e.g. `impetus.extension.v1`); those still reject unknowns via
+/// [`reject_unknown_critical_fields`].
 pub fn reject_leaked_nested_fields(
     spec: &SchemaSpec,
     object: &serde_json::Map<String, Value>,
 ) -> Result<(), SchemaValidationError> {
+    if !schema_uses_nests(spec) {
+        return Ok(());
+    }
     for key in object.keys() {
         if let Some(nest_under) = nest_under_for_key(key) {
             return Err(SchemaValidationError::LeakedNestedField {
@@ -207,10 +220,15 @@ pub fn reject_unknown_critical_fields(
 }
 
 /// When `provider` / `harness` are present, they must be objects (not scalars/arrays).
+///
+/// No-op for schemas that do not declare nest containers.
 pub fn require_nest_objects(
     spec: &SchemaSpec,
     object: &serde_json::Map<String, Value>,
 ) -> Result<(), SchemaValidationError> {
+    if !schema_uses_nests(spec) {
+        return Ok(());
+    }
     for nest in [NEST_PROVIDER, NEST_HARNESS] {
         if let Some(value) = object.get(nest)
             && !value.is_object()
