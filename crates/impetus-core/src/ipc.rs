@@ -17,6 +17,8 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "subscribe",
     "resolve_approval",
     "get_attachment",
+    // ApprovalDetail UI contract: schema id impetus.approval_detail.v1
+    // (see APPROVAL_DETAIL_SCHEMA_* / docs note in ARCHITECTURE.md).
     "get_approval_detail",
     "context",
     "diagnostics",

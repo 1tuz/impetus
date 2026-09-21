@@ -151,6 +151,23 @@ ProviderProtocolAdapter → StreamEvent → ToolCall assembler
 5. Typed approvals for mutating/sensitive ops
 6. `UnknownOutcome`: no auto-retry of mutating/non-replayable work on alternate backends
 
+## ApprovalDetail IPC UI contract
+
+`GetApprovalDetail` / `IpcResponse::ApprovalDetail` returns
+[`ApprovalDetail`](crates/impetus-core/src/approval.rs) for client presentation
+(diff preview, affected paths, scope estimate, attachment refs). This is a
+**versioned UI contract**, not a user policy file format:
+
+- Schema id: `impetus.approval_detail.v1`
+  (`APPROVAL_DETAIL_SCHEMA_ID`)
+- Payload field: `schema_version` (u16, currently `1`; omitted JSON defaults
+  to v1 for backward compatibility)
+- Capability: `get_approval_detail` (Hello negotiation)
+- Secrets never appear in the payload — only labels/paths/opaque attachment
+  UUIDs
+
+PolicyEngine rules and runtime policy reload remain separate follow-ups.
+
 ## Documentation
 
 - Executable roadmap: [TODO.md](TODO.md) (P0/P1/P2)

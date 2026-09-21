@@ -59,6 +59,9 @@ origin=user|agent → Policy → Sandbox → Capability → Execution → Durabl
 
 Credentials transient; profiles hold opaque platform-store references only (Keychain on macOS).
 
+Approval UI payloads: see **ApprovalDetail IPC UI contract** in
+[ARCHITECTURE.md](../ARCHITECTURE.md) (`impetus.approval_detail.v1`).
+
 ## Related docs
 
 | Topic | Document |
