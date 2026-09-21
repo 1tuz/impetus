@@ -255,7 +255,10 @@ Do **not** invent a new hard-coded agent type per workflow.
       `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
       (`ChildRunMetadata` validated; AgentScheduler/spawn still open)
 - [ ] Persist child results before parent resume
-- [ ] Concurrency caps enforced in harness
+- [x] Concurrency caps enforced in harness
+      (`child_concurrency::ChildConcurrencyGate` global counter; default cap 4;
+      admit / reject-at-cap / release on complete|cancel; no live spawn;
+      per-parent caps / fair scheduling still open)
 
 ### 8. Steer vs follow-up
 
