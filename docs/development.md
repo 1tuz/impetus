@@ -66,6 +66,33 @@ Mark **only** `Gate` (job name under workflow `CI`) as required for auto-merge.
 Do not require the internal macOS/Linux/security/site jobs individually — they
 may be skipped when out of scope.
 
+## Full request-flow coverage (#15)
+
+Issue #15 asked for end-to-end Memory harness flows with a deterministic mock
+provider, success + error paths, and CI execution. That acceptance is already
+met by existing `--lib` tests — **no duplicate** under
+`crates/impetus-core/tests/`.
+
+| Criterion | Evidence (PR CI: `--lib --bins`) |
+| --- | --- |
+| Harness setup / teardown | `Harness::with_test_provider` + `tempfile` workspace in `harness_api` tests |
+| Prompt → policy → NeedsApproval → Resolve → resume → observation | `harness_api::approval_resume_returns_durable_tool_observations_to_the_model` (`MemoryEventStore` + `MockProvider::scripted`) |
+| Error path (reject) | `harness_api::rejected_approval_records_denial_and_resumes_without_execution` |
+| Error path (cancel) | `harness_api::cancellation_stops_an_active_agent_run_without_a_final_answer` |
+| Complementary EffectSeam slice | `security_runtime_pr` (#174): approve/reject, sandbox deny, redaction, artifacts |
+
+Run the vertical slice locally:
+
+```zsh
+cargo test -p impetus-core --lib approval_resume_returns_durable_tool_observations_to_the_model
+cargo test -p impetus-core --lib rejected_approval_records_denial_and_resumes_without_execution
+cargo test -p impetus-core --lib security_runtime_pr
+```
+
+Honest boundary: these are colocated lib tests (same binaries PR CI already
+runs). Heavy `crates/*/tests/` suites (Seatbelt spike, audit-log IPC fixtures)
+stay outside the PR gate by design — see below.
+
 ## Manual / heavy tests
 
 Keep running locally when you touch Seatbelt, full IPC integration, or want the

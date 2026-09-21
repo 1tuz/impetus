@@ -70,7 +70,10 @@ Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
 
 - [x] Add focused lib/bin tests (or tiny PR-safe suite) covering:
   - [x] approve → execute; reject — `security_runtime_pr` + harness
-        `approval_resume_*` / `rejected_approval_*` (#174; refs full-flow #15)
+        `approval_resume_*` / `rejected_approval_*` (#174; full-flow #15
+        accepted via same Memory+MockProvider harness lib tests — no
+        duplicate under `crates/impetus-core/tests/`; see
+        `docs/development.md` § Full request-flow coverage)
   - [x] cancel — harness `cancellation_stops_an_active_agent_run_*` (lib)
   - [x] reconnect / attach after daemon restart (where feasible without Seatbelt)
         — runtime `attach_recovers_pending_approval_*` /
