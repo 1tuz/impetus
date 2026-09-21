@@ -210,6 +210,7 @@ enum Effect {
     },
     LoadApprovalDetail(Uuid),
     Diagnostics,
+    ListChildren,
     SetExecutionMode {
         mode: ExecutionMode,
     },
@@ -533,6 +534,25 @@ fn execute_effect(
             spawn_detached(async move {
                 let result = backend
                     .diagnostics()
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(AppMessage::Diagnostics(result)).await;
+            });
+        }
+        Effect::ListChildren => {
+            let Some(session_id) = app.active_session else {
+                app.show_toast("No active session. Create or resume one first.", true);
+                return;
+            };
+            app.overlay = Overlay::Diagnostics {
+                text: "Loading child runs…".to_owned(),
+            };
+            app.dirty = true;
+            let backend = backend.clone();
+            let tx = tx.clone();
+            spawn_detached(async move {
+                let result = backend
+                    .list_child_runs(session_id)
                     .await
                     .map_err(|error| error.to_string());
                 let _ = tx.send(AppMessage::Diagnostics(result)).await;
@@ -1454,6 +1474,7 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
             vec![]
         }
         CommandAction::Diagnostics => vec![Effect::Diagnostics],
+        CommandAction::ListChildren => vec![Effect::ListChildren],
         CommandAction::Cancel => vec![Effect::Cancel],
         CommandAction::ClearViewport => {
             app.clear_stream();
@@ -2448,15 +2469,17 @@ mod tests {
         );
 
         let suggestions = command::suggestions("c");
-        assert!(suggestions.len() >= 2);
-        assert_eq!(suggestions[0].name, "clear");
-        assert_eq!(suggestions[1].name, "cancel");
+        assert!(suggestions.len() >= 3);
+        assert_eq!(suggestions[0].name, "children");
+        assert_eq!(suggestions[1].name, "clear");
+        assert_eq!(suggestions[2].name, "cancel");
 
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         match &app.overlay {
             Overlay::Commands { selected, query } => {
                 assert_eq!(query, "c");
-                assert_eq!(*selected, 1);
+                assert_eq!(*selected, 2);
             }
             _ => panic!("expected commands overlay"),
         }

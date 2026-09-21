@@ -267,7 +267,8 @@ impl<'a> ExploreChildRunner<'a> {
         let metadata = request.to_metadata()?;
         enforce_explore_structural(&metadata)?;
 
-        self.gate.admit(&request.child_id)?;
+        self.gate
+            .admit_child(&request.child_id, &request.parent_session_id)?;
 
         let env = ExploreChildEnv {
             child_id: request.child_id.clone(),
@@ -521,6 +522,7 @@ impl ExploreChildExecutor for MockExploreExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ChildConcurrencyConfig;
 
     fn temp_store() -> (tempfile::TempDir, ChildResultStore) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -712,6 +714,30 @@ mod tests {
             .run(req, CancellationToken::new(), &mock)
             .expect("cancel");
         assert_eq!(out.status, ChildResultStatus::Cancelled);
+    }
+
+    #[test]
+    fn per_parent_cap_blocks_second_explore_for_same_parent() {
+        let (_dir, store) = temp_store();
+        let mut gate =
+            ChildConcurrencyGate::from_config(ChildConcurrencyConfig::fair(4, 1).expect("config"))
+                .unwrap();
+        gate.admit_child("child-explore-1", "parent-session-1")
+            .unwrap();
+        let req = ExploreChildRequest {
+            parent_session_id: "parent-session-1".into(),
+            child_id: "child-explore-2".into(),
+            ..sample_request(PathBuf::from("/tmp/ws"))
+        };
+        let mock = MockExploreExecutor::completing("x");
+        let mut runner = ExploreChildRunner::new(&mut gate, &store);
+        let err = runner
+            .run(req, CancellationToken::new(), &mock)
+            .expect_err("parent cap");
+        assert!(matches!(
+            err,
+            ExploreChildError::Concurrency(ChildConcurrencyError::ParentCapReached { .. })
+        ));
     }
 
     #[test]

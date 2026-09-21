@@ -209,6 +209,33 @@ impl UiBackend for ImpetusBackend {
         }
     }
 
+    async fn list_child_runs(&self, session_id: Uuid) -> Result<String> {
+        match self
+            .client
+            .request(IpcRequest::ListChildRuns { session_id })
+            .await?
+        {
+            IpcResponse::ChildRuns { runs, .. } => {
+                if runs.is_empty() {
+                    return Ok("(no child runs)".into());
+                }
+                let mut lines = Vec::new();
+                for run in runs {
+                    lines.push(format!(
+                        "{}  {}  {}  {}",
+                        run.child_id,
+                        run.role_label,
+                        run.status.as_str(),
+                        run.summary_label
+                    ));
+                }
+                Ok(lines.join("\n"))
+            }
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected child runs response: {response:?}"),
+        }
+    }
+
     async fn get_execution_mode(&self, session_id: Uuid) -> Result<ExecutionMode> {
         self.client.get_execution_mode(session_id).await
     }

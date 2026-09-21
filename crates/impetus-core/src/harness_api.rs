@@ -13,15 +13,15 @@ use crate::{
     IpcRequest, IpcResponse, MockProvider, NoCredentialResolver, NoticeEvent, OpenAiNativeAdapter,
     OpenAiProvider, PolicyConfig, PolicyEngine, Profile, ProviderMessage, ProviderRegistry,
     QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError,
-    RuntimeStatus, SandboxScope, SessionEvent, SteerActiveContext, SteerRewrite, TokenBudget,
-    ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
+    RuntimeStatus, SandboxScope, SessionEvent, SteerActiveContext, SteerPendingQueue, SteerRewrite,
+    TokenBudget, ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
     default_steer_rewrite,
     model_router::{ModelRouter, ModelRouterConfig},
     policy::ActionOrigin,
-    reduce,
+    provider_steer_rewrite, reduce,
     user_intent::UserIntentError,
 };
 use anyhow::Result;
@@ -80,12 +80,20 @@ pub struct Harness {
     /// In-memory Prompt/Steer/FollowUp router (synced from projection on submit).
     intent_router: Arc<Mutex<UserIntentRouter>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
-    /// Steer prompt rewrite seam (default passthrough; live LLM wire deferred).
+    /// Steer prompt rewrite seam (default passthrough; live provider when wired).
     steer_rewrite: Arc<dyn SteerRewrite>,
+    /// Rewritten steer fragments queued for the active agent loop.
+    steer_pending: SteerPendingQueue,
     /// Optional explore-child infrastructure (gate + store + executor bridge).
     explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
     /// Optional session MCP tool providers (lazy connect; not used by Explore).
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    /// Daemon-owned hook prefilter catalog for process spawn paths.
+    hook_prefilter: crate::HookPrefilter,
+    /// Optional governed-instruction catalog (labels/refs only; not PolicyConfig).
+    policy_store: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
+    /// Optional live WorkflowEngine runtime (schedule → child spawn).
+    workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
 }
 
 impl Harness {
@@ -114,8 +122,12 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            hook_prefilter: crate::HookPrefilter::default(),
+            policy_store: Arc::new(Mutex::new(None)),
+            workflow_runtime: None,
         }
     }
 
@@ -131,10 +143,17 @@ impl Harness {
         self
     }
 
-    /// Attach Steer prompt rewriter (tests / future live LLM wire).
+    /// Attach Steer prompt rewriter (tests / explicit override).
     pub fn with_steer_rewrite(mut self, rewriter: Arc<dyn SteerRewrite>) -> Self {
         self.steer_rewrite = rewriter;
         self
+    }
+
+    /// Wire provider-backed steer rewrite from the default registered provider.
+    pub fn with_provider_steer_rewrite(mut self) -> Result<Self, crate::ProviderError> {
+        let provider = self.provider_registry.get(&self.default_provider_id)?;
+        self.steer_rewrite = provider_steer_rewrite(provider);
+        Ok(self)
     }
 
     /// Attach Explore spawn bridge (gate + store + executor). Default is None.
@@ -154,6 +173,49 @@ impl Harness {
     ) -> Self {
         self.tool_providers = Some(runtime);
         self
+    }
+
+    /// Attach daemon-owned hook prefilter catalog for process spawn paths.
+    pub fn with_hook_prefilter(mut self, prefilter: crate::HookPrefilter) -> Self {
+        self.hook_prefilter = prefilter;
+        self
+    }
+
+    /// Attach optional governed-instruction catalog.
+    pub fn with_policy_store(self, store: Arc<crate::PolicyStore>) -> Self {
+        *self
+            .policy_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
+        self
+    }
+
+    /// Attach live WorkflowEngine runtime.
+    pub fn with_workflow_runtime(mut self, runtime: Arc<crate::WorkflowRuntime>) -> Self {
+        self.workflow_runtime = Some(runtime);
+        self
+    }
+
+    pub fn hook_prefilter(&self) -> &crate::HookPrefilter {
+        &self.hook_prefilter
+    }
+
+    pub fn policy_store(&self) -> Option<Arc<crate::PolicyStore>> {
+        self.policy_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn workflow_runtime(&self) -> Option<Arc<crate::WorkflowRuntime>> {
+        self.workflow_runtime.clone()
+    }
+
+    pub fn reload_policy_store(&self, store: crate::PolicyStore) {
+        *self
+            .policy_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(store));
     }
 
     /// Spawn one Explore child via configured bridge.
@@ -219,8 +281,12 @@ impl Harness {
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
+            steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            hook_prefilter: crate::HookPrefilter::default(),
+            policy_store: Arc::new(Mutex::new(None)),
+            workflow_runtime: None,
         }
     }
 
@@ -263,11 +329,12 @@ impl Harness {
             credential_resolver.clone(),
         ));
         registry
-            .register(adapter)
+            .register(adapter.clone())
             .expect("failed to register openai provider");
 
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
+        let steer_rewrite = provider_steer_rewrite(adapter);
 
         Self {
             store,
@@ -283,9 +350,13 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
-            steer_rewrite: default_steer_rewrite(),
+            steer_rewrite,
+            steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            hook_prefilter: crate::HookPrefilter::default(),
+            policy_store: Arc::new(Mutex::new(None)),
+            workflow_runtime: None,
         }
     }
 
@@ -318,11 +389,12 @@ impl Harness {
             Arc::new(policy.clone()),
         ));
         registry
-            .register(adapter)
+            .register(adapter.clone())
             .expect("failed to register acp gateway");
 
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
+        let steer_rewrite = provider_steer_rewrite(adapter);
 
         Self {
             store,
@@ -338,9 +410,13 @@ impl Harness {
             uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
-            steer_rewrite: default_steer_rewrite(),
+            steer_rewrite,
+            steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            hook_prefilter: crate::HookPrefilter::default(),
+            policy_store: Arc::new(Mutex::new(None)),
+            workflow_runtime: None,
         }
     }
 
@@ -368,6 +444,21 @@ impl Harness {
         self.tool_providers.is_some()
     }
 
+    pub fn has_hook_prefilter(&self) -> bool {
+        !self.hook_prefilter.rules().is_empty()
+    }
+
+    pub fn has_policy_store(&self) -> bool {
+        self.policy_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    pub fn has_workflow_runtime(&self) -> bool {
+        self.workflow_runtime.is_some()
+    }
+
     /// Resolve a single client request into a response.
     ///
     /// No global lock: EventStore and AgentRuntime use internal coordination.
@@ -388,7 +479,12 @@ impl Harness {
             self.intent_router.clone(),
             self.coding_tools.clone(),
             self.steer_rewrite.clone(),
+            self.steer_pending.clone(),
             self.tool_providers.clone(),
+            self.hook_prefilter.clone(),
+            self.policy_store.clone(),
+            self.workflow_runtime.clone(),
+            self.explore_spawn.clone(),
             request,
         )
     }
@@ -427,6 +523,20 @@ fn resolve_reload_policy_config(
     }
 }
 
+fn resolve_reload_policy_store(
+    path: Option<&Path>,
+    store_json: Option<&str>,
+) -> Result<crate::PolicyStore, String> {
+    match (path, store_json) {
+        (None, None) => Err("path or store_json is required".into()),
+        (Some(_), Some(_)) => Err("specify path or store_json, not both".into()),
+        (Some(path), None) => {
+            crate::PolicyStore::load_from_path(path).map_err(|error| error.to_string())
+        }
+        (None, Some(json)) => crate::PolicyStore::parse(json).map_err(|error| error.to_string()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_request(
     store: Arc<dyn EventStore>,
@@ -443,9 +553,18 @@ fn handle_request(
     intent_router: Arc<Mutex<UserIntentRouter>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
     steer_rewrite: Arc<dyn SteerRewrite>,
+    steer_pending: SteerPendingQueue,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    hook_prefilter: crate::HookPrefilter,
+    policy_store_slot: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
+    workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
+    explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
     request: IpcRequest,
 ) -> IpcResponse {
+    let policy_store = policy_store_slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     match request {
         IpcRequest::Hello { version, .. } if version != IPC_VERSION => {
             let upgrade_recommendation = if version < IPC_VERSION {
@@ -626,10 +745,10 @@ fn handle_request(
                             active_run_id,
                             active_prompt: runtime_intent(&runtime).ok(),
                         };
-                        // Clear hook for later live provider wire — result not streamed yet.
-                        let _rewritten = steer_rewrite
+                        let rewritten = steer_rewrite
                             .rewrite(&context, &accepted.text)
                             .map_err(|err| RuntimeError::Denied(err.to_string()))?;
+                        steer_pending.push(session_id, rewritten.fragment);
                         runtime.submit_intent_with_artifact_and_kind(
                             accepted.text,
                             artifact,
@@ -656,6 +775,7 @@ fn handle_request(
                         &session_workspace,
                         &runtime,
                         Some(&artifact_root),
+                        policy_store.as_deref(),
                     )
                     .unwrap_or_else(|_| {
                         vec![ProviderMessage::user(
@@ -677,6 +797,9 @@ fn handle_request(
                         session_coordinator.clone(),
                         artifact_root,
                         tool_providers.clone(),
+                        steer_pending.clone(),
+                        hook_prefilter.clone(),
+                        policy_store.clone(),
                     )?;
                     runtime.status()
                 }) {
@@ -687,7 +810,7 @@ fn handle_request(
         IpcRequest::Context { session_id } => {
             match AgentRuntime::attach(store, policy_snapshot(&policy), session_id) {
                 Ok(runtime) => match runtime.workspace_root().and_then(|workspace_root| {
-                    resolve_context(&workspace_root)
+                    resolve_context(&workspace_root, policy_store.as_deref())
                         .map_err(|error| RuntimeError::Denied(error.to_string()))
                 }) {
                     Ok(context) => IpcResponse::Context {
@@ -707,6 +830,9 @@ fn handle_request(
             let _session_guard = session_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(rt) = &workflow_runtime {
+                rt.cancel_session(session_id);
+            }
             if let Ok(active) = cancellations.lock()
                 && let Some(handle) = active.get(&session_id)
             {
@@ -733,6 +859,9 @@ fn handle_request(
                             session_coordinator.clone(),
                             uploads.artifact_root().to_path_buf(),
                             tool_providers.clone(),
+                            steer_pending.clone(),
+                            hook_prefilter.clone(),
+                            policy_store.clone(),
                             session_id,
                             run_id,
                             false,
@@ -834,6 +963,7 @@ fn handle_request(
                                     resolution,
                                     deferred,
                                     uploads.artifact_root(),
+                                    &hook_prefilter,
                                 )
                             }
                             name => Err(crate::OrchestratorError::ToolNotFound(name.into())),
@@ -849,6 +979,7 @@ fn handle_request(
                         &workspace_root,
                         &runtime,
                         Some(uploads.artifact_root()),
+                        policy_store.as_deref(),
                     )
                     .map_err(|error| RuntimeError::Denied(error.to_string()))?;
                     launch_agent_run(
@@ -866,6 +997,9 @@ fn handle_request(
                         session_coordinator.clone(),
                         uploads.artifact_root().to_path_buf(),
                         tool_providers.clone(),
+                        steer_pending.clone(),
+                        hook_prefilter.clone(),
+                        policy_store.clone(),
                     )?;
                 }
                 Ok(session_id)
@@ -1080,6 +1214,153 @@ fn handle_request(
                 }
             }
         }
+        IpcRequest::GetPolicyStore => {
+            let store = policy_store
+                .as_deref()
+                .cloned()
+                .unwrap_or(crate::PolicyStore {
+                    version: crate::POLICY_STORE_VERSION,
+                    instructions: Vec::new(),
+                });
+            IpcResponse::PolicyStore { store }
+        }
+        IpcRequest::ReloadPolicyStore { path, store_json } => {
+            match resolve_reload_policy_store(path.as_deref(), store_json.as_deref()) {
+                Ok(store) => {
+                    *policy_store_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(Arc::new(store.clone()));
+                    IpcResponse::PolicyStore { store }
+                }
+                Err(message) => IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    message,
+                },
+            }
+        }
+        IpcRequest::ListChildRuns { session_id } => {
+            let parent = session_id.to_string();
+            let runs = if let Some(rt) = &workflow_runtime {
+                rt.child_results().list_by_parent(&parent)
+            } else if let Some(bridge) = &explore_spawn {
+                bridge.child_results().list_by_parent(&parent)
+            } else {
+                Ok(Vec::new())
+            };
+            match runs {
+                Ok(runs) => IpcResponse::ChildRuns { session_id, runs },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::GetChildRun { child_id } => {
+            let loaded = if let Some(rt) = &workflow_runtime {
+                rt.child_results().load_result(&child_id)
+            } else if let Some(bridge) = &explore_spawn {
+                bridge.child_results().load_result(&child_id)
+            } else {
+                Ok(None)
+            };
+            match loaded {
+                Ok(Some(run)) => IpcResponse::ChildRun { run },
+                Ok(None) => IpcResponse::Error {
+                    code: IpcErrorCode::MissingSession,
+                    message: format!("unknown child run: {child_id}"),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::Hover {
+            path,
+            line,
+            character,
+        } => {
+            let query = crate::PositionQuery::new(path, line, character);
+            let coding_tools = coding_tools.clone();
+            match crate::block_on_coding_tools(async move { coding_tools.hover(&query).await }) {
+                Ok(info) => IpcResponse::Hover { info },
+                Err(error) if error.is_unavailable() => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: error.to_string(),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::StartWorkflow { session_id, recipe } => {
+            let Some(rt) = workflow_runtime.as_ref() else {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: "workflow runtime not configured".into(),
+                };
+            };
+            let recipe = match recipe.as_str() {
+                "bug" => crate::WorkflowEngine::bug_skeleton_recipe(),
+                "feature" => crate::WorkflowEngine::feature_skeleton_recipe(),
+                "refactor" => crate::WorkflowEngine::refactor_skeleton_recipe(),
+                other => {
+                    return IpcResponse::Error {
+                        code: IpcErrorCode::InvalidRequest,
+                        message: format!("unknown recipe: {other}"),
+                    };
+                }
+            };
+            match rt.start(session_id, recipe, workspace_root.clone()) {
+                Ok(()) => IpcResponse::WorkflowStatus {
+                    session_id,
+                    status: format!(
+                        "{:?}",
+                        rt.status(session_id).unwrap_or(crate::WorkflowStatus::Idle)
+                    ),
+                    last_summary: None,
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::CancelWorkflow { session_id } => {
+            if let Some(rt) = &workflow_runtime {
+                rt.cancel_session(session_id);
+            }
+            IpcResponse::WorkflowStatus {
+                session_id,
+                status: "Cancelled".into(),
+                last_summary: None,
+            }
+        }
+        IpcRequest::AdvanceWorkflow { session_id } => {
+            let Some(rt) = workflow_runtime.as_ref() else {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: "workflow runtime not configured".into(),
+                };
+            };
+            match rt.run_next_ready_step(session_id) {
+                Ok(summary) => IpcResponse::WorkflowStatus {
+                    session_id,
+                    status: format!(
+                        "{:?}",
+                        rt.status(session_id)
+                            .unwrap_or(crate::WorkflowStatus::Running)
+                    ),
+                    last_summary: Some(summary),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
     }
 }
 
@@ -1093,6 +1374,8 @@ async fn run_agent_loop(
     messages: Vec<ProviderMessage>,
     cancellation: CancellationToken,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    steer_pending: SteerPendingQueue,
+    hook_prefilter: crate::HookPrefilter,
 ) -> bool {
     let provider = match provider_registry.get(&provider_id) {
         Ok(p) => p,
@@ -1106,7 +1389,7 @@ async fn run_agent_loop(
         Err(_) => return false,
     };
 
-    let agent_loop = match build_agent_loop(runtime.clone(), tool_providers).await {
+    let agent_loop = match build_agent_loop(runtime.clone(), tool_providers, hook_prefilter).await {
         Ok(agent) => agent,
         Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Failed {
@@ -1119,7 +1402,13 @@ async fn run_agent_loop(
     };
 
     let result = agent_loop
-        .execute(run_id, provider, messages, cancellation.clone())
+        .execute(
+            run_id,
+            provider,
+            messages,
+            cancellation.clone(),
+            Some(&steer_pending),
+        )
         .await;
 
     match result {
@@ -1147,18 +1436,8 @@ async fn run_agent_loop(
 async fn build_agent_loop(
     runtime: Arc<AgentRuntime>,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    hook_prefilter: crate::HookPrefilter,
 ) -> anyhow::Result<AgentLoop> {
-    let Some(providers) = tool_providers else {
-        return Ok(AgentLoop::new(runtime));
-    };
-
-    let bridge = {
-        let mut guard = providers.lock().await;
-        // Connect all registered module-backed servers once before the loop.
-        guard.ensure_all_registered().await?;
-        guard.bridge(None)
-    };
-
     let policy = runtime.policy();
     let workspace_root = runtime
         .workspace_root()
@@ -1172,9 +1451,17 @@ async fn build_agent_loop(
         );
     }
     let mut orchestrator = crate::ToolOrchestrator::new(policy, workspace_root)
-        .with_web_research(Arc::new(web_research));
-    if let Some(bridge) = bridge {
-        orchestrator = orchestrator.with_mcp_live(bridge);
+        .with_web_research(Arc::new(web_research))
+        .with_hook_prefilter(hook_prefilter);
+    if let Some(providers) = tool_providers {
+        let bridge = {
+            let mut guard = providers.lock().await;
+            guard.ensure_all_registered().await?;
+            guard.bridge(None)
+        };
+        if let Some(bridge) = bridge {
+            orchestrator = orchestrator.with_mcp_live(bridge);
+        }
     }
     Ok(AgentLoop::with_tool_orchestrator(runtime, orchestrator))
 }
@@ -1197,6 +1484,9 @@ fn launch_agent_run(
     session_coordinator: SessionCoordinator,
     artifact_root: PathBuf,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    steer_pending: SteerPendingQueue,
+    hook_prefilter: crate::HookPrefilter,
+    policy_store: Option<Arc<crate::PolicyStore>>,
 ) -> Result<(), RuntimeError> {
     let runtime_session_id = runtime.session_id();
     let requirements = crate::model_router::CapabilityRequirements {
@@ -1245,6 +1535,10 @@ fn launch_agent_run(
     let task_model_router = model_router.clone();
     let task_artifact_root = artifact_root;
     let task_tool_providers = tool_providers;
+    let task_steer_pending = steer_pending;
+    let task_hook_prefilter = hook_prefilter.clone();
+    let task_hook_prefilter_drain = hook_prefilter;
+    let task_policy_store = policy_store;
 
     tokio::spawn(async move {
         let completed = run_agent_loop(
@@ -1256,6 +1550,8 @@ fn launch_agent_run(
             provider_messages,
             cancellation,
             task_tool_providers.clone(),
+            task_steer_pending.clone(),
+            task_hook_prefilter,
         )
         .await;
         if let Ok(mut active) = task_cancellations.lock()
@@ -1278,6 +1574,9 @@ fn launch_agent_run(
                 task_session_coordinator,
                 task_artifact_root,
                 task_tool_providers,
+                task_steer_pending,
+                task_hook_prefilter_drain,
+                task_policy_store,
                 runtime_session_id,
                 run_id,
                 true,
@@ -1302,6 +1601,9 @@ fn start_drained_follow_up_if_any(
     session_coordinator: SessionCoordinator,
     artifact_root: PathBuf,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    steer_pending: SteerPendingQueue,
+    hook_prefilter: crate::HookPrefilter,
+    policy_store: Option<Arc<crate::PolicyStore>>,
     session_id: uuid::Uuid,
     finished_run_id: uuid::Uuid,
     acquire_session_lock: bool,
@@ -1339,13 +1641,17 @@ fn start_drained_follow_up_if_any(
     let Ok(session_workspace) = runtime.workspace_root() else {
         return;
     };
-    let provider_messages =
-        resolve_provider_messages(&session_workspace, &runtime, Some(&artifact_root))
-            .unwrap_or_else(|_| {
-                vec![ProviderMessage::user(
-                    runtime_intent(&runtime).unwrap_or_default(),
-                )]
-            });
+    let provider_messages = resolve_provider_messages(
+        &session_workspace,
+        &runtime,
+        Some(&artifact_root),
+        policy_store.as_deref(),
+    )
+    .unwrap_or_else(|_| {
+        vec![ProviderMessage::user(
+            runtime_intent(&runtime).unwrap_or_default(),
+        )]
+    });
     let _ = launch_agent_run(
         runtime,
         run_id,
@@ -1361,21 +1667,28 @@ fn start_drained_follow_up_if_any(
         session_coordinator,
         artifact_root,
         tool_providers,
+        steer_pending,
+        hook_prefilter,
+        policy_store,
     );
 }
 
 fn resolve_context(
     workspace_root: &std::path::Path,
+    policy_store: Option<&crate::PolicyStore>,
 ) -> anyhow::Result<crate::ResolvedInstructions> {
-    InstructionResolver::new(workspace_root)
-        .resolve(&ResolveRequest::default())
-        .map_err(Into::into)
+    let resolved = InstructionResolver::new(workspace_root).resolve(&ResolveRequest::default())?;
+    if let Some(store) = policy_store {
+        let _governed = store.governed_ids_in(&resolved);
+    }
+    Ok(resolved)
 }
 
 fn resolve_provider_messages(
     workspace_root: &std::path::Path,
     runtime: &AgentRuntime,
     artifact_root: Option<&std::path::Path>,
+    policy_store: Option<&crate::PolicyStore>,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
     resolve_provider_messages_with_binding(
         workspace_root,
@@ -1383,6 +1696,7 @@ fn resolve_provider_messages(
         &Profile::Standard.default_bindings().context,
         DEFAULT_CONTEXT_BUDGET_TOKENS,
         artifact_root,
+        policy_store,
     )
 }
 
@@ -1392,8 +1706,9 @@ fn resolve_provider_messages_with_binding(
     context_binding: &crate::ServiceBinding,
     budget_tokens: usize,
     artifact_root: Option<&std::path::Path>,
+    policy_store: Option<&crate::PolicyStore>,
 ) -> anyhow::Result<Vec<ProviderMessage>> {
-    let instructions = resolve_context(workspace_root)?;
+    let instructions = resolve_context(workspace_root, policy_store)?;
     let tools = default_tool_stubs();
     let mut messages =
         system_messages_for_binding(context_binding, &instructions, &tools, budget_tokens);
@@ -2185,8 +2500,9 @@ mod tests {
             variant: "lazy".into(),
         };
         // Budget fits HOT (~9) + cold tool refs; not the large WARM convention.
-        let messages = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None)
-            .expect("resolve");
+        let messages =
+            resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None)
+                .expect("resolve");
 
         let system: Vec<_> = messages
             .iter()
@@ -2218,7 +2534,7 @@ mod tests {
             target: None,
         };
         let before = policy.evaluate(&denied);
-        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None);
+        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None);
         assert_eq!(policy.evaluate(&denied), before);
     }
 
@@ -3576,9 +3892,13 @@ mod tests {
         assert!(harness.tool_providers.is_some());
 
         // build_agent_loop connects/merges and returns a loop (MCP outside AgentLoop).
-        let _agent = build_agent_loop(runtime.clone(), Some(providers.clone()))
-            .await
-            .expect("build loop with MCP");
+        let _agent = build_agent_loop(
+            runtime.clone(),
+            Some(providers.clone()),
+            crate::HookPrefilter::default(),
+        )
+        .await
+        .expect("build loop with MCP");
 
         // Prove the same runtime bridge still serves tools to the orchestrator.
         let bridge = providers.lock().await.bridge(None).expect("bridge");

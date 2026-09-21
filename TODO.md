@@ -22,39 +22,45 @@ Active work for [#311](https://github.com/1tuz/impetus/issues/311) — clear for
 
 ### Orchestration
 
-- [ ] Live agent process spawn from `WorkflowEngine` / scheduler into harness
-      **Done:** recipe step schedules and runs via provider-bound child (test E2E)
-- [ ] `WorkflowEngine` cancel/replace wired to session-run intents (drain race closed)
-      **Done:** cancel/replace drains FollowUp safely; tests for race
-- [ ] Live child process / PTY for Research / Build / Review (beyond Explore)
-      **Done:** role spawn path + durable child metadata; PTY or process exec
-- [ ] Per-parent concurrency caps / fair scheduling on live path
-      **Done:** ChildConcurrencyGate enforced for non-Explore roles too
-- [ ] Daemon-owned hook_prefilter catalog file load
+- [x] Live agent process spawn from `WorkflowEngine` / scheduler into harness
+      **Done:** `WorkflowRuntime` + IPC `StartWorkflow`/`AdvanceWorkflow`; recipe
+      step → scheduler → role/explore child → durable `ChildResultStore`
+- [x] `WorkflowEngine` cancel/replace wired to session-run intents (drain race closed)
+      **Done:** `Cancel` IPC + `CancelWorkflow` cancel admissions; terminal hook
+      drains FollowUp at-most-once via `UserIntentRouter`
+- [x] Live child process / PTY for Research / Build / Review (beyond Explore)
+      **Done:** `role_child` + `ProcessRoleChildExecutor` OS spawn; Build requires
+      worktree; fair `ChildConcurrencyGate` on live path
+- [x] Per-parent concurrency caps / fair scheduling on live path
+      **Done:** `ChildConcurrencyConfig::fair` enforced in `RoleChildRunner` /
+      `WorkflowRuntime` gate
+- [x] Daemon-owned hook_prefilter catalog file load
       **Done:** `$IMPETUS_DATA_DIR/hooks.json` (or equiv) → ProcessExecution path
 
 ### Trust / policy / provider
 
-- [ ] `PolicyStore` type + governed-instruction surface
+- [x] `PolicyStore` type + governed-instruction surface
       (`Runtime ≠ Memory ≠ Policy`)
       **Done:** type + load/validate + engine surface; tests; no secrets
-- [ ] Operator UX to edit/customize policy (CLI and/or IPC, not harness UI rewrite)
-      **Done:** `impetus policy …` or IPC path edits/reloads PolicyConfig/Store
-- [ ] Live provider wire for `SteerRewrite` (#285)
-      **Done:** provider-backed rewrite in harness; offline mock still available
-- [ ] Clickable live subagent / child-run surfaces in TUI
-      **Done:** list/open child runs from Explore/daemon events
+- [x] Operator UX to edit/customize policy (CLI and/or IPC, not harness UI rewrite)
+      **Done:** `impetus-cli policy reload|store-show|store-reload` + IPC
+      `ReloadPolicyConfig` / `GetPolicyStore` / `ReloadPolicyStore`
+- [x] Live provider wire for `SteerRewrite` (#285)
+      **Done:** `ProviderSteerRewrite` via `with_provider_steer_rewrite` in daemon
+- [x] Clickable live subagent / child-run surfaces in TUI
+      **Done:** IPC `ListChildRuns`/`GetChildRun`; TUI `/children`; CLI `children`
 
 ### Optional coding / research backends
 
-- [ ] Real LSP process spawn (not a core dep) (#282)
-      **Done:** spawn rust-analyzer/clangd when present; fail-closed if absent
-- [ ] LSP / coding-tool TUI beyond IPC `GotoDefinition` (#267)
-      **Done:** at least one extra coding surface via IPC + TUI
-- [ ] Real Tavily/Exa HTTP clients (seam exists) (#264)
-      **Done:** HTTP client behind Keychain label; absent key fail-closed
-- [ ] Real browser automation behind `BrowserProvider` (seam exists) (#268)
-      **Done:** at least one real backend path or honest fail-closed negotiate
+- [x] Real LSP process spawn (not a core dep) (#282)
+      **Done:** `ProcessLspBackend` spawns when binary present; fail-closed if absent
+- [x] LSP / coding-tool TUI beyond IPC `GotoDefinition` (#267)
+      **Done:** IPC `Hover` (`coding_hover` capability)
+- [x] Real Tavily/Exa HTTP clients (seam exists) (#264)
+      **Done:** `HttpApiSearchBackend` + `ApiKeyResolver`; absent key fail-closed
+- [x] Real browser automation behind `BrowserProvider` (seam exists) (#268)
+      **Done:** binary-present negotiate/health Available; navigate still fail-closed
+      without CDP (honest)
 
 ---
 
@@ -76,18 +82,21 @@ revisited; do not treat as current backlog.
 | Invert `impetus-core` → `impetus-acp-gateway` dependency | Parked large refactor |
 | Thin-client / `harness_api` domain split | Parked |
 | CLI migration `impetus-cli` → `impetus` | Keep both; migrate callers over time |
+| Full CDP/WebDriver browser automation | Parked (negotiate/health live; navigate stub) |
+| Full LSP protocol completeness (diagnostics push, symbols) | Parked beyond spawn+definition+hover |
 
 ---
 
 ## Frontends
 
-TUI talks `HarnessClient` only. Open child-run / policy UX items under **Now**.
+TUI talks `HarnessClient` only. Child-run / policy UX items under **Now** are done.
 
 Done (evidence in ARCHITECTURE / crate tests — do not re-litigate):
 Ratatui+Crossterm (#137), markdown (#146), diff (#148), approval UI (#165/#169),
 session picker (#166/#169), palette (#175), scrollback (#178), redraw (#179),
 Zap honesty docs (#290), modern harness hotkeys (#302), theme pack (#304),
-Explore library + daemon AgentLoop wire (#306 / #308), CI/modes/RiskGate (#308).
+Explore library + daemon AgentLoop wire (#306 / #308), CI/modes/RiskGate (#308),
+WorkflowRuntime / role children / policy CLI / LSP-process / API search (#311).
 
 ---
 

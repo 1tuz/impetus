@@ -264,6 +264,11 @@ impl InstructionResolver {
         })
     }
 
+    /// Intersect `resolved` workspace instructions with governed instruction ids.
+    pub fn matching_governed_ids(resolved: &ResolvedInstructions, ids: &[&str]) -> Vec<String> {
+        governed_instruction_ids(resolved, ids)
+    }
+
     pub fn cache_len(&self) -> usize {
         self.cache.len()
     }
@@ -587,6 +592,25 @@ fn matches_scope(scope: &InstructionScope, request: &ResolveRequest) -> bool {
 
 fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
+}
+
+/// Intersect resolved workspace instructions with governed instruction ids.
+pub fn governed_instruction_ids(
+    resolved: &ResolvedInstructions,
+    governed_instruction_ids: &[&str],
+) -> Vec<String> {
+    let governed: BTreeSet<&str> = governed_instruction_ids.iter().copied().collect();
+    resolved
+        .references
+        .iter()
+        .filter_map(|reference| {
+            if governed.contains(reference.id.as_str()) {
+                Some(reference.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

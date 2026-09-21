@@ -106,8 +106,10 @@ intents; cross-machine orchestration.
   the error — pattern subsumption YAGNI. **Implemented** on live
   `ProcessExecutionRequest::execute` (always calls `spawn_stub` before OS spawn;
   empty default catalog or `with_hook_prefilter` inject). Performance hook only —
-  not RiskGate. Daemon-owned catalog file load still open (Next). Full
-  hook/plugin ABI still Planned.
+  not RiskGate. **Production daemon:** `impetusd` autoloads
+  `$IMPETUS_DATA_DIR/hooks.json` and/or `hooks/*.json` into Harness →
+  ToolOrchestrator → `ProcessExecutionRequest` (fail closed on bad config).
+  Full hook/plugin ABI still Planned.
 - **Built-in id hygiene** — small shipped inventory + duplicate detect
   ([`builtin_ids`](crates/impetus-core/src/builtin_ids.rs), #260); doctor
   `builtin_ids` probe; unused cross-ref stub Planned. No marketplace / vendor
@@ -160,22 +162,22 @@ impetusd  — authoritative daemon
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
 | Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into `ToolProviderRuntime` at start (`impetusd_autoload: true`; fail closed on bad config; no marketplace/UI). Live connect/health on first tool use. |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
-| Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `wire_daemon_runtime` sets `explore_spawn` with default provider (#308). TUI child surfaces still open. |
-| `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn; default empty catalog or `with_hook_prefilter`). Not RiskGate. Daemon catalog file load → Next. |
-| `SteerRewrite` (live provider) | Partial | Passthrough + mock seam; harness hook on accept (#285); no live model rewrite (#308 Next) |
+| Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `wire_daemon_runtime` sets `explore_spawn` with default provider (#308). TUI `/children` + IPC `ListChildRuns` (#311). |
+| `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn). **Production daemon:** autoload from `$IMPETUS_DATA_DIR/hooks.json` / `hooks/*.json` via `wire_daemon_runtime` → Harness → ToolOrchestrator. Not RiskGate. |
+| `SteerRewrite` (live provider) | Implemented | `ProviderSteerRewrite` one-shot via default `ModelProvider`; daemon `with_provider_steer_rewrite`; passthrough fallback offline (#285 / #311). |
 | Auto `RiskGate` (post-policy, mode-aware) | Implemented | `DeterministicRiskGate` in `EffectSeam`; all `AgentRuntime::request_action` via seam; process argv; tool_orchestrator; remote/PTY helpers use `with_sandbox` (Ask + RiskGate). Separate from `hook_prefilter`. |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
-| Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
+| Optional API search (Tavily/Exa) | Implemented | `HttpApiSearchBackend` + `ApiKeyResolver` (Keychain labels); absent key fail-closed; seam module retained (#264 / #311). |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
-| Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
-| Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267) + optional `LspBackendModule` runtime path hint (#282); mock/absent fail-closed; no real LSP process / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); `user_intent` / fanout (#247/#263/#271/#275); `builtin_ids` (#260). **Runtime open:** live agent spawn for non-Explore roles; WorkflowEngine cancel/replace on session-run. Explore + Steer + hooks + modes: see dedicated matrix rows |
+| Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome modules; **binary-present** health → Available; navigate/fetch still fail-closed without CDP (#268 / #311). |
+| Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam + IPC `coding_definition` + **`coding_hover`**; `ProcessLspBackend` spawns when binary present (fail-closed if absent) (#267 / #282 / #311). Full LSP completeness Parked. |
+| Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn (schedule → role/explore child → store); Research/Build/Review via `role_child` + process exec; fair per-parent caps; Cancel/CancelWorkflow + FollowUp drain race closed (#311). WorktreeManager lifecycle unchanged. |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
 | MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
-| PolicyStore (governed instructions) | Planned | Named in trust-model docs only — **no** `PolicyStore` type/module yet |
+| PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
-| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); execution modes via daemon IPC (Shift+Tab / F4 / slash; #308); more Phase 7 open |
+| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp; execution modes; `/children` child-run list (#311). |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | Path-aware PR: macOS clippy/`--lib --bins`; Linux fmt + `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
 
@@ -231,10 +233,9 @@ empty list rejected; each target routes independently with a per-session ok/err
 map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
 (`SteerRewrite` / passthrough + mock; harness hook on accept) is Partial (#285).
 
-**Still Planned / open on this path:** live provider wire for Steer rewrite;
-WorkflowEngine cancel/replace on intent; fanout over IPC / cross-machine;
-daemon-owned hook_prefilter catalog file load (execute path already live).
-(Daemon-owned execution modes + RiskGate admission are Implemented — see matrix.)
+**Still Planned / open on this path:** fanout over IPC / cross-machine.
+(Daemon-owned execution modes + RiskGate + live SteerRewrite + WorkflowRuntime
+cancel/replace are Implemented — see matrix.)
 
 ## Storage
 
@@ -337,8 +338,8 @@ Honest list (no new runtime in this docs slice):
 - Optional: register PolicyConfig in the shared `impetus.*.v1` schema registry
 - Non-TUI clients (Zap adapter and others) consuming ApprovalDetail beyond the
   TUI overlay
-- `PolicyStore` (memory trust model) is a **different** surface — **Planned**
-  (name only today; no type/module); not the same as PolicyConfig action overrides
+- `PolicyStore` (governed instruction refs) is a **different** surface from
+  PolicyConfig action overrides — see capability matrix row; operator UX still open
 
 Docs index for the shipped contracts: this section (#286).
 

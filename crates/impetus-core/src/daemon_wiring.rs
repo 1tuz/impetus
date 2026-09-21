@@ -10,8 +10,10 @@ use crate::child_result_store::ChildResultStore;
 use crate::explore_agent_loop::AgentLoopExploreExecutor;
 use crate::explore_child::{ExploreSpawnBridge, HarnessExploreSpawn};
 use crate::extension_compat::McpModule;
+use crate::hook_prefilter::HookPrefilter;
 use crate::mcp_manifest::McpManifest;
 use crate::policy::PolicyEngine;
+use crate::policy_store::{PolicyStore, default_policy_store_path};
 use crate::provider_trait::ModelProvider;
 use crate::storage::{EventStore, MemoryEventStore};
 use crate::tool_provider_runtime::{McpServerSpec, ToolProviderRuntime};
@@ -29,6 +31,10 @@ pub enum DaemonWiringError {
     ChildResultStore(#[from] crate::child_result_store::ChildResultError),
     #[error("MCP autoload: {0}")]
     McpAutoload(String),
+    #[error("hook catalog load: {0}")]
+    HookCatalog(String),
+    #[error("policy store load: {0}")]
+    PolicyStore(String),
 }
 
 /// Build Explore spawn bridge for production daemon (restricted AgentLoop + durable child store).
@@ -100,6 +106,22 @@ pub fn load_daemon_mcp_runtime(data_root: &Path) -> Result<ToolProviderRuntime, 
         });
     }
     Ok(runtime)
+}
+
+/// Load hook prefilter catalog from `{data_root}/hooks.json` and/or `hooks/*.json`.
+///
+/// Missing paths → empty catalog. Any present file must parse; bad config fails closed.
+pub fn load_daemon_hook_prefilter(data_root: &Path) -> Result<HookPrefilter, DaemonWiringError> {
+    HookPrefilter::load_daemon_catalog(data_root)
+        .map_err(|error| DaemonWiringError::HookCatalog(error.to_string()))
+}
+
+/// Load optional governed-instruction catalog from `{data_root}/policy_store.json`.
+pub fn load_daemon_policy_store(
+    data_root: &Path,
+) -> Result<Option<PolicyStore>, DaemonWiringError> {
+    PolicyStore::load_optional(default_policy_store_path(data_root))
+        .map_err(|error| DaemonWiringError::PolicyStore(error.to_string()))
 }
 
 #[cfg(test)]
@@ -190,6 +212,29 @@ mod tests {
         .expect("write");
         let runtime = load_daemon_mcp_runtime(data.path()).expect("load");
         assert_eq!(runtime.registered_ids(), vec!["echo".to_string()]);
+    }
+
+    #[test]
+    fn hook_autoload_missing_paths_is_empty() {
+        let data = tempfile::tempdir().expect("data");
+        let catalog = load_daemon_hook_prefilter(data.path()).expect("empty");
+        assert!(catalog.rules().is_empty());
+    }
+
+    #[test]
+    fn hook_autoload_rejects_invalid_json() {
+        let data = tempfile::tempdir().expect("data");
+        std::fs::write(data.path().join("hooks.json"), b"{").expect("write");
+        assert!(matches!(
+            load_daemon_hook_prefilter(data.path()),
+            Err(DaemonWiringError::HookCatalog(_))
+        ));
+    }
+
+    #[test]
+    fn policy_store_autoload_missing_is_none() {
+        let data = tempfile::tempdir().expect("data");
+        assert_eq!(load_daemon_policy_store(data.path()).expect("none"), None);
     }
 
     #[test]

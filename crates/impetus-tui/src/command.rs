@@ -120,6 +120,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: "Ctrl+Shift+P",
     },
     CommandSpec {
+        name: "children",
+        aliases: &["child", "subagents"],
+        description: "list durable child-run results for the active session",
+        shortcut: "",
+    },
+    CommandSpec {
         name: "quit",
         aliases: &["exit", "q"],
         description: "close the client; daemon sessions keep running",
@@ -145,6 +151,7 @@ pub enum CommandAction {
     ThemePicker,
     SetTheme(String),
     CycleTheme,
+    ListChildren,
     Quit,
     Unknown(String),
 }
@@ -213,6 +220,7 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
         "follow-up" => {
             CommandAction::SetPromptIntent(impetus_client::protocol::UserPromptIntent::FollowUp)
         }
+        "children" => CommandAction::ListChildren,
         "quit" => CommandAction::Quit,
         _ => CommandAction::Unknown(format!("unknown command `/{name}`")),
     };

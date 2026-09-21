@@ -46,6 +46,7 @@ pub trait UiBackend: Send + Sync {
         approval_id: Uuid,
     ) -> Result<ApprovalDetailView>;
     async fn diagnostics(&self) -> Result<String>;
+    async fn list_child_runs(&self, session_id: Uuid) -> Result<String>;
     async fn get_execution_mode(
         &self,
         session_id: Uuid,

@@ -56,6 +56,23 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ComponentsAction>,
     },
+    /// PolicyConfig / PolicyStore operator surface
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+    /// List durable child-run results for a session
+    Children { session_id: Uuid },
+}
+
+#[derive(Subcommand)]
+enum PolicyAction {
+    /// Show current PolicyStore (governed instructions)
+    StoreShow,
+    /// Reload PolicyStore from path
+    StoreReload { path: std::path::PathBuf },
+    /// Reload PolicyConfig from path
+    Reload { path: std::path::PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -278,6 +295,85 @@ async fn main() -> Result<()> {
                     println!("\nCurrent state:");
                     println!("  All builtin services: Ready");
                 }
+            }
+        }
+        Commands::Policy { action } => match action {
+            PolicyAction::StoreShow => {
+                let response = client
+                    .request(impetus_core::IpcRequest::GetPolicyStore)
+                    .await?;
+                match response {
+                    impetus_core::IpcResponse::PolicyStore { store } => {
+                        println!("{}", serde_json::to_string_pretty(&store)?);
+                    }
+                    impetus_core::IpcResponse::Error { message, .. } => {
+                        bail!("Error: {message}");
+                    }
+                    other => bail!("Unexpected response: {other:?}"),
+                }
+            }
+            PolicyAction::StoreReload { path } => {
+                let response = client
+                    .request(impetus_core::IpcRequest::ReloadPolicyStore {
+                        path: Some(path),
+                        store_json: None,
+                    })
+                    .await?;
+                match response {
+                    impetus_core::IpcResponse::PolicyStore { store } => {
+                        println!(
+                            "Reloaded PolicyStore ({} entries)",
+                            store.instructions.len()
+                        );
+                    }
+                    impetus_core::IpcResponse::Error { message, .. } => {
+                        bail!("Error: {message}");
+                    }
+                    other => bail!("Unexpected response: {other:?}"),
+                }
+            }
+            PolicyAction::Reload { path } => {
+                let response = client
+                    .request(impetus_core::IpcRequest::ReloadPolicyConfig {
+                        path: Some(path),
+                        config_json: None,
+                    })
+                    .await?;
+                match response {
+                    impetus_core::IpcResponse::PolicyConfig { config } => {
+                        println!("Reloaded PolicyConfig version {}", config.version);
+                    }
+                    impetus_core::IpcResponse::Error { message, .. } => {
+                        bail!("Error: {message}");
+                    }
+                    other => bail!("Unexpected response: {other:?}"),
+                }
+            }
+        },
+        Commands::Children { session_id } => {
+            let response = client
+                .request(impetus_core::IpcRequest::ListChildRuns { session_id })
+                .await?;
+            match response {
+                impetus_core::IpcResponse::ChildRuns { runs, .. } => {
+                    if runs.is_empty() {
+                        println!("(no child runs)");
+                    } else {
+                        for run in runs {
+                            println!(
+                                "{}  {}  {}  {}",
+                                run.child_id,
+                                run.role_label,
+                                run.status.as_str(),
+                                run.summary_label
+                            );
+                        }
+                    }
+                }
+                impetus_core::IpcResponse::Error { message, .. } => {
+                    bail!("Error: {message}");
+                }
+                other => bail!("Unexpected response: {other:?}"),
             }
         }
     }

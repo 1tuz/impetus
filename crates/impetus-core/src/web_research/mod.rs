@@ -15,8 +15,8 @@ mod types;
 
 pub use api_search::{
     ABSENT_API_SEARCH_REASON, API_SEARCH_HTTP_NOT_IMPLEMENTED, AbsentApiSearchBackend,
-    ApiSearchBackendModule, ApiSearchCredentialRef, ApiSearchProviderKind, MockSearchBackend,
-    OptionalApiSearchSlot,
+    ApiKeyResolver, ApiSearchBackendModule, ApiSearchCredentialRef, ApiSearchProviderKind,
+    HttpApiSearchBackend, MapApiKeyResolver, MockSearchBackend, OptionalApiSearchSlot,
 };
 pub use bing::BingHtmlSearchBackend;
 pub use browser::{

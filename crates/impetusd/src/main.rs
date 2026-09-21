@@ -4,7 +4,8 @@ use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine,
     ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
-    build_explore_spawn_bridge_for_harness, load_daemon_mcp_runtime,
+    build_explore_spawn_bridge_for_harness, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
+    load_daemon_policy_store,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -147,7 +148,7 @@ fn configured_harness(
     wire_daemon_runtime(harness, data_root)
 }
 
-/// Attach production Explore spawn + optional MCP autoload from `data_root`.
+/// Attach production Explore spawn + optional MCP/hook/policy/workflow autoload.
 fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     let explore = build_explore_spawn_bridge_for_harness(
         data_root,
@@ -157,6 +158,35 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     )
     .context("wire Explore spawn bridge")?;
     let harness = harness.with_explore_spawn(explore);
+
+    let hook_prefilter =
+        load_daemon_hook_prefilter(data_root).context("load hook prefilter catalog")?;
+    let harness = harness.with_hook_prefilter(hook_prefilter);
+
+    let harness = match load_daemon_policy_store(data_root).context("load policy store")? {
+        Some(store) => harness.with_policy_store(Arc::new(store)),
+        None => harness,
+    };
+
+    let harness = harness
+        .with_provider_steer_rewrite()
+        .context("wire provider steer rewrite")?;
+
+    let child_store = Arc::new(
+        impetus_core::ChildResultStore::open(data_root.join("child_results.sqlite3"))
+            .context("open child result store for workflow")?,
+    );
+    let workflow = Arc::new(
+        impetus_core::WorkflowRuntime::new(
+            child_store,
+            Arc::new(impetus_core::ProcessRoleChildExecutor::new()),
+            Arc::new(impetus_core::ReadOnlyExploreExecutor::new(
+                impetus_core::default_artifact_root(),
+            )),
+        )
+        .context("build workflow runtime")?,
+    );
+    let harness = harness.with_workflow_runtime(workflow);
 
     let mcp_runtime = load_daemon_mcp_runtime(data_root).context("load MCP autoload config")?;
     if mcp_runtime.registered_ids().is_empty() {
@@ -404,10 +434,16 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
+        IpcRequest::Hover { .. } => "coding_hover",
         IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
             "execution_mode"
         }
         IpcRequest::ReloadPolicyConfig { .. } => "reload_policy_config",
+        IpcRequest::ReloadPolicyStore { .. } | IpcRequest::GetPolicyStore => "reload_policy_store",
+        IpcRequest::ListChildRuns { .. } | IpcRequest::GetChildRun { .. } => "list_child_runs",
+        IpcRequest::StartWorkflow { .. }
+        | IpcRequest::CancelWorkflow { .. }
+        | IpcRequest::AdvanceWorkflow { .. } => "workflow_control",
     }
 }
 
@@ -587,6 +623,55 @@ mod tests {
             .err()
             .expect("bad mcp config should fail");
         assert!(err.to_string().contains("MCP autoload"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_hook_autoload_registers_valid_catalog() {
+        let dir = test_temp_dir("hooks-ok");
+        std::fs::write(
+            dir.join("hooks.json"),
+            r#"[{"pattern":"sleep","action":"deny"}]"#,
+        )
+        .expect("write hooks");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("hook autoload harness");
+        assert!(harness.has_hook_prefilter());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_hook_autoload_fails_closed_on_invalid_config() {
+        let dir = test_temp_dir("hooks-bad");
+        std::fs::write(dir.join("hooks.json"), b"{").expect("write bad json");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let err = configured_harness(store, &dir, [])
+            .err()
+            .expect("bad hook config should fail");
+        assert!(err.to_string().contains("hook prefilter"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_policy_store_autoload_registers_valid_config() {
+        let dir = test_temp_dir("policy-store-ok");
+        std::fs::write(
+            dir.join("policy_store.json"),
+            r#"{"version":1,"instructions":[{"id":"gov-1","label":"Rules"}]}"#,
+        )
+        .expect("write policy store");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("policy store harness");
+        assert!(harness.has_policy_store());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

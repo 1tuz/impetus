@@ -8,9 +8,9 @@
 //! - Tool execution coordination
 
 use crate::{
-    Action, ActionKind, ActionOrigin, AgentRuntime, DurableArtifactStore, EffectSeam, PolicyEngine,
-    ReadOnlyTool, ReadOnlyTools, RuntimeError, ToolArgError, ToolEvent, ToolEventOutcome,
-    ToolOutcome, validate_tool_arguments,
+    Action, ActionKind, ActionOrigin, AgentRuntime, DurableArtifactStore, EffectSeam,
+    HookPrefilter, PolicyEngine, ReadOnlyTool, ReadOnlyTools, RuntimeError, ToolArgError,
+    ToolEvent, ToolEventOutcome, ToolOutcome, validate_tool_arguments,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -66,6 +66,7 @@ pub struct ToolOrchestrator {
     mcp_live: Option<Arc<crate::mcp_live::McpLiveBridge>>,
     coding_tools: Arc<dyn crate::CodingToolsService>,
     allowed_tools: Option<Vec<String>>,
+    hook_prefilter: HookPrefilter,
 }
 
 impl ToolOrchestrator {
@@ -90,6 +91,7 @@ impl ToolOrchestrator {
             mcp_live: None,
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             allowed_tools: None,
+            hook_prefilter: HookPrefilter::default(),
         }
     }
 
@@ -130,6 +132,12 @@ impl ToolOrchestrator {
     /// Attach optional coding-tools seam (definition/refs/…). Absent by default.
     pub fn with_coding_tools(mut self, service: Arc<dyn crate::CodingToolsService>) -> Self {
         self.coding_tools = service;
+        self
+    }
+
+    /// Attach daemon-owned hook prefilter catalog for process spawn paths.
+    pub fn with_hook_prefilter(mut self, prefilter: HookPrefilter) -> Self {
+        self.hook_prefilter = prefilter;
         self
     }
 
@@ -1058,6 +1066,7 @@ impl ToolOrchestrator {
             resolution,
             deferred,
             &crate::default_artifact_root(),
+            &HookPrefilter::default(),
         )
     }
 
@@ -1069,6 +1078,7 @@ impl ToolOrchestrator {
         resolution: crate::ApprovalResolution,
         deferred: (String, String, serde_json::Value),
         artifact_root: &std::path::Path,
+        hook_prefilter: &HookPrefilter,
     ) -> Result<ToolObservation, OrchestratorError> {
         let (tool_call_id, tool_name, arguments) = deferred;
         if !matches!(tool_name.as_str(), "bash" | "shell" | "exec") {
@@ -1108,7 +1118,8 @@ impl ToolOrchestrator {
         )
         .with_working_dir(workspace.clone())
         .with_workspace_root(workspace.clone())
-        .with_allow_network(runtime.policy().scope().allow_network);
+        .with_allow_network(runtime.policy().scope().allow_network)
+        .with_hook_prefilter(hook_prefilter.clone());
         let seam = Self::session_effect_seam(runtime)?;
         let execution = seam
             .execute_after_approval_with_admission(
@@ -1634,6 +1645,7 @@ mod tests {
             resolution,
             deferred,
             artifact_root.path(),
+            &crate::HookPrefilter::default(),
         )
         .expect("approved large shell");
         assert_eq!(observation.outcome, ToolOutcomeStatus::Success);
