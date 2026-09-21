@@ -206,13 +206,12 @@ fn render_unified_lines(
     let mut current_file: Option<String> = None;
 
     for raw in input.lines() {
-        if emit_file_headers {
-            if let Some(path) = file_path_from_plus_header(raw) {
-                if current_file.as_deref() != Some(path.as_str()) {
-                    current_file = Some(path.clone());
-                    lines.extend(file_header(&path, width, theme));
-                }
-            }
+        if emit_file_headers
+            && let Some(path) = file_path_from_plus_header(raw)
+            && current_file.as_deref() != Some(path.as_str())
+        {
+            current_file = Some(path.clone());
+            lines.extend(file_header(&path, width, theme));
         }
 
         let style = line_style(raw, theme);
