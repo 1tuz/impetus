@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
     MouseEventKind,
 };
 use futures_util::StreamExt;
@@ -13,11 +13,12 @@ use uuid::Uuid;
 
 use crate::backend::UiBackend;
 use crate::command::{self, CommandAction};
+use crate::hit::{HitKind, PointerClick, cycle_prompt_intent, is_double_click, resolve_hit};
 use crate::model::{
     AppState, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES, MAX_PASTE_UPLOAD_BYTES, Overlay,
     RunOptions, RunState, SessionSummary, TimelineItem, UiEvent, UiEventKind, bounded,
     drain_stream_frame, format_paste_placeholder, ingest_stream_chunk, is_paste_placeholder,
-    normalize_paste, paste_line_count,
+    max_scroll_from_bottom, normalize_paste, paste_line_count,
 };
 use crate::render::{filtered_sessions, render};
 use crate::terminal::TerminalSession;
@@ -733,14 +734,7 @@ fn handle_terminal_event(app: &mut AppState, event: TerminalEvent) -> Vec<Effect
             app.dirty = true;
             vec![]
         }
-        TerminalEvent::Mouse(mouse) => {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => scroll_up(app, 4),
-                MouseEventKind::ScrollDown => scroll_down(app, 4),
-                _ => {}
-            }
-            vec![]
-        }
+        TerminalEvent::Mouse(mouse) => handle_mouse(app, mouse),
         TerminalEvent::Resize(_, _) | TerminalEvent::FocusGained | TerminalEvent::FocusLost => {
             app.clamp_timeline_scroll();
             app.dirty = true;
@@ -750,8 +744,116 @@ fn handle_terminal_event(app: &mut AppState, event: TerminalEvent) -> Vec<Effect
     }
 }
 
+fn handle_mouse(app: &mut AppState, mouse: MouseEvent) -> Vec<Effect> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            scroll_up(app, 4);
+            vec![]
+        }
+        MouseEventKind::ScrollDown => {
+            scroll_down(app, 4);
+            vec![]
+        }
+        MouseEventKind::Down(_) => {
+            let column = mouse.column;
+            let row = mouse.row;
+            let Some(kind) = resolve_hit(&app.hit_targets, column, row) else {
+                return vec![];
+            };
+            let now = Instant::now();
+            let double = is_double_click(app.last_pointer.as_ref(), column, row, kind, now);
+            app.last_pointer = Some(PointerClick {
+                at: now,
+                column,
+                row,
+                kind,
+            });
+            let effects = apply_hit(app, kind, double);
+            app.dirty = true;
+            effects
+        }
+        _ => vec![],
+    }
+}
+
+fn apply_hit(app: &mut AppState, kind: HitKind, double: bool) -> Vec<Effect> {
+    match kind {
+        HitKind::Composer => {
+            if matches!(app.overlay, Overlay::None) {
+                app.focus = Focus::Composer;
+            }
+            vec![]
+        }
+        HitKind::TimelineItem { index } => {
+            if !matches!(app.overlay, Overlay::None) {
+                return vec![];
+            }
+            if index < app.timeline.len() {
+                app.selected_item = Some(index);
+                app.focus = Focus::Timeline;
+                if double {
+                    toggle_selected_item(app);
+                }
+            }
+            vec![]
+        }
+        HitKind::SessionPickerRow { index } => {
+            let Overlay::Sessions { query, .. } = &app.overlay else {
+                return vec![];
+            };
+            let query = query.clone();
+            let chosen = filtered_sessions(app, &query)
+                .get(index)
+                .map(|session| session.id);
+            app.overlay = Overlay::Sessions {
+                selected: index,
+                query,
+            };
+            if let Some(session_id) = chosen {
+                return vec![Effect::ActivateSession(session_id)];
+            }
+            vec![]
+        }
+        HitKind::SessionPanelRow { index } => {
+            if !matches!(app.overlay, Overlay::None) {
+                return vec![];
+            }
+            if let Some(session) = app.sessions.get(index) {
+                return vec![Effect::ActivateSession(session.id)];
+            }
+            vec![]
+        }
+        HitKind::ApprovalAccept => app
+            .approval_queue
+            .front()
+            .map(|approval| Effect::ResolveApproval {
+                approval_id: approval.id,
+                accepted: true,
+            })
+            .into_iter()
+            .collect(),
+        HitKind::ApprovalReject => app
+            .approval_queue
+            .front()
+            .map(|approval| Effect::ResolveApproval {
+                approval_id: approval.id,
+                accepted: false,
+            })
+            .into_iter()
+            .collect(),
+        HitKind::ApprovalInspect => {
+            if let Some(approval) = app.approval_queue.front() {
+                app.overlay = Overlay::ApprovalDetail;
+                vec![Effect::LoadApprovalDetail(approval.id)]
+            } else {
+                vec![]
+            }
+        }
+    }
+}
+
 fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q')) {
         app.should_quit = true;
         return vec![];
     }
@@ -762,16 +864,8 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 
     match key.code {
         KeyCode::F(1) => app.overlay = Overlay::Help,
-        KeyCode::F(2) => {
-            let selected = app
-                .active_session
-                .and_then(|active| app.sessions.iter().position(|session| session.id == active))
-                .unwrap_or(0);
-            app.overlay = Overlay::Sessions {
-                selected,
-                query: String::new(),
-            };
-        }
+        KeyCode::Char('?') if app.composer.is_empty() => app.overlay = Overlay::Help,
+        KeyCode::F(2) => open_session_picker(app),
         KeyCode::F(3) => app.show_inspector = !app.show_inspector,
         KeyCode::F(4) => {
             let selected = ExecutionMode::ALL
@@ -782,6 +876,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::PageUp => scroll_up(app, 10),
         KeyCode::PageDown => scroll_down(app, 10),
+        KeyCode::Home if app.focus == Focus::Timeline => scroll_timeline_home(app),
         KeyCode::End if app.focus == Focus::Timeline => {
             app.follow_tail = true;
             app.line_scroll_from_bottom = 0;
@@ -802,6 +897,24 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
     app.dirty = true;
     vec![]
+}
+
+fn open_session_picker(app: &mut AppState) {
+    let selected = app
+        .active_session
+        .and_then(|active| app.sessions.iter().position(|session| session.id == active))
+        .unwrap_or(0);
+    app.overlay = Overlay::Sessions {
+        selected,
+        query: String::new(),
+    };
+}
+
+fn scroll_timeline_home(app: &mut AppState) {
+    app.follow_tail = false;
+    app.line_scroll_from_bottom =
+        max_scroll_from_bottom(app.timeline_line_count, app.timeline_viewport_rows);
+    app.focus = Focus::Timeline;
 }
 
 fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
@@ -837,7 +950,12 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     let _ = query.pop();
                     selected = 0;
                 }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('n') | KeyCode::Char('N')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        || (query.is_empty()
+                            && (key.modifiers.is_empty()
+                                || key.modifiers == KeyModifiers::SHIFT)) =>
+                {
                     return vec![Effect::CreateSession];
                 }
                 KeyCode::Char(ch)
@@ -1064,12 +1182,26 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
+            KeyCode::Char('p') | KeyCode::Char('P')
+                if key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                app.prompt_intent = cycle_prompt_intent(app.prompt_intent);
+                app.show_toast(
+                    format!(
+                        "Composer intent: {} (Ctrl+Shift+P cycles · Ctrl+T steers)",
+                        app.prompt_intent.label()
+                    ),
+                    false,
+                );
+            }
             KeyCode::Char('p') => {
                 app.overlay = Overlay::Commands {
                     selected: 0,
                     query: String::new(),
                 };
             }
+            KeyCode::Char('o') => open_session_picker(app),
+            KeyCode::Char('t') => set_steer_intent(app),
             KeyCode::Char('c') => {
                 if !app.composer.is_empty() || app.pending_large_paste.is_some() {
                     app.composer.clear();
@@ -1186,14 +1318,7 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
         CommandAction::NewSession => vec![Effect::CreateSession],
         CommandAction::Resume(Some(session_id)) => vec![Effect::ActivateSession(session_id)],
         CommandAction::Resume(None) | CommandAction::Sessions => {
-            let selected = app
-                .active_session
-                .and_then(|active| app.sessions.iter().position(|session| session.id == active))
-                .unwrap_or(0);
-            app.overlay = Overlay::Sessions {
-                selected,
-                query: String::new(),
-            };
+            open_session_picker(app);
             vec![]
         }
         CommandAction::ModePicker => {
@@ -1749,6 +1874,24 @@ fn toggle_selected_item(app: &mut AppState) {
     }
 }
 
+fn set_steer_intent(app: &mut AppState) {
+    if matches!(
+        app.run_state,
+        RunState::Working | RunState::WaitingApproval | RunState::Cancelling
+    ) {
+        app.prompt_intent = impetus_client::protocol::UserPromptIntent::Steer;
+        app.show_toast(
+            "Composer intent: steer (active run — submit to nudge)",
+            false,
+        );
+    } else {
+        app.show_toast(
+            "Steer needs an active run. Ctrl+Shift+P cycles intent, or type /steer.",
+            true,
+        );
+    }
+}
+
 fn cycle_focus(app: &mut AppState) {
     app.focus = match app.focus {
         Focus::Composer => Focus::Timeline,
@@ -2287,5 +2430,223 @@ mod tests {
         assert!(app.timeline[1].body.contains("→ "));
         assert!(app.timeline[1].body.to_ascii_lowercase().contains("policy"));
         assert!(app.timeline[1].details.starts_with("remediation:"));
+    }
+
+    #[test]
+    fn question_mark_opens_help_when_composer_empty() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert!(matches!(app.overlay, Overlay::Help));
+
+        app.overlay = Overlay::None;
+        app.composer.insert_char('x');
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(app.composer.text().contains('?'));
+    }
+
+    #[test]
+    fn ctrl_o_opens_session_picker() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(app.overlay, Overlay::Sessions { .. }));
+    }
+
+    #[test]
+    fn ctrl_shift_p_cycles_prompt_intent() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::Prompt
+        );
+        let mods = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Char('p'), mods));
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::Steer
+        );
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Char('P'), mods));
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::FollowUp
+        );
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Char('p'), mods));
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::Prompt
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn ctrl_t_sets_steer_only_when_run_active() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::Prompt
+        );
+        assert!(app.toast.as_ref().is_some_and(|toast| toast.error));
+
+        app.run_state = RunState::Working;
+        let _ = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            app.prompt_intent,
+            impetus_client::protocol::UserPromptIntent::Steer
+        );
+    }
+
+    #[test]
+    fn session_picker_accepts_plain_n_and_ctrl_n_for_new() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        open_session_picker(&mut app);
+        let effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(matches!(effects.as_slice(), [Effect::CreateSession]));
+
+        open_session_picker(&mut app);
+        let effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(effects.as_slice(), [Effect::CreateSession]));
+    }
+
+    #[test]
+    fn home_on_timeline_scrolls_to_top() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        for seq in 1..=20 {
+            app.push_item(TimelineItem::new(
+                seq,
+                seq,
+                ItemKind::Notice,
+                format!("event-{seq}"),
+            ));
+        }
+        app.note_timeline_metrics(5, 40);
+        app.focus = Focus::Timeline;
+        app.follow_tail = true;
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert!(!app.follow_tail);
+        assert_eq!(app.line_scroll_from_bottom, 35);
+        assert_eq!(app.focus, Focus::Timeline);
+    }
+
+    #[test]
+    fn mouse_hit_selects_timeline_and_double_click_toggles() {
+        use crate::hit::{HitTarget, RectHit};
+        use crossterm::event::MouseButton;
+
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.push_item(TimelineItem::new(1, 1, ItemKind::Notice, "one"));
+        app.push_item(TimelineItem::new(2, 2, ItemKind::Notice, "two"));
+        app.hit_targets = vec![HitTarget {
+            rect: RectHit::new(2, 4, 20, 1),
+            kind: HitKind::TimelineItem { index: 1 },
+        }];
+
+        let effects = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(app.selected_item, Some(1));
+        assert_eq!(app.focus, Focus::Timeline);
+        assert!(!app.timeline[1].collapsed);
+
+        let effects = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(effects.is_empty());
+        assert!(app.timeline[1].collapsed);
+    }
+
+    #[test]
+    fn mouse_hit_activates_session_picker_row() {
+        use crate::hit::{HitTarget, RectHit};
+        use crossterm::event::MouseButton;
+
+        let mut app = AppState::new(ConnectionInfo::default());
+        let id = Uuid::new_v4();
+        app.sessions.push(SessionSummary {
+            id,
+            label: "alpha".to_owned(),
+            status: "saved".to_owned(),
+            workspace: None,
+        });
+        app.overlay = Overlay::Sessions {
+            selected: 0,
+            query: String::new(),
+        };
+        app.hit_targets = vec![HitTarget {
+            rect: RectHit::new(10, 10, 30, 2),
+            kind: HitKind::SessionPickerRow { index: 0 },
+        }];
+
+        let effects = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 12,
+                row: 11,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ActivateSession(session_id)] if *session_id == id
+        ));
+    }
+
+    #[test]
+    fn mouse_hit_focuses_composer() {
+        use crate::hit::{HitTarget, RectHit};
+        use crossterm::event::MouseButton;
+
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.focus = Focus::Timeline;
+        app.hit_targets = vec![HitTarget {
+            rect: RectHit::new(0, 20, 80, 3),
+            kind: HitKind::Composer,
+        }];
+
+        let _ = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 4,
+                row: 21,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.focus, Focus::Composer);
     }
 }

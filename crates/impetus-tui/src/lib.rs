@@ -13,6 +13,7 @@ pub mod boundary;
 mod command;
 mod composer;
 mod diff;
+mod hit;
 mod markdown;
 mod model;
 mod render;

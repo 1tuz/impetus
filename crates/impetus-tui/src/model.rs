@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::composer::Composer;
+use crate::hit::{HitTarget, PointerClick};
 use crate::stream_buffer::StreamBuffer;
 
 pub const MAX_TIMELINE_ITEMS: usize = 1_000;
@@ -545,6 +546,10 @@ pub struct AppState {
     pub timeline_viewport_rows: usize,
     /// Last measured timeline line count for resize-safe scroll clamp.
     pub timeline_line_count: usize,
+    /// Hit regions recorded during the last paint (cleared each frame).
+    pub hit_targets: Vec<HitTarget>,
+    /// Previous mouse press for double-click detection.
+    pub last_pointer: Option<PointerClick>,
 }
 
 impl AppState {
@@ -578,6 +583,8 @@ impl AppState {
             stream_buffer: StreamBuffer::new(),
             timeline_viewport_rows: 0,
             timeline_line_count: 0,
+            hit_targets: Vec::new(),
+            last_pointer: None,
         }
     }
 
