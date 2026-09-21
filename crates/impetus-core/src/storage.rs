@@ -1076,6 +1076,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 1");
@@ -1084,6 +1085,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 2");
@@ -1092,6 +1094,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step3".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 3");
@@ -1129,6 +1132,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 1");
@@ -1137,6 +1141,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 2");
@@ -1145,6 +1150,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step3".into(),
+                    artifact: None,
                 }),
             )
             .expect("append event 3");
@@ -1194,6 +1200,7 @@ mod tests {
                     source_id,
                     EventPayload::Intent(IntentEvent {
                         text: format!("event{}", i),
+                        artifact: None,
                     }),
                 )
                 .expect("append event");
@@ -1224,6 +1231,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step1".into(),
+                    artifact: None,
                 }),
             )
             .expect("append");
@@ -1232,6 +1240,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "step2".into(),
+                    artifact: None,
                 }),
             )
             .expect("append");
@@ -1275,6 +1284,7 @@ mod tests {
                     source_id,
                     EventPayload::Intent(IntentEvent {
                         text: "kept".into(),
+                        artifact: None,
                     }),
                 )
                 .expect("append");
@@ -1283,6 +1293,7 @@ mod tests {
                     source_id,
                     EventPayload::Intent(IntentEvent {
                         text: "later".into(),
+                        artifact: None,
                     }),
                 )
                 .expect("append");
@@ -1292,6 +1303,7 @@ mod tests {
                     forked_id,
                     EventPayload::Intent(IntentEvent {
                         text: "branch".into(),
+                        artifact: None,
                     }),
                 )
                 .expect("append to fork");
@@ -1337,6 +1349,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "before".into(),
+                    artifact: None,
                 }),
             )
             .expect("append");
@@ -1345,6 +1358,7 @@ mod tests {
                 source_id,
                 EventPayload::Intent(IntentEvent {
                     text: "after".into(),
+                    artifact: None,
                 }),
             )
             .expect("append");

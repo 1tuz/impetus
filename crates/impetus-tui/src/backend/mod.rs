@@ -20,6 +20,13 @@ pub trait UiBackend: Send + Sync {
     async fn create_session(&self, workspace_root: PathBuf) -> Result<Uuid>;
     async fn resume_session(&self, session_id: Uuid) -> Result<String>;
     async fn send_message(&self, session_id: Uuid, text: String) -> Result<String>;
+    /// Chunked upload then prompt with `ArtifactRef` (large paste path).
+    async fn send_large_paste(
+        &self,
+        session_id: Uuid,
+        label: String,
+        body: Vec<u8>,
+    ) -> Result<String>;
     async fn cancel(&self, session_id: Uuid) -> Result<String>;
     async fn resolve_approval(
         &self,

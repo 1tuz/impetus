@@ -232,8 +232,8 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Token-budgeted module/tool selection for prompt
 - [x] Session fork without full event duplication (shared-prefix metadata)
 - [x] Session DAG: parent/fork, named checkpoints, restore as new branch, branch-aware ListSessions
-- [ ] Large paste: bracketed paste in TUI
-- [ ] Large paste: detection threshold + compact composer display
+- [x] Large paste: bracketed paste in TUI
+- [x] Large paste: detection threshold + compact composer display
 - [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
 - [x] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
 - [x] Context Builder: read large artifact in parts, summarize within token budget
@@ -248,8 +248,8 @@ Reference audit plan: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (audit not 
 - [ ] Ratatui + Crossterm spike / evaluation
 - [ ] TUI shell: `HarnessClient` only, no core imports
 - [ ] Composer (single-line + multiline mode)
-- [ ] Bracketed paste support
-- [ ] Large paste UX (`[Pasted text · N KB · M lines]`)
+- [x] Bracketed paste support
+- [x] Large paste UX (`[Pasted text · N KB · M lines]`)
 - [ ] Streaming output rendering
 - [ ] Markdown rendering (bounded)
 - [ ] Diff view

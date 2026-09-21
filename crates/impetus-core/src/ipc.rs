@@ -60,6 +60,9 @@ pub enum IpcRequest {
     Prompt {
         session_id: Uuid,
         text: String,
+        /// Optional durable paste/attachment ref; raw body must not be in `text`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<crate::DurableArtifactRef>,
     },
     Context {
         session_id: Uuid,

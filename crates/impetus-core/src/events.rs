@@ -51,6 +51,25 @@ pub enum RunEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IntentEvent {
     pub text: String,
+    /// Large paste / attachment: durable ref only — raw body stays out of events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<crate::DurableArtifactRef>,
+}
+
+impl IntentEvent {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            artifact: None,
+        }
+    }
+
+    pub fn with_artifact(text: impl Into<String>, artifact: crate::DurableArtifactRef) -> Self {
+        Self {
+            text: text.into(),
+            artifact: Some(artifact),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -303,9 +322,7 @@ mod tests {
         assert_eq!(
             legacy_payload("user_intent", serde_json::json!({ "text": "explain" }))
                 .expect("convert legacy"),
-            EventPayload::Intent(IntentEvent {
-                text: "explain".into()
-            })
+            EventPayload::Intent(IntentEvent::new("explain"))
         );
     }
 

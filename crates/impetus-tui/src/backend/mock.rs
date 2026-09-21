@@ -129,62 +129,8 @@ impl MockBackend {
             self.next_event(UiEventKind::RunCompleted { run_id }),
         ]
     }
-}
 
-#[async_trait]
-impl UiBackend for MockBackend {
-    async fn connection_info(&self) -> Result<ConnectionInfo> {
-        Ok(ConnectionInfo {
-            protocol_version: 4,
-            capabilities: [
-                "session_create",
-                "session_attach",
-                "session_list",
-                "prompt",
-                "cancel",
-                "subscribe",
-                "resolve_approval",
-                "get_approval_detail",
-                "diagnostics",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>(),
-            label: "demo backend · no daemon required".to_owned(),
-        })
-    }
-
-    async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
-        Ok(self.inner.sessions.lock().await.clone())
-    }
-
-    async fn create_session(&self, workspace_root: PathBuf) -> Result<Uuid> {
-        let id = Uuid::new_v4();
-        self.inner.sessions.lock().await.push(SessionSummary {
-            id,
-            label: format!("New session {}", crate::model::short_id(id)),
-            status: "ready".to_owned(),
-            workspace: Some(workspace_root.display().to_string()),
-        });
-        Ok(id)
-    }
-
-    async fn resume_session(&self, session_id: Uuid) -> Result<String> {
-        if self
-            .inner
-            .sessions
-            .lock()
-            .await
-            .iter()
-            .any(|session| session.id == session_id)
-        {
-            Ok("Ready".to_owned())
-        } else {
-            Err(anyhow!("demo session not found: {session_id}"))
-        }
-    }
-
-    async fn send_message(&self, session_id: Uuid, text: String) -> Result<String> {
+    async fn publish_prompt(&self, session_id: Uuid, text: String) -> Result<String> {
         let backend = self.clone();
         spawn_detached(async move {
             let run_id = Uuid::new_v4();
@@ -269,6 +215,76 @@ impl UiBackend for MockBackend {
             }
         });
         Ok("Running".to_owned())
+    }
+}
+
+#[async_trait]
+impl UiBackend for MockBackend {
+    async fn connection_info(&self) -> Result<ConnectionInfo> {
+        Ok(ConnectionInfo {
+            protocol_version: 4,
+            capabilities: [
+                "session_create",
+                "session_attach",
+                "session_list",
+                "prompt",
+                "cancel",
+                "subscribe",
+                "resolve_approval",
+                "get_approval_detail",
+                "diagnostics",
+                "artifact_upload",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>(),
+            label: "demo backend · no daemon required".to_owned(),
+        })
+    }
+
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
+        Ok(self.inner.sessions.lock().await.clone())
+    }
+
+    async fn create_session(&self, workspace_root: PathBuf) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        self.inner.sessions.lock().await.push(SessionSummary {
+            id,
+            label: format!("New session {}", crate::model::short_id(id)),
+            status: "ready".to_owned(),
+            workspace: Some(workspace_root.display().to_string()),
+        });
+        Ok(id)
+    }
+
+    async fn resume_session(&self, session_id: Uuid) -> Result<String> {
+        if self
+            .inner
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .any(|session| session.id == session_id)
+        {
+            Ok("Ready".to_owned())
+        } else {
+            Err(anyhow!("demo session not found: {session_id}"))
+        }
+    }
+
+    async fn send_message(&self, session_id: Uuid, text: String) -> Result<String> {
+        self.publish_prompt(session_id, text).await
+    }
+
+    async fn send_large_paste(
+        &self,
+        session_id: Uuid,
+        label: String,
+        body: Vec<u8>,
+    ) -> Result<String> {
+        // Demo backend never stores bytes; only the compact label enters the timeline.
+        let _ = body;
+        self.publish_prompt(session_id, label).await
     }
 
     async fn cancel(&self, session_id: Uuid) -> Result<String> {

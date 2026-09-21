@@ -6,8 +6,38 @@ use crate::composer::Composer;
 
 pub const MAX_TIMELINE_ITEMS: usize = 1_000;
 pub const MAX_BODY_CHARS: usize = 40_000;
+/// Pastes above this size use compact composer placeholder + upload path.
 pub const LARGE_PASTE_BYTES: usize = 8 * 1024;
-pub const MAX_DIRECT_PROMPT_BYTES: usize = 48 * 1024;
+/// Hard cap aligned with daemon `MAX_ARTIFACT_UPLOAD_BYTES` (8 MiB).
+pub const MAX_PASTE_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+/// Normalize terminal paste newlines (CRLF/CR → LF).
+pub fn normalize_paste(text: &str) -> String {
+    if !text.as_bytes().contains(&b'\r') {
+        return text.to_owned();
+    }
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Line count for paste stats (counts a trailing newline as its own line boundary).
+pub fn paste_line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|&b| b == b'\n').count() + 1
+    }
+}
+
+/// Compact composer placeholder for oversized paste.
+pub fn format_paste_placeholder(bytes: usize, lines: usize) -> String {
+    let kb = bytes.saturating_add(1023) / 1024;
+    format!("[Pasted text · {kb} KB · {lines} lines]")
+}
+
+pub fn is_paste_placeholder(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("[Pasted text · ") && trimmed.ends_with(']')
+}
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -487,4 +517,28 @@ pub fn bounded(value: String, max_chars: usize) -> String {
         "\n… output truncated in TUI; use the attached artifact/raw view for full content",
     );
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paste_placeholder_matches_architecture_shape() {
+        let body = "line1\nline2\nline3";
+        let placeholder = format_paste_placeholder(body.len(), paste_line_count(body));
+        assert_eq!(placeholder, "[Pasted text · 1 KB · 3 lines]");
+        assert!(is_paste_placeholder(&placeholder));
+        assert!(!is_paste_placeholder("plain text"));
+    }
+
+    #[test]
+    fn normalize_paste_collapses_crlf() {
+        assert_eq!(normalize_paste("a\r\nb\rc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn max_paste_upload_matches_eight_mib() {
+        assert_eq!(MAX_PASTE_UPLOAD_BYTES, 8 * 1024 * 1024);
+    }
 }

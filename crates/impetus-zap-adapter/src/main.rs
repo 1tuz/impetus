@@ -130,6 +130,7 @@ async fn create_and_attach(
         .request(IpcRequest::Prompt {
             session_id,
             text: prompt.to_string(),
+            artifact: None,
         })
         .await
         .context("Failed to send prompt")?;

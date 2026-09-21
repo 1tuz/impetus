@@ -388,7 +388,8 @@ mod tests {
                 store.clone(),
                 IpcRequest::Prompt {
                     session_id,
-                    text: "explain repository".into()
+                    text: "explain repository".into(),
+                    artifact: None,
                 }
             ),
             IpcResponse::Status {
@@ -491,7 +492,8 @@ mod tests {
                 store.clone(),
                 IpcRequest::Prompt {
                     session_id,
-                    text: "cancel mock response".into()
+                    text: "cancel mock response".into(),
+                    artifact: None,
                 }
             ),
             IpcResponse::Status {
@@ -539,6 +541,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "first".into(),
+                artifact: None,
             }),
             IpcResponse::Status {
                 status: RuntimeStatus::Running,
@@ -549,6 +552,7 @@ mod tests {
             harness.handle(IpcRequest::Prompt {
                 session_id,
                 text: "second".into(),
+                artifact: None,
             }),
             IpcResponse::Error {
                 code: IpcErrorCode::Conflict,
