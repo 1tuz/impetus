@@ -382,12 +382,88 @@ pub enum UiEventKind {
         title: String,
         message: String,
         error: bool,
+        /// Optional harness/doctor remediation; TUI falls back to a static hint.
+        remediation: Option<String>,
     },
     Retry {
         title: String,
         message: String,
         failed: bool,
     },
+}
+
+/// Default doctor-oriented hint when harness omits remediation.
+pub const DEFAULT_ERROR_REMEDIATION: &str =
+    "Run `impetus doctor` for subsystem probes and remediation hints.";
+
+/// Prefer explicit remediation from the event; else a short static hint by title.
+pub fn remediation_hint(title: &str, explicit: Option<&str>) -> String {
+    if let Some(hint) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
+        return hint.to_owned();
+    }
+    let lower = title.to_ascii_lowercase();
+    if lower.contains("policy") {
+        "Check policy mode and pending approvals; run `impetus doctor`.".to_owned()
+    } else if lower.contains("unknown") {
+        "Do not retry non-replayable work; reattach the session and check run status.".to_owned()
+    } else if lower.contains("reconnect")
+        || lower.contains("backend")
+        || lower.contains("ipc")
+        || lower.contains("provider")
+        || lower.contains("keychain")
+    {
+        "Ensure `impetusd` is running and the IPC socket is reachable.".to_owned()
+    } else if lower.contains("retry") || lower.contains("exhausted") {
+        "Inspect the last error; retry only if the work is replayable.".to_owned()
+    } else if lower.contains("fail") || lower.contains("error") {
+        "Inspect the event details; retry only if the work is replayable.".to_owned()
+    } else {
+        DEFAULT_ERROR_REMEDIATION.to_owned()
+    }
+}
+
+/// Connection + run + optional budget figures already present on `AppState`.
+pub fn format_status_strip(app: &AppState) -> String {
+    let conn = if app.connection.label.is_empty() {
+        format!("ipc v{}", app.connection.protocol_version)
+    } else {
+        format!(
+            "{} · ipc v{}",
+            app.connection.label, app.connection.protocol_version
+        )
+    };
+    let mut parts = vec![
+        conn,
+        format!("run {}", app.run_state.label()),
+        format!("{} tok", compact_status_number(app.budget.tokens_used)),
+        format!("ctx {}%", app.budget.context_used_percent),
+        format!("{} turn", app.budget.turns_used),
+    ];
+    if app.budget.compactions > 0 {
+        parts.push(format!("{} compact", app.budget.compactions));
+    }
+    if app.budget.warning.is_some() {
+        parts.push("budget!".to_owned());
+    }
+    parts.join(" · ")
+}
+
+fn compact_status_number(value: u64) -> String {
+    match value {
+        0..=999 => value.to_string(),
+        1_000..=999_999 => format!("{}k", value / 1_000),
+        _ => format!("{}m", value / 1_000_000),
+    }
+}
+
+/// Max scroll offset from bottom so the viewport stays filled when possible.
+pub fn max_scroll_from_bottom(total_lines: usize, viewport_rows: usize) -> usize {
+    total_lines.saturating_sub(viewport_rows.max(1))
+}
+
+/// Tick-gated redraw: high-frequency dirty flags coalesce into one paint per tick.
+pub fn should_coalesce_redraw(dirty: bool, since_last_draw: Duration, tick_rate: Duration) -> bool {
+    dirty && since_last_draw >= tick_rate
 }
 
 #[derive(Clone, Debug)]
@@ -463,6 +539,10 @@ pub struct AppState {
     /// Paced assistant stream (arrival ≠ paint). Keyed by active `run_id`.
     pub stream_run_id: Option<Uuid>,
     pub stream_buffer: StreamBuffer,
+    /// Last measured timeline viewport height (rows) for resize-safe scroll clamp.
+    pub timeline_viewport_rows: usize,
+    /// Last measured timeline line count for resize-safe scroll clamp.
+    pub timeline_line_count: usize,
 }
 
 impl AppState {
@@ -493,6 +573,30 @@ impl AppState {
             subscription_generation: 0,
             stream_run_id: None,
             stream_buffer: StreamBuffer::new(),
+            timeline_viewport_rows: 0,
+            timeline_line_count: 0,
+        }
+    }
+
+    /// Record timeline metrics from the last paint; clamp scroll if needed.
+    pub fn note_timeline_metrics(&mut self, viewport_rows: usize, line_count: usize) {
+        self.timeline_viewport_rows = viewport_rows;
+        self.timeline_line_count = line_count;
+        self.clamp_timeline_scroll();
+    }
+
+    /// Keep `line_scroll_from_bottom` inside the visible range after resize/scroll.
+    pub fn clamp_timeline_scroll(&mut self) {
+        if self.timeline_viewport_rows == 0 {
+            return;
+        }
+        let max = max_scroll_from_bottom(self.timeline_line_count, self.timeline_viewport_rows);
+        if self.line_scroll_from_bottom > max {
+            self.line_scroll_from_bottom = max;
+            if max == 0 {
+                self.follow_tail = true;
+            }
+            self.dirty = true;
         }
     }
 
@@ -706,5 +810,70 @@ mod tests {
         assert_eq!(rich.label, "TUI architecture");
         assert_eq!(rich.status, "working");
         assert_eq!(rich.workspace.as_deref(), Some("~/dev/impetus"));
+    }
+
+    #[test]
+    fn status_strip_includes_connection_run_and_budget() {
+        let mut app = AppState::new(ConnectionInfo {
+            protocol_version: 3,
+            capabilities: BTreeSet::new(),
+            label: "demo".to_owned(),
+        });
+        app.run_state = RunState::Working;
+        app.budget.tokens_used = 12_000;
+        app.budget.context_used_percent = 42;
+        app.budget.turns_used = 3;
+        let strip = format_status_strip(&app);
+        assert!(strip.contains("demo"));
+        assert!(strip.contains("ipc v3"));
+        assert!(strip.contains("run working"));
+        assert!(strip.contains("12k tok"));
+        assert!(strip.contains("ctx 42%"));
+        assert!(strip.contains("3 turn"));
+    }
+
+    #[test]
+    fn remediation_hint_prefers_explicit_then_static() {
+        assert_eq!(
+            remediation_hint("anything", Some("fix the socket path")),
+            "fix the socket path"
+        );
+        assert!(remediation_hint("policy denied", None).contains("policy"));
+        assert_eq!(
+            remediation_hint("misc notice", None),
+            DEFAULT_ERROR_REMEDIATION
+        );
+    }
+
+    #[test]
+    fn scroll_clamp_caps_offset_after_shrink() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.line_scroll_from_bottom = 80;
+        app.follow_tail = false;
+        app.note_timeline_metrics(10, 25);
+        assert_eq!(app.line_scroll_from_bottom, 15);
+        assert!(!app.follow_tail);
+        app.note_timeline_metrics(30, 25);
+        assert_eq!(app.line_scroll_from_bottom, 0);
+        assert!(app.follow_tail);
+    }
+
+    #[test]
+    fn redraw_coalesce_waits_for_tick() {
+        assert!(!should_coalesce_redraw(
+            true,
+            Duration::from_millis(10),
+            Duration::from_millis(33)
+        ));
+        assert!(should_coalesce_redraw(
+            true,
+            Duration::from_millis(33),
+            Duration::from_millis(33)
+        ));
+        assert!(!should_coalesce_redraw(
+            false,
+            Duration::from_millis(100),
+            Duration::from_millis(33)
+        ));
     }
 }

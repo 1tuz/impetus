@@ -11,11 +11,13 @@ use crate::{
     composer::ComposerLayoutMode,
     diff::{looks_like_diff, render_diff_view},
     markdown::{render_markdown, render_plain_wrapped},
-    model::{AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, short_id},
+    model::{
+        AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, format_status_strip, short_id,
+    },
     theme::Theme,
 };
 
-pub fn render(frame: &mut Frame, app: &AppState, theme: Theme) {
+pub fn render(frame: &mut Frame, app: &mut AppState, theme: Theme) {
     let area = frame.area();
     frame.render_widget(Block::default().style(theme.base()), area);
 
@@ -111,7 +113,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
     );
 }
 
-fn render_main(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
+fn render_main(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) {
     let show_sessions = app.show_sessions && area.width >= 100;
     let show_inspector = app.show_inspector && area.width >= 122;
     let constraints = match (show_sessions, show_inspector) {
@@ -188,7 +190,7 @@ fn render_sessions_panel(frame: &mut Frame, area: Rect, app: &AppState, theme: T
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_timeline(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
+fn render_timeline(frame: &mut Frame, area: Rect, app: &mut AppState, theme: Theme) {
     let block = panel_block(
         format!(" event log · {} ", app.status_message),
         app.focus == Focus::Timeline,
@@ -202,6 +204,7 @@ fn render_timeline(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) 
 
     let lines = build_timeline_lines(app, inner.width as usize, theme);
     let height = inner.height as usize;
+    app.note_timeline_metrics(height, lines.len());
     let offset = app.line_scroll_from_bottom.min(lines.len());
     let end = lines.len().saturating_sub(offset);
     let start = end.saturating_sub(height);
@@ -418,19 +421,8 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) 
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
-    let left = " F1 help  F2 sessions  F3 details  F4 mode  Ctrl+P commands  Ctrl+Q quit";
-    let warning = if app.budget.warning.is_some() {
-        " · !"
-    } else {
-        ""
-    };
-    let right = format!(
-        "{} tok · ctx {}% · {} turn{} ",
-        compact_number(app.budget.tokens_used),
-        app.budget.context_used_percent,
-        app.budget.turns_used,
-        warning,
-    );
+    let left = " F1 help  PageUp/Dn scroll  End follow  Ctrl+Q quit";
+    let right = format!(" {} ", format_status_strip(app));
     let available = area.width as usize;
     let right_width = right.chars().count();
     let left = truncate(left, available.saturating_sub(right_width));
@@ -1055,16 +1047,6 @@ fn format_time(unix_ms: u64) -> String {
     )
 }
 
-fn compact_number(value: u64) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}m", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{:.1}k", value as f64 / 1_000.0)
-    } else {
-        value.to_string()
-    }
-}
-
 fn human_bytes(value: usize) -> String {
     if value >= 1024 * 1024 {
         format!("{:.1} MiB", value as f64 / (1024.0 * 1024.0))
@@ -1105,7 +1087,7 @@ mod tests {
                     .with_body("# Result\n\n```rust\nfn main() {}\n```"),
             );
             terminal
-                .draw(|frame| render(frame, &app, Theme::default()))
+                .draw(|frame| render(frame, &mut app, Theme::default()))
                 .unwrap();
         }
     }

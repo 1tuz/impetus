@@ -262,8 +262,19 @@ TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
 - [x] Approval UI — `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (`render_approval*`, ingest/resolve in `app.rs`; tests `approval_requested_then_approve_clears_queue_and_overlay`, `approval_deny_and_detail_paths`; #165 via #169)
 - [x] Session picker — `render_session_picker` + `SessionSummary` mapping (`model.rs` / `render.rs`; tests `session_picker_filters_and_activates_selected`, `session_summary_maps_fork_meta_and_optional_overrides`, `filtered_sessions_matches_label_id_and_workspace`; #166 via #169)
 - [x] Command palette — `render_command_picker` + `Overlay::Commands` (`command::suggestions`, Ctrl+P; tests `command_palette_opens_filters_and_runs_selected`, `command_palette_down_selects_and_runs_command`; #175)
-- [ ] Scrollback/status polish
-- [ ] Redraw coalescing; error + remediation UX
+- [x] Scrollback/status polish — footer status strip (`format_status_strip`: connection +
+      run + budget from `UiEvent`/`BudgetState`); PageUp/Dn + resize clamp
+      (`clamp_timeline_scroll` / `note_timeline_metrics`); tests
+      `status_strip_includes_connection_run_and_budget`,
+      `page_keys_scroll_timeline_and_clamp_on_resize`, `scroll_clamp_caps_offset_after_shrink`
+      (#178)
+- [x] Redraw coalescing; error + remediation UX — tick-gated paint via
+      `should_coalesce_redraw` (stream text still
+      `chunks_coalesce_into_one_assistant_item`); timeline noise coalesce
+      (`push_or_coalesce_noise`); error notices show explicit or static remediation hint
+      + toast; tests `consecutive_notice_noise_coalesces_into_one_item`,
+      `error_notice_shows_explicit_or_static_remediation`, `redraw_coalesce_waits_for_tick`
+      (#179)
 
 ---
 
