@@ -170,6 +170,12 @@ impl OpenAiProvider {
                 for line in text.lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data.trim() == "[DONE]" {
+                            // Flush tool calls before ending — early return used to
+                            // skip emission after the stream terminator.
+                            Self::emit_accumulated_tool_calls(
+                                &mut tool_call_accumulators,
+                                &mut on_event,
+                            )?;
                             return Ok(());
                         }
                         if let Ok(parsed) = serde_json::from_str::<SseData>(data) {
@@ -230,8 +236,16 @@ impl OpenAiProvider {
             }
         }
 
-        // Emit accumulated tool calls
-        for (_index, acc) in tool_call_accumulators {
+        Self::emit_accumulated_tool_calls(&mut tool_call_accumulators, &mut on_event)?;
+        Ok(())
+    }
+
+    fn emit_accumulated_tool_calls(
+        tool_call_accumulators: &mut std::collections::HashMap<usize, ToolCallAccumulator>,
+        on_event: &mut dyn FnMut(StreamEvent) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        let pending: Vec<_> = tool_call_accumulators.drain().collect();
+        for (_index, acc) in pending {
             if let (Some(id), Some(name)) = (acc.id, acc.name) {
                 let arguments = if acc.arguments.is_empty() {
                     serde_json::Value::Object(serde_json::Map::new())
@@ -249,7 +263,6 @@ impl OpenAiProvider {
                 })?;
             }
         }
-
         Ok(())
     }
 }

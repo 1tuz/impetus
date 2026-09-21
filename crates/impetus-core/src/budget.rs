@@ -255,6 +255,12 @@ impl BudgetChecker {
         self.state.tokens_used += tokens_used;
     }
 
+    /// Increment turn counter and record tokens with measurement source.
+    pub fn record_turn_with_usage(&mut self, tokens_used: u64, measured: bool) {
+        self.state.turns_used += 1;
+        self.record_usage(tokens_used, measured);
+    }
+
     /// Record token usage with measurement source.
     ///
     /// When `measured` is true, tokens are from provider-reported usage.

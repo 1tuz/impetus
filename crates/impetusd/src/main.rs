@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
-    OpenAiCompatibleProvider, ProviderError, ProviderProfile, RetryBudget, SqliteEventStore,
+    OpenAiProvider, OpenAiRetryBudget, ProviderError, ProviderProfile, SqliteEventStore,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
             let profile_bytes = std::fs::read(profile_path).context("read provider profile")?;
             let profile: ProviderProfile = serde_json::from_slice(&profile_bytes)
                 .context("provider profile must contain only the documented non-secret fields")?;
-            let provider = OpenAiCompatibleProvider::new(profile, RetryBudget::default())
+            let provider = OpenAiProvider::new(profile, OpenAiRetryBudget::default())
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             Ok(Harness::with_openai_provider_and_resolver(
                 store,

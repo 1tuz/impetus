@@ -325,14 +325,16 @@ impl AgentLoop {
             .filter(|(_, _, measured)| *measured)
             .map(|(p, c, _)| (p, c));
 
-        // Record turn completion with token usage
-        let tokens_used = if let Some((prompt, completion)) = measured_usage {
-            prompt + completion
+        // Record turn completion with token usage (measured when provider sent Usage).
+        let (tokens_used, measured) = if let Some((prompt, completion)) = measured_usage {
+            (prompt + completion, true)
         } else {
-            // Fallback to estimation if provider didn't send usage
-            estimated_tokens + self.estimate_response_tokens(&text)
+            (
+                estimated_tokens + self.estimate_response_tokens(&text),
+                false,
+            )
         };
-        self.runtime.record_turn(tokens_used)?;
+        self.runtime.record_turn_with_usage(tokens_used, measured)?;
 
         // Emit budget update event
         if let Some(state) = self.runtime.budget_state() {

@@ -206,11 +206,20 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Record turn completion and persist budget state
+    /// Record turn completion and persist budget state (tokens treated as estimated).
     pub fn record_turn(&self, tokens_used: u64) -> Result<(), RuntimeError> {
+        self.record_turn_with_usage(tokens_used, false)
+    }
+
+    /// Record turn completion with measured vs estimated token accounting.
+    pub fn record_turn_with_usage(
+        &self,
+        tokens_used: u64,
+        measured: bool,
+    ) -> Result<(), RuntimeError> {
         if let Some(ref checker) = self.budget {
             let mut guard = checker.lock().unwrap();
-            guard.record_turn(tokens_used);
+            guard.record_turn_with_usage(tokens_used, measured);
             self.store
                 .as_ref()
                 .update_budget_state(self.session_id, guard.state())?;
