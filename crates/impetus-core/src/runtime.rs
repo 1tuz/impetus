@@ -153,6 +153,17 @@ impl AgentRuntime {
         })
     }
 
+    /// Restore named checkpoint as a new shared-prefix branch.
+    /// Source session history stays immutable.
+    pub fn restore_checkpoint(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        checkpoint_id: Uuid,
+    ) -> Result<Self, RuntimeError> {
+        let checkpoint = store.get_checkpoint(checkpoint_id)?;
+        Self::fork(store, policy, checkpoint.session_id, checkpoint.sequence)
+    }
+
     pub fn session_id(&self) -> Uuid {
         self.session_id
     }
@@ -935,5 +946,27 @@ mod tests {
         // Source session unchanged
         let source_events = source_runtime.events().expect("source events");
         assert_eq!(source_events.len(), 4);
+    }
+
+    #[test]
+    fn runtime_restore_checkpoint_creates_new_branch() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+
+        let source = AgentRuntime::new(store.clone(), policy.clone());
+        let source_id = source.session_id();
+        source.submit_intent("one").expect("intent 1");
+        source.submit_intent("two").expect("intent 2");
+
+        let checkpoint = store
+            .create_checkpoint(source_id, "mid".into(), 2)
+            .expect("checkpoint");
+        source.submit_intent("three").expect("intent 3");
+
+        let restored = AgentRuntime::restore_checkpoint(store.clone(), policy, checkpoint.id)
+            .expect("restore");
+        assert_ne!(restored.session_id(), source_id);
+        assert_eq!(restored.events().expect("restored").len(), 2);
+        assert_eq!(source.events().expect("source").len(), 4);
     }
 }

@@ -129,7 +129,8 @@ Zap adapter ──HarnessClient──┘
 ```
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol,
-`HarnessClient`, provider registry foundation, copied-event forks, command/JSON
+`HarnessClient`, provider registry foundation, shared-prefix session forks +
+named checkpoints, command/JSON
 client, `impetus doctor`, `impetus ui` (Ratatui), Module Runtime foundations,
 attachment/diff/detail DTOs with **bounded ephemeral/in-memory** backing.
 Zap adapter — experimental baseline, не target integration architecture.
@@ -683,7 +684,7 @@ update, disable. Optional component update без полного релиза Im
 | Daemon/client split | crates exist; docs/tooling gaps | clean `impetus`/`impetusd` everywhere |
 | Safety pipeline | policy, approval, sandbox, admission | unchanged invariants |
 | Provider | `ModelProvider`, registry foundation | router + escalation |
-| Context | copied forks, compaction primitives | Session DAG, lazy modules |
+| Context | shared-prefix forks, checkpoints, compaction | TUI branch picker; lazy modules |
 | Attachments | bounded ephemeral/in-memory DTO backing | durable `ArtifactStore` |
 | Agent loop | present; keep hardening | full orchestrator + research loop |
 | Web research | foundations + doctor probes | native search/fetch; optional browser |

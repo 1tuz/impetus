@@ -1,12 +1,15 @@
 use crate::RuntimeStatus;
+use crate::storage::{CheckpointInfo, SessionInfo};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const IPC_VERSION: u16 = 3;
+pub const IPC_VERSION: u16 = 4;
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
     "session_attach",
     "session_list",
+    "session_fork",
+    "session_checkpoint",
     "event_stream",
     "prompt",
     "cancel",
@@ -33,6 +36,22 @@ pub enum IpcRequest {
         session_id: Uuid,
     },
     ListSessions,
+    ForkSession {
+        session_id: Uuid,
+        up_to_sequence: u64,
+    },
+    CreateCheckpoint {
+        session_id: Uuid,
+        name: String,
+        /// Logical sequence; when omitted, uses current session head.
+        sequence: Option<u64>,
+    },
+    ListCheckpoints {
+        session_id: Uuid,
+    },
+    RestoreCheckpoint {
+        checkpoint_id: Uuid,
+    },
     Stream {
         session_id: Uuid,
         after_sequence: u64,
@@ -85,7 +104,13 @@ pub enum IpcResponse {
         status: RuntimeStatus,
     },
     Sessions {
-        sessions: Vec<Uuid>,
+        sessions: Vec<SessionInfo>,
+    },
+    Checkpoint {
+        checkpoint: CheckpointInfo,
+    },
+    Checkpoints {
+        checkpoints: Vec<CheckpointInfo>,
     },
     Events {
         session_id: Uuid,
@@ -171,6 +196,28 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn fork_and_checkpoint_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        let fork = IpcRequest::ForkSession {
+            session_id,
+            up_to_sequence: 3,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&fork).unwrap()).unwrap(),
+            fork
+        );
+        let create = IpcRequest::CreateCheckpoint {
+            session_id,
+            name: "stable".into(),
+            sequence: Some(2),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&create).unwrap()).unwrap(),
+            create
         );
     }
 }

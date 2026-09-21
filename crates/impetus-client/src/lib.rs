@@ -67,10 +67,77 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
-    /// List all durable sessions.
-    async fn list_sessions(&self) -> Result<Vec<uuid::Uuid>> {
+    /// List all durable sessions with branch metadata.
+    async fn list_sessions(&self) -> Result<Vec<impetus_core::SessionInfo>> {
         match self.request(IpcRequest::ListSessions).await? {
             IpcResponse::Sessions { sessions } => Ok(sessions),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Fork a session at a logical sequence into a new shared-prefix branch.
+    async fn fork_session(
+        &self,
+        session_id: uuid::Uuid,
+        up_to_sequence: u64,
+    ) -> Result<uuid::Uuid> {
+        match self
+            .request(IpcRequest::ForkSession {
+                session_id,
+                up_to_sequence,
+            })
+            .await?
+        {
+            IpcResponse::Session { session_id, .. } => Ok(session_id),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Create a durable named checkpoint (restore creates a new branch).
+    async fn create_checkpoint(
+        &self,
+        session_id: uuid::Uuid,
+        name: String,
+        sequence: Option<u64>,
+    ) -> Result<impetus_core::CheckpointInfo> {
+        match self
+            .request(IpcRequest::CreateCheckpoint {
+                session_id,
+                name,
+                sequence,
+            })
+            .await?
+        {
+            IpcResponse::Checkpoint { checkpoint } => Ok(checkpoint),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// List durable checkpoints for a session.
+    async fn list_checkpoints(
+        &self,
+        session_id: uuid::Uuid,
+    ) -> Result<Vec<impetus_core::CheckpointInfo>> {
+        match self
+            .request(IpcRequest::ListCheckpoints { session_id })
+            .await?
+        {
+            IpcResponse::Checkpoints { checkpoints } => Ok(checkpoints),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Restore a checkpoint as a new shared-prefix session branch.
+    async fn restore_checkpoint(&self, checkpoint_id: uuid::Uuid) -> Result<uuid::Uuid> {
+        match self
+            .request(IpcRequest::RestoreCheckpoint { checkpoint_id })
+            .await?
+        {
+            IpcResponse::Session { session_id, .. } => Ok(session_id),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }

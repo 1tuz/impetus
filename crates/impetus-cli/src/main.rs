@@ -189,8 +189,16 @@ async fn main() -> Result<()> {
                         println!("No sessions found.");
                     } else {
                         println!("Sessions:");
-                        for session_id in sessions {
-                            println!("  {session_id}");
+                        for session in sessions {
+                            match (session.parent_session_id, session.fork_sequence) {
+                                (Some(parent), Some(seq)) => {
+                                    println!(
+                                        "  {} (parent={parent}, fork_sequence={seq})",
+                                        session.id
+                                    );
+                                }
+                                _ => println!("  {}", session.id),
+                            }
                         }
                     }
                 }

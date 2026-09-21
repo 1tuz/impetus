@@ -32,8 +32,9 @@ Harness (`impetusd`) owns SQLite, policy, Keychain lookup, execution authority,
 authoritative session state. Client disconnect preserves durable history; unknown
 work is not reported as completed.
 
-`ModelProvider` / `ProviderRegistry` — implemented foundations. Copied-event fork
-≠ Session DAG. Module Runtime foundations, TUI (`impetus ui`), and `impetus doctor`
+`ModelProvider` / `ProviderRegistry` — implemented foundations. Shared-prefix
+session fork + named checkpoints form the Session DAG product surface (IPC fork /
+restore). Module Runtime foundations, TUI (`impetus ui`), and `impetus doctor`
 are present; extension adapters and a live components/registry browser remain thin
 or stubbed in places.
 

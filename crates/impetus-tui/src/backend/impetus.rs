@@ -60,7 +60,7 @@ impl UiBackend for ImpetusBackend {
             .list_sessions()
             .await?
             .into_iter()
-            .map(SessionSummary::bare)
+            .map(|session| SessionSummary::bare(session.id))
             .collect())
     }
 

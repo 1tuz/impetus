@@ -321,14 +321,56 @@ fn handle_request(
             }
         }
         IpcRequest::ListSessions => match store.list_sessions() {
-            Ok(sessions) => IpcResponse::Sessions {
-                sessions: sessions.into_iter().map(|session| session.id).collect(),
-            },
+            Ok(sessions) => IpcResponse::Sessions { sessions },
             Err(error) => IpcResponse::Error {
                 code: IpcErrorCode::Internal,
                 message: error.to_string(),
             },
         },
+        IpcRequest::ForkSession {
+            session_id,
+            up_to_sequence,
+        } => match AgentRuntime::fork(store, policy, session_id, up_to_sequence) {
+            Ok(runtime) => IpcResponse::Session {
+                session_id: runtime.session_id(),
+                status: RuntimeStatus::Idle,
+            },
+            Err(error) => runtime_error(error),
+        },
+        IpcRequest::CreateCheckpoint {
+            session_id,
+            name,
+            sequence,
+        } => {
+            let resolved_sequence = match sequence {
+                Some(sequence) => Ok(sequence),
+                None => store.list(session_id).and_then(|events| {
+                    events
+                        .last()
+                        .map(|event| event.sequence)
+                        .ok_or(crate::StoreError::MissingSession(session_id))
+                }),
+            };
+            match resolved_sequence
+                .and_then(|sequence| store.create_checkpoint(session_id, name, sequence))
+            {
+                Ok(checkpoint) => IpcResponse::Checkpoint { checkpoint },
+                Err(error) => store_error(error),
+            }
+        }
+        IpcRequest::ListCheckpoints { session_id } => match store.list_checkpoints(session_id) {
+            Ok(checkpoints) => IpcResponse::Checkpoints { checkpoints },
+            Err(error) => store_error(error),
+        },
+        IpcRequest::RestoreCheckpoint { checkpoint_id } => {
+            match AgentRuntime::restore_checkpoint(store, policy, checkpoint_id) {
+                Ok(runtime) => IpcResponse::Session {
+                    session_id: runtime.session_id(),
+                    status: RuntimeStatus::Idle,
+                },
+                Err(error) => runtime_error(error),
+            }
+        }
         IpcRequest::Stream {
             session_id,
             after_sequence,
@@ -783,13 +825,24 @@ pub fn redact_tool_outcome(mut outcome: ToolOutcome) -> ToolOutcome {
 fn runtime_error(error: RuntimeError) -> IpcResponse {
     let code = match &error {
         RuntimeError::MissingSession(_) => IpcErrorCode::MissingSession,
-        RuntimeError::ActiveRun(_) => IpcErrorCode::Conflict,
+        RuntimeError::Store(crate::StoreError::MissingSession(_))
+        | RuntimeError::Store(crate::StoreError::MissingCheckpoint(_))
+        | RuntimeError::Store(crate::StoreError::MissingSequence { .. }) => {
+            IpcErrorCode::MissingSession
+        }
+        RuntimeError::Store(crate::StoreError::DuplicateCheckpointName { .. })
+        | RuntimeError::ActiveRun(_) => IpcErrorCode::Conflict,
+        RuntimeError::Store(crate::StoreError::EmptyCheckpointName) => IpcErrorCode::InvalidRequest,
         _ => IpcErrorCode::Internal,
     };
     IpcResponse::Error {
         code,
         message: error.to_string(),
     }
+}
+
+fn store_error(error: crate::StoreError) -> IpcResponse {
+    runtime_error(RuntimeError::Store(error))
 }
 
 fn gather_subsystem_health(
@@ -1952,5 +2005,72 @@ mod tests {
         assert_eq!(details["web_fetch"], true);
         assert_eq!(details["search_backends"][0]["id"], "bing_html");
         assert_eq!(details["search_backends"][1]["id"], "duckduckgo");
+    }
+
+    #[test]
+    fn ipc_fork_and_checkpoint_expose_branch_metadata() {
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(store.clone(), policy());
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+        }) else {
+            panic!("create session");
+        };
+        // Created + two intents via append on store for deterministic sequences.
+        store
+            .append_next(
+                session_id,
+                EventPayload::Intent(crate::IntentEvent { text: "one".into() }),
+            )
+            .expect("intent 1");
+        store
+            .append_next(
+                session_id,
+                EventPayload::Intent(crate::IntentEvent { text: "two".into() }),
+            )
+            .expect("intent 2");
+
+        let IpcResponse::Checkpoint { checkpoint } = harness.handle(IpcRequest::CreateCheckpoint {
+            session_id,
+            name: "stable".into(),
+            sequence: Some(2),
+        }) else {
+            panic!("create checkpoint");
+        };
+        assert_eq!(checkpoint.sequence, 2);
+
+        let IpcResponse::Session {
+            session_id: forked_id,
+            ..
+        } = harness.handle(IpcRequest::ForkSession {
+            session_id,
+            up_to_sequence: 2,
+        })
+        else {
+            panic!("fork session");
+        };
+        assert_ne!(forked_id, session_id);
+
+        let IpcResponse::Sessions { sessions } = harness.handle(IpcRequest::ListSessions) else {
+            panic!("list sessions");
+        };
+        let forked_meta = sessions
+            .iter()
+            .find(|s| s.id == forked_id)
+            .expect("fork meta");
+        assert_eq!(forked_meta.parent_session_id, Some(session_id));
+        assert_eq!(forked_meta.fork_sequence, Some(2));
+
+        let IpcResponse::Session {
+            session_id: restored_id,
+            ..
+        } = harness.handle(IpcRequest::RestoreCheckpoint {
+            checkpoint_id: checkpoint.id,
+        })
+        else {
+            panic!("restore checkpoint");
+        };
+        assert_ne!(restored_id, session_id);
+        assert_ne!(restored_id, forked_id);
     }
 }

@@ -257,6 +257,10 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::CreateSession { .. } => "session_create",
         IpcRequest::Attach { .. } => "session_attach",
         IpcRequest::ListSessions => "session_list",
+        IpcRequest::ForkSession { .. } => "session_fork",
+        IpcRequest::CreateCheckpoint { .. }
+        | IpcRequest::ListCheckpoints { .. }
+        | IpcRequest::RestoreCheckpoint { .. } => "session_checkpoint",
         IpcRequest::Stream { .. } => "event_stream",
         IpcRequest::Prompt { .. } => "prompt",
         IpcRequest::Context { .. } => "context",
@@ -398,7 +402,8 @@ mod tests {
         ));
         assert!(matches!(
             handle_request(store.clone(), IpcRequest::ListSessions),
-            IpcResponse::Sessions { sessions } if sessions == vec![session_id]
+            IpcResponse::Sessions { sessions }
+                if sessions.len() == 1 && sessions[0].id == session_id
         ));
         let first = handle_request(
             store.clone(),

@@ -135,7 +135,7 @@ impl MockBackend {
 impl UiBackend for MockBackend {
     async fn connection_info(&self) -> Result<ConnectionInfo> {
         Ok(ConnectionInfo {
-            protocol_version: 3,
+            protocol_version: 4,
             capabilities: [
                 "session_create",
                 "session_attach",
