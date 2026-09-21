@@ -11,6 +11,7 @@ mod composer;
 mod markdown;
 mod model;
 mod render;
+pub mod spike;
 mod terminal;
 mod theme;
 

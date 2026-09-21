@@ -245,7 +245,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SHA; decisions locked). JCode = UX reference only; TUI uses `HarnessClient` only.
 
 - [x] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
-- [ ] Ratatui + Crossterm spike / evaluation
+- [x] Ratatui + Crossterm spike / evaluation
 - [ ] TUI shell: `HarnessClient` only, no core imports
 - [ ] Composer (single-line + multiline mode)
 - [x] Bracketed paste support

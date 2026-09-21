@@ -17,7 +17,7 @@ Impetus → own thin TUI client (Ratatui + Crossterm)
 **Codex** — secondary reference for composer, large paste, doctor/diagnostics,
 approval UX, errors/remediation.
 
-**Baseline stack (planned evaluation):** Ratatui, Crossterm.
+**Baseline stack:** Ratatui + Crossterm — **GO** (evaluation: [RATATUI_SPIKE.md](RATATUI_SPIKE.md), #137).
 
 ---
 

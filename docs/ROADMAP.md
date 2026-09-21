@@ -207,8 +207,9 @@ Cannot change safety, sandbox, credentials, or core code automatically.
 
 **Target:** `cd project && impetus` — first-class CLI/TUI. JCode
 ([1jehuang/jcode](https://github.com/1jehuang/jcode)) = UX reference only;
-Ratatui/Crossterm baseline. TUI audit: [TUI_REFERENCE.md](TUI_REFERENCE.md)
-(pinned JCode SHA; decisions locked). Bracketed paste + large-paste artifact flow.
+Ratatui/Crossterm baseline (**GO**, [RATATUI_SPIKE.md](RATATUI_SPIKE.md)).
+TUI audit: [TUI_REFERENCE.md](TUI_REFERENCE.md) (pinned JCode SHA; decisions locked).
+Bracketed paste + large-paste artifact flow.
 
 ### Zap backend integration
 
