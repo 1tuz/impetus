@@ -8,6 +8,17 @@ Stubs and placeholder responses do not count as done.
 
 ---
 
+## P0 §2 — Mandatory tool argument validation
+
+- [x] Validate model tool args against tool JSON Schema **before** policy/execution
+      (`tool_schema::validate_tool_arguments` in `ToolOrchestrator::normalize_tool_call`)
+- [x] Reject malformed args without reaching executor (typed `ToolArgError` /
+      `OrchestratorError::InvalidArguments`; no silent coercion at the schema gate)
+- [ ] Provider HTTP `tools` schemas — Planned; today prompt-only catalog
+      (`default_tool_stubs`) plus exported `builtin_tool_schemas()` for a future wire-up
+
+---
+
 ## Phase 0 — Foundation (done)
 
 - [x] Headless runtime with SQLite WAL and durable Event Log
@@ -222,6 +233,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 - [x] Provider-native tool call protocol parsing (OpenAI, Anthropic) - Issue #83, partial in PR #84
 - [x] Measured vs estimated token usage tracking in budget events
 - [x] Tool call argument validation (reject malformed before execution)
+      — JSON Schema gate in `tool_schema.rs` before policy (closes #154)
 
 ---
 

@@ -62,6 +62,7 @@ pub mod storage;
 pub mod supervisor;
 pub mod tempo_importer;
 pub mod tool_orchestrator;
+pub mod tool_schema;
 pub mod tools;
 pub mod web_research;
 
@@ -185,6 +186,10 @@ pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tempo_importer::{TempoImporter, TempoImporterConfig, TempoWorklog};
 pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
+};
+pub use tool_schema::{
+    BuiltinToolSchema, ToolArgError, builtin_tool_schemas, canonical_tool_name, schema_for_tool,
+    validate_tool_arguments,
 };
 pub use tools::{
     ARTIFACT_CHUNK_SIZE, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome,
