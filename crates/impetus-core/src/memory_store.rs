@@ -14,8 +14,22 @@
 //!
 //! Writes are create-only ([`MemoryStore::remember`]) or append-safe
 //! ([`MemoryStore::append`]) — never a silent overwrite of an existing id.
+//!
+//! Derived indexes are disposable: rebuild anytime from entries, or delete the
+//! on-disk `derived-index/` tree under a store root. Index I/O refuses paths
+//! that escape the store root via `..` or symlink traversal.
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use crate::{EffectCapability, PolicyDecision, PolicyEngine, SandboxScope};
+
+/// Relative directory under a memory store root for disposable derived index files.
+pub const DERIVED_INDEX_DIR: &str = "derived-index";
+
+/// Relative file (under [`DERIVED_INDEX_DIR`]) holding id → entry-order lines.
+const DERIVED_INDEX_BY_ID: &str = "by-id.txt";
 
 /// Visibility boundary for a memory entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,11 +57,15 @@ pub struct MemoryEntry {
     pub provenance: MemoryProvenance,
 }
 
-/// Write refused because it would silently replace an existing entry.
+/// Write / path refused for memory store I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryStoreError {
     /// Create-only insert hit an existing `id`.
     AlreadyExists(String),
+    /// Path escapes store root (`..`, absolute relative, or symlink outside).
+    UnsafeStorePath(String),
+    /// Filesystem failure while reading/writing disposable index.
+    Io(String),
 }
 
 impl std::fmt::Display for MemoryStoreError {
@@ -56,11 +74,96 @@ impl std::fmt::Display for MemoryStoreError {
             Self::AlreadyExists(id) => {
                 write!(f, "memory entry already exists for id: {id}")
             }
+            Self::UnsafeStorePath(path) => {
+                write!(
+                    f,
+                    "memory store path escapes root or follows unsafe symlink: {path}"
+                )
+            }
+            Self::Io(msg) => write!(f, "memory store io error: {msg}"),
         }
     }
 }
 
 impl std::error::Error for MemoryStoreError {}
+
+/// Disposable id → entry-index map. Safe to drop; rebuild from [`MemoryStore::rebuild_index`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MemoryDerivedIndex {
+    by_id: HashMap<String, usize>,
+}
+
+impl MemoryDerivedIndex {
+    pub fn get(&self, id: &str) -> Option<usize> {
+        self.by_id.get(id).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.by_id.contains_key(id)
+    }
+}
+
+/// Resolve `relative` under `store_root` for derived-index I/O.
+///
+/// Refuses absolute `relative`, `..` components, and any path whose canonical
+/// form (following symlinks) lies outside `store_root`.
+pub fn resolve_index_path(store_root: &Path, relative: &Path) -> Result<PathBuf, MemoryStoreError> {
+    if relative.is_absolute() {
+        return Err(MemoryStoreError::UnsafeStorePath(
+            relative.display().to_string(),
+        ));
+    }
+    for component in relative.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(MemoryStoreError::UnsafeStorePath(
+                    relative.display().to_string(),
+                ));
+            }
+        }
+    }
+
+    let root = store_root.canonicalize().map_err(|err| {
+        MemoryStoreError::Io(format!(
+            "canonicalize store root {}: {err}",
+            store_root.display()
+        ))
+    })?;
+    let candidate = root.join(relative);
+
+    if let Ok(resolved) = candidate.canonicalize() {
+        if !resolved.starts_with(&root) {
+            return Err(MemoryStoreError::UnsafeStorePath(
+                relative.display().to_string(),
+            ));
+        }
+        return Ok(resolved);
+    }
+
+    // Missing leaf: prove parent stays inside root (covers symlink parents).
+    let parent = candidate.parent().unwrap_or(root.as_path());
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| MemoryStoreError::UnsafeStorePath(relative.display().to_string()))?;
+    let parent_canon = parent.canonicalize().map_err(|err| {
+        MemoryStoreError::Io(format!("canonicalize parent {}: {err}", parent.display()))
+    })?;
+    if !parent_canon.starts_with(&root) {
+        return Err(MemoryStoreError::UnsafeStorePath(
+            relative.display().to_string(),
+        ));
+    }
+    Ok(parent_canon.join(file_name))
+}
 
 /// In-process contextual memory. Not an [`crate::EventStore`] and not policy.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -153,6 +256,80 @@ impl MemoryStore {
     pub fn context_texts_in_scope(&self, scope: MemoryScope) -> impl Iterator<Item = &str> {
         self.entries_in_scope(scope)
             .map(|entry| entry.content.as_str())
+    }
+
+    /// Rebuild disposable in-memory index from authoritative entries.
+    pub fn rebuild_index(&self) -> MemoryDerivedIndex {
+        let mut by_id = HashMap::with_capacity(self.entries.len());
+        for (idx, entry) in self.entries.iter().enumerate() {
+            by_id.insert(entry.id.clone(), idx);
+        }
+        MemoryDerivedIndex { by_id }
+    }
+
+    /// Look up an entry via a derived index. Index must match current entries.
+    pub fn get_via_index<'a>(
+        &'a self,
+        index: &MemoryDerivedIndex,
+        id: &str,
+    ) -> Option<&'a MemoryEntry> {
+        index.get(id).and_then(|idx| self.entries.get(idx))
+    }
+
+    /// Persist disposable derived index under `store_root/derived-index/`.
+    ///
+    /// Safe to delete that directory and call again. Refuses symlink escape.
+    pub fn persist_derived_index(&self, store_root: &Path) -> Result<PathBuf, MemoryStoreError> {
+        let index = self.rebuild_index();
+        let index_dir = resolve_index_path(store_root, Path::new(DERIVED_INDEX_DIR))?;
+        fs::create_dir_all(&index_dir).map_err(|err| {
+            MemoryStoreError::Io(format!("create {}: {err}", index_dir.display()))
+        })?;
+        // Re-resolve after create so a replaced-by-symlink dir is caught.
+        let _index_dir = resolve_index_path(store_root, Path::new(DERIVED_INDEX_DIR))?;
+        let file_rel = Path::new(DERIVED_INDEX_DIR).join(DERIVED_INDEX_BY_ID);
+        let file_path = resolve_index_path(store_root, &file_rel)?;
+
+        let mut body = String::with_capacity(index.len().saturating_mul(16));
+        // Stable order = entry order (authoritative), not HashMap iteration.
+        debug_assert_eq!(index.len(), self.entries.len());
+        for entry in &self.entries {
+            body.push_str(&entry.id);
+            body.push('\n');
+        }
+        fs::write(&file_path, body)
+            .map_err(|err| MemoryStoreError::Io(format!("write {}: {err}", file_path.display())))?;
+        Ok(file_path)
+    }
+
+    /// Delete disposable on-disk derived index under `store_root`. Entries untouched.
+    pub fn clear_derived_index(store_root: &Path) -> Result<(), MemoryStoreError> {
+        let candidate = store_root.join(DERIVED_INDEX_DIR);
+        match candidate.symlink_metadata() {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(MemoryStoreError::Io(format!(
+                    "stat {}: {err}",
+                    candidate.display()
+                )));
+            }
+            Ok(_) => {}
+        }
+        // Resolve first — refuse to touch an escaping symlink.
+        let index_dir = resolve_index_path(store_root, Path::new(DERIVED_INDEX_DIR))?;
+        let meta = index_dir
+            .symlink_metadata()
+            .map_err(|err| MemoryStoreError::Io(format!("stat {}: {err}", index_dir.display())))?;
+        if meta.file_type().is_symlink() || meta.is_file() {
+            fs::remove_file(&index_dir).map_err(|err| {
+                MemoryStoreError::Io(format!("remove {}: {err}", index_dir.display()))
+            })?;
+        } else if meta.is_dir() {
+            fs::remove_dir_all(&index_dir).map_err(|err| {
+                MemoryStoreError::Io(format!("remove {}: {err}", index_dir.display()))
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -447,5 +624,113 @@ mod tests {
         assert!(content.starts_with("prefix\n"));
         assert!(!content.contains("fake-append-token-zzz"));
         assert!(content.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn derived_index_rebuilds_from_entries_and_is_disposable() {
+        let mut memory = MemoryStore::new();
+        memory
+            .remember("a", MemoryScope::Project, "one", note_provenance())
+            .expect("create");
+        memory
+            .remember("b", MemoryScope::Team, "two", note_provenance())
+            .expect("create");
+
+        let index = memory.rebuild_index();
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.get("a"), Some(0));
+        assert_eq!(index.get("b"), Some(1));
+        assert_eq!(
+            memory
+                .get_via_index(&index, "b")
+                .map(|e| e.content.as_str()),
+            Some("two")
+        );
+
+        // Drop and rebuild — same mapping; entries stay authoritative.
+        drop(index);
+        let again = memory.rebuild_index();
+        assert_eq!(again.get("a"), Some(0));
+        assert_eq!(again.get("b"), Some(1));
+        assert_eq!(memory.entries().len(), 2);
+    }
+
+    #[test]
+    fn derived_index_on_disk_can_be_cleared_and_rebuilt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut memory = MemoryStore::new();
+        memory
+            .remember("x", MemoryScope::User, "note", note_provenance())
+            .expect("create");
+
+        let written = memory.persist_derived_index(root).expect("persist");
+        assert!(written.exists());
+        assert!(written.starts_with(root.canonicalize().unwrap()));
+
+        MemoryStore::clear_derived_index(root).expect("clear");
+        assert!(!root.join(DERIVED_INDEX_DIR).exists());
+
+        let rewritten = memory.persist_derived_index(root).expect("rebuild");
+        let body = std::fs::read_to_string(&rewritten).expect("read");
+        assert_eq!(body, "x\n");
+    }
+
+    #[test]
+    fn resolve_index_path_refuses_parent_and_absolute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let err = resolve_index_path(root, Path::new("../escape")).expect_err("parent");
+        assert!(matches!(err, MemoryStoreError::UnsafeStorePath(_)));
+
+        let abs = root.join("inside");
+        let err = resolve_index_path(root, &abs).expect_err("absolute");
+        assert!(matches!(err, MemoryStoreError::UnsafeStorePath(_)));
+    }
+
+    #[test]
+    fn persist_refuses_symlink_escape_outside_store_root() {
+        let store = tempfile::tempdir().expect("store");
+        let outside = tempfile::tempdir().expect("outside");
+        let root = store.path();
+        let link = root.join(DERIVED_INDEX_DIR);
+        std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
+
+        let mut memory = MemoryStore::new();
+        memory
+            .remember("y", MemoryScope::Project, "data", note_provenance())
+            .expect("create");
+
+        let err = memory.persist_derived_index(root).expect_err("must refuse");
+        assert!(
+            matches!(err, MemoryStoreError::UnsafeStorePath(_)),
+            "got {err:?}"
+        );
+        // Outside dir must stay empty — no write through escaping symlink.
+        assert!(
+            std::fs::read_dir(outside.path())
+                .expect("read outside")
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_file_symlink_pointing_outside_store() {
+        let store = tempfile::tempdir().expect("store");
+        let outside = tempfile::tempdir().expect("outside");
+        let root = store.path();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "nope").expect("write outside");
+        std::fs::create_dir_all(root.join(DERIVED_INDEX_DIR)).expect("mkdir");
+        let link = root.join(DERIVED_INDEX_DIR).join(DERIVED_INDEX_BY_ID);
+        std::os::unix::fs::symlink(&outside_file, &link).expect("symlink file");
+
+        let rel = Path::new(DERIVED_INDEX_DIR).join(DERIVED_INDEX_BY_ID);
+        let err = resolve_index_path(root, &rel).expect_err("must refuse");
+        assert!(
+            matches!(err, MemoryStoreError::UnsafeStorePath(_)),
+            "got {err:?}"
+        );
     }
 }

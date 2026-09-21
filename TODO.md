@@ -190,7 +190,9 @@ Runtime State ≠ Memory ≠ Policy
 - [x] Create-only or append-safe semantics where appropriate
       (`remember` create-only / `append` append-safe; `MemoryStoreError::AlreadyExists`;
       no silent overwrite; unit tests)
-- [ ] Derived indexes disposable/rebuildable; no unsafe symlink traversal
+- [x] Derived indexes disposable/rebuildable; no unsafe symlink traversal
+      (`MemoryDerivedIndex` / `rebuild_index` / `persist_derived_index`;
+      `resolve_index_path` refuses `..` and symlink escape; unit tests)
 - [ ] Human-readable source format where useful
 
 ### 5. WorktreeManager
