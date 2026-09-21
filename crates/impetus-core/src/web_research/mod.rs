@@ -13,8 +13,11 @@ mod types;
 
 pub use bing::BingHtmlSearchBackend;
 pub use browser::{
-    BrowserCapability, BrowserProvider, BrowserProviderDescriptor, BrowserService,
-    BrowserServiceStatus, ProviderBackedBrowserService,
+    ABSENT_BROWSER_REASON, AbsentBrowserService, BROWSER_PROVIDER_PROTOCOL_VERSION,
+    BrowserCapability, BrowserNavigateRequest, BrowserNavigateResult, BrowserNegotiateRequest,
+    BrowserNegotiateResult, BrowserProvider, BrowserProviderDescriptor, BrowserService,
+    BrowserServiceStatus, BrowserSessionEnsureRequest, BrowserSessionHandle, MockBrowserMode,
+    MockBrowserProvider, ProviderBackedBrowserService,
 };
 pub use doctor::{BackendDoctorStatus, SearchBackendDoctorEntry, WebDoctor, WebDoctorReport};
 pub use duckduckgo::DuckDuckGoSearchBackend;

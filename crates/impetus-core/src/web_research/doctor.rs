@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BrowserServiceStatus, SearchRequest, WebOutcome, WebResearchEngine, WebResearchService,
+    BrowserService, BrowserServiceStatus, SearchRequest, WebOutcome, WebResearchEngine,
+    WebResearchService,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,10 +66,19 @@ impl WebDoctor {
 
     /// Preferred live probe when the concrete engine is available: probe every configured
     /// backend once instead of stopping when the normal fallback chain finds a working result.
+    ///
+    /// Browser status defaults to honest absent/unavailable unless a provider is supplied.
     pub async fn probe_engine(engine: &WebResearchEngine) -> WebDoctorReport {
+        Self::probe_engine_with_browser(engine, &super::AbsentBrowserService).await
+    }
+
+    pub async fn probe_engine_with_browser(
+        engine: &WebResearchEngine,
+        browser: &dyn BrowserService,
+    ) -> WebDoctorReport {
         let mut report = WebDoctorReport {
             search_backends: Vec::new(),
-            browser: BrowserServiceStatus::Unavailable,
+            browser: browser.status().await,
             live_probe_performed: true,
             notes: Vec::new(),
         };
@@ -135,9 +145,16 @@ impl WebDoctor {
     /// Use this generic contract path only when the concrete engine is unavailable; unlike
     /// `probe_engine`, it observes the normal fallback chain and may not contact every backend.
     pub async fn probe_search(service: &dyn WebResearchService) -> WebDoctorReport {
+        Self::probe_search_with_browser(service, &super::AbsentBrowserService).await
+    }
+
+    pub async fn probe_search_with_browser(
+        service: &dyn WebResearchService,
+        browser: &dyn BrowserService,
+    ) -> WebDoctorReport {
         let mut report = WebDoctorReport {
             search_backends: Vec::new(),
-            browser: BrowserServiceStatus::Unavailable,
+            browser: browser.status().await,
             live_probe_performed: true,
             notes: Vec::new(),
         };
@@ -221,5 +238,52 @@ impl WebDoctor {
             }
         }
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::web_research::{
+        BrowserCapability, BrowserServiceStatus, EgressPolicy, MockBrowserMode,
+        MockBrowserProvider, ProviderBackedBrowserService, WebResearchEngine,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn inspect_reports_absent_browser_honestly() {
+        let engine = WebResearchEngine::production(EgressPolicy::default());
+        let report = WebDoctor::inspect(&engine, BrowserServiceStatus::absent());
+        assert_eq!(report.browser, BrowserServiceStatus::absent());
+        assert!(!report.live_probe_performed);
+    }
+
+    #[tokio::test]
+    async fn probe_engine_with_mock_degraded_browser() {
+        let engine = WebResearchEngine::production(EgressPolicy::default());
+        let provider = Arc::new(MockBrowserProvider::new(MockBrowserMode::Degraded));
+        let browser = ProviderBackedBrowserService::new(provider);
+        let report = WebDoctor::probe_engine_with_browser(&engine, &browser).await;
+        assert!(matches!(
+            report.browser,
+            BrowserServiceStatus::Degraded { .. }
+        ));
+        assert!(report.live_probe_performed);
+    }
+
+    #[tokio::test]
+    async fn probe_engine_defaults_to_absent_browser() {
+        let engine = WebResearchEngine::production(EgressPolicy::default());
+        let report = WebDoctor::probe_engine(&engine).await;
+        assert_eq!(report.browser, BrowserServiceStatus::absent());
+    }
+
+    #[test]
+    fn available_status_carries_capabilities() {
+        let status = BrowserServiceStatus::Available {
+            provider_id: "mock".into(),
+            capabilities: vec![BrowserCapability::Navigate],
+        };
+        assert!(status.is_usable());
     }
 }

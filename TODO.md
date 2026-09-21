@@ -177,7 +177,7 @@ Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
 
 ### Browser (optional)
 
-- [ ] JCode Browser Provider Protocol as reference (negotiation, health, session ops)
+- [x] JCode Browser Provider Protocol as reference (negotiation, health, session ops)
 - [ ] Optional Firefox/Chrome/WebDriver/Safari providers (not in mandatory core)
 - [x] No Chromium/Playwright/Node in required harness dependency set
 
