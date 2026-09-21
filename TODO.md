@@ -257,7 +257,14 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 ### 8. Steer vs follow-up
 
-- [ ] Steer running task vs enqueue follow-up — distinct from a normal user message
+- [x] Typed intents distinct from a normal user message:
+      `UserPromptIntent::{Prompt, Steer, FollowUp}` + in-memory
+      `UserIntentRouter` stubs (`user_intent`)
+      - Steer → active run only (rejected when none)
+      - FollowUp → enqueue after current (OK when session exists)
+      - Prompt → baseline when session exists
+      - Neither Steer nor FollowUp rewrites `ActionOrigin` or bypasses Policy
+- [ ] Full TUI/IPC wiring, LLM prompt rewrite, WorkflowEngine cancel/replace race
 
 ### 9. Hooks (only if needed; performance-first)
 
