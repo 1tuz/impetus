@@ -1,8 +1,10 @@
 //! Process execution with bounded output and artifact capture.
 
-use crate::{Action, ActionKind, ActionOrigin, EffectAdmission, EffectSeam, NormalizedEffect};
+use crate::{
+    Action, ActionKind, ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectAdmission,
+    EffectSeam, NormalizedEffect,
+};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
@@ -10,7 +12,16 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-/// Maximum bytes captured from stdout/stderr before truncation.
+/// Maximum UTF-8 bytes kept inline in process stdout/stderr preview (and in the
+/// combined observation body). Full captured output is stored as a durable
+/// artifact when this limit is exceeded — same bound as tool previews.
+pub const MAX_PROCESS_PREVIEW_BYTES: usize = 16 * 1024;
+
+/// Maximum bytes captured from each of stdout/stderr before capture stops.
+///
+/// ponytail: capture still buffers in RAM up to this ceiling per stream
+/// (~2 MiB). Mid-stream spill to DurableArtifactStore would remove the RAM
+/// ceiling; upgrade path is chunked hash-and-append while reading.
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Default execution timeout (2 minutes).
@@ -26,6 +37,8 @@ pub enum ProcessExecutionError {
     ExecutionFailed(String),
     #[error("process timed out after {0:?}")]
     Timeout(Duration),
+    #[error("artifact store error: {0}")]
+    Artifact(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -33,10 +46,17 @@ pub enum ProcessExecutionError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessOutput {
     pub exit_code: Option<i32>,
+    /// Bounded stdout preview. Full stream lives in [`Self::artifact`] when large.
     pub stdout: String,
+    /// Bounded stderr preview. Full stream lives in [`Self::artifact`] when large.
     pub stderr: String,
+    /// True when capture hit [`MAX_PROCESS_OUTPUT_BYTES`] or preview was replaced
+    /// by an artifact-backed body.
     pub truncated: bool,
     pub duration_ms: u64,
+    /// Full redacted process body (`exit_code` + stdout + stderr) when larger
+    /// than [`MAX_PROCESS_PREVIEW_BYTES`] or capture-truncated.
+    pub artifact: Option<DurableArtifactRef>,
 }
 
 /// Process execution request with policy check and bounded output.
@@ -44,7 +64,7 @@ pub struct ProcessOutput {
 pub struct ProcessExecutionRequest {
     pub command: String,
     pub args: Vec<String>,
-    pub working_dir: Option<PathBuf>,
+    pub working_dir: Option<std::path::PathBuf>,
     pub env: Vec<(String, String)>,
     pub origin: ActionOrigin,
     pub intent_revision: u64,
@@ -69,7 +89,7 @@ impl ProcessExecutionRequest {
         }
     }
 
-    pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
+    pub fn with_working_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.working_dir = Some(dir);
         self
     }
@@ -107,11 +127,15 @@ impl ProcessExecutionRequest {
     }
 
     /// Execute the process after policy approval.
-    /// Output is bounded to MAX_PROCESS_OUTPUT_BYTES.
+    ///
+    /// Capture is bounded to [`MAX_PROCESS_OUTPUT_BYTES`] per stream. Bodies that
+    /// exceed [`MAX_PROCESS_PREVIEW_BYTES`] (or hit the capture ceiling) are stored
+    /// in `artifacts`; the returned strings stay preview-sized.
     /// Requires AdmittedOperation token proving the effect passed admission.
     pub async fn execute(
         &self,
         _admission: &crate::AdmittedOperation,
+        artifacts: &DurableArtifactStore,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let start = std::time::Instant::now();
 
@@ -161,15 +185,71 @@ impl ProcessExecutionRequest {
             .map_err(|e| ProcessExecutionError::ExecutionFailed(e.to_string()))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let capture_truncated = stdout_truncated || stderr_truncated;
 
-        Ok(ProcessOutput {
-            exit_code: exit_status.code(),
-            stdout: stdout_output,
-            stderr: stderr_output,
-            truncated: stdout_truncated || stderr_truncated,
+        finalize_process_output(
+            exit_status.code(),
+            stdout_output,
+            stderr_output,
+            capture_truncated,
             duration_ms,
-        })
+            artifacts,
+        )
     }
+}
+
+/// Build a durable process observation: keep a bounded preview, store the full
+/// redacted body when it exceeds the preview bound or capture truncated.
+fn finalize_process_output(
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    capture_truncated: bool,
+    duration_ms: u64,
+    artifacts: &DurableArtifactStore,
+) -> Result<ProcessOutput, ProcessExecutionError> {
+    let full = crate::tools::redact_text(&format!(
+        "exit_code={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    ));
+    let needs_artifact = capture_truncated || full.len() > MAX_PROCESS_PREVIEW_BYTES;
+
+    let artifact = if needs_artifact {
+        Some(
+            artifacts
+                .store(full.as_bytes())
+                .map_err(|e| ProcessExecutionError::Artifact(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let (stdout_preview, stderr_preview) = if needs_artifact {
+        (truncate_preview(&stdout), truncate_preview(&stderr))
+    } else {
+        (stdout, stderr)
+    };
+
+    Ok(ProcessOutput {
+        exit_code,
+        stdout: stdout_preview,
+        stderr: stderr_preview,
+        truncated: needs_artifact,
+        duration_ms,
+        artifact,
+    })
+}
+
+fn truncate_preview(input: &str) -> String {
+    if input.len() <= MAX_PROCESS_PREVIEW_BYTES {
+        return input.to_owned();
+    }
+    let mut end = MAX_PROCESS_PREVIEW_BYTES;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut preview = input[..end].to_owned();
+    preview.push_str("\n...[preview truncated; full result is stored as an artifact]");
+    preview
 }
 
 /// Capture stream output up to max_bytes, returning (content, truncated).
@@ -225,10 +305,11 @@ impl ProcessExecution {
     pub async fn execute_with_admission(
         &self,
         req: &ProcessExecutionRequest,
+        artifacts: &DurableArtifactStore,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let admission = self.request(req)?;
         match admission {
-            crate::EffectAdmission::Allow(token) => req.execute(&token).await,
+            crate::EffectAdmission::Allow(token) => req.execute(&token, artifacts).await,
             crate::EffectAdmission::NeedsApproval(_) => {
                 Err(ProcessExecutionError::ApprovalRequired)
             }
@@ -248,6 +329,12 @@ mod tests {
         let workspace = std::env::temp_dir();
         let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.clone()));
         EffectSeam::with_sandbox(policy, Sandbox::workspace(workspace))
+    }
+
+    fn temp_artifacts() -> (tempfile::TempDir, DurableArtifactStore) {
+        let root = tempfile::tempdir().expect("artifact root");
+        let store = DurableArtifactStore::open(root.path()).expect("open artifact store");
+        (root, store)
     }
 
     #[test]
@@ -273,6 +360,7 @@ mod tests {
     #[tokio::test]
     async fn process_execution_captures_output() {
         let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
         let request =
             ProcessExecutionRequest::new("echo", vec!["hello".into()], ActionOrigin::User, 1);
 
@@ -282,18 +370,20 @@ mod tests {
             _ => panic!("expected Allow for user echo"),
         };
 
-        let result = request.execute(&token).await;
+        let result = request.execute(&token, &artifacts).await;
         assert!(result.is_ok());
 
         let output = result.unwrap();
         assert_eq!(output.exit_code, Some(0));
         assert!(output.stdout.contains("hello"));
         assert!(!output.truncated);
+        assert!(output.artifact.is_none());
     }
 
     #[tokio::test]
     async fn process_execution_handles_failure() {
         let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
         let request = ProcessExecutionRequest::new("false", vec![], ActionOrigin::User, 1);
 
         let admission = request.request(&seam).unwrap();
@@ -302,7 +392,7 @@ mod tests {
             _ => panic!("expected Allow for user false"),
         };
 
-        let result = request.execute(&token).await;
+        let result = request.execute(&token, &artifacts).await;
         assert!(result.is_ok());
 
         let output = result.unwrap();
@@ -312,6 +402,7 @@ mod tests {
     #[tokio::test]
     async fn process_execution_respects_timeout() {
         let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
         let request =
             ProcessExecutionRequest::new("sleep", vec!["10".into()], ActionOrigin::User, 1)
                 .with_timeout(Duration::from_millis(100));
@@ -322,7 +413,7 @@ mod tests {
             _ => panic!("expected Allow for user sleep"),
         };
 
-        let result = request.execute(&token).await;
+        let result = request.execute(&token, &artifacts).await;
         assert!(matches!(result, Err(ProcessExecutionError::Timeout(_))));
     }
 
@@ -333,6 +424,7 @@ mod tests {
         // so direct execute() is a compile error. This test proves the API contract.
         let request =
             ProcessExecutionRequest::new("echo", vec!["bypass".into()], ActionOrigin::Agent, 1);
+        let (_root, artifacts) = temp_artifacts();
 
         // This would not compile:
         // let _ = request.execute().await;
@@ -348,7 +440,7 @@ mod tests {
             }
             crate::EffectAdmission::Allow(token) => {
                 // If policy allows, token proves admission
-                let _ = request.execute(&token).await;
+                let _ = request.execute(&token, &artifacts).await;
             }
             crate::EffectAdmission::Deny { .. } => {
                 // Policy denied; no token, no execution
@@ -383,5 +475,72 @@ mod tests {
                 // Deny is also acceptable for dangerous commands
             }
         }
+    }
+
+    #[tokio::test]
+    async fn large_stdout_is_stored_as_durable_artifact() {
+        let seam = test_seam();
+        let (artifact_root, artifacts) = temp_artifacts();
+        // Synthetic large output well above preview bound, well below capture ceiling.
+        let byte_count = MAX_PROCESS_PREVIEW_BYTES + 4096;
+        let request = ProcessExecutionRequest::new(
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                format!("yes x | tr -d '\\n' | head -c {byte_count}"),
+            ],
+            ActionOrigin::User,
+            1,
+        );
+
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow for user shell"),
+        };
+
+        let output = request
+            .execute(&token, &artifacts)
+            .await
+            .expect("execute large stdout");
+        assert!(output.truncated, "large stdout must mark truncated");
+        let artifact = output.artifact.expect("artifact ref for large stdout");
+        assert!(
+            output.stdout.len()
+                <= MAX_PROCESS_PREVIEW_BYTES
+                    + "\n...[preview truncated; full result is stored as an artifact]".len()
+        );
+
+        let reopened =
+            DurableArtifactStore::open(artifact_root.path()).expect("reopen artifact store");
+        let full = reopened
+            .read(&artifact.id)
+            .expect("read durable process body");
+        let full_text = String::from_utf8(full).expect("utf8 artifact");
+        assert!(full_text.contains("stdout:"));
+        assert!(full_text.len() > MAX_PROCESS_PREVIEW_BYTES);
+        assert!(full_text.matches('x').count() > MAX_PROCESS_PREVIEW_BYTES);
+    }
+
+    #[tokio::test]
+    async fn small_stdout_stays_inline_without_artifact() {
+        let seam = test_seam();
+        let (_root, artifacts) = temp_artifacts();
+        let request =
+            ProcessExecutionRequest::new("printf", vec!["tiny".into()], ActionOrigin::User, 1);
+
+        let admission = request.request(&seam).unwrap();
+        let token = match admission {
+            crate::EffectAdmission::Allow(t) => t,
+            _ => panic!("expected Allow"),
+        };
+
+        let output = request
+            .execute(&token, &artifacts)
+            .await
+            .expect("execute small");
+        assert!(!output.truncated);
+        assert!(output.artifact.is_none());
+        assert_eq!(output.stdout, "tiny");
     }
 }

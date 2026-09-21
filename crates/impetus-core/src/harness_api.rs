@@ -601,8 +601,12 @@ fn handle_request(
                             )
                         }
                         "bash" | "shell" | "exec" => {
-                            crate::ToolOrchestrator::execute_approved_bash(
-                                &runtime, request, resolution, deferred,
+                            crate::ToolOrchestrator::execute_approved_bash_with_artifacts(
+                                &runtime,
+                                request,
+                                resolution,
+                                deferred,
+                                uploads.artifact_root(),
                             )
                         }
                         name => Err(crate::OrchestratorError::ToolNotFound(name.into())),

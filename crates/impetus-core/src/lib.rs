@@ -114,9 +114,10 @@ pub use events::{
     ToolEvent, ToolEventOutcome,
 };
 pub use execution::{
-    ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtySession,
-    PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
-    PtySessionStore, PtySessionStoreError, SqlitePtySessionStore,
+    MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, ProcessExecution, ProcessExecutionError,
+    ProcessExecutionRequest, ProcessOutput, PtySession, PtySessionError, PtySessionId,
+    PtySessionManager, PtySessionRecord, PtySessionState, PtySessionStore, PtySessionStoreError,
+    SqlitePtySessionStore,
 };
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
 pub use extension_compat::{

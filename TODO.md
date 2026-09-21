@@ -19,6 +19,14 @@ Stubs and placeholder responses do not count as done.
 
 ---
 
+## P0 §3 — Process/shell durable artifacts
+
+- [x] Process/shell stdout/stderr → durable artifact when large
+      (`ProcessExecutionRequest::execute` stores SHA-256 body; events keep
+      preview + `ArtifactRef` via `execute_approved_bash_with_artifacts`)
+
+---
+
 ## Phase 0 — Foundation (done)
 
 - [x] Headless runtime with SQLite WAL and durable Event Log
@@ -127,6 +135,7 @@ Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
 - [x] Bounded raw fallback → `ArtifactRef`
 - [x] Full raw output stored as Artifact alongside structured observation
 - [x] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
+- [x] Process/shell stdout/stderr → durable artifact when large
 - [x] RTK optional adapter: probe capabilities, not hard dependency
 
 ---

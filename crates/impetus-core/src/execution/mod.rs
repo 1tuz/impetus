@@ -12,7 +12,8 @@ mod pty;
 mod storage;
 
 pub use process::{
-    ProcessExecution, ProcessExecutionError, ProcessExecutionRequest, ProcessOutput,
+    MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, ProcessExecution, ProcessExecutionError,
+    ProcessExecutionRequest, ProcessOutput,
 };
 pub use pty::{PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionState};
 pub use storage::{PtySessionRecord, PtySessionStore, PtySessionStoreError, SqlitePtySessionStore};
