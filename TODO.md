@@ -239,10 +239,12 @@ Do **not** invent a new hard-coded agent type per workflow.
         (`WorkflowEngine::feature_skeleton_recipe`)
   - [x] Bug: Reproduce → Failing regression → Fix → Review
         (`WorkflowEngine::bug_skeleton_recipe`)
-  - [ ] Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
+  - [x] Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
+        (`WorkflowEngine::refactor_skeleton_recipe`)
 - [x] Engine owns: step order, dependencies, budgets (token/wall stubs),
-      checkpoints, cancellation, result propagation
-      (`workflow_engine` — in-memory; concurrency / retry still open)
+      checkpoints, cancellation, result propagation, minimal per-step retry
+      (`workflow_engine` — in-memory; `max_retries` workflow/step + fail→Pending
+      then Failed checkpoint; AgentScheduler / live spawn still open)
 - [ ] AgentScheduler schedules roles; WorkflowEngine sequences steps
       (engine sequences steps; scheduler role enforcement out of this slice)
 
