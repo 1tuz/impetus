@@ -2,10 +2,63 @@
 //!
 //! Catalog entries stay name-only until `description(id)` is requested.
 //! Bodies load once into an in-memory cache. `assemble` picks tiered items
-//! within a token budget. No AgentLoop wiring yet.
+//! within a token budget. [`ContextService`] wires this into the prompt path.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use crate::instructions::{InstructionKind, ResolvedInstructions};
+use crate::profile::ServiceBinding;
+use crate::provider::ProviderMessage;
+
+/// Default token budget for instruction/tool system context in the prompt path.
+pub const DEFAULT_CONTEXT_BUDGET_TOKENS: usize = 4_000;
+
+/// Optional tool/module name stub for the context catalog (COLD by default).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolStub {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+impl ToolStub {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+/// Builtin read-only tool name stubs (COLD refs unless budget allows).
+pub fn default_tool_stubs() -> Vec<ToolStub> {
+    vec![
+        ToolStub::new("tool:list", "List").with_description("List workspace directory entries"),
+        ToolStub::new("tool:read", "Read").with_description("Read a workspace file"),
+        ToolStub::new("tool:search", "Search").with_description("Search workspace content"),
+        ToolStub::new("tool:bash", "Bash").with_description("Run a shell command (policy-gated)"),
+    ]
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.len().div_ceil(4)
+}
+
+fn tier_for_instruction(kind: InstructionKind) -> ContextTier {
+    match kind {
+        InstructionKind::Soul | InstructionKind::ProjectRules => ContextTier::Hot,
+        InstructionKind::Convention | InstructionKind::Guide | InstructionKind::Skill => {
+            ContextTier::Warm
+        }
+    }
+}
 
 /// Catalog entry without a loaded description body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +178,19 @@ impl BuiltinContextOptimizer {
             .unwrap_or(0)
     }
 
+    /// Token estimate without caching the body (does not increment `load_count`).
+    pub fn peek_token_est(&self, id: &str) -> Option<usize> {
+        {
+            let cache = self.cache.lock().expect("context cache lock");
+            if let Some(body) = cache.get(id) {
+                return Some(estimate_tokens(body));
+            }
+        }
+        self.source
+            .load_description(id)
+            .map(|body| estimate_tokens(&body))
+    }
+
     /// Assemble items within `budget_tokens`.
     ///
     /// Order: HOT (all, even if over budget) → WARM while space → COLD as
@@ -179,9 +245,182 @@ impl BuiltinContextOptimizer {
     }
 }
 
+/// Prompt-path contract over a context optimizer.
+///
+/// Implementations select instruction/tool catalog entries under a token budget.
+/// They do **not** evaluate policy or grant capabilities — tool execution still
+/// goes through `Policy → Sandbox → Capability → Execution`.
+pub trait ContextService: Send + Sync {
+    /// Assemble system messages for the provider prompt (deterministic order).
+    fn select_system_messages(&self, budget_tokens: usize) -> Vec<ProviderMessage>;
+
+    /// How many times the underlying description source was hit for `id`.
+    fn load_count(&self, id: &str) -> usize;
+
+    /// Name-only catalog snapshot.
+    fn catalog(&self) -> &[ContextCatalogEntry];
+}
+
+/// Thin wrapper: build catalog from instructions + optional tool stubs, assemble
+/// under budget via [`BuiltinContextOptimizer`].
+pub struct BuiltinContextService {
+    optimizer: BuiltinContextOptimizer,
+    tiers: HashMap<String, ContextTier>,
+    kinds: HashMap<String, String>,
+}
+
+impl BuiltinContextService {
+    /// Build from resolved workspace instructions and optional tool stubs.
+    ///
+    /// Instruction bodies are registered in the lazy source but only loaded into
+    /// the assemble set when their tier requires a body (HOT/WARM). COLD stubs
+    /// stay as refs unless budget includes them (still without loading bodies).
+    pub fn from_instructions(
+        instructions: &ResolvedInstructions,
+        tools: impl IntoIterator<Item = ToolStub>,
+    ) -> Self {
+        let mut catalog = Vec::new();
+        let mut source = MemoryDescriptionSource::new();
+        let mut tiers = HashMap::new();
+        let mut kinds = HashMap::new();
+
+        for reference in &instructions.references {
+            catalog.push(ContextCatalogEntry {
+                id: reference.id.clone(),
+                name: reference.relative_path.display().to_string(),
+            });
+            source.insert(reference.id.clone(), reference.text.clone());
+            tiers.insert(reference.id.clone(), tier_for_instruction(reference.kind));
+            kinds.insert(reference.id.clone(), format!("{:?}", reference.kind));
+        }
+
+        for tool in tools {
+            catalog.push(ContextCatalogEntry {
+                id: tool.id.clone(),
+                name: tool.name.clone(),
+            });
+            if let Some(description) = tool.description {
+                source.insert(tool.id.clone(), description);
+            }
+            tiers.insert(tool.id.clone(), ContextTier::Cold);
+            kinds.insert(tool.id.clone(), "tool".to_string());
+        }
+
+        Self {
+            optimizer: BuiltinContextOptimizer::new(catalog, Arc::new(source)),
+            tiers,
+            kinds,
+        }
+    }
+
+    /// Materialize tiered items for assembly.
+    ///
+    /// HOT/WARM use `peek_token_est` (no load_count) so budget selection can run
+    /// before bodies enter the description cache. COLD stays Ref/cost 1.
+    fn build_items_for_budget(&self) -> Vec<ContextItem> {
+        let mut items = Vec::with_capacity(self.optimizer.catalog().len());
+        for entry in self.optimizer.catalog() {
+            let tier = self
+                .tiers
+                .get(&entry.id)
+                .copied()
+                .unwrap_or(ContextTier::Cold);
+            let kind = self
+                .kinds
+                .get(&entry.id)
+                .cloned()
+                .unwrap_or_else(|| "context".to_string());
+            match tier {
+                ContextTier::Hot | ContextTier::Warm => {
+                    let Some(token_est) = self.optimizer.peek_token_est(&entry.id) else {
+                        continue;
+                    };
+                    // Placeholder text; real body loaded only for selected ids.
+                    items.push(ContextItem {
+                        tier,
+                        id: entry.id.clone(),
+                        kind,
+                        token_est,
+                        payload: ContextPayload::Text(String::new()),
+                    });
+                }
+                ContextTier::Cold => {
+                    items.push(ContextItem {
+                        tier,
+                        id: entry.id.clone(),
+                        kind,
+                        token_est: 1,
+                        payload: ContextPayload::Ref(entry.id.clone()),
+                    });
+                }
+            }
+        }
+        items
+    }
+}
+
+impl ContextService for BuiltinContextService {
+    fn select_system_messages(&self, budget_tokens: usize) -> Vec<ProviderMessage> {
+        let items = self.build_items_for_budget();
+        let assembled = BuiltinContextOptimizer::assemble(&items, budget_tokens);
+        assembled
+            .into_iter()
+            .filter_map(|item| match item.tier {
+                ContextTier::Cold => Some(ProviderMessage::system(format!(
+                    "[context-ref:{}]",
+                    item.id
+                ))),
+                ContextTier::Hot | ContextTier::Warm => self
+                    .optimizer
+                    .description(&item.id)
+                    .map(ProviderMessage::system),
+            })
+            .collect()
+    }
+
+    fn load_count(&self, id: &str) -> usize {
+        self.optimizer.load_count(id)
+    }
+
+    fn catalog(&self) -> &[ContextCatalogEntry] {
+        self.optimizer.catalog()
+    }
+}
+
+/// Select system messages according to profile `context` binding.
+///
+/// - `Builtin { variant: "lazy" }` → token-budgeted [`BuiltinContextService`]
+/// - `Disabled` → no instruction/tool system messages
+/// - other builtins → eager full instruction dump (no budget trim)
+pub fn system_messages_for_binding(
+    binding: &ServiceBinding,
+    instructions: &ResolvedInstructions,
+    tools: &[ToolStub],
+    budget_tokens: usize,
+) -> Vec<ProviderMessage> {
+    match binding {
+        ServiceBinding::Builtin { variant } if variant == "lazy" => {
+            let service =
+                BuiltinContextService::from_instructions(instructions, tools.iter().cloned());
+            service.select_system_messages(budget_tokens)
+        }
+        ServiceBinding::Disabled => Vec::new(),
+        _ => instructions
+            .references
+            .iter()
+            .map(|reference| ProviderMessage::system(reference.text.clone()))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instructions::{
+        InstructionKind, InstructionReference, InstructionScope, InstructionTokenEstimate,
+        ResolvedInstructions,
+    };
+    use std::path::PathBuf;
 
     fn sample() -> BuiltinContextOptimizer {
         let catalog = vec![
@@ -298,5 +537,100 @@ mod tests {
             a.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             vec!["m", "a", "z"]
         );
+    }
+
+    fn sample_instructions() -> ResolvedInstructions {
+        ResolvedInstructions {
+            references: vec![
+                InstructionReference {
+                    id: "project-rules".into(),
+                    kind: InstructionKind::ProjectRules,
+                    scope: InstructionScope::Workspace,
+                    relative_path: PathBuf::from("AGENTS.md"),
+                    content_hash: "h1".into(),
+                    text: "HOT rules body that must stay".into(),
+                },
+                InstructionReference {
+                    id: "conv-z".into(),
+                    kind: InstructionKind::Convention,
+                    scope: InstructionScope::Workspace,
+                    relative_path: PathBuf::from(".impetus/conventions/z.md"),
+                    content_hash: "h2".into(),
+                    // ~30 tokens at len/4
+                    text: "W".repeat(120),
+                },
+                InstructionReference {
+                    id: "conv-a".into(),
+                    kind: InstructionKind::Convention,
+                    scope: InstructionScope::Workspace,
+                    relative_path: PathBuf::from(".impetus/conventions/a.md"),
+                    content_hash: "h3".into(),
+                    text: "W".repeat(120),
+                },
+            ],
+            estimated_tokens: InstructionTokenEstimate::default(),
+        }
+    }
+
+    #[test]
+    fn service_deterministic_order_and_overflow_drops_cold_then_warm() {
+        let tools = vec![
+            ToolStub::new("tool:bash", "Bash").with_description("shell"),
+            ToolStub::new("tool:read", "Read").with_description("read"),
+        ];
+        let service = BuiltinContextService::from_instructions(&sample_instructions(), tools);
+        // HOT (~8) + one WARM(30) = ~38; second WARM dropped; no room for COLD refs at 38.
+        let messages = service.select_system_messages(38);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content(), "HOT rules body that must stay");
+        // WARM sorted by id: conv-a before conv-z
+        assert_eq!(messages[1].content(), "W".repeat(120));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content().starts_with("[context-ref:"))
+        );
+
+        let again = service.select_system_messages(38);
+        assert_eq!(messages, again);
+    }
+
+    #[test]
+    fn service_lazy_load_skips_cold_bodies() {
+        let tools = vec![ToolStub::new("tool:bash", "Bash").with_description("Run shell commands")];
+        let service = BuiltinContextService::from_instructions(&sample_instructions(), tools);
+        // Tight budget: HOT only — WARM dropped after peek, COLD never description()-loaded.
+        let _ = service.select_system_messages(10);
+        assert_eq!(service.load_count("project-rules"), 1);
+        assert_eq!(service.load_count("conv-a"), 0);
+        assert_eq!(service.load_count("conv-z"), 0);
+        assert_eq!(service.load_count("tool:bash"), 0);
+    }
+
+    #[test]
+    fn lazy_binding_uses_optimizer_disabled_skips() {
+        let instructions = sample_instructions();
+        let tools = default_tool_stubs();
+        let lazy = ServiceBinding::Builtin {
+            variant: "lazy".into(),
+        };
+        let msgs = system_messages_for_binding(&lazy, &instructions, &tools, 40);
+        assert!(!msgs.is_empty());
+        assert_eq!(msgs[0].content(), "HOT rules body that must stay");
+
+        let disabled =
+            system_messages_for_binding(&ServiceBinding::Disabled, &instructions, &tools, 40);
+        assert!(disabled.is_empty());
+    }
+
+    #[test]
+    fn context_service_does_not_grant_policy_authority() {
+        // Optimizer only produces messages — no Action / PolicyDecision surface.
+        let service =
+            BuiltinContextService::from_instructions(&sample_instructions(), default_tool_stubs());
+        let messages = service.select_system_messages(100);
+        assert!(messages.iter().all(|m| m.role() == "system"));
+        // Catalog includes tools as name stubs only; no allow/deny decision.
+        assert!(service.catalog().iter().any(|e| e.id.starts_with("tool:")));
     }
 }
