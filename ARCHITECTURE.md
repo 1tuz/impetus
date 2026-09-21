@@ -19,6 +19,7 @@ Code is the source of truth. Status labels below mean:
 - Fail-closed admission: no execution when sandbox/policy denies
 - Secrets only via Keychain references (macOS); never raw tokens in SQLite/logs
 - Trusted kernel stays small; providers, context, extensions are replaceable layers
+- Reject features whose only justification is vendor parity or feature-count optics
 
 ## Trusted kernel
 

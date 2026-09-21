@@ -19,6 +19,7 @@ This file covers product boundaries and verification for this repo only.
 - Every typed action has `origin=user|agent` and goes through `Policy → Deny | Allow | NeedsApproval`; only `Allow` or user-accepted approval continues through `Sandbox → Capability → Execution`. Model cannot grant itself `origin=user` or approval.
 - Secrets stored only in macOS Keychain. In SQLite, JSONL, tracing, typed payloads, and tests — only reference labels, never token/private key/passphrase.
 - Do not use `latest` and unpinned git dependencies.
+- Reject features whose only justification is vendor parity or feature-count optics.
 
 ## Harness and Client Protocol
 
