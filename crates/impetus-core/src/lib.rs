@@ -15,6 +15,7 @@ pub mod audit_log;
 pub mod budget;
 pub mod capability_truth;
 pub mod child_concurrency;
+pub mod child_result_store;
 pub mod ci;
 pub mod claude_code_adapter;
 pub mod codex_adapter;
@@ -112,6 +113,7 @@ pub use child_concurrency::{
     ChildConcurrencyConfig, ChildConcurrencyError, ChildConcurrencyGate,
     DEFAULT_CHILD_CONCURRENCY_CAP,
 };
+pub use child_result_store::{ChildResult, ChildResultError, ChildResultStatus, ChildResultStore};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,

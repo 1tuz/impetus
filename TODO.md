@@ -254,7 +254,9 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [x] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
       `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
       (`ChildRunMetadata` validated; AgentScheduler/spawn still open)
-- [ ] Persist child results before parent resume
+- [x] Persist child results before parent resume
+      (`ChildResultStore` SQLite + `gate_parent_resume` stub; no live spawn /
+      AgentScheduler wiring — #250)
 - [x] Concurrency caps enforced in harness
       (`child_concurrency::ChildConcurrencyGate` global counter; default cap 4;
       admit / reject-at-cap / release on complete|cancel; no live spawn;
