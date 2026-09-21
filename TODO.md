@@ -41,7 +41,9 @@ Stubs and placeholder responses do not count as done.
 - [x] `impetus doctor --json` (and human doctor) reflects real capability matrix
       (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime,
       tool_schema gate) via `CapabilityTruthReport`
-- [ ] Prefer generating/checking docs claims from doctor JSON where practical
+- [x] Prefer generating/checking docs claims from doctor JSON where practical
+      (`crates/impetus-core/tests/docs_capability_claims.rs` +
+      `tests/fixtures/docs_capability_claims.json` vs `CapabilityTruthReport::gather`)
 
 ---
 

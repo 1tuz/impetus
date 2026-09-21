@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "notes": "Selected docs-facing capability claims checked against CapabilityTruthReport::gather(&[]). No secrets. Re-run: cargo test -p impetus-core --test docs_capability_claims. Update this file when intentionally changing capability truth; keep ARCHITECTURE / ROADMAP in sync.",
+  "registered_providers": [],
+  "claims": [
+    {
+      "id": "sandbox_path_scope",
+      "level": "IMPLEMENTED",
+      "details": {
+        "admission": "path_scope",
+        "fail_closed": true
+      }
+    },
+    {
+      "id": "seatbelt_process_wrap",
+      "level": "PARTIAL",
+      "details": {
+        "seatbelt_process_wrap": false
+      }
+    },
+    {
+      "id": "durable_artifact_store",
+      "level": "IMPLEMENTED",
+      "details": {
+        "durable": true
+      }
+    },
+    {
+      "id": "ephemeral_attachment_store",
+      "level": "IMPLEMENTED",
+      "details": {
+        "durable": false
+      }
+    },
+    {
+      "id": "tool_schema_validation",
+      "level": "IMPLEMENTED",
+      "details": {
+        "gate": true,
+        "provider_http_tools": false
+      }
+    },
+    {
+      "id": "openai_native_chat_completions",
+      "level": "PARTIAL",
+      "details": {
+        "native_wired": false,
+        "daemon_default": "mock"
+      }
+    },
+    {
+      "id": "extension_runtime",
+      "level": "PARTIAL",
+      "details": {
+        "mcp_live_tools_in_loop": false,
+        "skills_instruction_resolver": true
+      }
+    }
+  ]
+}
