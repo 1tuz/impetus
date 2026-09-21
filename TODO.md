@@ -301,7 +301,11 @@ Do **not** invent a new hard-coded agent type per workflow.
       InDaemon; External matcher for critical action → clear Deny/error;
       unit tests labels-only; no plugin ABI / script runner) (#272)
 - [ ] Measure per-tool-call overhead; add perf tests if hooks land
-- [ ] Avoid large overlapping hook catalogs
+- [x] Avoid large overlapping hook catalogs — Partial
+      (`hook_prefilter`: `try_new` / `add_rule` refuse exact duplicates —
+      same pattern + action; clear error lists conflicting rule ids/patterns;
+      subsumption YAGNI while patterns are exact equality; no marketplace)
+      (#276)
 - [x] Event log query baselines (append_next / list / cursor backfill) — Criterion
       benches + `docs/benchmarks/v0.2.md`; local `task bench` only, not PR CI gate
       (#16)

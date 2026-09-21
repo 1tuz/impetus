@@ -57,11 +57,13 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   policy/sandbox/exec; OpenAI/Anthropic HTTP requests include `tools` from
   `builtin_tool_schemas()`.
 - **Hook prefilter** — cheap in-process label match
-  ([`hook_prefilter`](crates/impetus-core/src/hook_prefilter.rs), #257/#272)
+  ([`hook_prefilter`](crates/impetus-core/src/hook_prefilter.rs), #257/#272/#276)
   before any spawn stub (`AllowContinue` / `SkipSpawn` / `Deny`); rules carry
   `HookTrustLevel` (`InDaemon` / `External`); security-critical patterns require
-  InDaemon — External matcher for those → clear Deny/error. Full hook/plugin
-  ABI still Planned.
+  InDaemon — External matcher for those → clear Deny/error; catalog
+  `try_new`/`add_rule` refuse exact duplicates (same pattern + action) with
+  conflicting rule ids in the error — pattern subsumption YAGNI. Full
+  hook/plugin ABI still Planned.
 - **Built-in id hygiene** — small shipped inventory + duplicate detect
   ([`builtin_ids`](crates/impetus-core/src/builtin_ids.rs), #260); doctor
   `builtin_ids` probe; unused cross-ref stub Planned. No marketplace / vendor
@@ -116,7 +118,7 @@ impetusd  — authoritative daemon
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267); mock/absent fail-closed; no real LSP / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp + IPC/TUI + session-run follow-up drain (`user_intent`, #247/#263/#271 — LLM rewrite / WorkflowEngine cancel-replace still open); multi-session `fanout` with explicit ids + partial-failure map (#275 — no cross-machine / IPC yet); hook prefilter + trust levels (`hook_prefilter`, #257/#272 — InDaemon required for security-critical); built-in id inventory + duplicate detect (`builtin_ids`, #260 — unused stub Planned); live agent spawn still Planned |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp + IPC/TUI + session-run follow-up drain (`user_intent`, #247/#263/#271 — LLM rewrite / WorkflowEngine cancel-replace still open); multi-session `fanout` with explicit ids + partial-failure map (#275 — no cross-machine / IPC yet); hook prefilter + trust levels + exact-duplicate catalog refuse (`hook_prefilter`, #257/#272/#276 — InDaemon required for security-critical; subsumption YAGNI); built-in id inventory + duplicate detect (`builtin_ids`, #260 — unused stub Planned); live agent spawn still Planned |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |

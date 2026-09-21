@@ -10,8 +10,12 @@
 //! `InDaemon`. An `External` matcher that hits a security-critical rule is
 //! refused with a clear error — never treated as AllowContinue.
 //!
+//! **Catalog hygiene:** [`HookPrefilter::try_new`] / [`HookPrefilter::add_rule`]
+//! refuse exact duplicates (same pattern + action). Pattern subsumption is
+//! YAGNI while patterns stay exact-string equality.
+//!
 //! Out of scope: full hook/plugin ABI, arbitrary script runner, perf suite,
-//! wiring into live `ProcessExecution` (real OS spawn).
+//! wiring into live `ProcessExecution` (real OS spawn), subsumption detection.
 
 use thiserror::Error;
 
@@ -35,12 +39,24 @@ pub enum HookAction {
     Deny,
 }
 
-/// One typed match rule: exact label pattern + action + trust.
+impl HookAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AllowContinue => "AllowContinue",
+            Self::SkipSpawn => "SkipSpawn",
+            Self::Deny => "Deny",
+        }
+    }
+}
+
+/// One typed match rule: id + exact label pattern + action + trust.
 ///
 /// Patterns are exact string equality on the command/tool label (no regex, no
 /// glob) — cheapest possible match for the stub.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookRule {
+    /// Stable catalog id for diagnostics (defaults to pattern in constructors).
+    pub id: String,
     pub pattern: String,
     pub action: HookAction,
     pub trust: HookTrustLevel,
@@ -49,10 +65,12 @@ pub struct HookRule {
 }
 
 impl HookRule {
-    /// Ordinary in-daemon rule (not security-critical).
+    /// Ordinary in-daemon rule (not security-critical). Id defaults to pattern.
     pub fn new(pattern: impl Into<String>, action: HookAction) -> Self {
+        let pattern = pattern.into();
         Self {
-            pattern: pattern.into(),
+            id: pattern.clone(),
+            pattern,
             action,
             trust: HookTrustLevel::InDaemon,
             security_critical: false,
@@ -61,8 +79,10 @@ impl HookRule {
 
     /// Security-critical in-daemon rule (policy gate, dangerous-label deny).
     pub fn security_critical(pattern: impl Into<String>, action: HookAction) -> Self {
+        let pattern = pattern.into();
         Self {
-            pattern: pattern.into(),
+            id: pattern.clone(),
+            pattern,
             action,
             trust: HookTrustLevel::InDaemon,
             security_critical: true,
@@ -71,12 +91,20 @@ impl HookRule {
 
     /// Ordinary external matcher (not security-critical).
     pub fn external(pattern: impl Into<String>, action: HookAction) -> Self {
+        let pattern = pattern.into();
         Self {
-            pattern: pattern.into(),
+            id: pattern.clone(),
+            pattern,
             action,
             trust: HookTrustLevel::External,
             security_critical: false,
         }
+    }
+
+    /// Override catalog id (e.g. distinct ids that still collide on pattern+action).
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
     }
 
     /// Override trust (e.g. test External + security_critical refusal path).
@@ -114,6 +142,22 @@ pub enum PrefilterError {
     ExternalForCritical { label: String },
 }
 
+/// Catalog registration failures (duplicate / overlap hygiene).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum HookCatalogError {
+    /// Exact duplicate: same pattern + action as an already-registered rule.
+    #[error(
+        "duplicate hook rule: id `{new_id}` conflicts with id `{existing_id}` (pattern `{pattern}`, action {})",
+        action.as_str()
+    )]
+    Duplicate {
+        existing_id: String,
+        new_id: String,
+        pattern: String,
+        action: HookAction,
+    },
+}
+
 /// In-memory rule set for cheap pre-spawn filtering.
 #[derive(Debug, Clone, Default)]
 pub struct HookPrefilter {
@@ -121,12 +165,46 @@ pub struct HookPrefilter {
 }
 
 impl HookPrefilter {
+    /// Build a catalog, refusing exact duplicates (same pattern + action).
+    pub fn try_new(rules: Vec<HookRule>) -> Result<Self, HookCatalogError> {
+        let mut prefilter = Self::default();
+        for rule in rules {
+            prefilter.add_rule(rule)?;
+        }
+        Ok(prefilter)
+    }
+
+    /// Infallible build for callers that already validated the catalog.
+    ///
+    /// Panics if `rules` contains an exact duplicate (same pattern + action).
+    /// Prefer [`Self::try_new`] / [`Self::add_rule`] at trust boundaries.
     pub fn new(rules: Vec<HookRule>) -> Self {
-        Self { rules }
+        Self::try_new(rules).expect("hook catalog must not contain exact duplicate rules")
     }
 
     pub fn rules(&self) -> &[HookRule] {
         &self.rules
+    }
+
+    /// Append one rule; refuse exact duplicate (same pattern + action).
+    ///
+    /// Same pattern with a different action is allowed (first-match-wins).
+    /// Pattern subsumption is out of scope while patterns are exact equality.
+    pub fn add_rule(&mut self, rule: HookRule) -> Result<(), HookCatalogError> {
+        if let Some(existing) = self
+            .rules
+            .iter()
+            .find(|r| r.pattern == rule.pattern && r.action == rule.action)
+        {
+            return Err(HookCatalogError::Duplicate {
+                existing_id: existing.id.clone(),
+                new_id: rule.id,
+                pattern: rule.pattern,
+                action: rule.action,
+            });
+        }
+        self.rules.push(rule);
+        Ok(())
     }
 
     /// Match `label` against rules in order. First hit wins; no hit → continue.
@@ -346,5 +424,64 @@ mod tests {
             ]),
             "x",
         );
+    }
+
+    #[test]
+    fn add_rule_refuses_exact_duplicate() {
+        let mut pf = HookPrefilter::default();
+        pf.add_rule(HookRule::new("lint", HookAction::SkipSpawn).with_id("skip-lint-a"))
+            .unwrap();
+        let err = pf
+            .add_rule(HookRule::new("lint", HookAction::SkipSpawn).with_id("skip-lint-b"))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            HookCatalogError::Duplicate {
+                existing_id: "skip-lint-a".into(),
+                new_id: "skip-lint-b".into(),
+                pattern: "lint".into(),
+                action: HookAction::SkipSpawn,
+            }
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("skip-lint-a"));
+        assert!(msg.contains("skip-lint-b"));
+        assert!(msg.contains("lint"));
+        assert!(msg.contains("SkipSpawn"));
+        assert_eq!(pf.rules().len(), 1);
+    }
+
+    #[test]
+    fn try_new_refuses_exact_duplicate() {
+        let err = HookPrefilter::try_new(vec![
+            HookRule::new("echo", HookAction::Deny).with_id("deny-echo-1"),
+            HookRule::new("echo", HookAction::Deny).with_id("deny-echo-2"),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            err,
+            HookCatalogError::Duplicate {
+                existing_id: "deny-echo-1".into(),
+                new_id: "deny-echo-2".into(),
+                pattern: "echo".into(),
+                action: HookAction::Deny,
+            }
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("deny-echo-1"));
+        assert!(msg.contains("deny-echo-2"));
+        assert!(msg.contains("echo"));
+        assert!(msg.contains("Deny"));
+    }
+
+    #[test]
+    fn same_pattern_different_action_allowed() {
+        let pf = HookPrefilter::try_new(vec![
+            HookRule::new("tool", HookAction::SkipSpawn).with_id("skip"),
+            HookRule::new("tool", HookAction::Deny).with_id("deny"),
+        ])
+        .unwrap();
+        assert_eq!(pf.rules().len(), 2);
+        assert_eq!(pf.prefilter("tool").unwrap(), PrefilterDecision::SkipSpawn);
     }
 }
