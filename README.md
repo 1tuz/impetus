@@ -38,9 +38,9 @@ own authoritative state.
 **Current.** The workspace ships `impetusd` and an `impetus` CLI client over
 versioned Unix-socket IPC and `HarnessClient`, plus provider registry foundations
 and an experimental Zap adapter. Also available: `impetus doctor` (diagnostics),
-`impetus ui` (Ratatui TUI), and Module Runtime foundations. A second CLI,
-`impetus-cli`, remains supported for its existing workflows; `impetus` is the
-fuller surface (doctor, ui, skills, …).
+`impetus ui` (Ratatui TUI), and Module Runtime foundations. Primary CLI is
+`impetus`; `impetus-cli` is the legacy/secondary surface (kept for existing
+workflows — migration note, not deletion).
 
 **Target.** Modular, extensible harness: `impetus` becomes first-class CLI/TUI;
 Zap keeps its own UI as another `HarnessClient` consumer. Honest adapter
@@ -67,10 +67,11 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
 - Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
   shared-prefix fork and checkpoints.
 - Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts). Live
-  MCP tools in the agent loop are not wired yet.
+  MCP: library + `ToolOrchestrator` hook exist; production `AgentLoop` /
+  `impetusd` path not wired yet.
 - Production model path defaults to Mock or native OpenAI Chat Completions SSE
   (`--provider-profile`); Anthropic library is available but not the default
-  daemon path. JSON Schema tool-arg validation before policy is still Planned.
+  daemon path. JSON Schema tool-arg validation runs before policy on builtins.
 
 ## Request control flow
 
@@ -168,7 +169,7 @@ lists. Optional protocol/UX notes: [Design references](docs/REFERENCES.md).
 | `crates/impetus-core` | Durable events, runtime, policy, effects, providers, tools, and IPC types. |
 | `crates/impetusd` | Headless Unix-socket daemon and macOS Keychain resolver. |
 | `crates/impetus` | User-facing CLI / TUI client (`doctor`, `ui`, …). |
-| `crates/impetus-cli` | Supported second CLI for its workflows; `impetus` is the fuller surface. |
+| `crates/impetus-cli` | Legacy/secondary CLI; migrate callers to `impetus` over time (do not delete). |
 | `crates/impetus-tui` | Ratatui TUI library used by `impetus ui`. |
 | `crates/impetus-client` | `HarnessClient` contract and local transports. |
 | `crates/impetus-zap-adapter` | Historical/experimental Zap integration baseline. |

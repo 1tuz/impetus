@@ -61,7 +61,9 @@
       "id": "extension_runtime",
       "level": "PARTIAL",
       "details": {
-        "mcp_live_tools_in_loop": true,
+        "mcp_live_tools_in_loop": false,
+        "mcp_live_library": true,
+        "mcp_live_orchestrator_hook": true,
         "skills_instruction_resolver": true
       }
     }

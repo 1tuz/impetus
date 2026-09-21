@@ -24,7 +24,7 @@ impetus ──HarnessClient──► impetusd ──► impetus-core
 | CLI client | `crates/impetus` | User-facing commands via `HarnessClient`, including `doctor` and `ui`. |
 | TUI | `crates/impetus-tui` | Ratatui client library used by `impetus ui`. |
 | Client contract | `crates/impetus-client` | `HarnessClient`, in-memory and Unix transports. |
-| Second CLI | `crates/impetus-cli` | Supported for its workflows; `impetus` is the fuller surface. |
+| Second CLI | `crates/impetus-cli` | Legacy/secondary; migrate toward `impetus` (do not delete). |
 | Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental baseline. |
 | ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. Honesty checklist: [ACP production hardening (#66)](../ARCHITECTURE.md#acp-production-hardening-checklist-66). |
 

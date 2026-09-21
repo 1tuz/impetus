@@ -63,10 +63,12 @@ Module links:
   durable ownership + Build-role sandbox binding
 - Supporting: [`subagent_metadata.rs`](crates/impetus-core/src/subagent_metadata.rs),
   [`child_concurrency.rs`](crates/impetus-core/src/child_concurrency.rs),
-  [`child_result_store.rs`](crates/impetus-core/src/child_result_store.rs)
+  [`child_result_store.rs`](crates/impetus-core/src/child_result_store.rs),
+  [`explore_child.rs`](crates/impetus-core/src/explore_child.rs) (#296)
 
-**Still Planned / open on this stack:** live agent process spawn; WorkflowEngine
-cancel/replace wired to session-run intents; cross-machine orchestration.
+**Still Planned / open on this stack:** live agent process spawn (beyond
+ExploreChildRunner slice); WorkflowEngine cancel/replace wired to session-run
+intents; cross-machine orchestration.
 
 - **AgentScheduler** — schedules agent **roles** (Explore / Research / Build / Review)
   with structured metadata and concurrency caps. Role enum +
@@ -78,11 +80,15 @@ cancel/replace wired to session-run intents; cross-machine orchestration.
   + parent-resume gate stub (#250, labels only); in-memory role scheduler wired into
   [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
   ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
-  schedule id / result slot, no live spawn); live process spawn still Planned.
+  schedule id / result slot, no live spawn); minimal Explore runtime slice
+  ([`ExploreChildRunner`](crates/impetus-core/src/explore_child.rs), #296 —
+  gate → injectable executor → durable child result → parent-resume; AgentLoop
+  wire still open); live process spawn for other roles still Planned.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
-  steps record scheduler handles via `begin_step_with_scheduler` (#253). Do not
-  invent a new agent type per workflow.
+  steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
+  validation rejects self-deps and multi-node dependency cycles
+  (`reject_dependency_cycles`, #296). Do not invent a new agent type per workflow.
 - **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
   recovery; Build-role bindings attach sandbox/write permissions to the isolated
@@ -127,8 +133,8 @@ impetusd  — authoritative daemon
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
 | PolicyConfig JSON load / reload | Partial | Format + engine/runtime reload (#193/#201); no IPC/CLI/daemon default path yet — see § Policy customization (#9) |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
-| macOS Seatbelt (`sandbox-exec`) in tool/process exec | Partial | Spike only: `tests/macos_sandbox_spike.rs`; **not** wired in `execution/process.rs` |
-| Linux / Windows sandbox backends | Planned | Phase 9; PR CI is macOS-only |
+| macOS Seatbelt (`sandbox-exec`) in tool/process exec | Partial | Spike only: `tests/macos_sandbox_spike.rs`; **not** wired in `execution/process.rs`. Production Seatbelt on macOS outranks broad cross-platform sandbox backends. |
+| Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS fmt/clippy/tests (`--lib --bins`) + Linux `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
@@ -143,24 +149,26 @@ impetusd  — authoritative daemon
 | Measured usage → budget accounting | Implemented | `record_turn_with_usage` in agent loop |
 | Context HOT/WARM/COLD + lazy descriptions | Implemented | `context_optimizer.rs`, wired in `harness_api` |
 | ContextBuilder (chunked artifact summarize) | Implemented | `context_builder.rs` |
-| Auto LLM compaction as durable events | Partial | Threshold events exist; no auto compact in agent loop |
+| Auto durable compaction (threshold → events) | Implemented | Agent loop calls `run_durable_compaction` (deterministic fold + durable budget events; **not** LLM summarizer) |
+| Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial | Skills via `InstructionResolver`; MCP live tools via `McpLiveBridge` + ToolOrchestrator (no marketplace/UI) |
+| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial | Skills via `InstructionResolver`; `McpLiveBridge` + ToolOrchestrator hook (tests); production AgentLoop/`impetusd` not wired (no marketplace/UI) |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome seam modules (`real_browser.rs`); negotiate/health + navigate stub fail-closed; no compile-time binary path / CDP crates (#268) |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam (#261) + `goto_definition` in ToolOrchestrator + IPC `coding_definition` (#267) + optional `LspBackendModule` runtime path hint (#282); mock/absent fail-closed; no real LSP process / TUI yet |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug/Refactor recipes + per-step retry stub (#243/#254); `InMemoryAgentScheduler` wired into WorkflowEngine step path (#253 — schedule id / result slot, no live spawn); `SubagentRole` + `ChildRunMetadata` validation (#246); global `ChildConcurrencyGate` (#251); `ChildResultStore` + `gate_parent_resume` stub (#250); typed `UserPromptIntent` Prompt/Steer/FollowUp + IPC/TUI + session-run follow-up drain (`user_intent`, #247/#263/#271) + Steer rewrite seam Partial (`SteerRewrite`, #285 — live provider wire / WorkflowEngine cancel-replace still open); multi-session `fanout` with explicit ids + partial-failure map (#275 — no cross-machine / IPC yet); hook prefilter + trust levels + exact-duplicate catalog refuse (`hook_prefilter`, #257/#272/#276 — InDaemon required for security-critical; subsumption YAGNI); built-in id inventory + duplicate detect (`builtin_ids`, #260 — unused stub Planned); live agent spawn still Planned |
-| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
-| MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | **Foundation [x]:** `WorktreeManager` lifecycle (#198/#206/#218); `WorkflowEngine` recipes + retry + dependency **cycle reject** (`reject_dependency_cycles`, #296); `InMemoryAgentScheduler` step hooks (#253); `SubagentRole`/`ChildRunMetadata` (#246); `ChildConcurrencyGate` (#251); `ChildResultStore` gate stub (#250); intents/Steer/fanout/hooks Partial as before (`user_intent`, #247/#263/#271/#285/#275; `hook_prefilter` #257/#272/#276; `builtin_ids` #260). **Runtime Partial:** `ExploreChildRunner` minimal vertical (gate → injectable executor → `ChildResultStore` → parent-resume; read-only tools; AgentLoop wire still open) (#296). **Runtime [ ]:** live agent spawn for other roles; WorkflowEngine cancel/replace on session-run; live provider Steer |
+| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
+| MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
+| PolicyStore (governed instructions) | Planned | Named in trust-model docs only — **no** `PolicyStore` type/module yet |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
-| PR CI critical security E2E suite | Partial | PR: fmt/clippy/`--lib --bins` on macOS; integration = nightly/manual |
+| PR CI critical security E2E suite | Partial | Path-aware PR: macOS fmt/clippy/`--lib --bins`; Linux `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
 
 ## Request path
 
@@ -321,8 +329,8 @@ Honest list (no new runtime in this docs slice):
 - Optional: register PolicyConfig in the shared `impetus.*.v1` schema registry
 - Non-TUI clients (Zap adapter and others) consuming ApprovalDetail beyond the
   TUI overlay
-- `PolicyStore` (memory trust model) is a **different** surface — still Partial;
-  not the same as PolicyConfig action overrides
+- `PolicyStore` (memory trust model) is a **different** surface — **Planned**
+  (name only today; no type/module); not the same as PolicyConfig action overrides
 
 Docs index for the shipped contracts: this section (#286).
 
@@ -336,7 +344,8 @@ a production Zap protocol or copy Zap/Warp client internals into the harness.
 
 | Path | Role | Status |
 | --- | --- | --- |
-| CLI (`impetus`) | First-class user-facing commands via `HarnessClient` | Implemented (surface still growing) |
+| CLI (`impetus`) | Primary user-facing commands via `HarnessClient` | Implemented (surface still growing) |
+| CLI (`impetus-cli`) | Legacy/secondary; keep for existing workflows; migrate toward `impetus` | Implemented (do not delete) |
 | Standalone TUI (`impetus ui` / `impetus-tui`) | First-class Ratatui client; ANSI/scrollback stay client-side | Partial — Phase 7 open |
 | Zap | Zap owns UI; Impetus is agent backend after connect/authorize | Partial — experimental adapter only |
 
@@ -476,12 +485,20 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 - Lookup: `KNOWN_SCHEMAS` / `lookup_schema`
 - Extension contract: [`ExtensionManifest`](crates/impetus-core/src/extension_manifest.rs)
   (`id` / `kind` / `version` / `digest` / `capabilities`) validated on
-  `plan_install` for Skill + MCP config; not a marketplace
+  `plan_install` for Skill + MCP config; not a marketplace. Install path IDs
+  are allowlisted via [`extension_id`](crates/impetus-core/src/extension_id.rs)
+  (#296).
 - MCP config contract: [`McpManifest`](crates/impetus-core/src/mcp_manifest.rs)
   (`id` / `transport` / `command` / `args` / `capabilities` / `env_keys`);
   env keys/labels only — never secret values; validated on `plan_mcp_config`
 
 Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of scope.
+
+## Known postponed debt
+
+- Prefer invert `impetus-core` → `impetus-acp-gateway` (core should not depend on
+  the gateway crate long-term). Large refactor postponed — see TODO.md P2.
+- `impetus` is primary CLI; `impetus-cli` is legacy/secondary (keep; migrate).
 
 ## Documentation
 
