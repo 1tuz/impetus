@@ -298,8 +298,10 @@ Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SH
 - [x] Streaming output rendering
 - [x] Markdown rendering (bounded)
 - [x] Diff view
-- [ ] Approval UI (typed approvals from harness)
-- [ ] Session picker / list
+- [x] Approval UI (typed approvals from harness)
+      — queue/overlay + approve/deny/detail tests in `impetus-tui` (closes #165)
+- [x] Session picker / list
+      — `SessionSummary::from_session_info` + filter/activate tests (closes #166)
 - [ ] Fuzzy search (sessions, commands)
 - [ ] Command palette
 - [ ] Scrollback / resize

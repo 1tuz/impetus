@@ -1653,7 +1653,7 @@ fn short(id: Uuid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ConnectionInfo, UiEvent};
+    use crate::model::{ApprovalCard, ApprovalDetailView, ConnectionInfo, UiEvent};
 
     #[test]
     fn chunks_coalesce_into_one_assistant_item() {
@@ -1821,6 +1821,197 @@ mod tests {
             [Effect::SendLargePaste { label, body: effect_body }]
                 if effect_body == &body
                     && is_paste_placeholder(label)
+        ));
+    }
+
+    fn sample_approval(id: Uuid) -> ApprovalCard {
+        ApprovalCard {
+            id,
+            action_kind: "WriteFile".to_owned(),
+            summary: "touch workspace file".to_owned(),
+            target: Some("crates/impetus-tui/src/app.rs".to_owned()),
+            reason: "changes workspace files".to_owned(),
+            fingerprint: "test:deadbeef".to_owned(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn approval_requested_then_approve_clears_queue_and_overlay() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let session_id = Uuid::from_u128(0xA1);
+        app.active_session = Some(session_id);
+        app.subscription_generation = 3;
+        let approval_id = Uuid::from_u128(0xB2);
+
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 1,
+                at_unix_ms: 1,
+                kind: UiEventKind::ApprovalRequested {
+                    approval: sample_approval(approval_id),
+                },
+            },
+        );
+        assert_eq!(app.approval_queue.len(), 1);
+        assert!(matches!(app.overlay, Overlay::Approval { selected: 0 }));
+        assert_eq!(app.run_state, RunState::WaitingApproval);
+
+        let effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ResolveApproval {
+                approval_id: id,
+                accepted: true
+            }] if *id == approval_id
+        ));
+
+        let _ = apply_message(
+            &mut app,
+            AppMessage::ApprovalResolved {
+                session_id,
+                generation: 3,
+                approval_id,
+                accepted: true,
+                result: Ok(()),
+            },
+        );
+        assert!(app.approval_queue.is_empty());
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.run_state, RunState::Working);
+    }
+
+    #[test]
+    fn approval_deny_and_detail_paths() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let session_id = Uuid::from_u128(0xC3);
+        app.active_session = Some(session_id);
+        app.subscription_generation = 1;
+        let approval_id = Uuid::from_u128(0xD4);
+
+        ingest_event(
+            &mut app,
+            UiEvent {
+                sequence: 1,
+                at_unix_ms: 1,
+                kind: UiEventKind::ApprovalRequested {
+                    approval: sample_approval(approval_id),
+                },
+            },
+        );
+
+        let detail_effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            detail_effects.as_slice(),
+            [Effect::LoadApprovalDetail(id)] if *id == approval_id
+        ));
+        let _ = apply_message(
+            &mut app,
+            AppMessage::ApprovalDetail {
+                session_id,
+                generation: 1,
+                approval_id,
+                result: Ok(ApprovalDetailView {
+                    diff_preview: Some("-old\n+new".to_owned()),
+                    affected_files: vec!["crates/impetus-tui/src/app.rs".to_owned()],
+                    estimated_scope: Some("Lines(2)".to_owned()),
+                    attachment_refs: vec![],
+                }),
+            },
+        );
+        assert!(matches!(app.overlay, Overlay::ApprovalDetail));
+        assert!(
+            app.approval_queue
+                .front()
+                .and_then(|card| card.detail.as_ref())
+                .is_some_and(|detail| detail.affected_files.len() == 1)
+        );
+
+        let deny_effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            deny_effects.as_slice(),
+            [Effect::ResolveApproval {
+                approval_id: id,
+                accepted: false
+            }] if *id == approval_id
+        ));
+        let _ = apply_message(
+            &mut app,
+            AppMessage::ApprovalResolved {
+                session_id,
+                generation: 1,
+                approval_id,
+                accepted: false,
+                result: Ok(()),
+            },
+        );
+        assert!(app.approval_queue.is_empty());
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn session_picker_filters_and_activates_selected() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let alpha = Uuid::from_u128(0xE5);
+        let beta = Uuid::from_u128(0xF6);
+        app.sessions = vec![
+            SessionSummary::from_session_info(
+                alpha,
+                None,
+                None,
+                Some("router hardening".to_owned()),
+                Some("saved".to_owned()),
+                Some("~/code/one".to_owned()),
+            ),
+            SessionSummary::from_session_info(
+                beta,
+                Some(alpha),
+                Some(2),
+                None,
+                None,
+                Some("~/code/two".to_owned()),
+            ),
+        ];
+
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::Sessions {
+                selected: 0,
+                query
+            } if query.is_empty()
+        ));
+
+        for ch in ['r', 'o', 'u'] {
+            let _ = handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        match &app.overlay {
+            Overlay::Sessions { selected, query } => {
+                assert_eq!(query, "rou");
+                assert_eq!(*selected, 0);
+                assert_eq!(filtered_sessions(&app, query).len(), 1);
+                assert_eq!(filtered_sessions(&app, query)[0].id, alpha);
+            }
+            _ => panic!("expected sessions overlay"),
+        }
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ActivateSession(id)] if *id == alpha
         ));
     }
 }

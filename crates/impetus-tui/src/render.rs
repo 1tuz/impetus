@@ -1090,8 +1090,9 @@ fn truncate(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ConnectionInfo, TimelineItem};
+    use crate::model::{ConnectionInfo, SessionSummary, TimelineItem};
     use ratatui::{Terminal, backend::TestBackend};
+    use uuid::Uuid;
 
     #[test]
     fn renders_narrow_and_wide_frames_without_panicking() {
@@ -1107,5 +1108,30 @@ mod tests {
                 .draw(|frame| render(frame, &app, Theme::default()))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn filtered_sessions_matches_label_id_and_workspace() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let keep = Uuid::from_u128(0x10);
+        let drop = Uuid::from_u128(0x20);
+        app.sessions = vec![
+            SessionSummary {
+                id: keep,
+                label: "Router hardening".to_owned(),
+                status: "working".to_owned(),
+                workspace: Some("~/dev/impetus".to_owned()),
+            },
+            SessionSummary {
+                id: drop,
+                label: "other".to_owned(),
+                status: "saved".to_owned(),
+                workspace: Some("~/tmp".to_owned()),
+            },
+        ];
+        assert_eq!(filtered_sessions(&app, "router").len(), 1);
+        assert_eq!(filtered_sessions(&app, "impetus").len(), 1);
+        assert_eq!(filtered_sessions(&app, &keep.to_string()).len(), 1);
+        assert!(filtered_sessions(&app, "missing").is_empty());
     }
 }

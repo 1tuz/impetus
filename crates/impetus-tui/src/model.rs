@@ -90,12 +90,39 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    pub fn bare(id: Uuid) -> Self {
+    /// Map durable `SessionInfo` branch metadata into picker rows.
+    ///
+    /// Harness `SessionInfo` today carries id / timestamps / parent / fork only.
+    /// Optional `label` / `status` / `workspace` override when a richer list DTO
+    /// is available; otherwise parent/fork drive label+status and workspace stays
+    /// unset.
+    pub fn from_session_info(
+        id: Uuid,
+        parent_session_id: Option<Uuid>,
+        fork_sequence: Option<u64>,
+        label: Option<String>,
+        status: Option<String>,
+        workspace: Option<String>,
+    ) -> Self {
+        let derived_label = match (parent_session_id, fork_sequence) {
+            (Some(parent), Some(seq)) => format!("fork@{seq} ← {}", short_id(parent)),
+            (Some(parent), None) => format!("fork ← {}", short_id(parent)),
+            _ => format!("session {}", short_id(id)),
+        };
+        let derived_status = if parent_session_id.is_some() {
+            "fork"
+        } else {
+            "saved"
+        };
         Self {
             id,
-            label: format!("session {}", short_id(id)),
-            status: "saved".to_owned(),
-            workspace: None,
+            label: label
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(derived_label),
+            status: status
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| derived_status.to_owned()),
+            workspace: workspace.filter(|value| !value.trim().is_empty()),
         }
     }
 }
@@ -656,5 +683,28 @@ mod tests {
     #[test]
     fn max_paste_upload_matches_eight_mib() {
         assert_eq!(MAX_PASTE_UPLOAD_BYTES, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn session_summary_maps_fork_meta_and_optional_overrides() {
+        let id = Uuid::from_u128(0x1111);
+        let parent = Uuid::from_u128(0x2222);
+        let derived =
+            SessionSummary::from_session_info(id, Some(parent), Some(7), None, None, None);
+        assert_eq!(derived.label, format!("fork@7 ← {}", short_id(parent)));
+        assert_eq!(derived.status, "fork");
+        assert!(derived.workspace.is_none());
+
+        let rich = SessionSummary::from_session_info(
+            id,
+            Some(parent),
+            Some(7),
+            Some("TUI architecture".to_owned()),
+            Some("working".to_owned()),
+            Some("~/dev/impetus".to_owned()),
+        );
+        assert_eq!(rich.label, "TUI architecture");
+        assert_eq!(rich.status, "working");
+        assert_eq!(rich.workspace.as_deref(), Some("~/dev/impetus"));
     }
 }
