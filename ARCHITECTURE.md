@@ -138,7 +138,7 @@ impetusd  — authoritative daemon
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Default daemon / CI use `NoCredentialResolver`. Non-interactive GUI-avoidance hardening: #308. |
-| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Partial | Daemon IPC v6 `Set`/`Get` + durable projection + **EffectSeam mode gate** (#308). TUI still local `prompt_prefix` until IPC sync lands. |
+| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Partial | Daemon IPC v6 `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI selects/displays via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). hook_prefilter still unwired. |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
@@ -173,7 +173,7 @@ impetusd  — authoritative daemon
 | PolicyStore (governed instructions) | Planned | Named in trust-model docs only — **no** `PolicyStore` type/module yet |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
-| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); execution modes = local `prompt_prefix` until daemon-owned modes land (#308 Now); more Phase 7 open |
+| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp composer intent (#263); execution modes via daemon IPC (Shift+Tab / F4 / slash; #308); more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | Path-aware PR: macOS fmt/clippy/`--lib --bins`; Linux `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
 
@@ -231,8 +231,8 @@ map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
 
 **Still Planned / open on this path:** live provider wire for Steer rewrite;
 WorkflowEngine cancel/replace on intent; fanout over IPC / cross-machine;
-daemon-owned execution modes + `RiskGate`; live `hook_prefilter` on
-`ProcessExecution` (performance hook only).
+live `hook_prefilter` on `ProcessExecution` (performance hook only).
+(Daemon-owned execution modes + RiskGate admission are Partial — see matrix.)
 
 ## Storage
 

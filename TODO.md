@@ -44,11 +44,9 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
       + projection + harness handlers + client wrappers (#308)
 - [x] Enforce mode in daemon admission (PLAN denies mutations; not prompt text).
       EffectSeam + runtime/tool_orchestrator use session `ExecutionMode`.
-- [ ] TUI syncs mode via IPC; drop `prompt_prefix`; show daemon-confirmed state.
-      **Done:** local TUI enum replaced / aliased; toast only after Set OK.
-- [ ] Shift+Tab cycles ASK → ACCEPT EDITS → PLAN → AUTO → ASK; Tab unchanged;
+- [x] TUI syncs mode via IPC; drop `prompt_prefix`; show daemon-confirmed state.
+- [x] Shift+Tab cycles ASK → ACCEPT EDITS → PLAN → AUTO → ASK; Tab unchanged;
       F4 mode picker secondary; slash `/mode` `/plan` `/ask` `/auto`.
-      **Done:** TUI keymap tests; Help/F1 matches reality.
 
 ### Auto Risk Gate
 

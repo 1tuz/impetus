@@ -13,7 +13,8 @@ use crate::{
     hit::{HitKind, HitTarget, RectHit},
     markdown::{render_markdown, render_plain_wrapped},
     model::{
-        AppState, ExecutionMode, Focus, ItemKind, Overlay, RunState, format_status_strip, short_id,
+        AppState, EXECUTION_MODE_ALL, Focus, ItemKind, Overlay, RunState,
+        execution_mode_description, execution_mode_is_available, format_status_strip, short_id,
     },
     theme::Theme,
 };
@@ -591,7 +592,9 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  ? / F1            keymap help ( ? only when composer empty )",
         "  F2 / Ctrl+O       session picker",
         "  F3                toggle inspector",
-        "  F4                Plan / Ask / Auto-Safe modes",
+        "  Shift+Tab         cycle ASK → ACCEPT EDITS → PLAN → AUTO (daemon IPC)",
+        "  F4                execution mode picker (includes BYPASS when unlocked)",
+        "  /mode /plan /ask /auto   set mode via daemon IPC",
         "  /theme            theme picker (Impetus neon + geek pack)",
         "  Ctrl+Shift+T      cycle theme",
         "  F5                theme picker",
@@ -609,9 +612,9 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  type              filter by label / id / workspace",
         "",
         "SAFETY",
-        "  The TUI never decides that an action is safe. It only displays the",
-        "  daemon decision and forwards an explicit user response. Accept Edits",
-        "  and Full Auto stay locked until impetusd exposes durable scoped grants.",
+        "  Execution mode is daemon-owned via IPC; the TUI never injects mode",
+        "  text into prompts. ACCEPT EDITS and BYPASS stay locked until impetusd",
+        "  exposes the matching approval-scope capabilities.",
         "",
         "Esc closes this window.",
     ]
@@ -761,13 +764,17 @@ fn render_command_picker(frame: &mut Frame, selected: usize, query: &str, theme:
 fn render_mode_picker(frame: &mut Frame, app: &AppState, selected: usize, theme: Theme) {
     let area = centered_rect(70, 58, frame.area());
     frame.render_widget(Clear, area);
-    let block = panel_block(" execution mode · Enter select · Esc close ", true, theme);
+    let block = panel_block(
+        " execution mode · Enter confirm via IPC · Esc close ",
+        true,
+        theme,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let items = ExecutionMode::ALL
+    let items = EXECUTION_MODE_ALL
         .iter()
         .map(|mode| {
-            let available = mode.is_available(&app.connection.capabilities);
+            let available = execution_mode_is_available(*mode, &app.connection.capabilities);
             let active = app.mode == *mode;
             ListItem::new(vec![
                 Line::from(vec![
@@ -791,7 +798,7 @@ fn render_mode_picker(frame: &mut Frame, app: &AppState, selected: usize, theme:
                     ),
                 ]),
                 Line::from(Span::styled(
-                    format!("  {}", mode.description()),
+                    format!("  {}", execution_mode_description(*mode)),
                     Style::default().fg(theme.muted),
                 )),
             ])

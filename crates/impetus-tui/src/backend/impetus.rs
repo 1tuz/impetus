@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use async_trait::async_trait;
+use impetus_client::protocol::ExecutionMode;
 use impetus_client::protocol::{
     AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, Event, EventPayload,
     IpcRequest, IpcResponse, NoticeEvent, RetryEvent, RunEvent, SessionEvent, ToolEvent,
@@ -208,6 +209,18 @@ impl UiBackend for ImpetusBackend {
         }
     }
 
+    async fn get_execution_mode(&self, session_id: Uuid) -> Result<ExecutionMode> {
+        self.client.get_execution_mode(session_id).await
+    }
+
+    async fn set_execution_mode(
+        &self,
+        session_id: Uuid,
+        mode: ExecutionMode,
+    ) -> Result<ExecutionMode> {
+        self.client.set_execution_mode(session_id, mode).await
+    }
+
     async fn subscribe(
         &self,
         session_id: Uuid,
@@ -248,12 +261,9 @@ fn map_event(event: Event) -> UiEvent {
             }
         }
         EventPayload::Session(SessionEvent::Attached) => UiEventKind::SessionAttached,
-        EventPayload::Session(SessionEvent::ExecutionModeChanged { mode }) => UiEventKind::Notice {
-            title: "execution mode".to_owned(),
-            message: format!("daemon mode set to {}", mode.label()),
-            error: false,
-            remediation: None,
-        },
+        EventPayload::Session(SessionEvent::ExecutionModeChanged { mode }) => {
+            UiEventKind::ExecutionModeChanged { mode }
+        }
         EventPayload::Intent(intent) => UiEventKind::UserInput { text: intent.text },
         EventPayload::Plan(plan) => UiEventKind::Plan {
             summary: plan.summary,

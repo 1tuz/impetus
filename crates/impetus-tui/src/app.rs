@@ -15,10 +15,11 @@ use crate::backend::UiBackend;
 use crate::command::{self, CommandAction};
 use crate::hit::{HitKind, PointerClick, cycle_prompt_intent, is_double_click, resolve_hit};
 use crate::model::{
-    AppState, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES, MAX_PASTE_UPLOAD_BYTES, Overlay,
-    RunOptions, RunState, SessionSummary, TimelineItem, UiEvent, UiEventKind, bounded,
-    drain_stream_frame, format_paste_placeholder, ingest_stream_chunk, is_paste_placeholder,
-    max_scroll_from_bottom, normalize_paste, paste_line_count,
+    AppState, EXECUTION_MODE_ALL, ExecutionMode, Focus, ItemKind, LARGE_PASTE_BYTES,
+    MAX_PASTE_UPLOAD_BYTES, Overlay, RunOptions, RunState, SessionSummary, TimelineItem, UiEvent,
+    UiEventKind, bounded, drain_stream_frame, execution_mode_is_available,
+    format_paste_placeholder, ingest_stream_chunk, is_paste_placeholder, max_scroll_from_bottom,
+    normalize_paste, paste_line_count,
 };
 use crate::render::{filtered_sessions, render};
 use crate::terminal::TerminalSession;
@@ -181,6 +182,11 @@ enum AppMessage {
         result: Result<crate::model::ApprovalDetailView, String>,
     },
     Diagnostics(Result<String, String>),
+    ExecutionModeUpdated {
+        session_id: Uuid,
+        generation: u64,
+        result: Result<ExecutionMode, String>,
+    },
 }
 
 #[derive(Debug)]
@@ -204,6 +210,9 @@ enum Effect {
     },
     LoadApprovalDetail(Uuid),
     Diagnostics,
+    SetExecutionMode {
+        mode: ExecutionMode,
+    },
 }
 
 fn execute_effect(
@@ -283,6 +292,22 @@ fn execute_effect(
                     return;
                 }
                 if !resume_ok {
+                    return;
+                }
+
+                let mode_result = backend
+                    .get_execution_mode(session_id)
+                    .await
+                    .map_err(|error| error.to_string());
+                if tx
+                    .send(AppMessage::ExecutionModeUpdated {
+                        session_id,
+                        generation,
+                        result: mode_result,
+                    })
+                    .await
+                    .is_err()
+                {
                     return;
                 }
 
@@ -513,6 +538,40 @@ fn execute_effect(
                 let _ = tx.send(AppMessage::Diagnostics(result)).await;
             });
         }
+        Effect::SetExecutionMode { mode } => {
+            let Some(session_id) = app.active_session else {
+                app.show_toast("No active session. Create or resume one first.", true);
+                return;
+            };
+            if !execution_mode_is_available(mode, &app.connection.capabilities) {
+                app.show_toast(
+                    format!(
+                        "{} is not supported by the current daemon contract.",
+                        mode.label()
+                    ),
+                    true,
+                );
+                return;
+            }
+            app.status_message = format!("setting mode · {}", mode.label());
+            app.dirty = true;
+            let generation = app.subscription_generation;
+            let backend = backend.clone();
+            let tx = tx.clone();
+            spawn_detached(async move {
+                let result = backend
+                    .set_execution_mode(session_id, mode)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = tx
+                    .send(AppMessage::ExecutionModeUpdated {
+                        session_id,
+                        generation,
+                        result,
+                    })
+                    .await;
+            });
+        }
     }
 }
 
@@ -687,6 +746,26 @@ fn apply_message(app: &mut AppState, message: AppMessage) -> Vec<Effect> {
                     app.show_toast(format!("approval detail failed: {error}"), true);
                 }
             }
+        }
+        AppMessage::ExecutionModeUpdated {
+            session_id,
+            generation,
+            result,
+        } => {
+            if !is_current_operation(app, session_id, generation) {
+                return vec![];
+            }
+            match result {
+                Ok(mode) => {
+                    app.mode = mode;
+                    app.status_message = format!("mode · {}", mode.label());
+                    app.show_toast(format!("Execution mode: {}", mode.label()), false);
+                }
+                Err(error) => {
+                    app.show_toast(format!("mode change failed: {error}"), true);
+                }
+            }
+            app.dirty = true;
         }
         AppMessage::Diagnostics(result) => {
             app.overlay = match result {
@@ -870,7 +949,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         KeyCode::F(2) => open_session_picker(app),
         KeyCode::F(3) => app.show_inspector = !app.show_inspector,
         KeyCode::F(4) => {
-            let selected = ExecutionMode::ALL
+            let selected = EXECUTION_MODE_ALL
                 .iter()
                 .position(|mode| *mode == app.mode)
                 .unwrap_or(0);
@@ -886,6 +965,10 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => select_previous_item(app),
         KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => select_next_item(app),
+        KeyCode::BackTab => return cycle_execution_mode(app),
+        KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            return cycle_execution_mode(app);
+        }
         KeyCode::Tab => cycle_focus(app),
         KeyCode::Enter if app.focus == Focus::Timeline => toggle_selected_item(app),
         KeyCode::Esc => {
@@ -1037,25 +1120,14 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 (Overlay::Modes { selected }, vec![])
             }
             KeyCode::Down => {
-                selected = (selected + 1).min(ExecutionMode::ALL.len() - 1);
+                selected = (selected + 1).min(EXECUTION_MODE_ALL.len() - 1);
                 (Overlay::Modes { selected }, vec![])
             }
             KeyCode::Enter => {
-                let mode = ExecutionMode::ALL[selected];
-                if mode.is_available(&app.connection.capabilities) {
-                    app.mode = mode;
-                    app.show_toast(format!("Execution mode: {}", mode.label()), false);
-                    (Overlay::None, vec![])
-                } else {
-                    app.show_toast(
-                        format!(
-                            "{} is locked until impetusd exposes a durable scoped-grant capability.",
-                            mode.label()
-                        ),
-                        true,
-                    );
-                    (Overlay::Modes { selected }, vec![])
-                }
+                let mode = EXECUTION_MODE_ALL[selected];
+                app.overlay = Overlay::None;
+                app.dirty = true;
+                return set_execution_mode_effects(app, mode);
             }
             _ => (Overlay::Modes { selected }, vec![]),
         },
@@ -1174,12 +1246,7 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     app.composer.clear();
                     (
                         Overlay::None,
-                        vec![send_large_paste_effect(
-                            app.mode,
-                            app.prompt_intent,
-                            label,
-                            body,
-                        )],
+                        vec![send_large_paste_effect(app.prompt_intent, label, body)],
                     )
                 }
             },
@@ -1304,12 +1371,7 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 } else {
                     text
                 };
-                return vec![send_large_paste_effect(
-                    app.mode,
-                    app.prompt_intent,
-                    label,
-                    body,
-                )];
+                return vec![send_large_paste_effect(app.prompt_intent, label, body)];
             }
             if text.len() > MAX_PASTE_UPLOAD_BYTES {
                 app.show_toast(
@@ -1326,14 +1388,9 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             if text.len() > LARGE_PASTE_BYTES {
                 let label = format_paste_placeholder(text.len(), paste_line_count(&text));
-                return vec![send_large_paste_effect(
-                    app.mode,
-                    app.prompt_intent,
-                    label,
-                    text,
-                )];
+                return vec![send_large_paste_effect(app.prompt_intent, label, text)];
             }
-            return vec![send_effect(app.mode, app.prompt_intent, text)];
+            return vec![send_effect(app.prompt_intent, text)];
         }
         KeyCode::Backspace => app.composer.backspace(),
         KeyCode::Delete => app.composer.delete(),
@@ -1364,28 +1421,14 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
             vec![]
         }
         CommandAction::ModePicker => {
-            let selected = ExecutionMode::ALL
+            let selected = EXECUTION_MODE_ALL
                 .iter()
                 .position(|mode| *mode == app.mode)
                 .unwrap_or(0);
             app.overlay = Overlay::Modes { selected };
             vec![]
         }
-        CommandAction::SetMode(mode) => {
-            if mode.is_available(&app.connection.capabilities) {
-                app.mode = mode;
-                app.show_toast(format!("Execution mode: {}", mode.label()), false);
-            } else {
-                app.show_toast(
-                    format!(
-                        "{} is not supported by the current daemon contract.",
-                        mode.label()
-                    ),
-                    true,
-                );
-            }
-            vec![]
-        }
+        CommandAction::SetMode(mode) => set_execution_mode_effects(app, mode),
         CommandAction::SetPromptIntent(intent) => {
             app.prompt_intent = intent;
             app.show_toast(
@@ -1458,36 +1501,47 @@ fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<Effect> {
     }
 }
 
-fn send_effect(
-    mode: ExecutionMode,
-    intent: impetus_client::protocol::UserPromptIntent,
-    text: String,
-) -> Effect {
-    let payload = mode
-        .prompt_prefix()
-        .map(|prefix| format!("{prefix}{text}"))
-        .unwrap_or(text);
-    Effect::SendMessage {
-        text: payload,
-        intent,
-    }
+fn send_effect(intent: impetus_client::protocol::UserPromptIntent, text: String) -> Effect {
+    Effect::SendMessage { text, intent }
 }
 
 fn send_large_paste_effect(
-    mode: ExecutionMode,
     intent: impetus_client::protocol::UserPromptIntent,
     label: String,
     body: String,
 ) -> Effect {
-    let label = mode
-        .prompt_prefix()
-        .map(|prefix| format!("{prefix}{label}"))
-        .unwrap_or(label);
     Effect::SendLargePaste {
         label,
         body,
         intent,
     }
+}
+
+fn set_execution_mode_effects(app: &mut AppState, mode: ExecutionMode) -> Vec<Effect> {
+    if app.active_session.is_none() {
+        app.show_toast("No active session. Create or resume one first.", true);
+        return vec![];
+    }
+    if !execution_mode_is_available(mode, &app.connection.capabilities) {
+        app.show_toast(
+            format!(
+                "{} is not supported by the current daemon contract.",
+                mode.label()
+            ),
+            true,
+        );
+        return vec![];
+    }
+    vec![Effect::SetExecutionMode { mode }]
+}
+
+fn cycle_execution_mode(app: &mut AppState) -> Vec<Effect> {
+    app.dirty = true;
+    if app.active_session.is_none() {
+        app.show_toast("No active session. Create or resume one first.", true);
+        return vec![];
+    }
+    set_execution_mode_effects(app, app.mode.cycle_next())
 }
 
 fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
@@ -1562,6 +1616,13 @@ fn ingest_event(app: &mut AppState, event: UiEvent) {
         UiEventKind::SessionAttached => {
             app.status_message = "attached".to_owned();
             app.last_sequence = sequence;
+        }
+        UiEventKind::ExecutionModeChanged { mode } => {
+            app.mode = mode;
+            app.push_item(
+                TimelineItem::new(sequence, at, ItemKind::Notice, "execution mode")
+                    .with_body(format!("daemon mode set to {}", mode.label())),
+            );
         }
         UiEventKind::UserInput { text } => app.push_item(
             TimelineItem::new(sequence, at, ItemKind::User, "you")
@@ -2687,6 +2748,85 @@ mod tests {
             effects.as_slice(),
             [Effect::ActivateSession(session_id)] if *session_id == id
         ));
+    }
+
+    #[test]
+    fn tab_cycles_focus_shift_tab_cycles_execution_mode() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.active_session = Some(Uuid::new_v4());
+        app.focus = Focus::Composer;
+        app.mode = ExecutionMode::Plan;
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(effects.is_empty());
+        assert_eq!(app.focus, Focus::Timeline);
+        assert_eq!(app.mode, ExecutionMode::Plan);
+
+        let effects = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SetExecutionMode {
+                mode: ExecutionMode::Auto
+            }]
+        ));
+        assert_eq!(app.mode, ExecutionMode::Plan);
+    }
+
+    #[test]
+    fn slash_auto_requests_auto_mode_via_ipc() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.active_session = Some(Uuid::new_v4());
+        let effects = execute_command(&mut app, CommandAction::SetMode(ExecutionMode::Auto));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SetExecutionMode {
+                mode: ExecutionMode::Auto
+            }]
+        ));
+        assert_eq!(app.mode, ExecutionMode::Ask);
+    }
+
+    #[test]
+    fn bypass_requires_daemon_capability() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        app.active_session = Some(Uuid::new_v4());
+        let effects = execute_command(&mut app, CommandAction::SetMode(ExecutionMode::Bypass));
+        assert!(effects.is_empty());
+        assert_eq!(app.mode, ExecutionMode::Ask);
+        assert!(app.toast.as_ref().is_some_and(|toast| toast.error));
+
+        app.connection
+            .capabilities
+            .insert("approval_scope_full_auto".to_owned());
+        let effects = execute_command(&mut app, CommandAction::SetMode(ExecutionMode::Bypass));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SetExecutionMode {
+                mode: ExecutionMode::Bypass
+            }]
+        ));
+    }
+
+    #[test]
+    fn execution_mode_updates_only_after_successful_ipc() {
+        let mut app = AppState::new(ConnectionInfo::default());
+        let session_id = Uuid::new_v4();
+        app.active_session = Some(session_id);
+        app.subscription_generation = 1;
+
+        let _ = apply_message(
+            &mut app,
+            AppMessage::ExecutionModeUpdated {
+                session_id,
+                generation: 1,
+                result: Ok(ExecutionMode::Plan),
+            },
+        );
+        assert_eq!(app.mode, ExecutionMode::Plan);
+        assert!(app.toast.as_ref().is_some_and(|toast| !toast.error));
     }
 
     #[test]

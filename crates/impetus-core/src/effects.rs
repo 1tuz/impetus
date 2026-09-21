@@ -480,21 +480,26 @@ impl EffectSeam {
         risk: RiskGateDecision,
         effect: &NormalizedEffect,
     ) -> EffectDecision {
-        match risk {
-            RiskGateDecision::Deny { reason } => EffectDecision::Deny { reason },
-            RiskGateDecision::NeedsHumanApproval { reason } => {
-                EffectDecision::NeedsApproval { reason }
-            }
-            RiskGateDecision::Allow => match policy {
-                PolicyDecision::Allow => EffectDecision::Allow,
-                PolicyDecision::NeedsApproval { reason } => {
-                    if self.risk_auto_allows_policy_deferral(effect) {
-                        EffectDecision::Allow
-                    } else {
-                        EffectDecision::NeedsApproval { reason }
-                    }
+        // Hard RiskGate Deny always wins (sudo, destructive git, path escape).
+        if let RiskGateDecision::Deny { reason } = risk {
+            return EffectDecision::Deny { reason };
+        }
+        match policy {
+            PolicyDecision::Deny { reason } => EffectDecision::Deny { reason },
+            // Explicit policy Allow (e.g. PolicyConfig override) is authoritative;
+            // soft RiskGate NeedsHumanApproval must not undo operator allow.
+            PolicyDecision::Allow => EffectDecision::Allow,
+            PolicyDecision::NeedsApproval { reason } => match risk {
+                RiskGateDecision::Allow if self.risk_auto_allows_policy_deferral(effect) => {
+                    EffectDecision::Allow
                 }
-                PolicyDecision::Deny { reason } => EffectDecision::Deny { reason },
+                RiskGateDecision::NeedsHumanApproval {
+                    reason: risk_reason,
+                } => EffectDecision::NeedsApproval {
+                    reason: risk_reason,
+                },
+                RiskGateDecision::Allow => EffectDecision::NeedsApproval { reason },
+                RiskGateDecision::Deny { .. } => unreachable!("deny handled above"),
             },
         }
     }
@@ -911,5 +916,22 @@ mod tests {
         let effect =
             NormalizedEffect::process_spawn(ActionOrigin::Agent, "sudo apt", "sudo apt update");
         assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_config_allow_not_undone_by_ask_risk_needs() {
+        use crate::PolicyConfig;
+        let root = workspace();
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#).unwrap();
+        let seam = EffectSeam::with_admission(
+            crate::PolicyEngine::with_config(crate::SandboxScope::local_workspace(&root), config),
+            crate::Sandbox::workspace(&root),
+            ExecutionMode::Ask,
+            Arc::new(crate::DeterministicRiskGate),
+        );
+        let effect =
+            NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
+        assert_eq!(seam.decide(&effect), EffectDecision::Allow);
     }
 }

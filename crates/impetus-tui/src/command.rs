@@ -32,8 +32,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "mode",
         aliases: &["permissions"],
-        description: "choose Plan, Ask, Auto-Safe or a server-backed scope",
-        shortcut: "F4",
+        description: "choose ASK, PLAN, ACCEPT EDITS, AUTO, or BYPASS (daemon IPC)",
+        shortcut: "F4 / Shift+Tab",
     },
     CommandSpec {
         name: "plan",
@@ -48,9 +48,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: "",
     },
     CommandSpec {
-        name: "auto-safe",
-        aliases: &["auto"],
-        description: "continue safe work; keep mutations approval-gated",
+        name: "auto",
+        aliases: &["auto-safe"],
+        description: "policy-allowed autonomy; risky paths approval-gated",
         shortcut: "",
     },
     CommandSpec {
@@ -176,14 +176,14 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
             "" => CommandAction::ModePicker,
             "plan" => CommandAction::SetMode(ExecutionMode::Plan),
             "ask" | "accept" => CommandAction::SetMode(ExecutionMode::Ask),
-            "auto" | "auto-safe" => CommandAction::SetMode(ExecutionMode::AutoSafe),
+            "auto" | "auto-safe" => CommandAction::SetMode(ExecutionMode::Auto),
             "accept-edits" | "edits" => CommandAction::SetMode(ExecutionMode::AcceptEdits),
-            "full-auto" | "full" => CommandAction::SetMode(ExecutionMode::FullAuto),
+            "bypass" | "full-auto" | "full" => CommandAction::SetMode(ExecutionMode::Bypass),
             other => CommandAction::Unknown(format!("unknown execution mode `{other}`")),
         },
         "plan" => CommandAction::SetMode(ExecutionMode::Plan),
         "ask" => CommandAction::SetMode(ExecutionMode::Ask),
-        "auto-safe" => CommandAction::SetMode(ExecutionMode::AutoSafe),
+        "auto" | "auto-safe" => CommandAction::SetMode(ExecutionMode::Auto),
         "diff" => CommandAction::ShowDiff,
         "details" => CommandAction::ToggleInspector,
         "status" => CommandAction::Status,
@@ -282,14 +282,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aliases_resolve_to_safe_mode() {
+    fn aliases_resolve_to_core_modes() {
         assert_eq!(
             parse_command("/auto"),
-            Some(CommandAction::SetMode(ExecutionMode::AutoSafe))
+            Some(CommandAction::SetMode(ExecutionMode::Auto))
+        );
+        assert_eq!(
+            parse_command("/auto-safe"),
+            Some(CommandAction::SetMode(ExecutionMode::Auto))
         );
         assert_eq!(
             parse_command("/accept"),
             Some(CommandAction::SetMode(ExecutionMode::Ask))
+        );
+        assert_eq!(
+            parse_command("/mode bypass"),
+            Some(CommandAction::SetMode(ExecutionMode::Bypass))
         );
     }
 
