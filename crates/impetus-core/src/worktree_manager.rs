@@ -1,13 +1,14 @@
 //! Managed git worktree lifecycle with durable session binding.
 //!
-//! Vertical slice (TODO P1 §5): create → resume → stop → close.
-//! Diff / merge-ready / stale / salvage come later.
+//! Vertical slice (TODO P1 §5): create → resume → stop → close → stale → salvage.
+//! Diff / merge-ready / conflict checks come later.
 //!
 //! Uses the system `git` CLI (no new git dependency). Bindings survive daemon
-//! restart via SQLite; `worktree_id` identity is retained through stop/close.
+//! restart via SQLite; `worktree_id` identity is retained through stop/close/stale.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,8 @@ use uuid::Uuid;
 pub enum WorktreeLifecycleState {
     Active,
     Stopped,
+    /// Binding still present, but disk/git registration looks abandoned.
+    Stale,
     Closed,
 }
 
@@ -28,6 +31,7 @@ impl WorktreeLifecycleState {
         match self {
             Self::Active => "active",
             Self::Stopped => "stopped",
+            Self::Stale => "stale",
             Self::Closed => "closed",
         }
     }
@@ -36,10 +40,30 @@ impl WorktreeLifecycleState {
         match raw {
             "active" => Ok(Self::Active),
             "stopped" => Ok(Self::Stopped),
+            "stale" => Ok(Self::Stale),
             "closed" => Ok(Self::Closed),
             other => Err(WorktreeError::CorruptState(other.to_string())),
         }
     }
+}
+
+/// Why a managed binding was classified as abandoned/stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaleReason {
+    /// Bound path is gone (git entry may still be prunable).
+    PathMissing,
+    /// Path still exists but is not listed by `git worktree list`.
+    NotRegistered,
+}
+
+/// Detection result for an abandoned/stale managed worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleReport {
+    pub binding: WorktreeBinding,
+    pub reason: StaleReason,
+    /// `true` when the worktree directory still exists and can be re-registered.
+    pub recoverable: bool,
 }
 
 /// Durable session ↔ worktree binding.
@@ -66,6 +90,8 @@ pub enum WorktreeError {
     AlreadyBound(Uuid),
     #[error("no worktree binding for session: {0}")]
     NotFound(Uuid),
+    #[error("no worktree binding with id: {0}")]
+    NotFoundId(String),
     #[error("invalid lifecycle transition from {from:?} via {op}")]
     InvalidTransition {
         from: WorktreeLifecycleState,
@@ -73,11 +99,15 @@ pub enum WorktreeError {
     },
     #[error("worktree path missing on disk: {0}")]
     PathMissing(String),
+    #[error("stale worktree is recoverable; salvage instead of cleanup: {0}")]
+    RecoverableNeedsSalvage(String),
+    #[error("stale worktree is not recoverable: {0}")]
+    NotRecoverable(String),
     #[error("corrupt binding state: {0}")]
     CorruptState(String),
 }
 
-/// Creates, stops, resumes, and closes git worktrees bound to session ids.
+/// Creates, stops, resumes, closes, detects stale, and salvages git worktrees.
 pub struct WorktreeManager {
     conn: Arc<Mutex<Connection>>,
     worktrees_root: PathBuf,
@@ -192,7 +222,7 @@ impl WorktreeManager {
         let binding = self.require_open(session_id)?;
         match binding.state {
             WorktreeLifecycleState::Active | WorktreeLifecycleState::Stopped => {}
-            WorktreeLifecycleState::Closed => {
+            WorktreeLifecycleState::Stale | WorktreeLifecycleState::Closed => {
                 return Err(WorktreeError::InvalidTransition {
                     from: binding.state,
                     op: "resume",
@@ -225,19 +255,147 @@ impl WorktreeManager {
 
     /// Remove the git worktree and mark the binding Closed.
     ///
-    /// `worktree_id` is retained so callers can still resolve identity after close.
+    /// Accepts Active, Stopped, or Stale. `worktree_id` is retained after close.
     pub fn close(&self, session_id: Uuid) -> Result<WorktreeBinding, WorktreeError> {
         let binding = self.require_open(session_id)?;
-        if binding.path.exists() {
-            let path_str = binding.path.to_string_lossy();
-            git(
-                &binding.repo_root,
-                &["worktree", "remove", "--force", path_str.as_ref()],
-            )?;
+        match binding.state {
+            WorktreeLifecycleState::Active
+            | WorktreeLifecycleState::Stopped
+            | WorktreeLifecycleState::Stale => {}
+            WorktreeLifecycleState::Closed => {
+                return Err(WorktreeError::InvalidTransition {
+                    from: binding.state,
+                    op: "close",
+                });
+            }
         }
+        self.remove_worktree_disk(&binding)?;
         self.set_state(&binding.worktree_id, WorktreeLifecycleState::Closed)?;
         self.get_by_worktree_id(&binding.worktree_id)?
             .ok_or_else(|| WorktreeError::NotFound(session_id))
+    }
+
+    /// Scan non-closed bindings for abandoned/stale conditions.
+    ///
+    /// Does not mutate durable state. Path-missing → not recoverable;
+    /// path present but absent from `git worktree list` → recoverable.
+    pub fn detect_stale(&self) -> Result<Vec<StaleReport>, WorktreeError> {
+        let mut reports = Vec::new();
+        for binding in self.list_non_closed()? {
+            if let Some(report) = self.classify_stale(&binding)? {
+                reports.push(report);
+            }
+        }
+        Ok(reports)
+    }
+
+    /// Detect abandoned bindings and mark them `Stale` without deleting disk contents.
+    pub fn mark_stale(&self) -> Result<Vec<StaleReport>, WorktreeError> {
+        let reports = self.detect_stale()?;
+        let mut marked = Vec::new();
+        for report in reports {
+            if report.binding.state != WorktreeLifecycleState::Stale {
+                self.set_state(&report.binding.worktree_id, WorktreeLifecycleState::Stale)?;
+            }
+            let binding = self
+                .get_by_worktree_id(&report.binding.worktree_id)?
+                .ok_or_else(|| WorktreeError::NotFoundId(report.binding.worktree_id.clone()))?;
+            marked.push(StaleReport {
+                binding,
+                reason: report.reason,
+                recoverable: report.recoverable,
+            });
+        }
+        Ok(marked)
+    }
+
+    /// Safe cleanup for a non-recoverable stale binding: prune/remove managed disk
+    /// state and mark Closed. Refuses recoverable stale worktrees (use [`Self::salvage`]).
+    pub fn cleanup_stale(&self, worktree_id: &str) -> Result<WorktreeBinding, WorktreeError> {
+        let binding = self
+            .get_by_worktree_id(worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFoundId(worktree_id.to_string()))?;
+        if binding.state != WorktreeLifecycleState::Stale {
+            return Err(WorktreeError::InvalidTransition {
+                from: binding.state,
+                op: "cleanup_stale",
+            });
+        }
+        let report = self.classify_stale(&binding)?.unwrap_or(StaleReport {
+            binding: binding.clone(),
+            reason: StaleReason::PathMissing,
+            recoverable: binding.path.exists(),
+        });
+        if report.recoverable {
+            return Err(WorktreeError::RecoverableNeedsSalvage(
+                worktree_id.to_string(),
+            ));
+        }
+        self.remove_worktree_disk(&binding)?;
+        self.set_state(worktree_id, WorktreeLifecycleState::Closed)?;
+        self.get_by_worktree_id(worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFoundId(worktree_id.to_string()))
+    }
+
+    /// Re-register a recoverable abandoned worktree and set state to Active.
+    ///
+    /// Preserves on-disk files (including untracked) via relocate → `git worktree add`
+    /// → overlay restore. Keeps the same `worktree_id`.
+    pub fn salvage(&self, worktree_id: &str) -> Result<WorktreeBinding, WorktreeError> {
+        let binding = self
+            .get_by_worktree_id(worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFoundId(worktree_id.to_string()))?;
+        match binding.state {
+            WorktreeLifecycleState::Stale
+            | WorktreeLifecycleState::Active
+            | WorktreeLifecycleState::Stopped => {}
+            WorktreeLifecycleState::Closed => {
+                return Err(WorktreeError::InvalidTransition {
+                    from: binding.state,
+                    op: "salvage",
+                });
+            }
+        }
+        if !binding.path.exists() {
+            return Err(WorktreeError::NotRecoverable(worktree_id.to_string()));
+        }
+        if self.is_registered(&binding)? {
+            // Already healthy on disk; just ensure Active.
+            self.set_state(worktree_id, WorktreeLifecycleState::Active)?;
+            return self
+                .get_by_worktree_id(worktree_id)?
+                .ok_or_else(|| WorktreeError::NotFoundId(worktree_id.to_string()));
+        }
+
+        let path_str = binding
+            .path
+            .to_str()
+            .ok_or_else(|| WorktreeError::Git("worktree path is not valid UTF-8".into()))?
+            .to_string();
+        let bak = binding
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{worktree_id}.salvage-bak"));
+        if bak.exists() {
+            std::fs::remove_dir_all(&bak)?;
+        }
+        std::fs::rename(&binding.path, &bak)?;
+        let add_result = git(
+            &binding.repo_root,
+            &["worktree", "add", &path_str, &binding.branch],
+        );
+        if let Err(err) = add_result {
+            // Best-effort restore of the abandoned tree.
+            let _ = std::fs::rename(&bak, &binding.path);
+            return Err(err);
+        }
+        copy_tree_overlay_skip_git(&bak, &binding.path)?;
+        std::fs::remove_dir_all(&bak)?;
+
+        self.set_state(worktree_id, WorktreeLifecycleState::Active)?;
+        self.get_by_worktree_id(worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFoundId(worktree_id.to_string()))
     }
 
     /// Lookup any binding (including Closed) for a session — newest by update time.
@@ -275,6 +433,78 @@ impl WorktreeManager {
             )
             .optional()?;
         Ok(row)
+    }
+
+    fn classify_stale(
+        &self,
+        binding: &WorktreeBinding,
+    ) -> Result<Option<StaleReport>, WorktreeError> {
+        if binding.state == WorktreeLifecycleState::Closed {
+            return Ok(None);
+        }
+        let path_exists = binding.path.exists();
+        if !path_exists {
+            return Ok(Some(StaleReport {
+                binding: binding.clone(),
+                reason: StaleReason::PathMissing,
+                recoverable: false,
+            }));
+        }
+        if !self.is_registered(binding)? {
+            return Ok(Some(StaleReport {
+                binding: binding.clone(),
+                reason: StaleReason::NotRegistered,
+                recoverable: true,
+            }));
+        }
+        Ok(None)
+    }
+
+    fn is_registered(&self, binding: &WorktreeBinding) -> Result<bool, WorktreeError> {
+        if !binding.repo_root.exists() {
+            return Ok(false);
+        }
+        let registered = git_worktree_paths(&binding.repo_root)?;
+        let canonical = absolute_path(&binding.path)?;
+        Ok(registered.iter().any(|p| paths_equal(p, &canonical)))
+    }
+
+    fn remove_worktree_disk(&self, binding: &WorktreeBinding) -> Result<(), WorktreeError> {
+        if binding.path.exists() {
+            let path_str = binding.path.to_string_lossy();
+            // Prefer git remove; fall back to prune + rmdir if registration is gone.
+            match git(
+                &binding.repo_root,
+                &["worktree", "remove", "--force", path_str.as_ref()],
+            ) {
+                Ok(_) => {}
+                Err(_) => {
+                    if binding.path.exists() {
+                        std::fs::remove_dir_all(&binding.path)?;
+                    }
+                    let _ = git(&binding.repo_root, &["worktree", "prune"]);
+                }
+            }
+        } else if binding.repo_root.exists() {
+            let _ = git(&binding.repo_root, &["worktree", "prune"]);
+        }
+        Ok(())
+    }
+
+    fn list_non_closed(&self) -> Result<Vec<WorktreeBinding>, WorktreeError> {
+        let conn = self.conn.lock().expect("worktree db lock");
+        let mut stmt = conn.prepare(
+            "SELECT worktree_id, session_id, path, branch, repo_root, state
+             FROM worktree_bindings
+             WHERE state != 'closed'
+             ORDER BY updated_unix_ms ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_binding)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     fn get_open_by_session(
@@ -356,6 +586,53 @@ fn absolute_path(path: &Path) -> Result<PathBuf, WorktreeError> {
     Ok(absolute.canonicalize().unwrap_or(absolute))
 }
 
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let ca = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let cb = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
+fn git_worktree_paths(repo_root: &Path) -> Result<HashSet<PathBuf>, WorktreeError> {
+    let output = git(repo_root, &["worktree", "list", "--porcelain"])?;
+    let mut paths = HashSet::new();
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            paths.insert(PathBuf::from(rest));
+        }
+    }
+    Ok(paths)
+}
+
+fn copy_tree_overlay_skip_git(src: &Path, dst: &Path) -> Result<(), WorktreeError> {
+    fn walk(src: &Path, dst: &Path) -> Result<(), WorktreeError> {
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let from = entry.path();
+            let to = dst.join(&name);
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                std::fs::create_dir_all(&to)?;
+                walk(&from, &to)?;
+            } else if ft.is_file() {
+                if let Some(parent) = to.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&from, &to)?;
+            }
+            // Skip symlinks — managed worktrees should not rely on them.
+        }
+        Ok(())
+    }
+    walk(src, dst)
+}
+
 fn git(cwd: &Path, args: &[&str]) -> Result<String, WorktreeError> {
     let output = Command::new("git").args(args).current_dir(cwd).output()?;
     if !output.status.success() {
@@ -401,6 +678,21 @@ mod tests {
         let manager = WorktreeManager::open(store_dir.path().join("worktrees.db"), &worktrees)
             .expect("open manager");
         (store_dir, repo_dir, manager, worktrees)
+    }
+
+    /// Break git registration while keeping the worktree directory and files.
+    fn break_registration(binding: &WorktreeBinding) {
+        let git_file = binding.path.join(".git");
+        let contents = std::fs::read_to_string(&git_file).expect("read .git");
+        let admin = contents
+            .trim()
+            .strip_prefix("gitdir: ")
+            .expect("gitdir prefix")
+            .to_string();
+        let _ = std::fs::remove_dir_all(&admin);
+        let _ = std::fs::remove_file(&git_file);
+        // Drop stale admin metadata if pruneable entries remain.
+        let _ = git(&binding.repo_root, &["worktree", "prune"]);
     }
 
     #[test]
@@ -496,5 +788,105 @@ mod tests {
         manager.close(session).expect("close");
         let err = manager.resume(session).expect_err("resume closed");
         assert!(matches!(err, WorktreeError::NotFound(_)));
+    }
+
+    #[test]
+    fn detect_stale_path_missing() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        std::fs::remove_dir_all(&created.path).expect("rm path");
+        let _ = git(repo.path(), &["worktree", "prune"]);
+
+        let reports = manager.detect_stale().expect("detect");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].reason, StaleReason::PathMissing);
+        assert!(!reports[0].recoverable);
+        assert_eq!(reports[0].binding.worktree_id, created.worktree_id);
+        // Detection must not mutate durable state.
+        let still = manager
+            .get_by_worktree_id(&created.worktree_id)
+            .expect("lookup")
+            .expect("present");
+        assert_eq!(still.state, WorktreeLifecycleState::Active);
+    }
+
+    #[test]
+    fn mark_stale_does_not_delete_disk() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        std::fs::write(created.path.join("notes.txt"), b"keep").expect("notes");
+        break_registration(&created);
+        assert!(created.path.join("notes.txt").is_file());
+
+        let marked = manager.mark_stale().expect("mark");
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].reason, StaleReason::NotRegistered);
+        assert!(marked[0].recoverable);
+        assert_eq!(marked[0].binding.state, WorktreeLifecycleState::Stale);
+        assert!(created.path.join("notes.txt").is_file());
+        assert!(created.path.is_dir());
+    }
+
+    #[test]
+    fn cleanup_stale_closes_non_recoverable() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        let worktree_id = created.worktree_id.clone();
+        std::fs::remove_dir_all(&created.path).expect("rm path");
+        let _ = git(repo.path(), &["worktree", "prune"]);
+
+        let marked = manager.mark_stale().expect("mark");
+        assert_eq!(marked.len(), 1);
+        assert!(!marked[0].recoverable);
+
+        let closed = manager.cleanup_stale(&worktree_id).expect("cleanup");
+        assert_eq!(closed.state, WorktreeLifecycleState::Closed);
+        assert!(!created.path.exists());
+    }
+
+    #[test]
+    fn cleanup_refuses_recoverable() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        break_registration(&created);
+        manager.mark_stale().expect("mark");
+
+        let err = manager
+            .cleanup_stale(&created.worktree_id)
+            .expect_err("must refuse");
+        assert!(matches!(err, WorktreeError::RecoverableNeedsSalvage(_)));
+        assert!(created.path.is_dir());
+    }
+
+    #[test]
+    fn salvage_restores_unregistered_with_files() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let created = manager.create(session, repo.path()).expect("create");
+        let worktree_id = created.worktree_id.clone();
+        std::fs::write(created.path.join("wip.rs"), b"fn main() {}").expect("wip");
+        break_registration(&created);
+        manager.mark_stale().expect("mark");
+
+        let salvaged = manager.salvage(&worktree_id).expect("salvage");
+        assert_eq!(salvaged.state, WorktreeLifecycleState::Active);
+        assert_eq!(salvaged.worktree_id, worktree_id);
+        assert!(salvaged.path.join("wip.rs").is_file());
+        assert!(salvaged.path.join("README").is_file());
+        assert!(manager.is_registered(&salvaged).expect("registered"));
+        assert!(manager.detect_stale().expect("detect").is_empty());
+    }
+
+    #[test]
+    fn healthy_binding_not_reported_stale() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        manager.create(session, repo.path()).expect("create");
+        assert!(manager.detect_stale().expect("detect").is_empty());
+        assert!(manager.mark_stale().expect("mark").is_empty());
     }
 }
