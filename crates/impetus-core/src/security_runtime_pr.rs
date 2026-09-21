@@ -3,11 +3,14 @@
 //! Filter: `cargo test -p impetus-core --lib security_runtime_pr`
 //!
 //! Runs under `cargo test --lib --bins` (PR CI). No Seatbelt / process wrap.
-//! Complementary full-flow harness coverage (same `--lib` target):
+//! Complementary full-flow harness coverage (same `--lib` target; satisfies #15
+//! without a second copy under `crates/impetus-core/tests/`):
 //! - `harness_api::approval_resume_returns_durable_tool_observations_to_the_model`
 //! - `harness_api::rejected_approval_records_denial_and_resumes_without_execution`
 //! - `harness_api::cancellation_stops_an_active_agent_run_without_a_final_answer`
 //! - `runtime::attach_recovers_pending_approval_and_next_sequence`
+//!
+//! Evidence map: `docs/development.md` § Full request-flow coverage (#15).
 
 use crate::module::ExecutionSemantics;
 use crate::module_fallback::{OperationOutcome, UnknownOutcomePolicy};
