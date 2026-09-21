@@ -96,8 +96,7 @@ impetusd  — authoritative daemon
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
-| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug recipes (#243); `SubagentRole` + `ChildRunMetadata` validation (#246); AgentScheduler spawn / concurrency / persist-before-resume still Planned |
-| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
+| Subagents / WorktreeManager / WorkflowEngine | Partial | `WorktreeManager` lifecycle + stale/salvage + merge-ready/conflict (#198/#206/#218); `WorkflowEngine` in-memory skeleton + Feature/Bug recipes (#243); `SubagentRole` + `ChildRunMetadata` validation (#246); typed `UserPromptIntent` Prompt/Steer/FollowUp stubs (`user_intent`, #247 — no TUI/IPC yet); AgentScheduler spawn / concurrency / persist-before-resume still Planned || Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair` |
 | MemoryStore vs PolicyStore trust split | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable source format still Planned |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
@@ -110,6 +109,7 @@ impetusd  — authoritative daemon
 ```text
 Client request
   → IPC negotiate
+  → Typed user intent (Prompt | Steer | FollowUp) — routing only; no origin/policy bypass
   → Policy (origin + ActionKind)
   → NeedsApproval? → typed approval IPC
   → Sandbox admit (path/network scope)
@@ -118,6 +118,9 @@ Client request
   → Durable observation (+ ArtifactRef when large)
   → Model / client events
 ```
+
+Steer targets an active run; FollowUp enqueues after the current turn. In-memory
+stubs live in `user_intent`; full client/IPC wiring remains open.
 
 ## Storage
 

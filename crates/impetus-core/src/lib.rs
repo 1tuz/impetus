@@ -80,6 +80,7 @@ pub mod tempo_importer;
 pub mod tool_orchestrator;
 pub mod tool_schema;
 pub mod tools;
+pub mod user_intent;
 pub mod web_research;
 pub mod workflow_engine;
 pub mod worktree_manager;
@@ -261,6 +262,10 @@ pub use tool_schema::{
 pub use tools::{
     ARTIFACT_CHUNK_SIZE, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome,
     ToolProvenance, ToolResult,
+};
+pub use user_intent::{
+    QueuedFollowUp, UserIntentAccepted, UserIntentError, UserIntentRouter, UserIntentSubmission,
+    UserPromptIntent,
 };
 pub use workflow_engine::{
     StepCheckpoint, StepStatus, WorkflowBudget, WorkflowEngine, WorkflowError, WorkflowRecipe,
