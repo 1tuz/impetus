@@ -39,16 +39,24 @@ while IFS= read -r f; do
     docs/*|*.md|assets/*|LICENSE|SECURITY.md|CONTRIBUTING.md|AGENTS.md)
       docs=true
       ;;
-    Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml|.cargo/*|deny.toml)
+    # License/policy only — no Rust compile.
+    deny.toml)
+      security=true
+      ;;
+    Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml|.cargo/*)
       workspace=true
       rust=true
       case "$f" in
-        Cargo.toml|Cargo.lock|deny.toml) security=true ;;
+        Cargo.toml|Cargo.lock) security=true ;;
       esac
       ;;
-    .github/workflows/ci.yml|.github/workflows/security.yml|scripts/ci-affected.sh)
+    # Self-test path: selector + workflow changes need full Rust scope.
+    .github/workflows/ci.yml|scripts/ci-affected.sh)
       rust=true
       workspace=true
+      ;;
+    # Tooling / hooks / non-CI scripts — no Rust compilation.
+    Taskfile.yml|.githooks/*|scripts/*)
       ;;
     crates/impetus-core/*) rust=true; mark_pkg impetus-core ;;
     crates/impetus-acp-gateway/*) rust=true; mark_pkg impetus-acp-gateway ;;
@@ -59,12 +67,30 @@ while IFS= read -r f; do
     crates/impetus-cli/*) rust=true; mark_pkg impetus-cli ;;
     crates/impetus-zap-adapter/*) rust=true; mark_pkg impetus-zap-adapter ;;
     crates/test-module/*) rust=true; mark_pkg test-module ;;
-    crates/*|.githooks/*|Taskfile.yml|scripts/*)
+    crates/*)
       rust=true
       workspace=true
       ;;
   esac
 done <<< "$CHANGED"
+
+# Direct reverse-deps (who depends on this package).
+direct_dependants() {
+  case "$1" in
+    impetus-acp-gateway)
+      echo "impetus-core impetusd"
+      ;;
+    impetus-core)
+      echo "impetus-client impetus impetusd impetus-cli impetus-zap-adapter impetus-tui"
+      ;;
+    impetus-client)
+      echo "impetus-tui impetus impetus-cli impetus-zap-adapter"
+      ;;
+    impetus-tui)
+      echo "impetus"
+      ;;
+  esac
+}
 
 dependants=""
 add_dep() {
@@ -74,29 +100,28 @@ add_dep() {
   esac
 }
 
-for p in $pkgs; do
-  case "$p" in
-    impetus-acp-gateway)
-      add_dep impetus-core
-      add_dep impetusd
-      ;;
-    impetus-core)
-      add_dep impetus-client
-      add_dep impetus
-      add_dep impetusd
-      add_dep impetus-cli
-      add_dep impetus-zap-adapter
-      ;;
-    impetus-client)
-      add_dep impetus-tui
-      add_dep impetus
-      add_dep impetus-cli
-      add_dep impetus-zap-adapter
-      ;;
-    impetus-tui)
-      add_dep impetus
-      ;;
+in_scope() {
+  case " $pkgs $dependants " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
   esac
+}
+
+# Fixed-point expansion: leaf → parents → their parents.
+frontier="$pkgs"
+while [[ -n "$frontier" ]]; do
+  next=""
+  for p in $frontier; do
+    # shellcheck disable=SC2046
+    for d in $(direct_dependants "$p"); do
+      if in_scope "$d"; then
+        continue
+      fi
+      add_dep "$d"
+      next="${next:+$next }$d"
+    done
+  done
+  frontier="$next"
 done
 
 if [[ "$workspace" == true ]]; then

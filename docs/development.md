@@ -28,15 +28,24 @@ task security
 Workflow: `.github/workflows/ci.yml` (single PR pipeline).
 
 1. **Detect** — `scripts/ci-affected.sh` vs PR base (`main`).
-2. **macOS** (if Rust changed) — `fmt`, Clippy + `cargo test --lib --bins` on
-   affected packages; `cargo check` on dependants when a shared crate changed.
+2. **macOS** (if Rust changed) — `fmt`, Clippy + `cargo test` on affected
+   packages with `--lib --bins` (not `--all-targets`); `cargo check` on
+   transitive dependants when a shared crate changed.
 3. **Linux** (if Rust changed) — `cargo check` on affected + dependants only
    (compile guard, not a second full test suite).
-4. **Security** — only when `Cargo.toml` / `Cargo.lock` / `deny.toml` change.
+4. **Security** — when `Cargo.toml` / `Cargo.lock` change (also `deny.toml`,
+   which does **not** trigger Rust jobs).
 5. **Site** — only when `site/**` changes (`npm run check`).
-6. **Gate** — always-green aggregator so docs-only PRs still pass required checks.
+6. **Gate** — always-on aggregator for branch protection so skipped scoped jobs
+   do not fail required checks.
 
-Docs/markdown/assets-only changes skip Rust jobs.
+Path scope notes: docs/markdown/assets skip Rust; `Taskfile.yml`, `.githooks/**`,
+and non-CI `scripts/*` also skip Rust (`scripts/ci-affected.sh` and
+`.github/workflows/ci.yml` still force workspace self-test). Dependants expand
+to a fixed point (e.g. `impetus-acp-gateway` pulls `impetus-core` and then
+core's consumers including `impetus-tui`).
+
+Selector self-check: `bash scripts/tests/ci-affected.sh`.
 
 ## Docs capability claims check
 
