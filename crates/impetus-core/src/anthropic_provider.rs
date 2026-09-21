@@ -455,6 +455,7 @@ mod tests {
                 model: "claude-3-5-sonnet".into(),
                 endpoint: "http://127.0.0.1:8080".into(),
                 credential_strategy: crate::CredentialStrategy::None,
+                openai_http_api: Default::default(),
             },
             RetryBudget::default(),
         )

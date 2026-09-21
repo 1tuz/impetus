@@ -1070,6 +1070,7 @@ fn gather_subsystem_health(
             serde_json::json!({
                 "providers": providers,
                 "openai_native": capability_truth.entry("openai_native_chat_completions"),
+                "openai_responses": capability_truth.entry("openai_responses_api"),
                 "openai_compat": capability_truth.entry("openai_compat_text_adapter"),
             }),
         )
@@ -1418,6 +1419,7 @@ mod tests {
                 endpoint: format!("http://{address}"),
                 model: "test-model".into(),
                 credential_strategy: CredentialStrategy::None,
+                openai_http_api: Default::default(),
             },
             OpenAiRetryBudget::default(),
         )
@@ -1666,6 +1668,7 @@ mod tests {
                     service: "opaque-service-label".into(),
                     account: "opaque-account-label".into(),
                 },
+                openai_http_api: Default::default(),
             },
             OpenAiRetryBudget::default(),
         )
@@ -2271,6 +2274,10 @@ mod tests {
         assert!(
             caps.iter()
                 .any(|c| c["id"] == "openai_native_chat_completions" && c["level"] == "PARTIAL")
+        );
+        assert!(
+            caps.iter()
+                .any(|c| c["id"] == "openai_responses_api" && c["level"] == "PARTIAL")
         );
     }
 

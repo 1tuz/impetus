@@ -46,6 +46,7 @@ pub mod observations;
 pub mod openai_compat_adapter;
 pub mod openai_native_adapter;
 pub mod openai_provider;
+pub mod openai_responses;
 pub mod output_reducer;
 pub mod plugins;
 pub mod policy;
@@ -168,7 +169,7 @@ pub use profile::{Profile, ProfileConfig, ServiceBinding, ServiceBindings};
 pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use provider::{
     CredentialResolver, CredentialStrategy, NoCredentialResolver, OpenAiCompatibleProvider,
-    ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, RetryBudget,
+    OpenAiHttpApi, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, RetryBudget,
 };
 pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
 pub use provider_registry::ProviderRegistry;

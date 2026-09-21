@@ -33,6 +33,18 @@ pub enum CredentialStrategy {
     },
 }
 
+/// OpenAI HTTP API surface for native [`crate::OpenAiProvider`].
+///
+/// Default remains Chat Completions (production daemon path). `Responses` is
+/// opt-in via provider profile — never flips the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiHttpApi {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderProfile {
@@ -40,6 +52,9 @@ pub struct ProviderProfile {
     pub endpoint: String,
     pub model: String,
     pub credential_strategy: CredentialStrategy,
+    /// Opt-in OpenAI wire protocol. Default: Chat Completions.
+    #[serde(default)]
+    pub openai_http_api: OpenAiHttpApi,
 }
 
 /// A transient chat message sent to a provider. It is never a durable event.
@@ -505,6 +520,7 @@ mod tests {
             endpoint: "http://127.0.0.1:11434".into(),
             model: "test".into(),
             credential_strategy: CredentialStrategy::None,
+            openai_http_api: OpenAiHttpApi::default(),
         }
     }
 
@@ -706,6 +722,7 @@ mod tests {
                 keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
+            openai_http_api: Default::default(),
         };
         assert!(profile.validate().is_err());
 

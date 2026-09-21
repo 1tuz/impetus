@@ -428,6 +428,7 @@ mod tests {
             endpoint: "http://127.0.0.1:11434".into(),
             model: "test".into(),
             credential_strategy: CredentialStrategy::None,
+            openai_http_api: Default::default(),
         };
         assert_eq!(resolver.resolve(&profile).unwrap(), None);
     }
@@ -444,6 +445,7 @@ mod tests {
                 service: "impetus".into(),
                 account: "test".into(),
             },
+            openai_http_api: Default::default(),
         };
         assert!(resolver.resolve(&profile).is_err());
     }
@@ -578,6 +580,7 @@ mod tests {
                 keychain_service: "impetus".into(),
                 keychain_account: "oauth-test".into(),
             },
+            openai_http_api: Default::default(),
         };
         assert!(valid.validate().is_ok());
 
@@ -626,6 +629,7 @@ mod tests {
                 keychain_service: "impetus".into(),
                 keychain_account: "nonexistent-oauth-test".into(),
             },
+            openai_http_api: Default::default(),
         };
 
         let result = resolver.resolve(&profile);

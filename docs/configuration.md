@@ -33,9 +33,12 @@ same path.
 }
 ```
 
-Supported fields are `id`, `endpoint`, `model`, and `credential_strategy`.
-The endpoint must be an absolute URL without a query string or fragment. The
-provider requests `<endpoint>/v1/chat/completions` with streaming enabled.
+Supported fields are `id`, `endpoint`, `model`, `credential_strategy`, and
+optional `openai_http_api` (`chat_completions` default, or `responses` for the
+`/v1/responses` opt-in path). The endpoint must be an absolute URL without a
+query string or fragment. By default the provider requests
+`<endpoint>/v1/chat/completions` with streaming enabled. With
+`"openai_http_api": "responses"` it requests `<endpoint>/v1/responses` instead.
 
 ### Credential strategies
 

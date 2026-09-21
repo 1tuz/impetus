@@ -1,11 +1,15 @@
 //! OpenAI-compatible provider implementation.
 //!
-//! Streams chat completions through an OpenAI-compatible endpoint with
-//! retry logic and health tracking.
+//! Default wire path: Chat Completions SSE (`/v1/chat/completions`).
+//! Opt-in: Responses API (`/v1/responses`) via [`crate::OpenAiHttpApi::Responses`].
 
 use crate::{
-    ModelProvider, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile,
+    ModelProvider, OpenAiHttpApi, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile,
     ProviderProtocolAdapter, StreamEvent, ToolCallAssembler,
+    openai_responses::{
+        ResponsesStreamAction, apply_responses_sse_data, build_responses_input,
+        openai_responses_tools_payload,
+    },
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -79,13 +83,40 @@ impl OpenAiProvider {
         &self.profile
     }
 
-    fn chat_completions_url(&self) -> Result<reqwest::Url, ProviderError> {
+    pub fn http_api(&self) -> OpenAiHttpApi {
+        self.profile.openai_http_api
+    }
+
+    fn request_url(&self) -> Result<reqwest::Url, ProviderError> {
         self.profile.validate()?;
         let mut endpoint = reqwest::Url::parse(&self.profile.endpoint)
             .map_err(|_| ProviderError::InvalidProfile("endpoint must be an absolute URL"))?;
         let base = endpoint.path().trim_end_matches('/');
-        endpoint.set_path(&format!("{base}/v1/chat/completions"));
+        let suffix = match self.profile.openai_http_api {
+            OpenAiHttpApi::ChatCompletions => "/v1/chat/completions",
+            OpenAiHttpApi::Responses => "/v1/responses",
+        };
+        endpoint.set_path(&format!("{base}{suffix}"));
         Ok(endpoint)
+    }
+
+    fn request_body(&self, messages: &[ProviderMessage]) -> serde_json::Value {
+        match self.profile.openai_http_api {
+            OpenAiHttpApi::ChatCompletions => serde_json::json!({
+                "model": self.profile.model,
+                "messages": messages,
+                "stream": true,
+                "tools": openai_tools_payload(),
+                "tool_choice": "auto",
+            }),
+            OpenAiHttpApi::Responses => serde_json::json!({
+                "model": self.profile.model,
+                "input": build_responses_input(messages),
+                "stream": true,
+                "tools": openai_responses_tools_payload(),
+                "tool_choice": "auto",
+            }),
+        }
     }
 
     fn update_health(&self, health: ProviderHealth) {
@@ -102,7 +133,8 @@ impl OpenAiProvider {
         cancel: CancellationToken,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        let url = self.chat_completions_url()?;
+        let url = self.request_url()?;
+        let body = self.request_body(messages);
         let mut attempt = 0u8;
 
         loop {
@@ -111,13 +143,7 @@ impl OpenAiProvider {
                 return Err(ProviderError::Cancelled);
             }
 
-            let mut request = self.client.post(url.clone()).json(&serde_json::json!({
-                "model": self.profile.model,
-                "messages": messages,
-                "stream": true,
-                "tools": openai_tools_payload(),
-                "tool_choice": "auto",
-            }));
+            let mut request = self.client.post(url.clone()).json(&body);
 
             if let Some(token) = credential {
                 request = request.bearer_auth(token);
@@ -126,7 +152,15 @@ impl OpenAiProvider {
             match request.send().await {
                 Ok(response) if response.status().is_success() => {
                     self.update_health(ProviderHealth::Healthy);
-                    return self.consume_sse_stream(response, cancel, on_event).await;
+                    return match self.profile.openai_http_api {
+                        OpenAiHttpApi::ChatCompletions => {
+                            self.consume_chat_completions_sse(response, cancel, on_event)
+                                .await
+                        }
+                        OpenAiHttpApi::Responses => {
+                            self.consume_responses_sse(response, cancel, on_event).await
+                        }
+                    };
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -153,7 +187,7 @@ impl OpenAiProvider {
         }
     }
 
-    async fn consume_sse_stream(
+    async fn consume_chat_completions_sse(
         &self,
         response: reqwest::Response,
         cancel: CancellationToken,
@@ -182,21 +216,17 @@ impl OpenAiProvider {
                 for line in text.lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data.trim() == "[DONE]" {
-                            // Flush tool calls before ending — early return used to
-                            // skip emission after the stream terminator.
                             tool_calls.emit_into(&mut on_event)?;
                             return Ok(());
                         }
                         if let Ok(parsed) = serde_json::from_str::<SseData>(data) {
                             if let Some(delta_choice) = parsed.choices.first() {
-                                // Emit text delta
                                 if let Some(content) = &delta_choice.delta.content {
                                     on_event(StreamEvent::TextDelta {
                                         delta: content.clone(),
                                     })?;
                                 }
 
-                                // Accumulate tool calls via shared assembler
                                 if let Some(delta_tool_calls) = &delta_choice.delta.tool_calls {
                                     for tc in delta_tool_calls {
                                         tool_calls.apply_openai_delta(
@@ -210,7 +240,6 @@ impl OpenAiProvider {
                                     }
                                 }
 
-                                // Emit finish reason
                                 if let Some(reason) = &delta_choice.finish_reason {
                                     let finish_reason = match reason.as_str() {
                                         "stop" => crate::FinishReason::Stop,
@@ -225,13 +254,69 @@ impl OpenAiProvider {
                                 }
                             }
 
-                            // Emit usage
                             if let Some(usage) = parsed.usage {
                                 on_event(StreamEvent::Usage {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     measured: true,
                                 })?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tool_calls.emit_into(&mut on_event)?;
+        Ok(())
+    }
+
+    async fn consume_responses_sse(
+        &self,
+        response: reqwest::Response,
+        cancel: CancellationToken,
+        mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
+    ) -> Result<(), ProviderError> {
+        let mut stream = response.bytes_stream();
+        let mut buffer = Vec::new();
+        let mut tool_calls = ToolCallAssembler::new();
+        let mut saw_function_call = false;
+
+        while let Some(chunk_result) = stream.next().await {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+
+            let chunk = chunk_result.map_err(|_| ProviderError::MalformedStream)?;
+            buffer.extend_from_slice(&chunk);
+
+            if buffer.len() > MAX_SSE_EVENT_BYTES {
+                return Err(ProviderError::MalformedStream);
+            }
+
+            while let Some(pos) = buffer.windows(2).position(|w| w == b"\n\n") {
+                let event = buffer.drain(..pos + 2).collect::<Vec<_>>();
+                let text = String::from_utf8_lossy(&event);
+
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        // Rare terminator some gateways still emit.
+                        if data.trim() == "[DONE]" {
+                            tool_calls.emit_into(&mut on_event)?;
+                            return Ok(());
+                        }
+                        match apply_responses_sse_data(
+                            data,
+                            &mut tool_calls,
+                            &mut saw_function_call,
+                            &mut on_event,
+                        )? {
+                            ResponsesStreamAction::Continue => {}
+                            ResponsesStreamAction::Completed => return Ok(()),
+                            ResponsesStreamAction::Failed => {
+                                return Err(ProviderError::RequestFailed(
+                                    "responses stream failed".into(),
+                                ));
                             }
                         }
                     }
@@ -278,7 +363,10 @@ impl ModelProvider for OpenAiProvider {
 
 impl ProviderProtocolAdapter for OpenAiProvider {
     fn protocol_id(&self) -> &'static str {
-        "openai_chat_completions"
+        match self.profile.openai_http_api {
+            OpenAiHttpApi::ChatCompletions => "openai_chat_completions",
+            OpenAiHttpApi::Responses => "openai_responses",
+        }
     }
 }
 
@@ -323,6 +411,16 @@ struct SseUsage {
 mod tests {
     use super::*;
 
+    fn test_profile(api: OpenAiHttpApi) -> ProviderProfile {
+        ProviderProfile {
+            id: "openai".into(),
+            model: "gpt-4o".into(),
+            endpoint: "http://127.0.0.1:8080".into(),
+            credential_strategy: crate::CredentialStrategy::None,
+            openai_http_api: api,
+        }
+    }
+
     #[test]
     fn openai_sse_data_deserialize_text_delta() {
         let json = r#"{"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#;
@@ -361,18 +459,56 @@ mod tests {
     }
 
     #[test]
-    fn protocol_adapter_id_is_chat_completions() {
+    fn protocol_adapter_id_defaults_to_chat_completions() {
         let provider = OpenAiProvider::new(
-            crate::ProviderProfile {
-                id: "openai".into(),
-                model: "gpt-4o".into(),
-                endpoint: "http://127.0.0.1:8080".into(),
-                credential_strategy: crate::CredentialStrategy::None,
-            },
+            test_profile(OpenAiHttpApi::ChatCompletions),
             RetryBudget::default(),
         )
         .unwrap();
         assert_eq!(provider.protocol_id(), "openai_chat_completions");
+        assert_eq!(provider.http_api(), OpenAiHttpApi::ChatCompletions);
+    }
+
+    #[test]
+    fn protocol_adapter_id_responses_when_opted_in() {
+        let provider = OpenAiProvider::new(
+            test_profile(OpenAiHttpApi::Responses),
+            RetryBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(provider.protocol_id(), "openai_responses");
+        let url = provider.request_url().unwrap();
+        assert!(url.path().ends_with("/v1/responses"));
+        let body = provider.request_body(&[ProviderMessage::user("hi")]);
+        assert!(body.get("input").is_some());
+        assert!(body.get("messages").is_none());
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert!(body["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn chat_completions_url_unchanged_by_default() {
+        let provider = OpenAiProvider::new(
+            test_profile(OpenAiHttpApi::default()),
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let url = provider.request_url().unwrap();
+        assert!(url.path().ends_with("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn profile_json_defaults_http_api_to_chat_completions() {
+        let raw = r#"{"id":"openai","endpoint":"http://127.0.0.1:8080","model":"gpt-4o","credential_strategy":{"kind":"none"}}"#;
+        let profile: ProviderProfile = serde_json::from_str(raw).unwrap();
+        assert_eq!(profile.openai_http_api, OpenAiHttpApi::ChatCompletions);
+    }
+
+    #[test]
+    fn profile_json_accepts_responses_opt_in() {
+        let raw = r#"{"id":"openai","endpoint":"http://127.0.0.1:8080","model":"gpt-4o","credential_strategy":{"kind":"none"},"openai_http_api":"responses"}"#;
+        let profile: ProviderProfile = serde_json::from_str(raw).unwrap();
+        assert_eq!(profile.openai_http_api, OpenAiHttpApi::Responses);
     }
 
     #[test]
