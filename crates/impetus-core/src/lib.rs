@@ -9,6 +9,7 @@ pub mod agent_plugins_adapter;
 pub mod agent_skills_adapter;
 pub mod anthropic_provider;
 pub mod approval;
+pub mod artifact_upload;
 pub mod attachments;
 pub mod audit_log;
 pub mod budget;
@@ -71,6 +72,10 @@ pub use agent_skills_adapter::AgentSkillsAdapter;
 pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
     ApprovalState, ScopeEstimate,
+};
+pub use artifact_upload::{
+    ArtifactUploadError, ArtifactUploadStore, MAX_ARTIFACT_UPLOAD_BYTES,
+    MAX_ARTIFACT_UPLOAD_CHUNK_BYTES, upload_error_message,
 };
 pub use attachments::{Attachment, AttachmentError, AttachmentStore, StoreStats};
 pub use audit_log::{AuditEntry, AuditLog, AuditQuery};

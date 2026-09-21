@@ -63,6 +63,7 @@ pub struct Harness {
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
+    uploads: crate::ArtifactUploadStore,
 }
 
 impl Harness {
@@ -87,7 +88,14 @@ impl Harness {
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
+            uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
         }
+    }
+
+    /// Override durable artifact root (tests / portable installs).
+    pub fn with_artifact_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.uploads = crate::ArtifactUploadStore::new(root);
+        self
     }
 
     #[cfg(test)]
@@ -115,6 +123,7 @@ impl Harness {
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
+            uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
         }
     }
 
@@ -174,6 +183,7 @@ impl Harness {
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
+            uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
         }
     }
 
@@ -223,6 +233,7 @@ impl Harness {
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
+            uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
         }
     }
 
@@ -254,6 +265,7 @@ impl Harness {
             self.workspace_root.clone(),
             self.session_coordinator.clone(),
             self.attachments.clone(),
+            self.uploads.clone(),
             request,
         )
     }
@@ -271,6 +283,7 @@ fn handle_request(
     workspace_root: PathBuf,
     session_coordinator: SessionCoordinator,
     attachments: crate::AttachmentStore,
+    uploads: crate::ArtifactUploadStore,
     request: IpcRequest,
 ) -> IpcResponse {
     match request {
@@ -504,8 +517,8 @@ fn handle_request(
             target,
             pattern,
         } => {
-            let artifact_store = DurableArtifactStore::open(crate::default_artifact_root())
-                .expect("open artifact store");
+            let artifact_store =
+                DurableArtifactStore::open(uploads.artifact_root()).expect("open artifact store");
             let tool = match kind {
                 ReadOnlyToolKind::List => ReadOnlyTool::List {
                     target: target.into(),
@@ -667,6 +680,68 @@ fn handle_request(
                 detail: Box::new(detail),
             },
             Err(error) => runtime_error(error),
+        },
+        IpcRequest::BeginArtifactUpload {
+            session_id,
+            declared_bytes,
+            content_type: _,
+        } => match AgentRuntime::attach(store, policy, session_id).and_then(|_| {
+            uploads
+                .begin(session_id, declared_bytes)
+                .map_err(|error| RuntimeError::Denied(crate::upload_error_message(&error)))
+        }) {
+            Ok(upload_id) => IpcResponse::ArtifactUploadBegun {
+                upload_id,
+                max_bytes: crate::MAX_ARTIFACT_UPLOAD_BYTES,
+                max_chunk_bytes: crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES,
+            },
+            Err(error) => runtime_error(error),
+        },
+        IpcRequest::AppendArtifactChunk {
+            upload_id,
+            seq,
+            data_b64,
+        } => match uploads.append_b64(upload_id, seq, &data_b64) {
+            Ok(bytes_received) => IpcResponse::ArtifactChunkAccepted {
+                upload_id,
+                bytes_received,
+                next_seq: seq.saturating_add(1),
+            },
+            Err(error) => IpcResponse::Error {
+                code: match error {
+                    crate::ArtifactUploadError::NotFound(_) => IpcErrorCode::Unavailable,
+                    crate::ArtifactUploadError::TooLarge
+                    | crate::ArtifactUploadError::ChunkTooLarge
+                    | crate::ArtifactUploadError::SequenceMismatch { .. }
+                    | crate::ArtifactUploadError::InvalidBase64
+                    | crate::ArtifactUploadError::DeclaredSizeExceeded { .. }
+                    | crate::ArtifactUploadError::DeclaredSizeMismatch { .. }
+                    | crate::ArtifactUploadError::TooManyUploads => IpcErrorCode::InvalidRequest,
+                    crate::ArtifactUploadError::Poisoned | crate::ArtifactUploadError::Store => {
+                        IpcErrorCode::Internal
+                    }
+                },
+                message: crate::upload_error_message(&error),
+            },
+        },
+        IpcRequest::FinishArtifactUpload { upload_id } => match uploads.finish(upload_id) {
+            Ok(artifact) => IpcResponse::ArtifactStored { artifact },
+            Err(error) => IpcResponse::Error {
+                code: match error {
+                    crate::ArtifactUploadError::NotFound(_) => IpcErrorCode::Unavailable,
+                    crate::ArtifactUploadError::DeclaredSizeMismatch { .. }
+                    | crate::ArtifactUploadError::TooLarge => IpcErrorCode::InvalidRequest,
+                    _ => IpcErrorCode::Internal,
+                },
+                message: crate::upload_error_message(&error),
+            },
+        },
+        IpcRequest::AbortArtifactUpload { upload_id } => match uploads.abort(upload_id) {
+            Ok(()) => IpcResponse::ArtifactUploadAborted { upload_id },
+            Err(error) => IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: crate::upload_error_message(&error),
+            },
         },
         IpcRequest::Diagnostics => {
             let subsystems =
@@ -2112,5 +2187,107 @@ mod tests {
         };
         assert_ne!(restored_id, session_id);
         assert_ne!(restored_id, forked_id);
+    }
+
+    #[test]
+    fn chunked_artifact_upload_returns_ref_without_event_body() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use sha2::{Digest, Sha256};
+
+        let artifact_root = tempfile::tempdir().expect("artifacts");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_artifact_root(artifact_root.path());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let body = b"oversized paste payload that must not enter durable events";
+        let IpcResponse::ArtifactUploadBegun { upload_id, .. } =
+            harness.handle(IpcRequest::BeginArtifactUpload {
+                session_id,
+                declared_bytes: Some(body.len()),
+                content_type: Some("text/plain".into()),
+            })
+        else {
+            panic!("begin upload");
+        };
+
+        let mid = body.len() / 2;
+        for (seq, chunk) in [(0u64, &body[..mid]), (1u64, &body[mid..])] {
+            let IpcResponse::ArtifactChunkAccepted {
+                bytes_received,
+                next_seq,
+                ..
+            } = harness.handle(IpcRequest::AppendArtifactChunk {
+                upload_id,
+                seq,
+                data_b64: BASE64.encode(chunk),
+            })
+            else {
+                panic!("append chunk {seq}");
+            };
+            assert_eq!(next_seq, seq + 1);
+            assert!(bytes_received > 0);
+        }
+
+        let IpcResponse::ArtifactStored { artifact } =
+            harness.handle(IpcRequest::FinishArtifactUpload { upload_id })
+        else {
+            panic!("finish upload");
+        };
+        assert_eq!(artifact.byte_count, body.len());
+        assert_eq!(artifact.id, format!("{:x}", Sha256::digest(body)));
+
+        let events = store.list(session_id).expect("events");
+        let encoded = serde_json::to_string(&events).expect("encode events");
+        assert!(
+            !encoded.contains("oversized paste payload"),
+            "raw paste must not appear in durable events"
+        );
+
+        let durable = DurableArtifactStore::open(artifact_root.path()).expect("reopen");
+        assert_eq!(durable.read(&artifact.id).unwrap(), body);
+
+        // #122 Context Builder hook: uploaded ref materializes without full dump path.
+        let materialized = crate::ContextBuilder::new(
+            &durable,
+            crate::output_reducer::TokenBudget { max_tokens: 2_000 },
+        )
+        .materialize(&artifact)
+        .expect("materialize uploaded artifact");
+        assert!(materialized.content.contains("oversized paste payload"));
+    }
+
+    #[test]
+    fn oversized_declared_upload_is_rejected() {
+        let artifact_root = tempfile::tempdir().expect("artifacts");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_artifact_root(artifact_root.path());
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let response = harness.handle(IpcRequest::BeginArtifactUpload {
+            session_id,
+            declared_bytes: Some(crate::MAX_ARTIFACT_UPLOAD_BYTES + 1),
+            content_type: None,
+        });
+        assert!(
+            matches!(response, IpcResponse::Error { .. }),
+            "expected rejection, got {response:?}"
+        );
     }
 }

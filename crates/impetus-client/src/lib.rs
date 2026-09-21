@@ -224,6 +224,62 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Upload bytes via chunked IPC into the durable artifact store.
+    ///
+    /// Returns only an [`impetus_core::DurableArtifactRef`]; the raw body never
+    /// enters durable session events.
+    async fn upload_artifact(
+        &self,
+        session_id: uuid::Uuid,
+        bytes: &[u8],
+        content_type: Option<String>,
+    ) -> Result<impetus_core::DurableArtifactRef> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use impetus_core::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES;
+
+        let begun = self
+            .request(IpcRequest::BeginArtifactUpload {
+                session_id,
+                declared_bytes: Some(bytes.len()),
+                content_type,
+            })
+            .await?;
+        let upload_id = match begun {
+            IpcResponse::ArtifactUploadBegun { upload_id, .. } => upload_id,
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected begin response: {response:?}"),
+        };
+
+        for (seq, chunk) in bytes.chunks(MAX_ARTIFACT_UPLOAD_CHUNK_BYTES).enumerate() {
+            match self
+                .request(IpcRequest::AppendArtifactChunk {
+                    upload_id,
+                    seq: seq as u64,
+                    data_b64: BASE64.encode(chunk),
+                })
+                .await?
+            {
+                IpcResponse::ArtifactChunkAccepted { .. } => {}
+                IpcResponse::Error { message, .. } => {
+                    let _ = self
+                        .request(IpcRequest::AbortArtifactUpload { upload_id })
+                        .await;
+                    bail!(message);
+                }
+                response => bail!("unexpected append response: {response:?}"),
+            }
+        }
+
+        match self
+            .request(IpcRequest::FinishArtifactUpload { upload_id })
+            .await?
+        {
+            IpcResponse::ArtifactStored { artifact } => Ok(artifact),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected finish response: {response:?}"),
+        }
+    }
+
     /// Open a dedicated event connection. Reconnect uses the last rendered
     /// sequence, so it receives a durable backfill without duplicate history.
     async fn subscribe_live(
@@ -247,6 +303,20 @@ impl InMemoryTransport {
     pub fn new(store: Arc<dyn EventStore>, policy: PolicyEngine) -> Self {
         Self {
             harness: Arc::new(Harness::new(store.clone(), policy)),
+            store,
+        }
+    }
+
+    /// Build transport with a custom durable artifact root (tests).
+    pub fn with_artifact_root(
+        store: Arc<dyn EventStore>,
+        policy: PolicyEngine,
+        artifact_root: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            harness: Arc::new(
+                Harness::new(store.clone(), policy).with_artifact_root(artifact_root),
+            ),
             store,
         }
     }
@@ -359,6 +429,11 @@ mod tests {
                 .iter()
                 .any(|capability| capability == "context")
         );
+        assert!(
+            capabilities
+                .iter()
+                .any(|capability| capability == "artifact_upload")
+        );
 
         let session_id = client
             .create_session(std::env::current_dir().unwrap().canonicalize().unwrap())
@@ -398,6 +473,37 @@ mod tests {
                 .is_err(),
             "both transports reject subscriptions to missing sessions"
         );
+    }
+
+    #[tokio::test]
+    async fn upload_artifact_chunks_into_durable_store() {
+        let artifact_root = tempfile::tempdir().expect("artifacts");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let client = InMemoryTransport::with_artifact_root(
+            store.clone(),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            artifact_root.path(),
+        );
+
+        let session_id = client
+            .create_session(workspace.path().to_path_buf())
+            .await
+            .unwrap();
+        let body = b"client helper multi-chunk paste body";
+        let art = client
+            .upload_artifact(session_id, body, Some("text/plain".into()))
+            .await
+            .unwrap();
+        assert_eq!(art.byte_count, body.len());
+
+        let durable =
+            impetus_core::DurableArtifactStore::open(artifact_root.path()).expect("open store");
+        assert_eq!(durable.read(&art.id).unwrap(), body);
+
+        let events = store.list(session_id).expect("events");
+        let dump = serde_json::to_string(&events).unwrap();
+        assert!(!dump.contains("multi-chunk paste body"));
     }
 
     #[tokio::test]
