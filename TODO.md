@@ -222,6 +222,9 @@ Do **not** invent a new hard-coded agent type per workflow.
       external processes by default
 - [ ] Measure per-tool-call overhead; add perf tests if hooks land
 - [ ] Avoid large overlapping hook catalogs
+- [x] Event log query baselines (append_next / list / cursor backfill) — Criterion
+      benches + `docs/benchmarks/v0.2.md`; local `task bench` only, not PR CI gate
+      (#16)
 
 ### 10. Anti-sprawl
 
