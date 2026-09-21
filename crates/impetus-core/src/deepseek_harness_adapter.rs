@@ -122,13 +122,11 @@ impl DeepSeekHarnessAdapter {
 fn validate_command_path(command: &str) -> Result<()> {
     let path = PathBuf::from(command);
     // Absolute or explicit relative paths must exist; bare names resolve via PATH later.
-    if path.is_absolute() || command.contains('/') || command.contains('\\') {
-        if !path.exists() {
-            anyhow::bail!(
-                "DeepSeek Harness bridge command not found at {}",
-                path.display()
-            );
-        }
+    if (path.is_absolute() || command.contains('/') || command.contains('\\')) && !path.exists() {
+        anyhow::bail!(
+            "DeepSeek Harness bridge command not found at {}",
+            path.display()
+        );
     }
     Ok(())
 }
