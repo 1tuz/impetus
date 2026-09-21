@@ -74,7 +74,10 @@ pub enum ApprovalResponse {
 
 ### 4. Sandbox Capability
 
-Execution requires explicit capability grant from macOS Seatbelt sandbox:
+Execution requires explicit sandbox admission. **Today** that is path/network
+**scope** enforcement in `EffectSeam` / `Sandbox::admit` (workspace roots,
+`allow_network`, web grants). macOS Seatbelt (`sandbox-exec`) exists as a
+**spike/evidence** test only and is not yet the production process wrapper.
 
 ```rust
 pub enum SandboxProfile {
@@ -86,6 +89,8 @@ pub enum SandboxProfile {
 ```
 
 **Invariant:** Custom modules cannot escape sandbox boundaries or elevate privileges.
+Seatbelt wiring is a P0/P1 hardening target; docs must not claim it is already
+the live executor boundary.
 
 ### 5. Durable Outcome
 

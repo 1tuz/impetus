@@ -1,54 +1,41 @@
 # Design references
 
-A reference informs an approach; it never becomes a dependency, permission, or
-claim of implementation automatically.
+A reference informs an approach. It is not a dependency, permission grant, or
+proof that Impetus implements the same feature.
 
-## Architectural / Agent Harness References
+Prefer, in order: official specs/repos, public protocols, well-maintained
+open-source harnesses. Document **why a design is correct for Impetus**, not a
+list of projects copied from.
 
-| Reference | What informs Impetus |
+## Protocols and libraries
+
+| Reference | Role for Impetus |
 | --- | --- |
-| [Codex](https://openai.com/codex/) | Tool orchestration, capability/policy boundaries, sandbox execution, structured tool lifecycle. |
-| [Claude Code](https://code.claude.com/docs/) | Long-session compaction/recovery, autonomy/risk concepts, fewer unnecessary approvals. |
-| [OpenClaude](https://github.com/Gitlawb/openclaude) | Per-agent budgets, reasoning effort, separate compaction model, context/token UX, useful multi-model concepts. Reuse always requires separate license/provenance review. |
-| [jcode](https://github.com/1jehuang/jcode) | Persistent daemon, lightweight sessions, multi-model, swarm, memory, soft interrupt, low overhead, and Rust TUI ideas (UX reference; see [TUI_REFERENCE.md](TUI_REFERENCE.md)). |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Modular capability architecture and stable subsystem interfaces. |
-| [Qwen Code](https://github.com/QwenLM/qwen-code) | Fork-context subagents, inherited prefix/cache, background delegation. |
-| [Pi](https://github.com/badlogic/pi-mono) | Session tree/DAG, shared history, non-destructive context projection. |
-| [OpenCode](https://github.com/anomalyco/opencode) | Checkpoints, diff/revert/fork, workspace transactions, repo-intelligence concepts. |
-| [Aider](https://github.com/Aider-AI/aider) | Repo Map, ranked repository context, token-budgeted symbol/import graph, optional Architect → Editor. |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | Transport-neutral clients, isolated persistent subagents, compact worker-to-parent results. |
-| [RTK](https://github.com/rtk-ai/rtk) | Deterministic tool-output reduction; structured summary for the model while raw output remains an artifact. |
+| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) / [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | External coding-agent adapter (ACP). |
+| [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) | Streaming + tool-call shapes (Chat Completions path). |
+| [Anthropic Messages API](https://docs.anthropic.com/en/api/messages) | Streaming + `tool_use` shapes. |
+| [Ratatui](https://crates.io/crates/ratatui) `0.30.2` + [Crossterm](https://crates.io/crates/crossterm) `0.29.0` | Adopted for `impetus-tui` ([RATATUI_SPIKE.md](RATATUI_SPIKE.md)). |
+| [russh](https://github.com/Eugeny/russh) | Candidate SSH transport (remote tier). |
+| [portable-pty](https://crates.io/crates/portable-pty) | Candidate controlled PTY capability. |
 
-## Terminal / Frontend
+## Harness ideas (optional study)
 
-| Reference | What informs Impetus |
+Use only when a concrete Impetus need exists. Do not treat as a parity checklist.
+
+| Theme | Useful principle |
 | --- | --- |
-| [Zap](https://github.com/zerx-lab/zap) | Terminal/frontend UX and a host UI for the Impetus backend. |
+| Tool orchestration | Central policy gate; structured tool lifecycle; sandbox retry clarity. |
+| Long sessions | Compaction as durable state transition; never put permissions only in summaries. |
+| Multi-role agents | Explicit roles + metadata (tools, write roots, budgets) outside the prompt. |
+| Context | Event-projected context; token-budgeted selection; artifacts by reference. |
+| Output reduction | Bounded previews to the model; full raw body as durable artifact. |
+| Terminal hosts | Thin client; host UI does not own SQLite/policy/secrets. |
 
-## Protocols
-
-| Reference | What informs Impetus |
-| --- | --- |
-| [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) and [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | External coding-agent adapter, negotiation, sessions, updates, permission/auth interaction. |
-| [ACP content](https://agentclientprotocol.com/protocol/v1/content) | Negotiated image/resource blocks and typed attachment references. |
-| [JCode Browser Provider Protocol](https://github.com/1jehuang/jcode/blob/2a4edaa02057ac994a601311c4f03ed450e1b3c9/docs/BROWSER_PROVIDER_PROTOCOL.md) | Optional browser negotiate/health/session shapes. Impetus audit: [BROWSER_PROVIDER_PROTOCOL.md](BROWSER_PROVIDER_PROTOCOL.md). |
-
-## Implementation libraries
-
-| Reference | Status |
-| --- | --- |
-| [Ratatui](https://crates.io/crates/ratatui) `0.30.2` + [Crossterm](https://crates.io/crates/crossterm) `0.29.0` | **Adopted** for standalone `impetus-tui` (GO — [RATATUI_SPIKE.md](RATATUI_SPIKE.md)). |
-| [russh](https://github.com/Eugeny/russh) | Candidate low-level SSH transport for the remote target. |
-| [portable-pty](https://crates.io/crates/portable-pty) | Candidate low-level controlled PTY capability. |
-
-## Diagram design
-
-| Reference | What informs Impetus |
-| --- | --- |
-| [diagram-design](https://github.com/cathrynlavery/diagram-design) | Editorial layout, visual hierarchy, accessible SVG, and request-flow diagrams. |
+Official product docs and public harness source may be inspected privately while
+designing. They should not appear as “Impetus was inspired by X” unless there is
+a real protocol, license, or compatibility reason.
 
 ## Source rule
 
-Before API-dependent code, verify exact version/commit, inspect real uses, and
-record compatibility assumptions. A planned upstream feature is not proof that
-it is implemented here.
+Before API-dependent code: pin version/commit, inspect real behaviour, record
+compatibility assumptions. A planned upstream feature is not proof it exists here.

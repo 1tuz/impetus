@@ -82,18 +82,18 @@ cargo run -p impetus -- stream <session-id>
 clean-machine smoke и update/uninstall docs. Это roadmap, а не текущая команда
 установки.
 
-## Design lineage
+## Design stance
 
-Impetus не является port/fork одного coding agent. Он собирает отдельные
-проверенные механизмы Codex, Claude Code, OpenClaude, jcode, DeepSeek Harness,
-Qwen Code, Pi, OpenCode, Aider, Kimi Code и RTK в собственной local-first Rust
-architecture. См. [References](docs/REFERENCES.md).
+Impetus — не port/fork другого coding agent. Маленький trusted kernel
+(events, artifacts, policy, approval, sandbox, executor) и replaceable layers.
+См. [References](docs/REFERENCES.md).
 
 ## Документация
 
-- [Architecture](ARCHITECTURE.md) — canonical CURRENT/TARGET architecture.
-- [Roadmap](docs/ROADMAP.md) — реализованные foundations и planned gates.
-- [References](docs/REFERENCES.md) — design lineage, protocols и libraries.
+- [Architecture](ARCHITECTURE.md) — capability matrix (code-backed).
+- [TODO](TODO.md) — P0/P1/P2 roadmap.
+- [Roadmap](docs/ROADMAP.md) — краткий priority narrative.
+- [References](docs/REFERENCES.md) — protocols и libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks и CI.
 

@@ -1,136 +1,144 @@
 # Impetus Architecture
 
-**Impetus** is a policy-centered local runtime for autonomous coding agents on macOS.
+**Impetus** is a policy-centered local agent harness. The daemon (`impetusd`) owns
+durable state; clients (`impetus`, TUI, adapters) send typed requests and render
+events.
 
-## Core Principles
+Code is the source of truth. Status labels below mean:
 
-- **Durable events first**: SQLite WAL event log, survive restart
-- **Policy-gated execution**: every action goes through `Policy → Sandbox → Capability → Execution`
-- **Versioned IPC**: Unix domain socket with protocol negotiation
-- **Fail-closed sandbox**: macOS Seatbelt profiles, no execution without explicit capability
-- **Secrets in Keychain only**: never in SQLite, logs, or tracing
-- **Module runtime**: pluggable backends with external process isolation
+- **Implemented** — production path in `impetusd` / client with tests
+- **Partial** — library or import path exists; not fully wired or incomplete
+- **Planned** — roadmap only
 
-## Architecture
+## Core principles
 
-```
-┌─────────────────┐
-│  impetus (CLI)  │  User-facing client
-└────────┬────────┘
-         │ Unix socket (versioned IPC)
-         ▼
-┌─────────────────────────────────────────┐
-│          impetusd (daemon)              │
-│  ┌─────────────────────────────────┐   │
-│  │     Harness (Policy Kernel)     │   │
-│  │  ┌──────────┐  ┌─────────────┐  │   │
-│  │  │ Policy   │  │ Approval    │  │   │
-│  │  │ Engine   │  │ Resolver    │  │   │
-│  │  └──────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────┘   │
-│  ┌─────────────────────────────────┐   │
-│  │      Agent Loop & Tools         │   │
-│  │  ┌──────────┐  ┌─────────────┐  │   │
-│  │  │ Model    │  │ Tool        │  │   │
-│  │  │ Provider │  │ Orchestrator│  │   │
-│  │  └──────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────┘   │
-│  ┌─────────────────────────────────┐   │
-│  │    Module Runtime (Phase 2)     │   │
-│  │  ┌──────────┐  ┌─────────────┐  │   │
-│  │  │ Module   │  │ External    │  │   │
-│  │  │ Registry │  │ IPC         │  │   │
-│  │  └──────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────┘   │
-│  ┌─────────────────────────────────┐   │
-│  │  Extension Compat (Phase 3)     │   │
-│  │  ┌──────────┐  ┌─────────────┐  │   │
-│  │  │ Canonical│  │ Import      │  │   │
-│  │  │ Types    │  │ Adapters    │  │   │
-│  │  └──────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────┘   │
-│                                         │
-│  ┌─────────────────────────────────┐   │
-│  │    Durable Storage              │   │
-│  │  ┌──────────┐  ┌─────────────┐  │   │
-│  │  │ SQLite   │  │ Keychain    │  │   │
-│  │  │ Event Log│  │ (secrets)   │  │   │
-│  │  └──────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Sandbox        │  macOS Seatbelt
-│  (fail-closed)  │  Shell, FS, Network
-└─────────────────┘
+- Durable events first: SQLite WAL event log, survive restart
+- Policy-gated execution: every action goes through
+  `Policy → Approval → Sandbox → Capability → Execution`
+- Versioned Unix-domain IPC with capability negotiation
+- Fail-closed admission: no execution when sandbox/policy denies
+- Secrets only via Keychain references (macOS); never raw tokens in SQLite/logs
+- Trusted kernel stays small; providers, context, extensions are replaceable layers
+
+## Trusted kernel
+
+```text
+EventStore + DurableArtifactStore + Policy + Approval + Sandbox + Executor
 ```
 
-## Key Components
+Replaceable layers above the kernel:
 
-### Harness (Policy Kernel)
-- **PolicyEngine**: `Action → Deny | Allow | NeedsApproval`
-- **ApprovalResolver**: human-in-the-loop decisions
-- **EventStore**: durable SQLite WAL log with cursor backfill
-- **Sandbox integration**: macOS Seatbelt enforcement
+```text
+ProviderProtocol → ContextEngine → ToolOrchestrator → AgentScheduler → ExtensionGateway
+```
 
-### Agent Loop
-- **ModelProvider**: OpenAI-compatible, local, cloud
-- **ToolOrchestrator**: tool execution through policy pipeline
-- **BudgetChecker**: token/time tracking per session
-- **InstructionResolver**: layered context (global/project/session)
+Security decisions stay in the kernel, not in ordinary plugins.
 
-### Module Runtime (Phase 2)
-- **ModuleRegistry**: discover, probe, lifecycle
-- **External IPC**: Unix socket, separate process isolation
-- **FallbackPolicy**: FailFast, Retry, Alternate, Degrade, SafeDefault
-- **UnknownOutcome safety**: blocks retry for mutating operations
+## Process topology
 
-### Extension Compatibility (Phase 3)
-- **Canonical types**: ModuleSpec, Skill, Instruction, Profile, Command, MCP
-- **ExtensionAdapter**: import from Agent Skills, MCP, Cursor, Codex, Claude, etc.
-- **Compatibility matrix**: SUPPORTED | PARTIAL | UNSUPPORTED | INCOMPATIBLE
-- **ExtensionRegistry**: multi-source module registration
+```text
+impetus / impetus-tui / adapters
+        │  versioned Unix socket (HarnessClient)
+        ▼
+impetusd  — authoritative daemon
+  Harness (policy kernel)
+  AgentLoop + ToolOrchestrator
+  ProviderRegistry
+  EventStore (SQLite WAL) + DurableArtifactStore
+  Keychain credential resolver (macOS)
+```
 
-### Storage
-- **EventStore**: SQLite WAL, schema migrations, event replay
-- **ArtifactStore**: bounded ephemeral/in-memory backing (durable planned)
-- **ReferenceStore**: YAML-based partitioned storage for long-term agent reference data (Tempo worklogs, past decisions, project patterns)
-- **Keychain**: macOS-native secret storage, never in SQLite
+## Capability matrix (current)
 
-## Security Model
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests |
+| Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
+| Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
+| macOS Seatbelt (`sandbox-exec`) in tool/process exec | Partial | Spike only: `tests/macos_sandbox_spike.rs`; **not** wired in `execution/process.rs` |
+| Linux / Windows sandbox backends | Planned | Phase 9; PR CI is macOS-only |
+| Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` |
+| DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
+| Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
+| Process stdout/stderr → durable artifacts | Missing | `execution/process.rs` (memory-bounded only) |
+| AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests |
+| Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
+| Native Anthropic Messages tool-call SSE | Partial | `anthropic_provider.rs` exported; not default daemon path |
+| OpenAI Responses API | Missing | No `/v1/responses` client |
+| Legacy OpenAI-compatible text stream | Implemented | `openai_compat_adapter.rs` (still in tree; not default) |
+| Provider `tools` / JSON Schema arg validation | Missing | Catalog stubs in context optimizer only |
+| Measured usage → budget accounting | Implemented | `record_turn_with_usage` in agent loop |
+| Context HOT/WARM/COLD + lazy descriptions | Implemented | `context_optimizer.rs`, wired in `harness_api` |
+| ContextBuilder (chunked artifact summarize) | Implemented | `context_builder.rs` |
+| Auto LLM compaction as durable events | Partial | Threshold events exist; no auto compact in agent loop |
+| Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
+| Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
+| Extension **runtime** in agent loop (live MCP tools, etc.) | Partial / Missing | Skills via filesystem `InstructionResolver`; MCP not in loop |
+| Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
+| Web search/fetch + SSRF egress | Implemented | `web_research/` |
+| Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
+| Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
+| Subagents / git worktrees / per-agent tool ACLs | Missing | Discovery of agent markdown only |
+| ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
+| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; more Phase 7 open |
+| Zap as Impetus backend | Partial | Experimental adapter crate |
+| PR CI critical security E2E suite | Partial | PR: fmt/clippy/`--lib --bins` on macOS; integration = nightly/manual |
 
-1. **Origin tracking**: every action has `origin=user|agent`
-2. **Policy decision**: before execution, not after
-3. **Sandbox enforcement**: fail-closed, no execution without capability
-4. **Secret isolation**: Keychain API only, redacted in logs/events
-5. **Approval flow**: typed approvals for destructive/sensitive operations
+## Request path
 
-## Development Phases
+```text
+Client request
+  → IPC negotiate
+  → Policy (origin + ActionKind)
+  → NeedsApproval? → typed approval IPC
+  → Sandbox admit (path/network scope)
+  → Capability / EffectSeam
+  → Execution
+  → Durable observation (+ ArtifactRef when large)
+  → Model / client events
+```
 
-- **Phase 0**: Foundation (done) — IPC, policy, events, sandbox
-- **Phase 1**: Binary topology & diagnostics (done) — doctor, daemon discovery
-- **Phase 2**: Module runtime (done) — external IPC, fallback policies, tests
-- **Phase 3**: Extension compatibility (done) — canonical types, adapters
-- **Phase 3.5**: VimTrap architecture (done) — profile system, service providers, kernel invariants
-- **Phase 4**: Output optimization — structured observations, RTK integration
-- **Phase 5**: Agent runtime — real loop, tool execution, web research
-- **Phase 6**: Context & sessions — lazy loading, artifact store, fork/checkpoint
-- **Phase 7**: TUI — standalone client with Ratatui
-- **Phase 8**: Integrations — Zap backend, credential UI, policy customization
-- **Phase 9**: Remote & platform — SSH/tmux, Ubuntu support
-- **Phase 10**: Security & verification — audit, end-to-end tests
+## Storage
+
+| Store | Durability | Use |
+| --- | --- | --- |
+| EventStore (SQLite WAL) | Durable | Ordered session history, approvals, budgets |
+| DurableArtifactStore | Durable | Large tool/web/paste bodies (SHA-256) |
+| AttachmentStore | Ephemeral (RAM) | Approval diff previews / detail DTOs |
+
+Do not call AttachmentStore an ArtifactStore. Doctor must describe both honestly.
+
+## Providers (truth)
+
+Production daemon defaults to Mock, or `--provider-profile` → **native** OpenAI
+Chat Completions SSE (`OpenAiProvider` + Keychain resolver) with tool-call
+assembly. Legacy text-only OpenAI-compatible adapter remains in-tree for
+compatibility but is not the default daemon wiring. Anthropic Messages parser
+is exported; Responses API is Planned.
+
+Target shape:
+
+```text
+ProviderProtocolAdapter → StreamEvent → ToolCall assembler
+  → JSON Schema validation → Policy Kernel → execution
+```
+
+## Security model
+
+1. Origin tracking: `origin=user|agent`
+2. Policy before execution
+3. Fail-closed sandbox admission (path scope today)
+4. Keychain references only; redaction in logs/events
+5. Typed approvals for mutating/sensitive ops
+6. `UnknownOutcome`: no auto-retry of mutating/non-replayable work on alternate backends
 
 ## Documentation
 
-- **Detailed architecture** (Russian): [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)
-- **Kernel invariants**: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
-- **VimTrap principle**: [docs/VimTrap_Implementation_Plan.md](docs/VimTrap_Implementation_Plan.md)
-- **Roadmap**: [docs/ROADMAP.md](docs/ROADMAP.md)
-- **TODO**: [TODO.md](TODO.md)
+- Executable roadmap: [TODO.md](TODO.md) (P0/P1/P2)
+- Short phase narrative: [docs/ROADMAP.md](docs/ROADMAP.md)
+- Kernel invariants: [docs/KERNEL_INVARIANTS.md](docs/KERNEL_INVARIANTS.md)
+- Agent rules: [AGENTS.md](AGENTS.md)
+- TUI notes: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
+- Design references (principles, not copy claims): [docs/REFERENCES.md](docs/REFERENCES.md)
 
-## References
-
-- macOS Sandbox: [docs/MACOS_SANDBOX_SPIKE.md](docs/MACOS_SANDBOX_SPIKE.md)
-- TUI design: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md)
-- Development guide: [docs/development.md](docs/development.md)
+Historical audits under `docs/` may lag; prefer this file + `TODO.md`.

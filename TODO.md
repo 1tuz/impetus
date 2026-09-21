@@ -1,296 +1,157 @@
-# TODO — Impetus Harness
+# TODO — Impetus
 
-Executable work map. Context: [ARCHITECTURE.md](ARCHITECTURE.md),
-[docs/ROADMAP.md](docs/ROADMAP.md).
+Executable roadmap. **Code is source of truth.** Status labels:
 
-**Rule:** mark `[x]` only after a working vertical slice, tests, and its gate.
-Stubs and placeholder responses do not count as done.
+- **Implemented** — production path + tests
+- **Partial** — library/import exists; gaps remain
+- **Planned** — not started or deferred
 
----
+Detail and evidence: [ARCHITECTURE.md](ARCHITECTURE.md).
+Narrative phases (historical): [docs/ROADMAP.md](docs/ROADMAP.md).
 
-## Phase 0 — Foundation (done)
+Rule: mark Implemented only when the vertical slice works end-to-end. Types-only
+or import-only adapters are Partial.
 
-- [x] Headless runtime with SQLite WAL and durable Event Log
-- [x] Versioned local IPC via Unix Domain Socket
-- [x] `HarnessClient` for Unix transport and in-memory tests
-- [x] Durable sessions and client reconnect
-- [x] Cursor backfill + push event subscription
-- [x] Policy engine with `Deny | Allow | NeedsApproval`
-- [x] Typed `Action` with `origin=user|agent` and request ID tracking
-- [x] Sandbox integration for shell/process capabilities
-- [x] Attachment/diff/detail DTO contracts with bounded ephemeral/in-memory backing (not durable `ArtifactStore`)
-- [x] Agent Loop / Tool Orchestrator vertical slice: durable observations, policy-gated read tools, and exact approval/resume for writes and shell commands (see Phase 5)
-- [x] `ModelProvider` trait and `ProviderRegistry` foundation
-- [x] Crate split: `impetus-core`, `impetusd`, `impetus` (initial)
+Active parallel TUI work: #146 (markdown), #148 (diff) — do not duplicate.
 
 ---
 
-## Phase 1 — Binary topology & diagnostics (early)
+## P0 — Runtime correctness (now)
 
-Target name roles: `impetus` = user client, `impetusd` = daemon. Crate split
-exists; migration of names/roles in docs and dev-tooling is not yet complete.
+Gate before P1 product features.
 
-### Binary topology
+### 1. Provider-native protocol adapters
 
-- [x] Lock target roles in all user-facing docs (`getting-started`, `configuration`, `troubleshooting`, `README.ru`)
-- [x] `task daemon` → `cargo run -p impetusd` (not `harness`)
-- [x] `task client` → `cargo run -p impetus` (not `cli`)
-- [x] `task harness` / `task cli` deprecated aliases
-- [x] Release artifact: both binaries with explicit roles in install script help
-- [x] `impetus` auto-discovers socket and safely spawns `impetusd` if needed
-- [x] Install/uninstall docs: `impetusd` daemon vs `impetus` client
+- [x] Wire `OpenAiProvider` (Chat Completions SSE + tool-call assembly) into
+      `impetusd` / `Harness` via `OpenAiNativeAdapter`
+- [x] Fix stream end handling so accumulated tool calls emit before
+      `[DONE]` / `message_stop` early-return
+- [x] Export `AnthropicProvider` (still optional / not default daemon path)
+- [x] Keep legacy OpenAI-compatible text adapter in tree for compatibility
+- [ ] OpenAI Responses API (`/v1/responses`) — Planned (after Chat Completions production)
+- [ ] Explicit `ProviderProtocolAdapter` trait boundary (shared assembler) — Planned
 
-### Doctor
+Evidence: `openai_provider.rs`, `openai_native_adapter.rs`, `anthropic_provider.rs`,
+`impetusd` `--provider-profile`.
 
-- [x] `impetus doctor` — human-readable diagnostics + remediation
-- [x] `impetus doctor --json` — versioned redacted schema for bug reports
-- [x] Probe: `impetus`/`impetusd` versions
-- [x] Probe: daemon discovery, socket path, permissions
-- [x] Probe: IPC handshake and protocol compatibility (`Incompatible` path)
-- [x] Probe: daemon readiness
-- [x] Probe: Event Store, SQLite WAL, schema/migrations
-- [x] Probe: Artifact Store (durable target; flag ephemeral/in-memory attachment backing)
-- [x] Probe: sandbox availability (Seatbelt fail-closed)
-- [x] Probe: policy and approval subsystem
-- [x] Probe: platform credential store accessibility (Keychain on macOS; redacted)
-- [x] Probe: ProviderRegistry, providers, model capabilities
-- [x] Probe: tools/capabilities registration
-- [x] Probe: external agents / ACP adapters
-- [x] Probe: optional modules, compatibility adapters, remote capabilities
-- [x] Probe: web research (internet access, WebFetch, per-`SearchBackend` health, BrowserProvider, network policy)
-- [x] Probe: disk/runtime health
-- [x] Partial extension compatibility matrix in doctor output
+### 2. Mandatory tool argument validation
 
-### Components (introspection)
+- [ ] Validate model tool args against tool JSON Schema **before** policy/execution
+- [ ] Reject malformed args without reaching executor (`{}` silent fallback banned)
+- [ ] Send provider `tools` schemas where the protocol supports them (or document prompt-only catalog honestly)
 
-- [x] `impetus components list` (static built-in tool catalog; not live IPC registry)
-- [x] `impetus components status` (catalog entry lookup; live health via `doctor`)
-- [x] Concept: component version/digest lock for reproducibility
-- [x] Update/disable flows (design; no marketplace)
+### 3. Single durable ArtifactStore semantics
 
----
+- [x] Doctor text: distinguish path-scope sandbox vs Seatbelt process wrap
+- [x] Wire measured provider usage into `BudgetChecker::record_usage` via
+      `record_turn_with_usage`
+- [ ] Process/shell stdout/stderr → durable artifact when large
+- [x] Ephemeral `AttachmentStore` for approval previews (keep; document as non-durable)
+- [x] `DurableArtifactStore` for truncated tool/web/paste bodies
 
-## Phase 2 — Module Runtime / extensibility foundation
+### 4. Context engine + durable compaction
 
-Gate before mass integrations. See ROADMAP § MODULE RUNTIME.
+- [x] HOT/WARM/COLD + lazy descriptions + token-budgeted assemble
+- [x] ContextBuilder chunked artifact summarize
+- [x] Shared-prefix fork + named checkpoints
+- [x] Wire measured provider usage into `BudgetChecker::record_usage`
+- [ ] Compaction as durable events (`CompactionStarted` / range / summary refs /
+      `CompactionCommitted`) executed from agent loop — not silent history rewrite
+- [ ] Structural state (permissions, cwd, budgets, parent, worktree) never only in text summary
 
-- [x] Typed service contracts (decouple loop/scheduling from concrete backends)
-- [x] Replaceable `AgentLoopStrategy` and `AgentScheduler` behind contracts (Kernel pipeline unchanged)
-- [x] `ServiceRegistry` / `ModuleRegistry`
-- [x] `ModuleDescriptor` (id, kind, versions, provides/requires, capabilities)
-- [x] Capability negotiation and probing API (not version-only checks)
-- [x] Module lifecycle: discover, probe, start, health, stop
-- [x] Compatibility: harness protocol, service contracts, platforms, external versions
-- [x] Permissions: filesystem, process, network, secrets, remote
-- [x] Execution semantics on modules: read_only, idempotent, mutating, non_replayable
-- [x] Safe fallback policies per module kind
-- [x] `UnknownOutcome` enforcement: no auto-retry mutating/non-replayable on alternate backend
-- [x] External module isolation: separate process + versioned IPC + sandbox where applicable
-- [x] Tests: module incompatible/degraded/unavailable paths without policy bypass
+### 5. Security / runtime E2E in PR CI
 
----
+Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
+`cargo test --workspace --lib --bins`.
 
-## Phase 3 — Extension compatibility
+- [ ] Add focused lib/bin tests (or tiny PR-safe suite) covering:
+  - approve → execute; reject
+  - cancel
+  - reconnect / attach after daemon restart (where feasible without Seatbelt)
+  - sandbox deny → no execution
+  - `UnknownOutcome` / retry blocked for mutating
+  - secret redaction
+  - durable artifact restore
+- [ ] Do **not** move full Seatbelt integration into every PR; keep nightly/manual
 
-- [x] Extension Compatibility Adapter layer (types exist; no working adapters yet)
-- [x] Canonical types (defined but not used in real imports)
-- [x] Import capability matrix (all entries Unsupported; no real capability detection)
-- [x] Agent Skills adapter (SKILL.md parser, CLI `impetus skills list/import/show`, integration tests)
-- [x] MCP adapter
-- [x] Agent Plugins adapter
-- [x] Claude Code extensions/plugins adapter
-- [x] Codex extensions/plugins/skills adapter
-- [x] Cursor plugins/rules/skills/agents/commands adapter
-- [x] DeepSeek Harness/Cordis bridge (process adapter, not TS in daemon)
-- [x] `doctor` reports per-package partial compatibility
+### 6. Capability truth generation
+
+- [ ] `impetus doctor --json` (and human doctor) reflects real capability matrix
+      (providers wired, seatbelt vs path-scope, artifact stores, extensions runtime)
+- [ ] Prefer generating/checking docs claims from doctor JSON where practical
 
 ---
 
-## Phase 4 — Output optimization
+## P1 — Modern coding-agent capabilities
 
-- [x] `TestObservation` from `cargo test` (native structured path)
-- [x] `DiffObservation` from `git diff`
-- [x] `SearchObservation` from repo search
-- [x] `PipelineObservation` from CI backends
-- [x] Builtin output reducer (token-bounded)
-- [x] Bounded raw fallback → `ArtifactRef`
-- [x] Full raw output stored as Artifact alongside structured observation
-- [x] Migrate tools.rs ArtifactStore to DurableArtifactStore (SHA-256)
-- [x] RTK optional adapter: probe capabilities, not hard dependency
+Start after P0 foundations are solid.
 
----
+### Subagents (explicit roles, not a swarm)
 
-## WEB / INTERNET RESEARCH
+- [ ] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
+      Review (read-only diff/tests)
+- [ ] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
+      `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
+- [ ] Persist child results before parent resume
+- [ ] Concurrency caps enforced in harness
 
-Core Agent Runtime capability (not optional marketplace plugin). Base: native Rust
-HTTP — no mandatory cloud search API, Python, Docker, or SearXNG daemon.
-Details: [ARCHITECTURE.md](ARCHITECTURE.md) § Web / Internet Research.
+### Worktree isolation
 
-### Contracts & services
+- [ ] git worktrees for write-capable parallel agents
+- [ ] Safe cleanup + recoverable abandoned worktrees
+- [ ] Worktree identity survives compaction/resume
 
-- [x] `WebResearchService` facade contract
-- [x] `WebSearchService` + `SearchBackend` trait (Module Runtime)
-- [x] `WebFetchService` (separate from search)
-- [x] `BrowserService` + `BrowserProvider` contract (optional module)
-- [x] Agent Loop integration via contracts only (no direct DuckDuckGo/Bing deps)
-- [x] Research loop: search → select → fetch → follow links → compare → cite
+### Steer vs follow-up
 
-### WebSearch backends
+- [ ] Steer running task vs enqueue follow-up — distinct from a normal user message
 
-- [x] Native `DuckDuckGoHtml` backend (default)
-- [x] Native `BingHtml` fallback backend
-- [x] Optional `SearXNG` `SearchBackend`
-- [ ] Optional future API backends (Tavily, Exa, …) as replaceable modules only
-- [x] Fallback chain + degraded health (one backend down ≠ harness unhealthy)
-- [x] Capability probing per backend (not version-only)
+### Skills + MCP (real adapters)
 
-### WebFetch
+- [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
+- [x] MCP **import** adapter (JSON-RPC client library)
+- [ ] MCP tools live in ToolOrchestrator / agent loop
+- [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
 
-- [x] Bounded HTTP fetch (timeout, max response size, redirects)
-- [x] MIME detection
-- [x] HTML → clean text / Markdown extraction (links, title)
-- [x] Source URL, timestamp, content hash, truncation
-- [x] Large/full body → `ArtifactStore` → `ArtifactRef`; bounded preview to model
+### LSP
 
-### Observations & context
+- [ ] First-class coding tools: definition, references, diagnostics, symbols, hover
+- [ ] No hard couple of runtime to one LSP binary
 
-- [x] Typed `WebObservation` (search result list + fetch document shapes)
-- [x] Provenance / citation metadata for research loop answers
-- [x] Raw HTML / large content → artifact, not unbounded context
+### Web / research
 
-### Safety & policy
-
-- [x] Fine-grained capabilities: `web.read`, `web.search`, `web.download`, `web.browser`, `web.submit`, `web.upload`
-- [x] Session-level allowance for read-only web vs stricter approval for outbound data (POST, upload, auth actions)
-- [x] SSRF: block localhost, `127.0.0.0/8`, `::1`, private LAN, link-local, metadata endpoints, local services
-- [x] Validate initial URL, DNS resolution, redirect chain, final destination
-- [x] LAN/internal targets — separate capability, not default `web.read`
-- [x] All web ops through Kernel pipeline (policy → sandbox → capability → execution → durable event)
-
-### JCode source audit (web)
-
-Upstream: `https://github.com/1jehuang/jcode` — pin SHA before implementation.
-
-- [x] Audit `websearch`, `webfetch`, browser tool, Browser Provider Protocol
-- [x] Audit fallback handling, anti-bot detection, output bounding, HTML cleanup
-- [x] Per-area `ADAPT | REIMPLEMENT | SKIP`; attribution if code adapted
-
-### Browser (optional)
-
-- [x] JCode Browser Provider Protocol as reference (negotiation, health, session ops)
-- [ ] Optional Firefox/Chrome/WebDriver/Safari providers (not in mandatory core)
-- [x] No Chromium/Playwright/Node in required harness dependency set
-
-### Doctor
-
-- [x] Internet access enabled/disabled
-- [x] WebFetch / per-SearchBackend / BrowserProvider health in `impetus doctor`
-- [x] `DEGRADED — web search fallback available` when fallback path works
+- [x] Search + fetch + SSRF + citations/provenance (core path)
+- [x] Session outbound / private-network grants
+- [ ] Optional API search backends (Tavily/Exa) as replaceable modules only
+- [ ] Real browser providers (Firefox/Chrome/…) — optional, not core deps
 
 ---
 
-## Phase 5 — Agent runtime (continued)
+## P2 — Advanced orchestration (explicitly deferred)
 
-### Durable budgets & Model Router
-
-- [x] Token and wall-time budget tracking per session (durable)
-- [x] Budget enforcement in agent loop
-- [x] Model Router: selection rules (capability, health, cost, latency, privacy, cache, budget)
-- [x] Router policies: local-first, free-first, balanced, quality-first
-- [x] Escalation: local → sanitised cloud request → result back to local agent
-- [x] Cost estimation and budget warnings
-
-### Agent loop (real implementation)
-
-The baseline vertical is working. The remaining items harden and extend it.
-
-- [x] Replace `extract_tool_calls()` placeholder with provider-aware parsing (PR #84: typed StreamEvent foundation, native protocol parsing pending)
-- [x] Wire Tool Orchestrator to real tool execution through policy/sandbox path
-- [x] Durable observations from executed tools (not stub responses)
-- [x] Large read output uses durable content-addressed artifacts and bounded event previews
-- [x] End-to-end slice: model → tool request → execution → observation → model
-- [x] Wire web research tools through `WebResearchService` (when WEB slice lands)
-
-### Agent loop hardening
-
-- [x] Multi-turn conversation state with durable tool result accumulation and approval/rejection resume
-- [x] Streaming response chunking and client sync
-- [x] Error recovery and retry logic (respect `UnknownOutcome` / `RETRY_BLOCKED`)
-- [x] Parallel tool execution where safe (read_only/idempotent only)
-- [x] Cross-session state isolation and cleanup
-- [x] Audit log with redacted tool arguments
-- [x] Provider-native tool call protocol parsing (OpenAI, Anthropic) - Issue #83, partial in PR #84
-- [x] Measured vs estimated token usage tracking in budget events
-- [x] Tool call argument validation (reject malformed before execution)
+- [ ] Deterministic multi-agent workflows / teams
+- [ ] Plugin marketplace / large plugin ABI
+- [ ] Portable sessions between harnesses
+- [ ] Deep Claude/Codex/Cursor compatibility **runtime** (imports already Partial)
+- [ ] Autonomous long-running planner/tester loops
+- [ ] Ubuntu 24.04 release tier + clean-machine smoke
+- [ ] Full Zap discovery/authorize production protocol
 
 ---
 
-## Phase 6 — Context & sessions
+## Frontends (ongoing; not blocking P0)
 
-- [x] Lazy module/tool/MCP description loading in Context Optimizer
-- [x] HOT/WARM/COLD context tiers
-- [x] Token-budgeted module/tool selection for prompt
-- [x] Session fork without full event duplication (shared-prefix metadata)
-- [x] Session DAG: parent/fork, named checkpoints, restore as new branch, branch-aware ListSessions
-- [x] Large paste: bracketed paste in TUI
-- [x] Large paste: detection threshold + compact composer display
-- [x] Durable `ArtifactStore` (metadata + content survives restart; SHA-256 refs)
-- [x] Large paste: chunked upload to `impetusd` → `ArtifactStore` → `ArtifactRef`
-- [x] Context Builder: read large artifact in parts, summarize within token budget
+TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
+
+- [x] Ratatui/Crossterm adopted; composer single/multi; large paste upload; streaming
+- [ ] Bounded markdown (#146)
+- [ ] Diff view (#148)
+- [ ] Approval UI, session picker, command palette, scrollback/status polish
+- [ ] Redraw coalescing; Codex-like error remediation UX
 
 ---
 
-## Phase 7 — TUI (standalone `impetus`)
+## Historical checklist (superseded)
 
-Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SHA; decisions locked). JCode = UX reference only; TUI uses `HarnessClient` only.
-
-- [x] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
-- [x] Ratatui + Crossterm spike / evaluation
-- [x] TUI shell: `HarnessClient` only, no core imports
-- [x] Composer (single-line + multiline mode)
-- [x] Bracketed paste support
-- [x] Large paste UX (`[Pasted text · N KB · M lines]`)
-- [x] Streaming output rendering
-- [ ] Markdown rendering (bounded)
-- [ ] Diff view
-- [ ] Approval UI (typed approvals from harness)
-- [ ] Session picker / list
-- [ ] Fuzzy search (sessions, commands)
-- [ ] Command palette
-- [ ] Scrollback / resize
-- [ ] Status / usage UI
-- [ ] Redraw / event coalescing for performance
-- [ ] Codex UX patterns: errors + remediation display
-
----
-
-## Phase 8 — Clients & integrations
-
-- [ ] Zap discovery/connect/authorize protocol
-- [ ] Zap backend handoff (Impetus as agent backend)
-- [ ] Provider credential management via Keychain API (user-facing flows)
-- [ ] Policy customization and approval UI contracts (IPC)
-- [ ] Integration tests for full request flows
-- [ ] Performance benchmarks for event log queries
-- [ ] Migration strategy for schema changes documented + tested
-
----
-
-## Phase 9 — Remote & platform
-
-- [ ] Controlled SSH/tmux/SFTP agent flow end-to-end
-- [ ] Ubuntu 24.04 x86_64 release tier
-- [ ] Clean-machine install smoke
-- [ ] Update and uninstall documentation
-
----
-
-## Phase 10 — Security & verification
-
-- [ ] Security review: secret handling, sandbox escapes, policy bypass
-- [ ] End-to-end verification: no policy bypass, no credential leakage
-- [x] Client examples: minimal read-only observer
-
----
-
-**Completion criterion:** working vertical slice, tests, passes relevant gates.
+Older Phase 0–10 checkboxes lived here and over-marked “done”. Prefer P0/P1/P2
+above. For archaeology see git history and `docs/TODO_AUDIT_2026-08-30.md`
+(dated; do not treat as current).
