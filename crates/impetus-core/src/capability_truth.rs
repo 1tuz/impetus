@@ -8,6 +8,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::schema::{SCHEMA_CAPABILITIES, require_version, validate_envelope};
+
+/// Documented schema id for [`CapabilityTruthReport`] (`doctor` / Diagnostics).
+pub const CAPABILITIES_SCHEMA_ID: &str = SCHEMA_CAPABILITIES.id;
+
+/// Current [`CapabilityTruthReport`] schema version.
+pub const CAPABILITIES_SCHEMA_VERSION: u16 = SCHEMA_CAPABILITIES.version;
+
 /// Architecture-aligned capability level (not extension ImportCapability).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -28,6 +36,8 @@ pub struct CapabilityEntry {
 }
 
 /// Snapshot of harness capability truth, optionally enriched with live providers.
+///
+/// Canonical schema: [`CAPABILITIES_SCHEMA_ID`] / [`CAPABILITIES_SCHEMA_VERSION`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilityTruthReport {
     pub schema_version: u16,
@@ -70,7 +80,7 @@ impl CapabilityTruthReport {
         };
 
         Self {
-            schema_version: 1,
+            schema_version: CAPABILITIES_SCHEMA_VERSION,
             capabilities: vec![
                 entry(
                     "sandbox_path_scope",
@@ -191,6 +201,20 @@ impl CapabilityTruthReport {
     pub fn entry(&self, id: &str) -> Option<&CapabilityEntry> {
         self.capabilities.iter().find(|entry| entry.id == id)
     }
+
+    /// Reject reports whose `schema_version` does not match the registry.
+    pub fn validate_schema_version(&self) -> Result<(), crate::schema::SchemaValidationError> {
+        require_version(&SCHEMA_CAPABILITIES, self.schema_version)
+    }
+
+    /// Serialize and validate as the `impetus.capabilities.v1` envelope
+    /// (version match + no unknown critical top-level fields).
+    pub fn validate_envelope(&self) -> Result<(), crate::schema::SchemaValidationError> {
+        let value =
+            serde_json::to_value(self).expect("CapabilityTruthReport always serializes to JSON");
+        validate_envelope(CAPABILITIES_SCHEMA_ID, &value)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -243,11 +267,23 @@ mod tests {
         );
 
         let json = serde_json::to_value(&report).expect("serialize");
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], CAPABILITIES_SCHEMA_VERSION);
         assert!(json["capabilities"].as_array().unwrap().len() >= 9);
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));
         assert!(!blob.contains("Bearer "));
+        report
+            .validate_envelope()
+            .expect("gather shape matches capabilities schema");
+        assert_eq!(CAPABILITIES_SCHEMA_ID, "impetus.capabilities.v1");
+    }
+
+    #[test]
+    fn capability_truth_version_mismatch_fails() {
+        let mut report = CapabilityTruthReport::gather(&[]);
+        report.schema_version = 7;
+        let err = report.validate_schema_version().unwrap_err();
+        assert!(err.to_string().contains("version mismatch"));
     }
 
     #[test]

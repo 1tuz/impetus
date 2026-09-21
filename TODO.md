@@ -122,13 +122,16 @@ Agents remain **execution roles**. Workflows own step ordering. Worktrees are
 
 ### 1. Versioned canonical schemas
 
-- [ ] Stable schemas with deterministic validation, e.g.:
-  - `impetus.session.v1`
-  - `impetus.extension.v1`
-  - `impetus.mcp.v1`
-  - `impetus.capabilities.v1`
+- [x] Shared schema registry (`schema` module): ids + `schema_version` convention
+- [x] Stable schemas with deterministic validation (partial — registry slice):
+  - [ ] `impetus.session.v1`
+  - [ ] `impetus.extension.v1`
+  - [ ] `impetus.mcp.v1`
+  - [x] `impetus.capabilities.v1`
+  - [x] `impetus.approval_detail.v1` wired into shared registry (#189/#191 pattern)
 - [ ] Provider/harness-specific details nested; do not leak into common fields
-- [ ] Compatibility evolution (version field + reject unknown critical fields)
+- [x] Compatibility evolution (version field + reject unknown critical fields)
+  (registry helpers; full payload coverage still growing)
 
 ### 2. Extension lifecycle (not file copy)
 

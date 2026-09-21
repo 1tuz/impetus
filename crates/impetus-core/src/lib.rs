@@ -65,6 +65,7 @@ pub mod reference_tools;
 pub mod remote;
 pub mod rtk_adapter;
 pub mod runtime;
+pub mod schema;
 #[cfg(test)]
 mod security_runtime_pr;
 pub mod service_contract;
@@ -96,7 +97,10 @@ pub use audit_log::{AuditEntry, AuditLog, AuditQuery};
 pub use budget::{
     BudgetChecker, BudgetConfig, BudgetError, BudgetState, CompactionPolicy, ReasoningEffort,
 };
-pub use capability_truth::{CapabilityEntry, CapabilityLevel, CapabilityTruthReport};
+pub use capability_truth::{
+    CAPABILITIES_SCHEMA_ID, CAPABILITIES_SCHEMA_VERSION, CapabilityEntry, CapabilityLevel,
+    CapabilityTruthReport,
+};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
@@ -208,6 +212,11 @@ pub use remote::{
     TmuxSessionStore, TmuxSessionStoreError,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
+pub use schema::{
+    KNOWN_SCHEMAS, SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SchemaSpec, SchemaValidationError,
+    lookup as lookup_schema, reject_unknown_critical_fields,
+    require_version as require_schema_version, validate_envelope as validate_schema_envelope,
+};
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
 };
