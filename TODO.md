@@ -246,7 +246,7 @@ Reference audit: [docs/TUI_REFERENCE.md](docs/TUI_REFERENCE.md) (pinned JCode SH
 
 - [x] JCode source audit: `https://github.com/1jehuang/jcode` — pin commit SHA, list presentation files, lock `ADAPT | REIMPLEMENT | SKIP` per component
 - [x] Ratatui + Crossterm spike / evaluation
-- [ ] TUI shell: `HarnessClient` only, no core imports
+- [x] TUI shell: `HarnessClient` only, no core imports
 - [x] Composer (single-line + multiline mode)
 - [x] Bracketed paste support
 - [x] Large paste UX (`[Pasted text · N KB · M lines]`)

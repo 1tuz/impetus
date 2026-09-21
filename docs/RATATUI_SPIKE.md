@@ -51,6 +51,8 @@ Hard rules restated:
 - Production path uses `impetus_client::HarnessClient` via `backend::impetus`.
 - `Cargo.toml` for `impetus-tui` depends on `impetus-client`, **not**
   `impetus-core`.
+- Enforced by `impetus_tui::boundary` unit tests (#142) — direct core dep or
+  `impetus_core` source import fails CI/`task verify`.
 - Typed actions keep `origin=user|agent`; TUI cannot self-approve or bypass
   policy.
 

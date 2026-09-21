@@ -34,6 +34,11 @@ approval UX, errors/remediation.
 - Large paste: chunked upload → `ArtifactStore` → `ArtifactRef` on the wire;
   raw body never enters durable events or logs.
 - Do not vendor `jcode-tui` / `jcode-app-core` crates or copy their modules.
+- **Regression guard (#142):** `crates/impetus-tui` must list `impetus-client`
+  only (no direct `impetus-core` in `Cargo.toml`). Tests in
+  `impetus_tui::boundary` fail if a direct core dep or `use impetus_core`
+  appears. Transitive core via `impetus-client` wire types is allowed until
+  further client/core decomposition.
 
 ---
 
