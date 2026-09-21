@@ -40,8 +40,26 @@ pub const SCHEMA_CAPABILITIES: SchemaSpec = SchemaSpec {
     critical_fields: &["schema_version", "capabilities"],
 };
 
+/// Minimal extension manifest (`plan_install` / Skill + MCP config).
+pub const SCHEMA_EXTENSION: SchemaSpec = SchemaSpec {
+    id: "impetus.extension.v1",
+    version: 1,
+    critical_fields: &[
+        "schema_version",
+        "id",
+        "kind",
+        "version",
+        "digest",
+        "capabilities",
+    ],
+};
+
 /// All schemas known to this crate build. Order is stable for tests/docs.
-pub const KNOWN_SCHEMAS: &[SchemaSpec] = &[SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES];
+pub const KNOWN_SCHEMAS: &[SchemaSpec] = &[
+    SCHEMA_APPROVAL_DETAIL,
+    SCHEMA_CAPABILITIES,
+    SCHEMA_EXTENSION,
+];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SchemaValidationError {
@@ -127,13 +145,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn known_schemas_include_approval_and_capabilities() {
+    fn known_schemas_include_approval_capabilities_and_extension() {
         assert_eq!(SCHEMA_APPROVAL_DETAIL.id, "impetus.approval_detail.v1");
         assert_eq!(SCHEMA_APPROVAL_DETAIL.version, 1);
         assert_eq!(SCHEMA_CAPABILITIES.id, "impetus.capabilities.v1");
         assert_eq!(SCHEMA_CAPABILITIES.version, 1);
+        assert_eq!(SCHEMA_EXTENSION.id, "impetus.extension.v1");
+        assert_eq!(SCHEMA_EXTENSION.version, 1);
         assert!(lookup(SCHEMA_APPROVAL_DETAIL.id).is_some());
         assert!(lookup(SCHEMA_CAPABILITIES.id).is_some());
+        assert!(lookup(SCHEMA_EXTENSION.id).is_some());
         assert!(lookup("impetus.session.v1").is_none());
     }
 

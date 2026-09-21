@@ -31,6 +31,7 @@ pub mod execution;
 pub mod extension_adapter;
 pub mod extension_compat;
 pub mod extension_lifecycle;
+pub mod extension_manifest;
 pub mod harness_api;
 pub mod instruction_learning;
 pub mod instructions;
@@ -156,6 +157,11 @@ pub use extension_lifecycle::{
     PlanError, RemoveError, RemoveResult, RepairError, RepairResult, ResolutionPlan, apply_install,
     doctor_install, plan_install, remove_install, repair_install,
 };
+pub use extension_manifest::{
+    EXTENSION_SCHEMA_ID, EXTENSION_SCHEMA_VERSION, ExtensionManifest, ExtensionManifestError,
+    ExtensionManifestKind, validate_capabilities as validate_extension_capabilities,
+    validate_digest as validate_extension_digest,
+};
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use instruction_learning::{
     InstructionLearning, LearningEvidence, ObservationKind, Proposal, ProposalLifecycle,
@@ -221,8 +227,8 @@ pub use remote::{
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{
-    KNOWN_SCHEMAS, SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SchemaSpec, SchemaValidationError,
-    lookup as lookup_schema, reject_unknown_critical_fields,
+    KNOWN_SCHEMAS, SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_EXTENSION, SchemaSpec,
+    SchemaValidationError, lookup as lookup_schema, reject_unknown_critical_fields,
     require_version as require_schema_version, validate_envelope as validate_schema_envelope,
 };
 pub use service_provider::{
