@@ -29,8 +29,19 @@ EventStore + DurableArtifactStore + Policy + Approval + Sandbox + Executor
 Replaceable layers above the kernel:
 
 ```text
-ProviderProtocol → ContextEngine → ToolOrchestrator → AgentScheduler → ExtensionGateway
+ProviderProtocol → ContextEngine → ToolOrchestrator
+  → AgentScheduler + WorkflowEngine + WorktreeManager
+  → ExtensionGateway
 ```
+
+- **AgentScheduler** — schedules agent **roles** (Explore / Research / Build / Review)
+  with structured metadata and concurrency caps.
+- **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
+  order, budgets, retry, checkpoints, cancellation, result propagation. Do not
+  invent a new agent type per workflow.
+- **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
+  merge-ready/conflict/stale/close/salvage) with durable ownership and restart
+  recovery.
 
 Security decisions stay in the kernel, not in ordinary plugins.
 
@@ -78,7 +89,10 @@ impetusd  — authoritative daemon
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
-| Subagents / git worktrees / per-agent tool ACLs | Missing | Discovery of agent markdown only |
+| Subagents / WorktreeManager / WorkflowEngine | Missing | Planned P1; roles + recipes + managed worktrees |
+| Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Import adapters exist; no InstallPlan/ownership store |
+| MemoryStore vs PolicyStore trust split | Missing | EventStore authoritative; memory≠policy Planned |
+| Versioned canonical schemas (`impetus.*.v1`) | Partial | IPC/events versioned; extension/session/mcp schemas Planned |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + gateway library; not full production hardening |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; more Phase 7 open |
 | Zap as Impetus backend | Partial | Experimental adapter crate |

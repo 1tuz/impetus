@@ -4,24 +4,31 @@ Canonical **task list**: [TODO.md](../TODO.md) (P0 / P1 / P2).
 
 Canonical **architecture + capability matrix**: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-This file stays short on purpose. Do not duplicate checklists here.
+This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
 1. **P0 — Runtime correctness** — provider-native wiring, arg validation, artifact
    durability truth, durable compaction, PR-critical security tests, honest doctor.
-2. **P1 — Coding-agent capabilities** — subagents, worktrees, steer/follow-up,
-   live MCP/Skills, LSP, optional browsers.
+2. **P1 — Operator / extension / orchestration** — versioned schemas, extension
+   lifecycle with ownership, `Runtime ≠ Memory ≠ Policy`, WorktreeManager,
+   WorkflowEngine + small recipes, small role set (Explore/Research/Build/Review),
+   live MCP, LSP, anti-sprawl.
 3. **P2 — Advanced orchestration** — marketplaces, multi-harness portability,
-   deep vendor runtime parity, long-running autonomous loops.
+   deep vendor runtime parity, large swarm/team loops.
 
 ## Kernel (do not dilute)
 
 `EventStore` + `DurableArtifactStore` + `Policy` + `Approval` + `Sandbox` +
 `Executor`.
 
-Replaceable above: ProviderProtocol → ContextEngine → ToolOrchestrator →
-AgentScheduler → ExtensionGateway.
+Replaceable above:
+
+```text
+ProviderProtocol → ContextEngine → ToolOrchestrator
+  → AgentScheduler + WorkflowEngine + WorktreeManager
+  → ExtensionGateway
+```
 
 ## Platform
 

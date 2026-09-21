@@ -7,12 +7,10 @@ Executable roadmap. **Code is source of truth.** Status labels:
 - **Planned** — not started or deferred
 
 Detail and evidence: [ARCHITECTURE.md](ARCHITECTURE.md).
-Narrative phases (historical): [docs/ROADMAP.md](docs/ROADMAP.md).
+Narrative: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Rule: mark Implemented only when the vertical slice works end-to-end. Types-only
 or import-only adapters are Partial.
-
-Active parallel TUI work: #146 (markdown), #148 (diff) — do not duplicate.
 
 ---
 
@@ -82,11 +80,105 @@ Keep suite small. PR CI today: macOS `fmt` + `clippy -D warnings` +
 
 ---
 
-## P1 — Modern coding-agent capabilities
+## P1 — Operator / extension / orchestration layer
 
-Start after P0 foundations are solid.
+Start after P0 foundations are solid. Keep the **built-in agent set small**; prefer
+composable primitives over a catalog of overlapping skills/commands/hooks.
 
-### Subagents (explicit roles, not a swarm)
+Orchestration stack (names may vary if cleaner boundaries exist):
+
+```text
+AgentScheduler + WorkflowEngine + WorktreeManager
+```
+
+Agents remain **execution roles**. Workflows own step ordering. Worktrees are
+**managed resources** with durable ownership — not “spawn git worktree and hope”.
+
+### 1. Versioned canonical schemas
+
+- [ ] Stable schemas with deterministic validation, e.g.:
+  - `impetus.session.v1`
+  - `impetus.extension.v1`
+  - `impetus.mcp.v1`
+  - `impetus.capabilities.v1`
+- [ ] Provider/harness-specific details nested; do not leak into common fields
+- [ ] Compatibility evolution (version field + reject unknown critical fields)
+
+### 2. Extension lifecycle (not file copy)
+
+Lifecycle:
+
+```text
+Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
+```
+
+- [ ] Dry-run plan before filesystem mutations where practical
+- [ ] CLI/IPC equivalents: `extension plan | install | doctor | repair | remove`
+- [ ] Persist install state: created paths, modified paths, source, version/digest,
+      ownership, installation ID
+- [ ] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
+- [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
+- [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
+- [x] MCP **import** adapter (JSON-RPC client library)
+
+### 3. Ownership safety (first-class invariant)
+
+Default:
+
+`destination exists + no matching Impetus ownership record = do not overwrite`
+
+- [ ] Ownership records: path, owner, source, digest, version, installation ID
+- [ ] Uninstall removes **only** resources Impetus can prove it owns
+- [ ] Repair never overwrites unrelated user changes without explicit policy/approval
+- [ ] Pre-existing user files never silently become Impetus-owned
+
+### 4. Memory trust model
+
+Separate explicitly:
+
+```text
+Runtime State ≠ Memory ≠ Policy
+```
+
+| Store | Role |
+| --- | --- |
+| `EventStore` | Authoritative runtime/session state |
+| `MemoryStore` | Contextual knowledge (untrusted by default) |
+| `PolicyStore` | Governed instructions and permissions |
+
+- [ ] Memory never auto-promotes to policy or tool/sandbox capability
+- [ ] Scopes: project / team / user; provenance; secret filtering
+- [ ] Create-only or append-safe semantics where appropriate
+- [ ] Derived indexes disposable/rebuildable; no unsafe symlink traversal
+- [ ] Human-readable source format where useful
+
+### 5. WorktreeManager
+
+Managed resource lifecycle (persist + recover after daemon restart):
+
+create → resume → pause → stop → diff → review → merge-ready → conflict →
+stale → close → salvage
+
+- [ ] Create/resume/stop/close with durable session ↔ worktree binding
+- [ ] Diff / merge-ready / conflict checks before merge attempts
+- [ ] Safe cleanup + abandoned/stale detection
+- [ ] Salvage path for recoverable abandoned worktrees
+- [ ] Worktree identity survives compaction/resume
+- [ ] Build-role agents prefer isolated worktrees with attached permissions
+
+### 6. WorkflowEngine + small recipes
+
+Do **not** invent a new hard-coded agent type per workflow.
+
+- [ ] Declarative recipes (examples):
+  - Feature: Research → Plan → Tests → Implement → Review → Approval
+  - Bug: Reproduce → Failing regression → Fix → Review
+  - Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
+- [ ] Engine owns: step order, dependencies, budgets, concurrency, retry,
+      checkpoints, cancellation, result propagation
+- [ ] AgentScheduler schedules roles; WorkflowEngine sequences steps
+
+### 7. Subagents (explicit roles, not a swarm)
 
 - [ ] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
       Review (read-only diff/tests)
@@ -95,29 +187,29 @@ Start after P0 foundations are solid.
 - [ ] Persist child results before parent resume
 - [ ] Concurrency caps enforced in harness
 
-### Worktree isolation
-
-- [ ] git worktrees for write-capable parallel agents
-- [ ] Safe cleanup + recoverable abandoned worktrees
-- [ ] Worktree identity survives compaction/resume
-
-### Steer vs follow-up
+### 8. Steer vs follow-up
 
 - [ ] Steer running task vs enqueue follow-up — distinct from a normal user message
 
-### Skills + MCP (real adapters)
+### 9. Hooks (only if needed; performance-first)
 
-- [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
-- [x] MCP **import** adapter (JSON-RPC client library)
-- [ ] MCP tools live in ToolOrchestrator / agent loop
-- [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
+- [ ] Cheap match/filter **before** spawning expensive processes
+- [ ] Security-critical hooks prefer in-daemon / trusted runtime, not arbitrary
+      external processes by default
+- [ ] Measure per-tool-call overhead; add perf tests if hooks land
+- [ ] Avoid large overlapping hook catalogs
 
-### LSP
+### 10. Anti-sprawl
+
+- [ ] Keep built-in agent/skill/command set small; detect unused/duplicates
+- [ ] No features solely for vendor parity or feature-count optics
+
+### 11. LSP
 
 - [ ] First-class coding tools: definition, references, diagnostics, symbols, hover
 - [ ] No hard couple of runtime to one LSP binary
 
-### Web / research
+### 12. Web / research
 
 - [x] Search + fetch + SSRF + citations/provenance (core path)
 - [x] Session outbound / private-network grants
@@ -128,7 +220,7 @@ Start after P0 foundations are solid.
 
 ## P2 — Advanced orchestration (explicitly deferred)
 
-- [ ] Deterministic multi-agent workflows / teams
+- [ ] Large multi-team / swarm orchestration beyond small WorkflowEngine recipes
 - [ ] Plugin marketplace / large plugin ABI
 - [ ] Portable sessions between harnesses
 - [ ] Deep Claude/Codex/Cursor compatibility **runtime** (imports already Partial)
@@ -143,10 +235,10 @@ Start after P0 foundations are solid.
 TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
 
 - [x] Ratatui/Crossterm adopted; composer single/multi; large paste upload; streaming
-- [ ] Bounded markdown (#146)
-- [ ] Diff view (#148)
+- [x] Bounded markdown (#146)
+- [x] Diff view (#148)
 - [ ] Approval UI, session picker, command palette, scrollback/status polish
-- [ ] Redraw coalescing; Codex-like error remediation UX
+- [ ] Redraw coalescing; error + remediation UX
 
 ---
 
