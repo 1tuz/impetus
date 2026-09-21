@@ -37,7 +37,7 @@
       "level": "IMPLEMENTED",
       "details": {
         "gate": true,
-        "provider_http_tools": false
+        "provider_http_tools": true
       }
     },
     {

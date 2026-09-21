@@ -43,7 +43,8 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
   recovery.
 - **ToolOrchestrator** — JSON Schema arg validation (`tool_schema`) before
-  policy/sandbox/exec; provider HTTP `tools` field not wired yet (prompt catalog).
+  policy/sandbox/exec; OpenAI/Anthropic HTTP requests include `tools` from
+  `builtin_tool_schemas()`.
 
 Security decisions stay in the kernel, not in ordinary plugins.
 
@@ -80,7 +81,7 @@ impetusd  — authoritative daemon
 | OpenAI Responses API | Missing | No `/v1/responses` client |
 | Legacy OpenAI-compatible text stream | Implemented | `openai_compat_adapter.rs` (still in tree; not default) |
 | JSON Schema tool-arg validation (before policy) | Implemented | `tool_schema.rs` + ToolOrchestrator gate |
-| Provider HTTP `tools` field | Planned | Prompt-only catalog today |
+| Provider HTTP `tools` field | Implemented | OpenAI + Anthropic from `builtin_tool_schemas()` |
 | Measured usage → budget accounting | Implemented | `record_turn_with_usage` in agent loop |
 | Context HOT/WARM/COLD + lazy descriptions | Implemented | `context_optimizer.rs`, wired in `harness_api` |
 | ContextBuilder (chunked artifact summarize) | Implemented | `context_builder.rs` |

@@ -1,8 +1,8 @@
 //! Builtin tool JSON Schemas and pre-policy argument validation.
 //!
-//! Schemas are the catalog source of truth for ToolOrchestrator. Provider HTTP
-//! `tools` fields are not wired yet — the agent loop uses a prompt-only catalog
-//! (`default_tool_stubs`); these schemas are exported for that future path.
+//! Schemas are the catalog source of truth for ToolOrchestrator and for
+//! provider HTTP `tools` payloads (`openai_provider::openai_tools_payload`,
+//! `anthropic_provider::anthropic_tools_payload`).
 
 use std::sync::OnceLock;
 
