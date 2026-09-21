@@ -245,7 +245,9 @@ TUI uses `HarnessClient` only (`impetus-tui` boundary tests).
 - [x] Ratatui/Crossterm adopted; composer single/multi; large paste upload; streaming
 - [x] Bounded markdown (#146)
 - [x] Diff view (#148)
-- [ ] Approval UI, session picker, command palette, scrollback/status polish
+- [x] Approval UI — `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (`render_approval*`, ingest/resolve in `app.rs`; tests `approval_requested_then_approve_clears_queue_and_overlay`, `approval_deny_and_detail_paths`; #165 via #169)
+- [x] Session picker — `render_session_picker` + `SessionSummary` mapping (`model.rs` / `render.rs`; tests `session_picker_filters_and_activates_selected`, `session_summary_maps_fork_meta_and_optional_overrides`, `filtered_sessions_matches_label_id_and_workspace`; #166 via #169)
+- [ ] Command palette, scrollback/status polish
 - [ ] Redraw coalescing; error + remediation UX
 
 ---
