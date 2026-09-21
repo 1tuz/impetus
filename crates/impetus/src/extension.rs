@@ -1,13 +1,13 @@
-//! CLI wrappers for extension lifecycle plan + install + remove.
+//! CLI wrappers for extension lifecycle plan + install + remove + doctor.
 //!
-//! Offline (no daemon): wraps `plan_install` / `apply_install` / `remove_install`.
-//! doctor / repair stay out of scope.
+//! Offline (no daemon): wraps `plan_install` / `apply_install` / `remove_install` /
+//! `doctor_install`. Repair stays out of scope.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use impetus_core::{
     ExtensionInstallIntent, ExtensionStateStore, InstallPlan, OwnershipStore, apply_install,
-    plan_install, remove_install,
+    doctor_install, plan_install, remove_install,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -157,4 +157,68 @@ pub fn remove(installation_id: &str, root: Option<&Path>, json: bool) -> Result<
         }
     }
     Ok(())
+}
+
+/// Report install-state + ownership health (read-only).
+pub fn doctor(installation_id: Option<&str>, root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let report =
+        doctor_install(installation_id, &ownership, &state_store).context("extension doctor")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_doctor_human(&report);
+    }
+    Ok(())
+}
+
+fn print_doctor_human(report: &impetus_core::DoctorReport) {
+    let overall = if report.healthy {
+        "healthy"
+    } else {
+        "unhealthy"
+    };
+    println!(
+        "Extension doctor ({overall}; {} installation(s))",
+        report.installations.len()
+    );
+    if report.installations.is_empty() {
+        println!("  (no install state rows under this root)");
+        return;
+    }
+    for install in &report.installations {
+        let mark = if install.healthy { "ok" } else { "FAIL" };
+        println!("  [{mark}] {}", install.installation_id);
+        println!("    state_present: {}", install.state_present);
+        if let Some(res) = &install.resolution {
+            println!(
+                "    module: {} ({}) v{}",
+                res.module_name, res.module_id, res.version
+            );
+        }
+        if install.paths.is_empty() {
+            println!("    paths: (none)");
+            continue;
+        }
+        for path in &install.paths {
+            match &path.status {
+                impetus_core::PathHealthStatus::Ok => {
+                    println!("    ok  {}", path.path);
+                }
+                impetus_core::PathHealthStatus::Missing => {
+                    println!("    MISSING {}", path.path);
+                }
+                impetus_core::PathHealthStatus::DigestMismatch { expected, actual } => {
+                    println!("    DIGEST {}", path.path);
+                    println!("      expected: {expected}");
+                    println!("      actual:   {actual}");
+                }
+                impetus_core::PathHealthStatus::Unreadable { reason } => {
+                    println!("    UNREADABLE {} ({reason})", path.path);
+                }
+            }
+        }
+    }
 }

@@ -86,6 +86,17 @@ enum ExtensionAction {
         #[arg(long)]
         json: bool,
     },
+    /// Report install-state + ownership health (read-only)
+    Doctor {
+        /// Optional installation ID; omit to check all under --root
+        installation_id: Option<String>,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -109,7 +120,7 @@ enum Commands {
         #[command(subcommand)]
         action: SkillsAction,
     },
-    /// Extension lifecycle (plan / install / remove; doctor|repair later)
+    /// Extension lifecycle (plan / install / remove / doctor; repair later)
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
@@ -275,6 +286,14 @@ async fn main() -> Result<()> {
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
                     extension::remove(installation_id, root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Doctor {
+                    installation_id,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::doctor(installation_id.as_deref(), root_path.as_deref(), *json)?;
                 }
             }
             return Ok(());
@@ -535,6 +554,45 @@ mod tests {
                     },
             } => {
                 assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");
+                assert_eq!(root, "/tmp/project");
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_doctor_all_and_one() {
+        let all = Cli::try_parse_from(["impetus", "extension", "doctor", "--json"]).unwrap();
+        assert!(matches!(
+            all.command,
+            Commands::Extension {
+                action: ExtensionAction::Doctor {
+                    installation_id: None,
+                    json: true,
+                    ..
+                }
+            }
+        ));
+
+        let one = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "doctor",
+            "11111111-2222-3333-4444-555555555555",
+            "--root",
+            "/tmp/project",
+        ])
+        .unwrap();
+        match one.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Doctor {
+                        installation_id: Some(id),
+                        json: false,
+                        root: Some(root),
+                    },
+            } => {
+                assert_eq!(id, "11111111-2222-3333-4444-555555555555");
                 assert_eq!(root, "/tmp/project");
             }
             _ => panic!("unexpected command variant"),
