@@ -1022,6 +1022,15 @@ fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('m') {
+        app.composer.toggle_layout_mode();
+        let mode = app.composer.layout_mode().label();
+        app.show_toast(format!("Composer mode: {mode}"), false);
+        app.focus = Focus::Composer;
+        app.dirty = true;
+        return vec![];
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('p') => {
@@ -1064,8 +1073,18 @@ fn handle_composer_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
 
     match key.code {
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => app.composer.newline(),
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            app.composer.newline();
+        }
         KeyCode::Enter => {
+            if app.composer.try_backslash_continuation() {
+                app.focus = Focus::Composer;
+                app.dirty = true;
+                return vec![];
+            }
             let Some(text) = app.composer.take_for_submit() else {
                 return vec![];
             };
