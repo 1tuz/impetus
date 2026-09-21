@@ -1,7 +1,8 @@
 //! Durable ownership records for managed resources.
 //!
 //! First-class invariant (TODO P1 §3):
-//! `destination exists + no matching Impetus ownership record = do not overwrite`.
+//! `destination exists + no matching Impetus ownership record = do not overwrite`
+//! and do not silently claim that path as Impetus-owned.
 //! Uninstall removes a path only when Impetus can prove ownership (path + owner + digest).
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -83,8 +84,21 @@ impl OwnershipStore {
         })
     }
 
-    /// Persist a new ownership record. Fails if a record for `path` already exists.
+    /// Persist a new ownership record for a path Impetus is about to manage.
+    ///
+    /// Fails if a record for `path` already exists, or if the path already exists
+    /// on disk without a matching record (pre-existing user files must not be
+    /// silently claimed). Register before writing new content.
     pub fn create(&self, record: &OwnershipRecord) -> Result<(), OwnershipError> {
+        if self.get_by_path(&record.path)?.is_some() {
+            return Err(OwnershipError::AlreadyExists(record.path.clone()));
+        }
+
+        let on_disk = Path::new(&record.path);
+        if on_disk.exists() {
+            return Err(OwnershipError::UnownedDestination(record.path.clone()));
+        }
+
         let conn = self.conn.lock().expect("ownership db lock");
         let created_unix_ms = now_unix_ms();
         match conn.execute(
@@ -192,13 +206,28 @@ impl OwnershipStore {
 }
 
 /// Normalize a filesystem path into the store key (absolute; canonical when present).
+///
+/// For a path that does not exist yet, canonicalize the parent directory and
+/// append the final component so register-before-write keys match post-write
+/// lookups (e.g. macOS `/var` → `/private/var`).
 pub fn path_key(path: &Path) -> Result<String, OwnershipError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
     };
-    let key = absolute.canonicalize().unwrap_or(absolute);
+
+    let key = if let Ok(canonical) = absolute.canonicalize() {
+        canonical
+    } else if let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) {
+        let parent_key = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        parent_key.join(name)
+    } else {
+        absolute
+    };
+
     Ok(key.to_string_lossy().into_owned())
 }
 
@@ -226,43 +255,86 @@ mod tests {
         (dir, store)
     }
 
-    fn sample_record(path: &Path) -> OwnershipRecord {
-        let bytes = std::fs::read(path).unwrap_or_default();
+    fn sample_record(path: &Path, content: &[u8]) -> OwnershipRecord {
         OwnershipRecord {
             path: path_key(path).expect("path key"),
             owner: "impetus".into(),
             source: "extension://demo/skill".into(),
-            digest: content_digest(&bytes),
+            digest: content_digest(content),
             version: "1.0.0".into(),
             installation_id: "install-001".into(),
         }
+    }
+
+    /// Register ownership before writing bytes (create refuses pre-existing paths).
+    fn register_then_write(store: &OwnershipStore, path: &Path, content: &[u8]) -> OwnershipRecord {
+        let record = sample_record(path, content);
+        store.create(&record).expect("create before write");
+        std::fs::write(path, content).expect("write owned content");
+        record
     }
 
     #[test]
     fn create_and_lookup_by_path() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let record = sample_record(&dest);
+        let record = sample_record(&dest, b"owned");
 
-        store.create(&record).expect("create");
+        store.create(&record).expect("create for new path");
         let found = store
             .get_by_path(&record.path)
             .expect("lookup")
             .expect("present");
         assert_eq!(found, record);
+        assert!(!dest.exists(), "create must not invent on-disk content");
     }
 
     #[test]
     fn create_refuses_duplicate_path() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let record = sample_record(&dest);
+        let record = sample_record(&dest, b"owned");
 
         store.create(&record).expect("create");
         let err = store.create(&record).expect_err("duplicate");
         assert!(matches!(err, OwnershipError::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn create_refuses_to_claim_preexisting_unowned_path() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("user-file.txt");
+        std::fs::write(&dest, b"pre-existing user content").expect("write dest");
+        let record = sample_record(&dest, b"pre-existing user content");
+
+        let err = store
+            .create(&record)
+            .expect_err("must not silently claim pre-existing path");
+        assert!(matches!(err, OwnershipError::UnownedDestination(_)));
+        assert!(
+            store.get_by_path(&record.path).expect("lookup").is_none(),
+            "pre-existing file must stay unowned"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read"),
+            "pre-existing user content"
+        );
+    }
+
+    #[test]
+    fn create_allows_record_for_new_missing_path() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("brand-new.txt");
+        assert!(!dest.exists());
+        let record = sample_record(&dest, b"fresh");
+
+        store
+            .create(&record)
+            .expect("new missing path may receive ownership record");
+        assert!(
+            store.get_by_path(&record.path).expect("lookup").is_some(),
+            "record must be stored for new path"
+        );
     }
 
     #[test]
@@ -281,9 +353,7 @@ mod tests {
     fn allows_overwrite_when_matching_record_exists() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let record = sample_record(&dest);
-        store.create(&record).expect("create");
+        register_then_write(&store, &dest, b"owned");
 
         store
             .ensure_can_overwrite(&dest)
@@ -306,8 +376,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("ownership.db");
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let record = sample_record(&dest);
+        let record = sample_record(&dest, b"owned");
 
         {
             let store = OwnershipStore::open(&db).expect("open");
@@ -326,9 +395,7 @@ mod tests {
     fn uninstall_removes_owned_path_and_record() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned-content").expect("write dest");
-        let record = sample_record(&dest);
-        store.create(&record).expect("create");
+        let record = register_then_write(&store, &dest, b"owned-content");
 
         store.uninstall(&dest, "impetus").expect("owned uninstall");
         assert!(!dest.exists(), "owned path must be removed");
@@ -359,10 +426,10 @@ mod tests {
     fn uninstall_refuses_digest_mismatch_without_deleting() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let mut record = sample_record(&dest);
+        let mut record = sample_record(&dest, b"owned");
         record.digest = content_digest(b"different-bytes");
         store.create(&record).expect("create");
+        std::fs::write(&dest, b"owned").expect("write dest");
 
         let err = store
             .uninstall(&dest, "impetus")
@@ -379,9 +446,7 @@ mod tests {
     fn uninstall_refuses_owner_mismatch_without_deleting() {
         let (dir, store) = temp_store();
         let dest = dir.path().join("managed.txt");
-        std::fs::write(&dest, b"owned").expect("write dest");
-        let record = sample_record(&dest);
-        store.create(&record).expect("create");
+        register_then_write(&store, &dest, b"owned");
 
         let err = store
             .uninstall(&dest, "other-owner")

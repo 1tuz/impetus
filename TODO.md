@@ -156,7 +156,7 @@ Default:
 - [x] Ownership records: path, owner, source, digest, version, installation ID
 - [x] Uninstall removes **only** resources Impetus can prove it owns
 - [ ] Repair never overwrites unrelated user changes without explicit policy/approval
-- [ ] Pre-existing user files never silently become Impetus-owned
+- [x] Pre-existing user files never silently become Impetus-owned
 
 ### 4. Memory trust model
 
