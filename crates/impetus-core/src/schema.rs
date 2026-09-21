@@ -4,9 +4,47 @@
 //! - Stable string id: `impetus.<name>.vN` (see [`SchemaSpec::id`])
 //! - Numeric field on payloads: `schema_version` (u16)
 //! - Evolution: bump version; reject mismatch and unknown critical fields
+//! - Provider/harness-specific details nest under [`NEST_PROVIDER`] / [`NEST_HARNESS`]
+//!   — never as common top-level fields
 
 use serde_json::Value;
 use thiserror::Error;
+
+/// Nest container for provider-specific envelope details.
+pub const NEST_PROVIDER: &str = "provider";
+
+/// Nest container for harness-specific envelope details.
+pub const NEST_HARNESS: &str = "harness";
+
+/// Provider-owned keys forbidden at the common top level (must nest under [`NEST_PROVIDER`]).
+pub const PROVIDER_NEST_KEYS: &[&str] = &[
+    "model",
+    "model_id",
+    "provider_id",
+    "provider_profile",
+    "base_url",
+    "api_base",
+    "endpoint",
+    "temperature",
+    "max_tokens",
+    "top_p",
+    "api_key",
+    "api_token",
+    "api_key_ref",
+    "auth_ref",
+    "openai_http_api",
+];
+
+/// Harness-owned keys forbidden at the common top level (must nest under [`NEST_HARNESS`]).
+pub const HARNESS_NEST_KEYS: &[&str] = &[
+    "harness_id",
+    "harness_version",
+    "seatbelt",
+    "sandbox_profile",
+    "worktree",
+    "worktree_path",
+    "seatbelt_process_wrap",
+];
 
 /// One registered canonical schema (id + current numeric version).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +68,8 @@ pub const SCHEMA_APPROVAL_DETAIL: SchemaSpec = SchemaSpec {
         "affected_files",
         "estimated_scope",
         "attachment_refs",
+        NEST_PROVIDER,
+        NEST_HARNESS,
     ],
 };
 
@@ -37,7 +77,22 @@ pub const SCHEMA_APPROVAL_DETAIL: SchemaSpec = SchemaSpec {
 pub const SCHEMA_CAPABILITIES: SchemaSpec = SchemaSpec {
     id: "impetus.capabilities.v1",
     version: 1,
-    critical_fields: &["schema_version", "capabilities"],
+    critical_fields: &[
+        "schema_version",
+        "capabilities",
+        NEST_PROVIDER,
+        NEST_HARNESS,
+    ],
+};
+
+/// Session-ish envelope slice for nest validation (common fields + provider/harness nests).
+///
+/// Full session catalog remains Planned; this registers only the critical top-level shape
+/// so leaked provider/harness keys fail the same way as capabilities.
+pub const SCHEMA_SESSION: SchemaSpec = SchemaSpec {
+    id: "impetus.session.v1",
+    version: 1,
+    critical_fields: &["schema_version", "session_id", NEST_PROVIDER, NEST_HARNESS],
 };
 
 /// Minimal extension manifest (`plan_install` / Skill + MCP config).
@@ -58,6 +113,7 @@ pub const SCHEMA_EXTENSION: SchemaSpec = SchemaSpec {
 pub const KNOWN_SCHEMAS: &[SchemaSpec] = &[
     SCHEMA_APPROVAL_DETAIL,
     SCHEMA_CAPABILITIES,
+    SCHEMA_SESSION,
     SCHEMA_EXTENSION,
 ];
 
@@ -73,6 +129,16 @@ pub enum SchemaValidationError {
     },
     #[error("schema `{id}` has unknown critical field `{field}`")]
     UnknownCriticalField { id: String, field: String },
+    #[error(
+        "schema `{id}` field `{field}` must nest under `{nest_under}` (provider/harness details are not common fields)"
+    )]
+    LeakedNestedField {
+        id: String,
+        field: String,
+        nest_under: String,
+    },
+    #[error("schema `{id}` nest `{nest}` must be a JSON object")]
+    NestNotAnObject { id: String, nest: String },
     #[error("schema `{id}` payload must be a JSON object")]
     NotAnObject { id: String },
 }
@@ -97,6 +163,46 @@ pub fn require_version(
     Ok(())
 }
 
+fn nest_under_for_key(key: &str) -> Option<&'static str> {
+    if PROVIDER_NEST_KEYS.contains(&key) {
+        Some(NEST_PROVIDER)
+    } else if HARNESS_NEST_KEYS.contains(&key) {
+        Some(NEST_HARNESS)
+    } else {
+        None
+    }
+}
+
+fn schema_uses_nests(spec: &SchemaSpec) -> bool {
+    spec.critical_fields
+        .iter()
+        .any(|f| *f == NEST_PROVIDER || *f == NEST_HARNESS)
+}
+
+/// Reject provider/harness-owned keys when they appear as common top-level fields.
+///
+/// No-op for schemas that do not declare nest containers in `critical_fields`
+/// (e.g. `impetus.extension.v1`); those still reject unknowns via
+/// [`reject_unknown_critical_fields`].
+pub fn reject_leaked_nested_fields(
+    spec: &SchemaSpec,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), SchemaValidationError> {
+    if !schema_uses_nests(spec) {
+        return Ok(());
+    }
+    for key in object.keys() {
+        if let Some(nest_under) = nest_under_for_key(key) {
+            return Err(SchemaValidationError::LeakedNestedField {
+                id: spec.id.to_string(),
+                field: key.clone(),
+                nest_under: nest_under.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reject unknown keys on a critical envelope (provider-specific data stays nested).
 pub fn reject_unknown_critical_fields(
     spec: &SchemaSpec,
@@ -113,9 +219,33 @@ pub fn reject_unknown_critical_fields(
     Ok(())
 }
 
+/// When `provider` / `harness` are present, they must be objects (not scalars/arrays).
+///
+/// No-op for schemas that do not declare nest containers.
+pub fn require_nest_objects(
+    spec: &SchemaSpec,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), SchemaValidationError> {
+    if !schema_uses_nests(spec) {
+        return Ok(());
+    }
+    for nest in [NEST_PROVIDER, NEST_HARNESS] {
+        if let Some(value) = object.get(nest)
+            && !value.is_object()
+        {
+            return Err(SchemaValidationError::NestNotAnObject {
+                id: spec.id.to_string(),
+                nest: nest.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate a JSON value as a known critical schema envelope.
 ///
-/// Checks: known id, version match, no unknown top-level fields.
+/// Checks: known id, version match, no leaked provider/harness top-level fields,
+/// no unknown top-level fields, nest containers are objects when present.
 pub fn validate_envelope(
     schema_id: &str,
     value: &Value,
@@ -135,7 +265,9 @@ pub fn validate_envelope(
         .map(|v| v as u16)
         .unwrap_or(spec.version);
     require_version(spec, version)?;
+    reject_leaked_nested_fields(spec, object)?;
     reject_unknown_critical_fields(spec, object)?;
+    require_nest_objects(spec, object)?;
     Ok(spec)
 }
 
@@ -145,17 +277,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn known_schemas_include_approval_capabilities_and_extension() {
+    fn known_schemas_include_approval_capabilities_session_and_extension() {
         assert_eq!(SCHEMA_APPROVAL_DETAIL.id, "impetus.approval_detail.v1");
         assert_eq!(SCHEMA_APPROVAL_DETAIL.version, 1);
         assert_eq!(SCHEMA_CAPABILITIES.id, "impetus.capabilities.v1");
         assert_eq!(SCHEMA_CAPABILITIES.version, 1);
+        assert_eq!(SCHEMA_SESSION.id, "impetus.session.v1");
+        assert_eq!(SCHEMA_SESSION.version, 1);
         assert_eq!(SCHEMA_EXTENSION.id, "impetus.extension.v1");
         assert_eq!(SCHEMA_EXTENSION.version, 1);
         assert!(lookup(SCHEMA_APPROVAL_DETAIL.id).is_some());
         assert!(lookup(SCHEMA_CAPABILITIES.id).is_some());
+        assert!(lookup(SCHEMA_SESSION.id).is_some());
         assert!(lookup(SCHEMA_EXTENSION.id).is_some());
-        assert!(lookup("impetus.session.v1").is_none());
+        assert!(SCHEMA_CAPABILITIES.critical_fields.contains(&NEST_PROVIDER));
+        assert!(SCHEMA_CAPABILITIES.critical_fields.contains(&NEST_HARNESS));
     }
 
     #[test]
@@ -176,22 +312,115 @@ mod tests {
     }
 
     #[test]
-    fn unknown_critical_field_rejected() {
+    fn leaked_provider_field_rejected_at_top_level() {
         let value = json!({
             "schema_version": 1,
             "capabilities": [],
-            "api_token": "should-never-appear"
+            "api_token": "label-only-never-a-secret"
+        });
+        let err = validate_envelope(SCHEMA_CAPABILITIES.id, &value).unwrap_err();
+        let msg = err.to_string();
+        match err {
+            SchemaValidationError::LeakedNestedField {
+                id,
+                field,
+                nest_under,
+            } => {
+                assert_eq!(id, "impetus.capabilities.v1");
+                assert_eq!(field, "api_token");
+                assert_eq!(nest_under, NEST_PROVIDER);
+            }
+            other => panic!("expected LeakedNestedField, got {other:?}"),
+        }
+        assert!(msg.contains("must nest under"));
+        assert!(msg.contains(NEST_PROVIDER));
+        // Secrets must not be required for the test — only the field name is asserted.
+        assert!(!value.to_string().contains("sk-"));
+    }
+
+    #[test]
+    fn leaked_harness_field_rejected_at_top_level() {
+        let value = json!({
+            "schema_version": 1,
+            "session_id": "00000000-0000-0000-0000-000000000001",
+            "worktree_path": "/tmp/should-nest"
+        });
+        let err = validate_envelope(SCHEMA_SESSION.id, &value).unwrap_err();
+        assert_eq!(
+            err,
+            SchemaValidationError::LeakedNestedField {
+                id: "impetus.session.v1".into(),
+                field: "worktree_path".into(),
+                nest_under: NEST_HARNESS.into(),
+            }
+        );
+    }
+
+    #[test]
+    fn nested_provider_and_harness_accepted() {
+        let value = json!({
+            "schema_version": 1,
+            "capabilities": [],
+            "provider": {
+                "provider_id": "openai",
+                "model": "gpt-test",
+                "api_key_ref": "keychain:openai-label"
+            },
+            "harness": {
+                "harness_id": "impetusd",
+                "seatbelt_process_wrap": false
+            }
+        });
+        let spec = validate_envelope(SCHEMA_CAPABILITIES.id, &value).expect("nested ok");
+        assert_eq!(spec.id, SCHEMA_CAPABILITIES.id);
+        assert!(!value.to_string().contains("sk-"));
+        assert!(!value.to_string().contains("Bearer "));
+    }
+
+    #[test]
+    fn session_ish_accepts_nested_provider() {
+        let value = json!({
+            "schema_version": 1,
+            "session_id": "00000000-0000-0000-0000-000000000002",
+            "provider": { "model_id": "mock-1", "provider_id": "mock" },
+            "harness": { "worktree_path": "/tmp/session-wt" }
+        });
+        let spec = validate_envelope(SCHEMA_SESSION.id, &value).expect("session nested ok");
+        assert_eq!(spec.id, SCHEMA_SESSION.id);
+    }
+
+    #[test]
+    fn provider_nest_must_be_object() {
+        let value = json!({
+            "schema_version": 1,
+            "capabilities": [],
+            "provider": "openai"
+        });
+        let err = validate_envelope(SCHEMA_CAPABILITIES.id, &value).unwrap_err();
+        assert_eq!(
+            err,
+            SchemaValidationError::NestNotAnObject {
+                id: "impetus.capabilities.v1".into(),
+                nest: NEST_PROVIDER.into(),
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_critical_field_still_rejected() {
+        let value = json!({
+            "schema_version": 1,
+            "capabilities": [],
+            "totally_unknown": true
         });
         let err = validate_envelope(SCHEMA_CAPABILITIES.id, &value).unwrap_err();
         match err {
             SchemaValidationError::UnknownCriticalField { id, field } => {
                 assert_eq!(id, "impetus.capabilities.v1");
-                assert_eq!(field, "api_token");
+                assert_eq!(field, "totally_unknown");
             }
             other => panic!("expected UnknownCriticalField, got {other:?}"),
         }
-        // Secrets must not be required for the test — only the field name is asserted.
-        assert!(!value.to_string().contains("sk-"));
     }
 
     #[test]
