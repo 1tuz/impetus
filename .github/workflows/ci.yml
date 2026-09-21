@@ -58,7 +58,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy (affected)
-        run: cargo clippy ${{ needs.detect.outputs.packages }} --all-targets -- -D warnings
+        # Prefer --lib --bins over --all-targets: PR CI skips heavy crates/*/tests/
+        # (those stay local via task verify). Still deny warnings.
+        run: cargo clippy ${{ needs.detect.outputs.packages }} --lib --bins -- -D warnings
       - name: Test (affected lib/bins)
         run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins
       - name: Check dependants
@@ -120,6 +122,8 @@ jobs:
         env:
           GITHUB_ACTIONS: "true"
 
+  # Aggregator for branch protection: require only this job name so skipped
+  # scoped jobs (docs-only / no-security / no-site) do not block merge.
   gate:
     name: Gate
     if: always()
