@@ -48,18 +48,27 @@ Zap keeps its own UI as another `HarnessClient` consumer. See
 
 ## What works now
 
+Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
+
 - Durable sessions and ordered audit events in SQLite WAL.
 - Versioned local Unix-socket negotiation before a client can act.
-- Typed actions through policy, approval, sandbox, capability, and execution
-  checks.
+- Typed actions through policy, approval, **path-scope** sandbox, capability, and
+  execution (fail-closed). macOS Seatbelt confinement is spike-only, not yet the
+  live process wrapper.
 - Keychain references or a local no-secret provider endpoint; profiles never
   store raw tokens.
-- Typed Rust client transport, a reference CLI, ACP gateway library, and an
-  experimental Zap integration baseline.
-- Agent-loop vertical for filesystem reads plus approval-gated writes and shell
-  commands; each result is persisted before it is returned to the model.
-- Large read results use content-addressed durable artifacts; events retain a
-  bounded, redacted preview and an artifact reference.
+- Typed Rust client transport, CLI, TUI (`impetus ui`), ACP gateway library, and
+  an experimental Zap adapter.
+- Agent-loop vertical for filesystem reads plus approval-gated writes and shell;
+  large tool/web/paste bodies use durable content-addressed artifacts; approval
+  diffs use ephemeral in-memory attachments.
+- Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
+  shared-prefix fork and checkpoints.
+- Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts). Live
+  MCP tools in the agent loop are not wired yet.
+- Production model path defaults to Mock or native OpenAI Chat Completions SSE
+  (`--provider-profile`); Anthropic library is available but not the default
+  daemon path. JSON Schema tool-arg validation before policy is still Planned.
 
 ## Request control flow
 
@@ -142,12 +151,13 @@ Remove credentials from macOS Keychain via **Keychain Access.app** or `security 
 
 For detailed cleanup steps, see [getting started](docs/getting-started.md#uninstall).
 
-## Design lineage
+## Design stance
 
-Impetus is not a port or fork of one coding agent. It combines proven ideas
-from Codex, Claude Code, OpenClaude, jcode, DeepSeek Harness, Qwen Code, Pi,
-OpenCode, Aider, Kimi Code, and RTK in its own local-first Rust architecture.
-See [Design references](docs/REFERENCES.md).
+Impetus is not a port or fork of another coding agent. It keeps a small trusted
+kernel (events, artifacts, policy, approval, sandbox, executor) and replaceable
+layers above it. Engineering principles (durable events, fail-closed admission,
+explicit approvals, opaque secret references) matter more than feature parity
+lists. Optional protocol/UX notes: [Design references](docs/REFERENCES.md).
 
 ## Project layout
 
@@ -164,11 +174,11 @@ See [Design references](docs/REFERENCES.md).
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md) — kernel invariants, module model, client/daemon split.
-- [Roadmap](docs/ROADMAP.md) — phases and gates.
-- [TODO](TODO.md) — executable task list.
-- [TUI reference audit](docs/TUI_REFERENCE.md) — JCode/Codex UX decisions (audited; SHA pinned).
-- [References](docs/REFERENCES.md) — design lineage, protocols, and libraries.
+- [Architecture](ARCHITECTURE.md) — kernel + capability matrix (code-backed).
+- [TODO](TODO.md) — P0/P1/P2 executable roadmap.
+- [Roadmap](docs/ROADMAP.md) — short priority narrative.
+- [TUI notes](docs/TUI_REFERENCE.md) — client UX constraints and audit notes.
+- [References](docs/REFERENCES.md) — protocols and libraries.
 - [Getting started](docs/getting-started.md) — source-checkout setup.
 - [Development](docs/development.md) — workspace checks and CI.
 

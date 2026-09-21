@@ -277,7 +277,7 @@ impl AnthropicProvider {
                                 }
                             }
                             "message_stop" => {
-                                // Emit final usage
+                                // Emit final usage, then flush tool calls before end.
                                 if input_tokens > 0 || output_tokens > 0 {
                                     on_event(StreamEvent::Usage {
                                         prompt_tokens: input_tokens,
@@ -285,6 +285,10 @@ impl AnthropicProvider {
                                         measured: true,
                                     })?;
                                 }
+                                Self::emit_accumulated_tool_calls(
+                                    &mut tool_call_accumulators,
+                                    &mut on_event,
+                                )?;
                                 return Ok(());
                             }
                             _ => {}
@@ -294,8 +298,16 @@ impl AnthropicProvider {
             }
         }
 
-        // Emit accumulated tool calls
-        for (_index, acc) in tool_call_accumulators {
+        Self::emit_accumulated_tool_calls(&mut tool_call_accumulators, &mut on_event)?;
+        Ok(())
+    }
+
+    fn emit_accumulated_tool_calls(
+        tool_call_accumulators: &mut std::collections::HashMap<usize, ToolCallAccumulator>,
+        on_event: &mut dyn FnMut(StreamEvent) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        let pending: Vec<_> = tool_call_accumulators.drain().collect();
+        for (_index, acc) in pending {
             if !acc.id.is_empty() && !acc.name.is_empty() {
                 let arguments = if acc.input_json.is_empty() {
                     serde_json::Value::Object(serde_json::Map::new())
@@ -314,7 +326,6 @@ impl AnthropicProvider {
                 })?;
             }
         }
-
         Ok(())
     }
 }

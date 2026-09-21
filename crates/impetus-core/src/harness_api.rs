@@ -10,10 +10,9 @@
 use crate::{
     AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventStore,
     IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse,
-    MockProvider, NoCredentialResolver, OpenAiCompatibleAdapter, OpenAiCompatibleProvider,
-    PolicyEngine, Profile, ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind,
-    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget,
-    ToolOutcome,
+    MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider, PolicyEngine, Profile,
+    ProviderMessage, ProviderRegistry, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools,
+    ResolveRequest, RuntimeError, RuntimeStatus, Sandbox, SandboxScope, TokenBudget, ToolOutcome,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
@@ -129,10 +128,11 @@ impl Harness {
 
     /// Use a user-selected direct-provider profile. The profile is supplied by
     /// daemon startup, not client IPC; credentials remain outside this type.
+    /// Registers native Chat Completions SSE provider (tool-call aware).
     pub fn with_openai_provider(
         store: Arc<dyn EventStore>,
         policy: PolicyEngine,
-        provider: OpenAiCompatibleProvider,
+        provider: OpenAiProvider,
     ) -> Self {
         Self::with_openai_provider_and_resolver(
             store,
@@ -147,7 +147,7 @@ impl Harness {
     pub fn with_openai_provider_and_resolver(
         store: Arc<dyn EventStore>,
         policy: PolicyEngine,
-        provider: OpenAiCompatibleProvider,
+        provider: OpenAiProvider,
         credential_resolver: Arc<dyn CredentialResolver>,
     ) -> Self {
         let workspace_root = policy.scope().workspace_root.clone();
@@ -159,9 +159,8 @@ impl Harness {
             .register(mock)
             .expect("failed to register mock provider");
 
-        // Register OpenAI-compatible provider with adapter
         let provider_id = provider.profile().id.clone();
-        let adapter = Arc::new(OpenAiCompatibleAdapter::new(
+        let adapter = Arc::new(OpenAiNativeAdapter::new(
             Arc::new(provider),
             credential_resolver.clone(),
         ));
@@ -1335,8 +1334,8 @@ fn compute_approval_detail(
 mod tests {
     use super::*;
     use crate::{
-        CredentialStrategy, EventPayload, MemoryEventStore, ProviderError, ProviderProfile,
-        RetryBudget, mock_provider::MockStreamItem,
+        CredentialStrategy, EventPayload, MemoryEventStore, OpenAiProvider, OpenAiRetryBudget,
+        ProviderError, ProviderProfile, mock_provider::MockStreamItem,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1413,14 +1412,14 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let provider = OpenAiCompatibleProvider::new(
+        let provider = OpenAiProvider::new(
             ProviderProfile {
                 id: "local-test".into(),
                 endpoint: format!("http://{address}"),
                 model: "test-model".into(),
                 credential_strategy: CredentialStrategy::None,
             },
-            RetryBudget::default(),
+            OpenAiRetryBudget::default(),
         )
         .unwrap();
         let harness = Harness::with_openai_provider(
@@ -1658,7 +1657,7 @@ mod tests {
     #[tokio::test]
     async fn keychain_lookup_is_lazy_and_missing_or_unavailable_results_are_redacted() {
         let store = Arc::new(MemoryEventStore::default());
-        let provider = OpenAiCompatibleProvider::new(
+        let provider = OpenAiProvider::new(
             ProviderProfile {
                 id: "remote-profile".into(),
                 endpoint: "https://api.example.test".into(),
@@ -1668,7 +1667,7 @@ mod tests {
                     account: "opaque-account-label".into(),
                 },
             },
-            RetryBudget::default(),
+            OpenAiRetryBudget::default(),
         )
         .unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));

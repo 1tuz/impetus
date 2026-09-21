@@ -44,6 +44,7 @@ pub mod module_lifecycle;
 pub mod module_registry;
 pub mod observations;
 pub mod openai_compat_adapter;
+pub mod openai_native_adapter;
 pub mod openai_provider;
 pub mod output_reducer;
 pub mod plugins;
@@ -72,6 +73,7 @@ pub use acp_adapter::AcpAdapter;
 pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
 pub use agent_plugins_adapter::{AgentPluginsAdapter, PluginCommandEntry};
 pub use agent_skills_adapter::AgentSkillsAdapter;
+pub use anthropic_provider::AnthropicProvider;
 pub use approval::{
     ApprovalDetail, ApprovalId, ApprovalRequest, ApprovalResolution, ApprovalResolver,
     ApprovalState, ScopeEstimate,
@@ -151,6 +153,7 @@ pub use observations::{
     SearchObservation, TestFailure, TestObservation,
 };
 pub use openai_compat_adapter::OpenAiCompatibleAdapter;
+pub use openai_native_adapter::OpenAiNativeAdapter;
 pub use openai_provider::{OpenAiProvider, RetryBudget as OpenAiRetryBudget};
 pub use output_reducer::{OutputReducer, ReducedOutput, ReductionStrategy, TokenBudget};
 pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry};
