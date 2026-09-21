@@ -428,6 +428,25 @@ impl CodingToolsProvider for MockCodingToolsProvider {
     }
 }
 
+/// Run a coding-tools future on an isolated current-thread runtime.
+///
+/// Used by sync IPC harness dispatch; agent-loop path calls the async API directly.
+pub fn block_on_coding_tools<T, F>(fut: F) -> T
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("coding-tools runtime")
+            .block_on(fut)
+    })
+    .join()
+    .unwrap_or_else(|_| panic!("coding-tools worker panicked"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,8 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "context",
     "diagnostics",
     "artifact_upload",
+    // Coding-tools IPC: definition (paths/ranges only; no secrets).
+    "coding_definition",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +123,13 @@ pub enum IpcRequest {
         upload_id: Uuid,
     },
     Diagnostics,
+    /// Resolve go-to-definition via optional coding-tools provider.
+    /// Paths/ranges only — never secrets or raw credentials.
+    GotoDefinition {
+        path: std::path::PathBuf,
+        line: u32,
+        character: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,6 +205,10 @@ pub enum IpcResponse {
     ArtifactUploadAborted {
         upload_id: Uuid,
     },
+    /// Definition locations (workspace paths + ranges only).
+    Definition {
+        locations: Vec<crate::SourceLocation>,
+    },
     Incompatible {
         supported_version: u16,
         client_version: u16,
@@ -266,6 +279,30 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<IpcRequest>(&serde_json::to_string(&create).unwrap()).unwrap(),
             create
+        );
+    }
+
+    #[test]
+    fn goto_definition_messages_round_trip() {
+        let request = IpcRequest::GotoDefinition {
+            path: std::path::PathBuf::from("src/lib.rs"),
+            line: 42,
+            character: 5,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
+            request
+        );
+        let response = IpcResponse::Definition {
+            locations: vec![crate::SourceLocation::new(
+                "src/lib.rs",
+                crate::SourceRange::new(10, 0, 10, 3),
+            )],
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&response).unwrap())
+                .unwrap(),
+            response
         );
     }
 

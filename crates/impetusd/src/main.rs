@@ -275,6 +275,7 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::FinishArtifactUpload { .. }
         | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
         IpcRequest::Diagnostics => "diagnostics",
+        IpcRequest::GotoDefinition { .. } => "coding_definition",
     }
 }
 

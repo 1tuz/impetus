@@ -312,7 +312,9 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [x] Typed coding-tool seam + mock (definition / references / diagnostics /
       symbols / hover); no LSP binary required at compile time (#261)
 - [ ] Real LSP backend spawn (rust-analyzer / clangd / …) — optional, not core dep
-- [ ] Wire coding tools into agent loop / IPC / TUI
+- [x] Wire coding tools into agent loop / IPC / TUI — Partial: `goto_definition`
+      tool via ToolOrchestrator + IPC `GotoDefinition`/`Definition` (mock/absent
+      fail-closed); real LSP + TUI surface still Planned (#267)
 
 ### 12. Web / research
 
