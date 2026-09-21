@@ -80,6 +80,7 @@ pub mod tool_orchestrator;
 pub mod tool_schema;
 pub mod tools;
 pub mod web_research;
+pub mod workflow_engine;
 pub mod worktree_manager;
 
 pub use acp_adapter::AcpAdapter;
@@ -256,6 +257,10 @@ pub use tool_schema::{
 pub use tools::{
     ARTIFACT_CHUNK_SIZE, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome,
     ToolProvenance, ToolResult,
+};
+pub use workflow_engine::{
+    StepCheckpoint, StepStatus, WorkflowBudget, WorkflowEngine, WorkflowError, WorkflowRecipe,
+    WorkflowStatus, WorkflowStep,
 };
 pub use worktree_manager::{
     AgentWorkRole, MergeReadyReport, StaleReason, StaleReport, WorktreeAttachedPermissions,

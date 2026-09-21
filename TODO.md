@@ -234,13 +234,17 @@ stale → close → salvage
 
 Do **not** invent a new hard-coded agent type per workflow.
 
-- [ ] Declarative recipes (examples):
-  - Feature: Research → Plan → Tests → Implement → Review → Approval
-  - Bug: Reproduce → Failing regression → Fix → Review
-  - Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
-- [ ] Engine owns: step order, dependencies, budgets, concurrency, retry,
+- [x] Declarative recipes (examples):
+  - [x] Feature: Research → Plan → Tests → Implement → Review → Approval
+        (`WorkflowEngine::feature_skeleton_recipe`)
+  - [x] Bug: Reproduce → Failing regression → Fix → Review
+        (`WorkflowEngine::bug_skeleton_recipe`)
+  - [ ] Refactor: Baseline tests → Characterization if needed → Refactor → Validation → Review
+- [x] Engine owns: step order, dependencies, budgets (token/wall stubs),
       checkpoints, cancellation, result propagation
+      (`workflow_engine` — in-memory; concurrency / retry still open)
 - [ ] AgentScheduler schedules roles; WorkflowEngine sequences steps
+      (engine sequences steps; scheduler role enforcement out of this slice)
 
 ### 7. Subagents (explicit roles, not a swarm)
 
