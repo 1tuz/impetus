@@ -1,13 +1,13 @@
-//! CLI wrappers for extension lifecycle plan + install.
+//! CLI wrappers for extension lifecycle plan + install + remove.
 //!
-//! Offline (no daemon): wraps `plan_install` / `apply_install`.
-//! doctor / repair / remove stay out of scope.
+//! Offline (no daemon): wraps `plan_install` / `apply_install` / `remove_install`.
+//! doctor / repair stay out of scope.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use impetus_core::{
     ExtensionInstallIntent, ExtensionStateStore, InstallPlan, OwnershipStore, apply_install,
-    plan_install,
+    plan_install, remove_install,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -135,6 +135,26 @@ pub async fn install(
             println!("    ~ {}", p.display());
         }
         println!("  ownership records: {}", state.ownership.len());
+    }
+    Ok(())
+}
+
+/// Remove install by `installation_id` (ownership proof + state cleanup).
+pub fn remove(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let result = remove_install(installation_id, &ownership, &state_store)
+        .with_context(|| format!("remove install {installation_id}"))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Removed extension");
+        println!("  installation_id: {}", result.installation_id);
+        println!("  removed: {}", result.removed_paths.len());
+        for p in &result.removed_paths {
+            println!("    - {}", p.display());
+        }
     }
     Ok(())
 }

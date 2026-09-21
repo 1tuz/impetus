@@ -194,6 +194,7 @@ impl CapabilityTruthReport {
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
                         "lifecycle_cli_plan_install": true,
+                        "lifecycle_cli_remove": true,
                     })),
                 ),
             ],
