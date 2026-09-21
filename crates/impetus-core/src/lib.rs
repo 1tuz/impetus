@@ -74,6 +74,7 @@ mod security_runtime_pr;
 pub mod service_contract;
 pub mod service_provider;
 pub mod storage;
+pub mod subagent_metadata;
 pub mod supervisor;
 pub mod tempo_importer;
 pub mod tool_orchestrator;
@@ -245,6 +246,9 @@ pub use service_provider::{
 };
 pub use storage::{
     CheckpointInfo, EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError,
+};
+pub use subagent_metadata::{
+    ChildRunMetadata, ChildRunMetadataError, SubagentCapabilityIntent, SubagentRole,
 };
 pub use supervisor::{MockStreamingProvider, SessionSupervisor, SupervisorError};
 pub use tempo_importer::{TempoImporter, TempoImporterConfig, TempoWorklog};

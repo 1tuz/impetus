@@ -248,10 +248,12 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 ### 7. Subagents (explicit roles, not a swarm)
 
-- [ ] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
+- [x] Roles: Explore (read-only), Research (read + approved web), Build (worktree),
       Review (read-only diff/tests)
-- [ ] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
+      (`subagent_metadata::SubagentRole` + capability intent; no live spawn)
+- [x] Structured child metadata: `parent_id`, `cwd`, `worktree`, `allowed_tools`,
       `write_roots`, `max_tokens`, `max_time`, `max_depth` — **not** prompt-only
+      (`ChildRunMetadata` validated; AgentScheduler/spawn still open)
 - [ ] Persist child results before parent resume
 - [ ] Concurrency caps enforced in harness
 
