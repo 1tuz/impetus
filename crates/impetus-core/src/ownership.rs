@@ -2,9 +2,11 @@
 //!
 //! First-class invariant (TODO P1 §3):
 //! `destination exists + no matching Impetus ownership record = do not overwrite`.
+//! Uninstall removes a path only when Impetus can prove ownership (path + owner + digest).
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -36,6 +38,12 @@ pub enum OwnershipError {
     UnownedDestination(String),
     #[error("ownership record already exists for path: {0}")]
     AlreadyExists(String),
+    #[error("no ownership record for path: {0}")]
+    NotOwned(String),
+    #[error("ownership owner mismatch for path: {0}")]
+    OwnerMismatch(String),
+    #[error("ownership digest mismatch for path: {0}")]
+    DigestMismatch(String),
 }
 
 /// SQLite-backed ownership store.
@@ -140,6 +148,47 @@ impl OwnershipStore {
             None => Err(OwnershipError::UnownedDestination(key)),
         }
     }
+
+    /// Remove a managed path only when Impetus can prove it owns the on-disk resource.
+    ///
+    /// Proof requires a stored record for `path` whose `owner` equals `expected_owner`
+    /// and whose `digest` equals the SHA-256 digest of the current file bytes.
+    /// Without that proof the path is left untouched.
+    pub fn uninstall(&self, path: &Path, expected_owner: &str) -> Result<(), OwnershipError> {
+        let key = path_key(path)?;
+        let record = match self.get_by_path(&key)? {
+            Some(record) => record,
+            None => return Err(OwnershipError::NotOwned(key)),
+        };
+
+        if record.owner != expected_owner {
+            return Err(OwnershipError::OwnerMismatch(key));
+        }
+
+        if !path.exists() {
+            self.delete_record(&key)?;
+            return Ok(());
+        }
+
+        let bytes = std::fs::read(path)?;
+        let actual = content_digest(&bytes);
+        if actual != record.digest {
+            return Err(OwnershipError::DigestMismatch(key));
+        }
+
+        std::fs::remove_file(path)?;
+        self.delete_record(&key)?;
+        Ok(())
+    }
+
+    fn delete_record(&self, path_key: &str) -> Result<(), OwnershipError> {
+        let conn = self.conn.lock().expect("ownership db lock");
+        conn.execute(
+            "DELETE FROM ownership_records WHERE path = ?1",
+            params![path_key],
+        )?;
+        Ok(())
+    }
 }
 
 /// Normalize a filesystem path into the store key (absolute; canonical when present).
@@ -151,6 +200,13 @@ pub fn path_key(path: &Path) -> Result<String, OwnershipError> {
     };
     let key = absolute.canonicalize().unwrap_or(absolute);
     Ok(key.to_string_lossy().into_owned())
+}
+
+/// Content digest stored on ownership records (`sha256:` + hex).
+pub fn content_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha256:{hex}")
 }
 
 fn now_unix_ms() -> u64 {
@@ -171,11 +227,12 @@ mod tests {
     }
 
     fn sample_record(path: &Path) -> OwnershipRecord {
+        let bytes = std::fs::read(path).unwrap_or_default();
         OwnershipRecord {
             path: path_key(path).expect("path key"),
             owner: "impetus".into(),
             source: "extension://demo/skill".into(),
-            digest: "sha256:deadbeef".into(),
+            digest: content_digest(&bytes),
             version: "1.0.0".into(),
             installation_id: "install-001".into(),
         }
@@ -263,5 +320,73 @@ mod tests {
             .expect("lookup")
             .expect("present");
         assert_eq!(found, record);
+    }
+
+    #[test]
+    fn uninstall_removes_owned_path_and_record() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        std::fs::write(&dest, b"owned-content").expect("write dest");
+        let record = sample_record(&dest);
+        store.create(&record).expect("create");
+
+        store.uninstall(&dest, "impetus").expect("owned uninstall");
+        assert!(!dest.exists(), "owned path must be removed");
+        assert!(
+            store.get_by_path(&record.path).expect("lookup").is_none(),
+            "ownership record must be cleared"
+        );
+    }
+
+    #[test]
+    fn uninstall_leaves_unowned_preexisting_path_untouched() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("user-file.txt");
+        std::fs::write(&dest, b"pre-existing user content").expect("write dest");
+
+        let err = store
+            .uninstall(&dest, "impetus")
+            .expect_err("must refuse unowned path");
+        assert!(matches!(err, OwnershipError::NotOwned(_)));
+        assert!(dest.exists(), "unowned path must stay on disk");
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read"),
+            "pre-existing user content"
+        );
+    }
+
+    #[test]
+    fn uninstall_refuses_digest_mismatch_without_deleting() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        std::fs::write(&dest, b"owned").expect("write dest");
+        let mut record = sample_record(&dest);
+        record.digest = content_digest(b"different-bytes");
+        store.create(&record).expect("create");
+
+        let err = store
+            .uninstall(&dest, "impetus")
+            .expect_err("digest mismatch");
+        assert!(matches!(err, OwnershipError::DigestMismatch(_)));
+        assert!(dest.exists(), "mismatch must not delete file");
+        assert!(
+            store.get_by_path(&record.path).expect("lookup").is_some(),
+            "mismatch must keep ownership record"
+        );
+    }
+
+    #[test]
+    fn uninstall_refuses_owner_mismatch_without_deleting() {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("managed.txt");
+        std::fs::write(&dest, b"owned").expect("write dest");
+        let record = sample_record(&dest);
+        store.create(&record).expect("create");
+
+        let err = store
+            .uninstall(&dest, "other-owner")
+            .expect_err("owner mismatch");
+        assert!(matches!(err, OwnershipError::OwnerMismatch(_)));
+        assert!(dest.exists(), "owner mismatch must not delete file");
     }
 }

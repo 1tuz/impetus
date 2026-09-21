@@ -170,7 +170,7 @@ pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_native_adapter::OpenAiNativeAdapter;
 pub use openai_provider::{OpenAiProvider, RetryBudget as OpenAiRetryBudget};
 pub use output_reducer::{OutputReducer, ReducedOutput, ReductionStrategy, TokenBudget};
-pub use ownership::{OwnershipError, OwnershipRecord, OwnershipStore, path_key};
+pub use ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
 pub use plugins::{CapabilityAvailability, CapabilityManifest, CapabilityRegistry};
 pub use policy::{
     Action, ActionFingerprint, ActionKind, ActionOrigin, PolicyDecision, PolicyEngine,
