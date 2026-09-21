@@ -285,9 +285,7 @@ mod tests {
         let effect = spawn_effect("run transform", "cargo run --package rm-helper");
         assert!(!matches!(
             gate.classify(&ctx(ExecutionMode::Auto, &effect, None)),
-            RiskGateDecision::Deny {
-                reason: ref reason
-            } if reason.contains("rm")
+            RiskGateDecision::Deny { ref reason } if reason.contains("rm")
         ));
     }
 

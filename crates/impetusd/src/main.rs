@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
-    OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine, ProviderError, ProviderProfile,
-    SandboxScope, SqliteEventStore,
+    NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine,
+    ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -97,7 +97,7 @@ fn configured_harness(store: Arc<dyn impetus_core::EventStore>) -> Result<Harnes
                 store,
                 policy,
                 provider,
-                Arc::new(MacosKeychainResolver),
+                provider_credential_resolver()?,
             ))
         }
         "--acp-profile" => {
@@ -157,6 +157,27 @@ fn startup_policy(explicit: Option<&Path>) -> Result<PolicyEngine> {
     ))
 }
 
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// CI and scripted runs must not open the Keychain GUI or block on authorization.
+fn is_noninteractive_env() -> bool {
+    env_truthy("CI") || env_truthy("IMPETUS_NONINTERACTIVE")
+}
+
+fn provider_credential_resolver() -> Result<Arc<dyn CredentialResolver>> {
+    match std::env::var("IMPETUS_CREDENTIAL_BACKEND").as_deref() {
+        Ok("mock") => Ok(Arc::new(NoCredentialResolver)),
+        Ok("keychain") | Err(_) => Ok(Arc::new(MacosKeychainResolver)),
+        Ok(other) => {
+            bail!("unknown IMPETUS_CREDENTIAL_BACKEND `{other}` (expected `mock` or `keychain`)")
+        }
+    }
+}
+
 /// The daemon owns the macOS Keychain lookup. The resolver returns only a
 /// transient request credential and intentionally suppresses platform errors,
 /// so neither a Keychain detail nor a credential can enter an event or log.
@@ -173,16 +194,38 @@ impl CredentialResolver for MacosKeychainResolver {
     }
 }
 
+type KeychainPasswordFetcher = fn(&str, &str) -> Result<Vec<u8>, ()>;
+
 #[cfg(target_os = "macos")]
-fn read_keychain_credential(service: &str, account: &str) -> Result<String, ProviderError> {
-    let bytes = security_framework::passwords::get_generic_password(service, account)
-        .map_err(|_| ProviderError::MissingCredential)?;
-    String::from_utf8(bytes).map_err(|_| ProviderError::MissingCredential)
+fn platform_keychain_fetch(service: &str, account: &str) -> Result<Vec<u8>, ()> {
+    security_framework::passwords::get_generic_password(service, account).map_err(|_| ())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credential(_service: &str, _account: &str) -> Result<String, ProviderError> {
-    Err(ProviderError::MissingCredential)
+fn platform_keychain_fetch(_service: &str, _account: &str) -> Result<Vec<u8>, ()> {
+    Err(())
+}
+
+fn read_keychain_credential(service: &str, account: &str) -> Result<String, ProviderError> {
+    read_keychain_credential_with(
+        service,
+        account,
+        platform_keychain_fetch,
+        is_noninteractive_env(),
+    )
+}
+
+fn read_keychain_credential_with(
+    service: &str,
+    account: &str,
+    fetch: KeychainPasswordFetcher,
+    noninteractive: bool,
+) -> Result<String, ProviderError> {
+    if noninteractive {
+        return Err(ProviderError::MissingCredential);
+    }
+    let bytes = fetch(service, account).map_err(|_| ProviderError::MissingCredential)?;
+    String::from_utf8(bytes).map_err(|_| ProviderError::MissingCredential)
 }
 
 async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
@@ -413,6 +456,36 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).expect("create temp dir");
         path
+    }
+
+    #[test]
+    fn noninteractive_keychain_read_fails_closed_without_platform_access() {
+        assert_eq!(
+            read_keychain_credential_with(
+                "impetus.test",
+                "api-key",
+                |_, _| panic!("keychain must not be accessed in non-interactive mode"),
+                true,
+            ),
+            Err(ProviderError::MissingCredential),
+        );
+    }
+
+    #[test]
+    fn interactive_keychain_read_uses_fetcher_when_noninteractive_false() {
+        assert_eq!(
+            read_keychain_credential_with(
+                "impetus.test",
+                "api-key",
+                |service, account| {
+                    assert_eq!(service, "impetus.test");
+                    assert_eq!(account, "api-key");
+                    Ok(b"token".to_vec())
+                },
+                false,
+            ),
+            Ok("token".to_string()),
+        );
     }
 
     #[test]

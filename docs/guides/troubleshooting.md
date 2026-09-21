@@ -39,6 +39,34 @@ Compare with `config/provider-profile.example.json` and [configuration](configur
 request. Confirm the generic-password entry exists and the process may read it.
 Errors are redacted; do not paste credentials into issues or logs.
 
+### macOS Keychain prompts after rebuild
+
+`impetusd --provider-profile` with `keychain_reference` may trigger a macOS
+authorization dialog on the first provider request. A local rebuild changes
+binary identity (code signature / path), so macOS can treat the new binary as a
+different client and prompt again.
+
+| Choice | Effect |
+| --- | --- |
+| **Allow** | Works until the next rebuild or install path change. |
+| **Always Allow** | Persists for this binary identity until signing identity or path changes materially. |
+
+Do **not** grant Full Disk Access to work around Keychain — it is not required
+and widens trust incorrectly. Impetus does not use permissive Keychain ACL or
+`codesign -A` workarounds; credentials stay reference-only via documented
+`service` / `account` fields.
+
+### CI and non-interactive runs
+
+When `CI=true` or `IMPETUS_NONINTERACTIVE=1` (truthy: `1`, `true`, `yes`,
+`on`), `impetusd` does **not** call Keychain. Provider requests fail closed
+with `MissingCredential` instead of opening a GUI or hanging.
+
+Default daemon (no `--provider-profile`) and tests use `NoCredentialResolver`.
+For local live Keychain tests, run interactively without those env vars. Opt-in
+backends: `IMPETUS_CREDENTIAL_BACKEND=mock` (never reads Keychain) or
+`keychain` (reads only when interactive). See [configuration](configuration.md).
+
 ## A planned interface returns `Unavailable`
 
 The IPC protocol advertises attachment and approval-detail requests, but backing

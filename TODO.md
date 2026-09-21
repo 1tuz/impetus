@@ -35,8 +35,9 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
       (Linux already checks `check_packages`)
 - [x] `CARGO_PROFILE_*_DEBUG=0` on PR jobs
 - [x] Run `scripts/tests/ci-affected.sh` in Detect; expand site/workflow/client cases
-- [ ] Measure warm-cache PR→Gate after push; A/B sccache only if still slow;
-      evaluate `macos-15`. **Done:** ≤ ~2 min warm (stretch 60–90s) or revert regressing knobs.
+- [x] Measure warm-cache PR→Gate: macOS ~77s (clippy 15 + test 37, cache hit),
+      Linux ~30s, Gate ~**85s** wall (run 35638437125). Stretch 60–90s met;
+      sccache / macos-15 not needed. Cold populate was ~174s.
 
 ### Daemon-owned execution modes
 
@@ -64,10 +65,10 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
 ### Keychain / non-interactive
 
-- [ ] Diagnose `impetusd` Keychain GUI prompt (service/account/ACL/signing);
-      tests/CI never open Keychain GUI; live creds opt-in; non-interactive
-      structured error (no hang). No permissive ACL / `-A` / plaintext.
-      **Done:** unit/integration use mock resolver; documented operator path.
+- [x] CI / `IMPETUS_NONINTERACTIVE` fail closed without Keychain GUI;
+      `IMPETUS_CREDENTIAL_BACKEND=mock|keychain`; unit test; operator docs (#308).
+- [ ] Diagnose intermittent `impetusd` Keychain GUI prompt after rebuild
+      (service/account/ACL/signing). No permissive ACL / `-A` / plaintext.
 
 ### Runtime gaps (honest open items)
 

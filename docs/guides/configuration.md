@@ -45,6 +45,8 @@ In-process reload remains a library API (`PolicyEngine::reload_config*` /
 | `IMPETUS_DATA_DIR` | `~/Library/Application Support/Impetus` | SQLite event store directory; optional `policy.json`. |
 | `IMPETUS_SOCKET` | `<data-dir>/harness.sock` | Unix-socket path used by daemon, `impetus` CLI, and Zap adapter. |
 | `IMPETUS_POLICY_CONFIG` | (unset) | Explicit PolicyConfig JSON path (see above). |
+| `IMPETUS_NONINTERACTIVE` | (unset) | When truthy (`1`/`true`/`yes`/`on`), Keychain resolver fails closed (no GUI). `CI=true` implies the same. |
+| `IMPETUS_CREDENTIAL_BACKEND` | `keychain` | With `--provider-profile`: `mock` = `NoCredentialResolver`; `keychain` = macOS Keychain (only when interactive). |
 
 The daemon creates the Unix socket with mode `0600`. It refuses to replace an
 existing socket path, so stop the old daemon before starting another one at the
