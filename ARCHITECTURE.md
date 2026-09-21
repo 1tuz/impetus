@@ -111,6 +111,7 @@ impetusd  — authoritative daemon
 | Extension **runtime** in agent loop (live MCP tools, etc.) | Partial | Skills via `InstructionResolver`; MCP live tools via `McpLiveBridge` + ToolOrchestrator (no marketplace/UI) |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
+| Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + mock; no real browser binary |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | `coding_tools.rs` trait + mock + absent fail-closed; no LSP binary at compile time (#261) |

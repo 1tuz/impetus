@@ -312,7 +312,9 @@ Do **not** invent a new hard-coded agent type per workflow.
 
 - [x] Search + fetch + SSRF + citations/provenance (core path)
 - [x] Session outbound / private-network grants
-- [ ] Optional API search backends (Tavily/Exa) as replaceable modules only
+- [x] Optional API search backends (Tavily/Exa) as replaceable modules only —
+      Partial: `SearchBackend` + Keychain-label modules + mock/absent fail-closed;
+      real Tavily/Exa HTTP clients Planned (not core deps) (#264)
 - [ ] Real browser providers (Firefox/Chrome/…) — optional, not core deps
 
 ---
