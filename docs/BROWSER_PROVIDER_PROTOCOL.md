@@ -69,8 +69,11 @@ Normalized ops harness can rely on without a browser binary:
 
 Default production wiring: **no provider registered** → honest `Unavailable` (optional track).
 CI: `MockBrowserProvider` proves negotiate → ensure → navigate → close without binaries.
+Optional Firefox/Chrome slots: `RealBrowserProviderModule` + `OptionalBrowserService`
+advertise family via negotiate/health; session/navigate fail-closed until a real
+automation adapter lands (no compile-time binary path, no CDP crates in core).
 
-See `crates/impetus-core/src/web_research/browser.rs`.
+See `crates/impetus-core/src/web_research/browser.rs` and `real_browser.rs`.
 
 ---
 

@@ -323,7 +323,10 @@ Do **not** invent a new hard-coded agent type per workflow.
 - [x] Optional API search backends (Tavily/Exa) as replaceable modules only —
       Partial: `SearchBackend` + Keychain-label modules + mock/absent fail-closed;
       real Tavily/Exa HTTP clients Planned (not core deps) (#264)
-- [ ] Real browser providers (Firefox/Chrome/…) — optional, not core deps
+- [x] Real browser providers (Firefox/Chrome/…) — optional, not core deps —
+      Partial: `BrowserProvider` seam + Firefox/Chrome modules + Mock/Absent/
+      Optional fail-closed; no compile-time binary path; real automation Planned
+      (not core deps) (#268)
 
 ---
 
