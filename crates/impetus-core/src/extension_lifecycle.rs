@@ -5,7 +5,7 @@
 //!
 //! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
 //! dry-run plan, register-before-write ownership, and durable install state.
-//! CLI/IPC (`extension plan | install | …`) stays out of scope.
+//! CLI: `impetus extension plan | install` (doctor/repair/remove later).
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule};

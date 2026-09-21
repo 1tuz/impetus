@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 mod daemon;
 mod doctor;
+mod extension;
 mod skills;
 mod tui;
 
@@ -45,6 +46,38 @@ enum SkillsAction {
 }
 
 #[derive(Subcommand)]
+enum ExtensionAction {
+    /// Dry-run InstallPlan (no filesystem writes)
+    Plan {
+        /// Extension kind: skill or mcp
+        #[arg(value_enum)]
+        kind: extension::ExtensionKind,
+        /// Path to SKILL.md / skill dir, or MCP config JSON
+        path: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Plan then apply (ownership + install state)
+    Install {
+        /// Extension kind: skill or mcp
+        #[arg(value_enum)]
+        kind: extension::ExtensionKind,
+        /// Path to SKILL.md / skill dir, or MCP config JSON
+        path: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Run diagnostics and health checks
     Doctor {
@@ -64,6 +97,11 @@ enum Commands {
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
+    },
+    /// Extension lifecycle (plan / install; doctor|repair|remove later)
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionAction,
     },
     /// Launch interactive TUI (MVP UI)
     Ui,
@@ -187,6 +225,41 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Commands::Extension { ref action } => {
+            match action {
+                ExtensionAction::Plan {
+                    kind,
+                    path,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::plan(
+                        *kind,
+                        std::path::Path::new(path),
+                        root_path.as_deref(),
+                        *json,
+                    )
+                    .await?;
+                }
+                ExtensionAction::Install {
+                    kind,
+                    path,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::install(
+                        *kind,
+                        std::path::Path::new(path),
+                        root_path.as_deref(),
+                        *json,
+                    )
+                    .await?;
+                }
+            }
+            return Ok(());
+        }
         Commands::Ui => {
             daemon::ensure_daemon_running(&socket_path).await?;
             tui::run(&socket_path).await?;
@@ -206,6 +279,7 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("handled above"),
         Commands::Components { .. } => unreachable!("handled above"),
         Commands::Skills { .. } => unreachable!("handled above"),
+        Commands::Extension { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let workspace_root = std::env::current_dir()?.canonicalize()?;
@@ -369,5 +443,54 @@ mod tests {
             cli.command,
             Commands::Approve { reject: true, .. }
         ));
+    }
+
+    #[test]
+    fn parses_extension_plan_skill() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "plan",
+            "skill",
+            "./demo/SKILL.md",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Extension {
+                action: ExtensionAction::Plan {
+                    kind: extension::ExtensionKind::Skill,
+                    json: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_extension_install_mcp_with_root() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "install",
+            "mcp",
+            "./servers/demo.json",
+            "--root",
+            "/tmp/project",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Install {
+                        kind: extension::ExtensionKind::Mcp,
+                        json: false,
+                        root: Some(root),
+                        ..
+                    },
+            } => assert_eq!(root, "/tmp/project"),
+            _ => panic!("unexpected command variant"),
+        }
     }
 }
