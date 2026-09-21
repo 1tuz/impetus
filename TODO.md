@@ -229,7 +229,7 @@ The baseline vertical is working. The remaining items harden and extend it.
 
 - [x] Lazy module/tool/MCP description loading in Context Optimizer
 - [x] HOT/WARM/COLD context tiers
-- [ ] Token-budgeted module/tool selection for prompt
+- [x] Token-budgeted module/tool selection for prompt
 - [x] Session fork without full event duplication (shared-prefix metadata)
 - [x] Session DAG: parent/fork, named checkpoints, restore as new branch, branch-aware ListSessions
 - [ ] Large paste: bracketed paste in TUI
