@@ -36,4 +36,7 @@ ProviderProtocol → ContextEngine → ToolOrchestrator
 - **Path-scope sandbox**: Implemented and fail-closed.
 - **Seatbelt profiles**: spike/evidence only until wired into process execution.
 - **Linux x86_64**: install target; sandbox/Keychain parity Planned.
+  Clean-machine Ubuntu 24.04 smoke proofs vs PR CI:
+  [ubuntu-smoke-checklist.md](ubuntu-smoke-checklist.md) (#293; automated
+  smoke still Planned).
 - **Windows**: not a current target.
