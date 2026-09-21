@@ -360,7 +360,60 @@ fn add_subsystem_probes(report: &mut DoctorReport, subsystems: impetus_core::Sub
         subsystems.optional_modules,
     ));
     report.add(status_to_probe("disk_runtime", subsystems.disk_runtime));
+
+    let browser_status = subsystems
+        .web_research
+        .details
+        .as_ref()
+        .and_then(|details| details.get("browser_provider").cloned())
+        .and_then(|value| {
+            serde_json::from_value::<impetus_core::web_research::BrowserServiceStatus>(value).ok()
+        });
     report.add(status_to_probe("web_research", subsystems.web_research));
+    match browser_status {
+        Some(status) => report.add(browser_status_to_probe(&status)),
+        None => report.add(ProbeResult::unavailable(
+            "browser_provider",
+            "Browser provider status missing from diagnostics",
+        )),
+    }
+}
+
+fn browser_status_to_probe(
+    status: &impetus_core::web_research::BrowserServiceStatus,
+) -> ProbeResult {
+    use impetus_core::web_research::BrowserServiceStatus;
+
+    match status {
+        BrowserServiceStatus::Unavailable { reason } => ProbeResult::unavailable(
+            "browser_provider",
+            format!("Browser provider unavailable: {reason}"),
+        )
+        .with_details(serde_json::json!({ "status": status })),
+        BrowserServiceStatus::Degraded { reason } => ProbeResult::warn(
+            "browser_provider",
+            format!("Browser provider degraded: {reason}"),
+            "Optional browser track; search/fetch remain available without a ready provider",
+        )
+        .with_details(serde_json::json!({ "status": status })),
+        BrowserServiceStatus::Misconfigured { reason } => ProbeResult::error(
+            "browser_provider",
+            format!("Browser provider misconfigured: {reason}"),
+            "Fix browser provider configuration or disable the optional browser module",
+        )
+        .with_details(serde_json::json!({ "status": status })),
+        BrowserServiceStatus::Available {
+            provider_id,
+            capabilities,
+        } => ProbeResult::ok(
+            "browser_provider",
+            format!("Browser provider available: {provider_id}"),
+        )
+        .with_details(serde_json::json!({
+            "provider_id": provider_id,
+            "capabilities": capabilities,
+        })),
+    }
 }
 
 async fn probe_web_research_live(report: &mut DoctorReport) {
@@ -368,6 +421,12 @@ async fn probe_web_research_live(report: &mut DoctorReport) {
 
     let engine = WebResearchEngine::production(EgressPolicy::default());
     let web_report = WebDoctor::probe_engine(&engine).await;
+
+    // Replace offline browser probe with the live report's honest status.
+    report
+        .probes
+        .retain(|probe| probe.name != "browser_provider");
+    report.add(browser_status_to_probe(&web_report.browser));
 
     // Add per-backend probes
     for backend in &web_report.search_backends {

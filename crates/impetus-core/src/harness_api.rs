@@ -1104,7 +1104,7 @@ fn gather_subsystem_health(
     let web_engine = crate::web_research::WebResearchEngine::production(policy.egress_policy());
     let web_report = crate::web_research::WebDoctor::inspect(
         &web_engine,
-        crate::web_research::BrowserServiceStatus::Unavailable,
+        crate::web_research::BrowserServiceStatus::absent(),
     );
     let web_research = SubsystemStatus::ok("Native web research contract available").with_details(
         serde_json::json!({

@@ -31,6 +31,7 @@ claim of implementation automatically.
 | --- | --- |
 | [Agent Client Protocol](https://agentclientprotocol.com/get-started/agents) and [Rust SDK](https://github.com/agentclientprotocol/rust-sdk) | External coding-agent adapter, negotiation, sessions, updates, permission/auth interaction. |
 | [ACP content](https://agentclientprotocol.com/protocol/v1/content) | Negotiated image/resource blocks and typed attachment references. |
+| [JCode Browser Provider Protocol](https://github.com/1jehuang/jcode/blob/2a4edaa02057ac994a601311c4f03ed450e1b3c9/docs/BROWSER_PROVIDER_PROTOCOL.md) | Optional browser negotiate/health/session shapes. Impetus audit: [BROWSER_PROVIDER_PROTOCOL.md](BROWSER_PROVIDER_PROTOCOL.md). |
 
 ## Implementation libraries
 
