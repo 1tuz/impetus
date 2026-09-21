@@ -38,8 +38,8 @@ async fn main() -> Result<()> {
     // List all sessions
     let sessions = client.list_sessions().await?;
     println!("\nSessions ({}):", sessions.len());
-    for session_id in &sessions {
-        println!("  - {}", session_id);
+    for session in &sessions {
+        println!("  - {}", session.id);
     }
 
     if sessions.is_empty() {
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     }
 
     // Observe the first session (read-only)
-    let session_id = sessions[0];
+    let session_id = sessions[0].id;
     println!("\nObserving session: {}", session_id);
 
     // Stream events from the beginning

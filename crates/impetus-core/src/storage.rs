@@ -1,6 +1,7 @@
 use crate::budget::BudgetState;
 use crate::events::{Event, EventPayload, SessionEvent, legacy_payload};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -26,15 +27,32 @@ pub enum StoreError {
     InvalidUuid { field: &'static str, value: String },
     #[error("session `{0}` does not exist")]
     MissingSession(Uuid),
+    #[error("session `{session_id}` has no event at sequence {sequence}")]
+    MissingSequence { session_id: Uuid, sequence: u64 },
+    #[error("checkpoint `{0}` does not exist")]
+    MissingCheckpoint(Uuid),
+    #[error("checkpoint name `{name}` already exists on session `{session_id}`")]
+    DuplicateCheckpointName { session_id: Uuid, name: String },
+    #[error("checkpoint name must not be empty")]
+    EmptyCheckpointName,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: Uuid,
     pub created_at_unix_ms: u64,
     pub updated_at_unix_ms: u64,
     pub parent_session_id: Option<Uuid>,
     pub fork_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointInfo {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub name: String,
+    pub sequence: u64,
+    pub created_at_unix_ms: u64,
 }
 
 pub trait EventStore: Send + Sync {
@@ -48,13 +66,27 @@ pub trait EventStore: Send + Sync {
     /// Returns Ok(()) even if session doesn't exist (idempotent).
     fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError>;
 
-    /// Fork session up to given sequence number (inclusive).
-    /// Creates new session with events copied from source up to checkpoint.
+    /// Fork session at logical sequence (inclusive) via shared-prefix metadata.
+    /// Does not copy events — child reads ancestor prefix through parent_session_id.
     fn fork_session(
         &self,
         source_session_id: Uuid,
         up_to_sequence: u64,
     ) -> Result<Uuid, StoreError>;
+
+    /// Persist a named checkpoint at a logical sequence on the session.
+    fn create_checkpoint(
+        &self,
+        session_id: Uuid,
+        name: String,
+        sequence: u64,
+    ) -> Result<CheckpointInfo, StoreError>;
+
+    /// List durable checkpoints for a session (oldest first).
+    fn list_checkpoints(&self, session_id: Uuid) -> Result<Vec<CheckpointInfo>, StoreError>;
+
+    /// Load a durable checkpoint by id.
+    fn get_checkpoint(&self, checkpoint_id: Uuid) -> Result<CheckpointInfo, StoreError>;
 
     /// Subscribe to event notifications.
     /// Returns a receiver that gets (session_id, sequence) on every append.
@@ -68,6 +100,39 @@ pub trait EventStore: Send + Sync {
     fn update_budget_state(&self, session_id: Uuid, state: &BudgetState) -> Result<(), StoreError>;
 }
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_millis() as u64
+}
+
+fn validate_fork_sequence(
+    store: &dyn EventStore,
+    source_session_id: Uuid,
+    up_to_sequence: u64,
+) -> Result<(), StoreError> {
+    let history = store.list(source_session_id)?;
+    if history.is_empty() {
+        return Err(StoreError::MissingSession(source_session_id));
+    }
+    if !history.iter().any(|event| event.sequence == up_to_sequence) {
+        return Err(StoreError::MissingSequence {
+            session_id: source_session_id,
+            sequence: up_to_sequence,
+        });
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_sequence(
+    store: &dyn EventStore,
+    session_id: Uuid,
+    sequence: u64,
+) -> Result<(), StoreError> {
+    validate_fork_sequence(store, session_id, sequence)
+}
+
 #[derive(Debug, Clone)]
 struct MemorySessionMetadata {
     id: Uuid,
@@ -78,6 +143,7 @@ struct MemorySessionMetadata {
 pub struct MemoryEventStore {
     events: Mutex<Vec<Event>>,
     sessions: Mutex<Vec<MemorySessionMetadata>>,
+    checkpoints: Mutex<Vec<CheckpointInfo>>,
     notifier: broadcast::Sender<(Uuid, u64)>,
 }
 
@@ -87,6 +153,7 @@ impl Default for MemoryEventStore {
         Self {
             events: Mutex::default(),
             sessions: Mutex::default(),
+            checkpoints: Mutex::default(),
             notifier,
         }
     }
@@ -208,6 +275,13 @@ impl EventStore for MemoryEventStore {
                 .and_modify(|times| times.1 = times.1.max(event.at_unix_ms))
                 .or_insert((event.at_unix_ms, event.at_unix_ms));
         }
+        // Include shared-prefix forks that have metadata but no owned events yet.
+        for meta in sessions.iter() {
+            sessions_map.entry(meta.id).or_insert_with(|| {
+                let now = now_unix_ms();
+                (now, now)
+            });
+        }
         Ok(sessions_map
             .into_iter()
             .map(|(id, (created_at_unix_ms, updated_at_unix_ms))| {
@@ -228,19 +302,10 @@ impl EventStore for MemoryEventStore {
         source_session_id: Uuid,
         up_to_sequence: u64,
     ) -> Result<Uuid, StoreError> {
-        let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        validate_fork_sequence(self, source_session_id, up_to_sequence)?;
         let mut sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
 
-        // Verify source session exists and has events up to checkpoint
-        let source_exists = events
-            .iter()
-            .any(|e| e.session_id == source_session_id && e.sequence <= up_to_sequence);
-
-        if !source_exists {
-            return Err(StoreError::MissingSession(source_session_id));
-        }
-
-        // Create new session with parent reference (no event copying, no SessionCreated)
+        // Shared-prefix fork: parent reference only, no event copy.
         let new_session_id = Uuid::new_v4();
         sessions.push(MemorySessionMetadata {
             id: new_session_id,
@@ -251,9 +316,60 @@ impl EventStore for MemoryEventStore {
         Ok(new_session_id)
     }
 
+    fn create_checkpoint(
+        &self,
+        session_id: Uuid,
+        name: String,
+        sequence: u64,
+    ) -> Result<CheckpointInfo, StoreError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(StoreError::EmptyCheckpointName);
+        }
+        validate_checkpoint_sequence(self, session_id, sequence)?;
+        let mut checkpoints = self.checkpoints.lock().map_err(|_| StoreError::Poisoned)?;
+        if checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.session_id == session_id && checkpoint.name == name)
+        {
+            return Err(StoreError::DuplicateCheckpointName { session_id, name });
+        }
+        let checkpoint = CheckpointInfo {
+            id: Uuid::new_v4(),
+            session_id,
+            name,
+            sequence,
+            created_at_unix_ms: now_unix_ms(),
+        };
+        checkpoints.push(checkpoint.clone());
+        Ok(checkpoint)
+    }
+
+    fn list_checkpoints(&self, session_id: Uuid) -> Result<Vec<CheckpointInfo>, StoreError> {
+        let checkpoints = self.checkpoints.lock().map_err(|_| StoreError::Poisoned)?;
+        Ok(checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.session_id == session_id)
+            .cloned()
+            .collect())
+    }
+
+    fn get_checkpoint(&self, checkpoint_id: Uuid) -> Result<CheckpointInfo, StoreError> {
+        let checkpoints = self.checkpoints.lock().map_err(|_| StoreError::Poisoned)?;
+        checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.id == checkpoint_id)
+            .cloned()
+            .ok_or(StoreError::MissingCheckpoint(checkpoint_id))
+    }
+
     fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError> {
         let mut events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
         events.retain(|e| e.session_id != session_id);
+        let mut sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
+        sessions.retain(|session| session.id != session_id);
+        let mut checkpoints = self.checkpoints.lock().map_err(|_| StoreError::Poisoned)?;
+        checkpoints.retain(|checkpoint| checkpoint.session_id != session_id);
         Ok(())
     }
 
@@ -315,7 +431,15 @@ impl SqliteEventStore {
         add_column_if_missing(&connection, "sessions", "fork_sequence", "INTEGER")?;
 
         connection.execute_batch(
-            "INSERT OR IGNORE INTO sessions (id, created_at_unix_ms, updated_at_unix_ms)
+            "CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                created_at_unix_ms INTEGER NOT NULL,
+                UNIQUE(session_id, name)
+             );
+             INSERT OR IGNORE INTO sessions (id, created_at_unix_ms, updated_at_unix_ms)
              SELECT session_id, MIN(at_unix_ms), MAX(at_unix_ms) FROM events GROUP BY session_id;",
         )?;
         let (notifier, _) = broadcast::channel(100);
@@ -530,29 +654,13 @@ impl EventStore for SqliteEventStore {
         source_session_id: Uuid,
         up_to_sequence: u64,
     ) -> Result<Uuid, StoreError> {
+        validate_fork_sequence(self, source_session_id, up_to_sequence)?;
         let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // Verify source session exists and has events up to checkpoint
-        let exists: bool = transaction
-            .query_row(
-                "SELECT 1 FROM events WHERE session_id = ?1 AND sequence <= ?2 LIMIT 1",
-                params![source_session_id.to_string(), up_to_sequence],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-
-        if !exists {
-            return Err(StoreError::MissingSession(source_session_id));
-        }
-
-        // Create new session with parent reference (no event copying, no SessionCreated)
+        // Shared-prefix fork: parent reference only, no event copy.
         let new_session_id = Uuid::new_v4();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before Unix epoch")
-            .as_millis() as u64;
+        let now = now_unix_ms();
 
         transaction.execute(
             "INSERT INTO sessions (id, created_at_unix_ms, updated_at_unix_ms, parent_session_id, fork_sequence) \
@@ -564,9 +672,134 @@ impl EventStore for SqliteEventStore {
         Ok(new_session_id)
     }
 
+    fn create_checkpoint(
+        &self,
+        session_id: Uuid,
+        name: String,
+        sequence: u64,
+    ) -> Result<CheckpointInfo, StoreError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(StoreError::EmptyCheckpointName);
+        }
+        validate_checkpoint_sequence(self, session_id, sequence)?;
+        let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let checkpoint = CheckpointInfo {
+            id: Uuid::new_v4(),
+            session_id,
+            name: name.clone(),
+            sequence,
+            created_at_unix_ms: now_unix_ms(),
+        };
+        match transaction.execute(
+            "INSERT INTO checkpoints (id, session_id, name, sequence, created_at_unix_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                checkpoint.id.to_string(),
+                session_id.to_string(),
+                name,
+                sequence,
+                checkpoint.created_at_unix_ms
+            ],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                return Err(StoreError::DuplicateCheckpointName {
+                    session_id,
+                    name: checkpoint.name,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
+        transaction.commit()?;
+        Ok(checkpoint)
+    }
+
+    fn list_checkpoints(&self, session_id: Uuid) -> Result<Vec<CheckpointInfo>, StoreError> {
+        let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut statement = conn.prepare(
+            "SELECT id, session_id, name, sequence, created_at_unix_ms \
+             FROM checkpoints WHERE session_id = ?1 \
+             ORDER BY created_at_unix_ms ASC, name ASC",
+        )?;
+        statement
+            .query_map(params![session_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .map(|row| {
+                let (id, session_id_str, name, sequence, created_at_unix_ms) = row?;
+                Ok(CheckpointInfo {
+                    id: Uuid::parse_str(&id).map_err(|_| StoreError::InvalidUuid {
+                        field: "checkpoint id",
+                        value: id,
+                    })?,
+                    session_id: Uuid::parse_str(&session_id_str).map_err(|_| {
+                        StoreError::InvalidUuid {
+                            field: "session_id",
+                            value: session_id_str,
+                        }
+                    })?,
+                    name,
+                    sequence,
+                    created_at_unix_ms,
+                })
+            })
+            .collect()
+    }
+
+    fn get_checkpoint(&self, checkpoint_id: Uuid) -> Result<CheckpointInfo, StoreError> {
+        let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let row = conn
+            .query_row(
+                "SELECT id, session_id, name, sequence, created_at_unix_ms \
+                 FROM checkpoints WHERE id = ?1",
+                params![checkpoint_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, session_id_str, name, sequence, created_at_unix_ms)) = row else {
+            return Err(StoreError::MissingCheckpoint(checkpoint_id));
+        };
+        Ok(CheckpointInfo {
+            id: Uuid::parse_str(&id).map_err(|_| StoreError::InvalidUuid {
+                field: "checkpoint id",
+                value: id,
+            })?,
+            session_id: Uuid::parse_str(&session_id_str).map_err(|_| StoreError::InvalidUuid {
+                field: "session_id",
+                value: session_id_str,
+            })?,
+            name,
+            sequence,
+            created_at_unix_ms,
+        })
+    }
+
     fn delete_session(&self, session_id: Uuid) -> Result<(), StoreError> {
         let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM checkpoints WHERE session_id = ?",
+            [session_id.to_string()],
+        )?;
         transaction.execute(
             "DELETE FROM events WHERE session_id = ?",
             [session_id.to_string()],
@@ -980,5 +1213,165 @@ mod tests {
         assert!(
             matches!(&forked_events[9].payload, EventPayload::Intent(intent) if intent.text == "event9")
         );
+    }
+
+    #[test]
+    fn shared_prefix_fork_does_not_duplicate_events() {
+        let store = MemoryEventStore::default();
+        let source_id = store.create_session().expect("create source");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step1".into(),
+                }),
+            )
+            .expect("append");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "step2".into(),
+                }),
+            )
+            .expect("append");
+
+        let physical_before = store.events.lock().expect("lock").len();
+        let forked_id = store.fork_session(source_id, 2).expect("fork");
+        let physical_after = store.events.lock().expect("lock").len();
+        assert_eq!(
+            physical_before, physical_after,
+            "fork must not copy prefix events"
+        );
+        assert_eq!(
+            store
+                .events
+                .lock()
+                .expect("lock")
+                .iter()
+                .filter(|event| event.session_id == forked_id)
+                .count(),
+            0
+        );
+
+        let sessions = store.list_sessions().expect("list sessions");
+        let forked_meta = sessions.iter().find(|s| s.id == forked_id).expect("meta");
+        assert_eq!(forked_meta.parent_session_id, Some(source_id));
+        assert_eq!(forked_meta.fork_sequence, Some(2));
+    }
+
+    #[test]
+    fn sqlite_shared_prefix_ancestry_survives_reopen() {
+        let test_root = std::env::temp_dir().join(format!("impetus-dag-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&test_root).expect("create isolated test directory");
+        let database = test_root.join("events.sqlite3");
+        let source_id;
+        let forked_id;
+        {
+            let store = SqliteEventStore::open(&database).expect("open");
+            source_id = store.create_session().expect("create");
+            store
+                .append_next(
+                    source_id,
+                    EventPayload::Intent(IntentEvent {
+                        text: "kept".into(),
+                    }),
+                )
+                .expect("append");
+            store
+                .append_next(
+                    source_id,
+                    EventPayload::Intent(IntentEvent {
+                        text: "later".into(),
+                    }),
+                )
+                .expect("append");
+            forked_id = store.fork_session(source_id, 2).expect("fork");
+            store
+                .append_next(
+                    forked_id,
+                    EventPayload::Intent(IntentEvent {
+                        text: "branch".into(),
+                    }),
+                )
+                .expect("append to fork");
+        }
+
+        let reopened = SqliteEventStore::open(&database).expect("reopen");
+        let sessions = reopened.list_sessions().expect("list");
+        let forked_meta = sessions.iter().find(|s| s.id == forked_id).expect("meta");
+        assert_eq!(forked_meta.parent_session_id, Some(source_id));
+        assert_eq!(forked_meta.fork_sequence, Some(2));
+
+        let forked_events = reopened.list(forked_id).expect("list forked");
+        assert_eq!(forked_events.len(), 3);
+        assert!(
+            matches!(&forked_events[2].payload, EventPayload::Intent(intent) if intent.text == "branch")
+        );
+
+        let owned: i64 = reopened
+            .connection
+            .lock()
+            .expect("lock")
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                params![forked_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count owned events");
+        assert_eq!(owned, 1, "only suffix event owned by fork");
+
+        std::fs::remove_dir_all(test_root).expect("cleanup");
+    }
+
+    #[test]
+    fn named_checkpoint_round_trip_restores_as_new_branch() {
+        let test_root = std::env::temp_dir().join(format!("impetus-checkpoint-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&test_root).expect("create isolated test directory");
+        let database = test_root.join("events.sqlite3");
+        let store = SqliteEventStore::open(&database).expect("open");
+
+        let source_id = store.create_session().expect("create");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "before".into(),
+                }),
+            )
+            .expect("append");
+        store
+            .append_next(
+                source_id,
+                EventPayload::Intent(IntentEvent {
+                    text: "after".into(),
+                }),
+            )
+            .expect("append");
+
+        let checkpoint = store
+            .create_checkpoint(source_id, "stable".into(), 2)
+            .expect("create checkpoint");
+        assert_eq!(checkpoint.name, "stable");
+        assert_eq!(checkpoint.sequence, 2);
+
+        let listed = store.list_checkpoints(source_id).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, checkpoint.id);
+
+        let loaded = store.get_checkpoint(checkpoint.id).expect("get");
+        assert_eq!(loaded, checkpoint);
+
+        let restored_id = store
+            .fork_session(loaded.session_id, loaded.sequence)
+            .expect("restore as fork");
+        assert_ne!(restored_id, source_id);
+
+        let restored_events = store.list(restored_id).expect("list restored");
+        assert_eq!(restored_events.len(), 2);
+        let source_events = store.list(source_id).expect("list source");
+        assert_eq!(source_events.len(), 3, "source history stays immutable");
+
+        std::fs::remove_dir_all(test_root).expect("cleanup");
     }
 }

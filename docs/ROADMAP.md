@@ -10,7 +10,7 @@ executable tasks are in [TODO.md](../TODO.md).
 - Versioned local IPC, `HarnessClient`.
 - Safety, capability, sandbox, approval, secret-reference base.
 - `ModelProvider` and `ProviderRegistry` foundations.
-- Basic copied-event fork and compaction/budget primitives.
+- Basic shared-prefix session fork and compaction/budget primitives.
 - Attachment/diff/detail DTOs with bounded **ephemeral/in-memory** backing (not durable `ArtifactStore`).
 - Agent Loop / Tool Orchestrator vertical slice: read tools execute through
   policy and sandbox; writes and shell commands require exact user approval,
@@ -176,10 +176,10 @@ context, lazy LSP.
 
 ### Session DAG and checkpoints
 
-**Current:** basic fork with copied history.
+**Current:** shared-prefix `fork_session` (O(1) metadata), parent/fork_sequence in
+`ListSessions`, durable named checkpoints, restore as a new branch (immutable history).
 
-**Target:** parent/fork, shared prefix, checkpoints, restore/revert, branch-aware
-sessions.
+**Target:** TUI branch picker; optional multi-parent merge DAG only if needed.
 
 ### Interrupt, pause, resume
 
