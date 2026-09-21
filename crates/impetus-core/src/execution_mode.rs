@@ -1,7 +1,7 @@
 //! Daemon-owned execution modes (ASK / PLAN / ACCEPT_EDITS / AUTO / BYPASS).
 //!
 //! TUI and clients select mode via IPC; durable state lives in session events.
-//! RiskGate / EffectSeam admission is wired in a later slice (#308).
+//! EffectSeam admission applies mode + RiskGate after hard Policy deny.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,10 +66,7 @@ mod tests {
     #[test]
     fn cycle_skips_bypass() {
         assert_eq!(ExecutionMode::Ask.cycle_next(), ExecutionMode::AcceptEdits);
-        assert_eq!(
-            ExecutionMode::AcceptEdits.cycle_next(),
-            ExecutionMode::Plan
-        );
+        assert_eq!(ExecutionMode::AcceptEdits.cycle_next(), ExecutionMode::Plan);
         assert_eq!(ExecutionMode::Plan.cycle_next(), ExecutionMode::Auto);
         assert_eq!(ExecutionMode::Auto.cycle_next(), ExecutionMode::Ask);
         assert_eq!(ExecutionMode::Bypass.cycle_next(), ExecutionMode::Ask);

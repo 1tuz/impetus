@@ -8,19 +8,20 @@
 //! the client.
 
 use crate::{
-    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore, EventPayload,
-    EventStore, IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode, IpcRequest,
-    IpcResponse, MockProvider, NoCredentialResolver, OpenAiNativeAdapter, OpenAiProvider,
-    PolicyEngine, Profile, ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool,
-    ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, Sandbox,
+    AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore,
+    EventPayload, EventStore, IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode,
+    IpcRequest, IpcResponse, MockProvider, NoCredentialResolver, OpenAiNativeAdapter,
+    OpenAiProvider, PolicyEngine, Profile, ProviderMessage, ProviderRegistry, QueuedFollowUp,
+    ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus,
     SandboxScope, SessionEvent, SteerActiveContext, SteerRewrite, TokenBudget, ToolOutcome,
-    UserIntentRouter, UserIntentSubmission, UserPromptIntent, reduce,
+    UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
     default_steer_rewrite,
     model_router::{ModelRouter, ModelRouterConfig},
     policy::ActionOrigin,
+    reduce,
     user_intent::UserIntentError,
 };
 use anyhow::Result;
@@ -720,10 +721,7 @@ fn handle_request(
             match AgentRuntime::attach(store, policy, session_id).and_then(|runtime| {
                 let workspace_root = runtime.workspace_root()?;
                 let tools = ReadOnlyTools::new(&workspace_root);
-                let effect_seam = crate::EffectSeam::with_sandbox(
-                    runtime.policy(),
-                    Sandbox::workspace(&workspace_root),
-                );
+                let effect_seam = runtime.effect_seam()?;
                 tools
                     .run_with_seam(tool, origin, &artifact_store, &effect_seam)
                     .map_err(|e| RuntimeError::Denied(e.to_string()))
@@ -953,16 +951,16 @@ fn handle_request(
             }
         }
         IpcRequest::SetExecutionMode { session_id, mode } => {
-            if let Some(required) = mode.required_ipc_capability() {
-                if !IPC_CAPABILITIES.contains(&required) {
-                    return IpcResponse::Error {
-                        code: IpcErrorCode::Unavailable,
-                        message: format!(
-                            "execution mode {} requires harness capability `{required}`",
-                            mode.label()
-                        ),
-                    };
-                }
+            if let Some(required) = mode.required_ipc_capability()
+                && !IPC_CAPABILITIES.contains(&required)
+            {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: format!(
+                        "execution mode {} requires harness capability `{required}`",
+                        mode.label()
+                    ),
+                };
             }
             match AgentRuntime::attach(store.clone(), policy.clone(), session_id) {
                 Ok(runtime) => {
@@ -3527,8 +3525,7 @@ mod tests {
         );
         let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
             workspace_root: workspace.path().to_path_buf(),
-        })
-        else {
+        }) else {
             panic!("create session");
         };
         let IpcResponse::ExecutionMode { mode, .. } =
@@ -3549,8 +3546,7 @@ mod tests {
         );
         let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
             workspace_root: workspace.path().to_path_buf(),
-        })
-        else {
+        }) else {
             panic!("create session");
         };
         let IpcResponse::ExecutionMode { mode, .. } =
@@ -3564,14 +3560,12 @@ mod tests {
         assert_eq!(mode, ExecutionMode::Plan);
 
         let events = store.list(session_id).expect("events");
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.payload,
-                EventPayload::Session(SessionEvent::ExecutionModeChanged {
-                    mode: ExecutionMode::Plan
-                })
-            ))
-        );
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::Session(SessionEvent::ExecutionModeChanged {
+                mode: ExecutionMode::Plan
+            })
+        )));
 
         let IpcResponse::ExecutionMode { mode, .. } =
             harness.handle(IpcRequest::GetExecutionMode { session_id })
@@ -3589,7 +3583,10 @@ mod tests {
                 tempfile::tempdir().expect("workspace").path(),
             )),
         );
-        let IpcResponse::Hello { capabilities, version } = harness.handle(IpcRequest::Hello {
+        let IpcResponse::Hello {
+            capabilities,
+            version,
+        } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
             capabilities: vec![
                 "execution_mode".into(),

@@ -77,6 +77,7 @@ pub mod provider_trait;
 pub mod reference_store;
 pub mod reference_tools;
 pub mod remote;
+pub mod risk_gate;
 pub mod rtk_adapter;
 pub mod runtime;
 pub mod schema;
@@ -169,13 +170,13 @@ pub use durable_artifacts::{
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
+    normalized_effect_from_action,
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, CompactionStructuralState,
     EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent,
     RunEvent, SessionEvent, ToolEvent, ToolEventOutcome,
 };
-pub use execution_mode::ExecutionMode;
 pub use execution::{
     MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, MacosSeatbeltSandbox,
     PreparedSandboxCommand, ProcessExecution, ProcessExecutionError, ProcessExecutionRequest,
@@ -184,6 +185,7 @@ pub use execution::{
     SandboxDecisionState, SandboxError, SandboxProvider, SqlitePtySessionStore,
     UnavailableSandboxProvider, production_sandbox_provider,
 };
+pub use execution_mode::ExecutionMode;
 pub use explore_agent_loop::{
     AgentLoopExploreExecutor, explore_provider_tool_names, explore_provider_tool_schemas,
 };
@@ -291,6 +293,11 @@ pub use remote::{
     SftpSessionManager, SqliteSSHApprovalStore, SqliteTmuxSessionStore, TmuxError, TmuxSession,
     TmuxSessionId, TmuxSessionManager, TmuxSessionRecord, TmuxSessionRequest, TmuxSessionState,
     TmuxSessionStore, TmuxSessionStoreError,
+};
+pub use risk_gate::{
+    DeterministicRiskGate, RiskContext, RiskGate, RiskGateDecision, command_text,
+    default_risk_gate, is_mutating_effect, is_opaque_shell, is_read_only_effect,
+    is_safe_readonly_command,
 };
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{

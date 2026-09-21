@@ -138,7 +138,7 @@ impetusd  — authoritative daemon
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Default daemon / CI use `NoCredentialResolver`. Non-interactive GUI-avoidance hardening: #308. |
-| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Partial | TUI `ExecutionMode` + prompt prefix only (`impetus-tui`); **not** daemon/IPC state. Daemon-owned modes + RiskGate: #308. |
+| Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Partial | Daemon IPC v6 `Set`/`Get` + durable projection + **EffectSeam mode gate** (#308). TUI still local `prompt_prefix` until IPC sync lands. |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
@@ -161,7 +161,7 @@ impetusd  — authoritative daemon
 | Explore child (production daemon) | Partial | **Library Implemented (#306):** `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `explore_spawn` still `None` — wire open (#308 Now) |
 | `hook_prefilter` on process spawn | Partial | Catalog + `prefilter` API + tests (#257/#272/#276); not called from live `ProcessExecution` spawn path (#308 Now) |
 | `SteerRewrite` (live provider) | Partial | Passthrough + mock seam; harness hook on accept (#285); no live model rewrite (#308 Next) |
-| Auto `RiskGate` (post-policy, mode-aware) | Planned | Separate from `hook_prefilter`; argv/effects-aware Allow \| NeedsHumanApproval \| Deny (#308 Now) |
+| Auto `RiskGate` (post-policy, mode-aware) | Partial | `risk_gate.rs` + `DeterministicRiskGate` wired into `EffectSeam`; runtime/tool_orchestrator/process/harness read path (#308). Separate from `hook_prefilter`. |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Optional API search (Tavily/Exa) | Partial | `web_research/api_search.rs`: `SearchBackend` seam + mock + Keychain labels; absent/module fail-closed; no vendor HTTP crates (#264) |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |

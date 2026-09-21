@@ -151,7 +151,10 @@ impl ProcessExecutionRequest {
 
         let effect = NormalizedEffect::process_spawn(self.origin, summary, target);
 
-        Ok(seam.request(effect, self.intent_revision))
+        let mut argv = vec![self.command.clone()];
+        argv.extend(self.args.iter().cloned());
+
+        Ok(seam.request_with_argv(effect, self.intent_revision, Some(&argv)))
     }
 
     /// Execute the process after policy approval.

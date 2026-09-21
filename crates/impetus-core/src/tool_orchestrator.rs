@@ -9,7 +9,7 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, AgentRuntime, DurableArtifactStore, EffectSeam, PolicyEngine,
-    ReadOnlyTool, ReadOnlyTools, RuntimeError, Sandbox, ToolArgError, ToolEvent, ToolEventOutcome,
+    ReadOnlyTool, ReadOnlyTools, RuntimeError, ToolArgError, ToolEvent, ToolEventOutcome,
     ToolOutcome, validate_tool_arguments,
 };
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,10 @@ pub struct ToolOrchestrator {
 }
 
 impl ToolOrchestrator {
+    fn session_effect_seam(runtime: &AgentRuntime) -> Result<EffectSeam, OrchestratorError> {
+        runtime.effect_seam().map_err(OrchestratorError::Runtime)
+    }
+
     pub fn new(policy: PolicyEngine, workspace_root: PathBuf) -> Self {
         Self::with_artifact_root(policy, workspace_root, crate::default_artifact_root())
     }
@@ -425,7 +429,7 @@ impl ToolOrchestrator {
                 .await;
         }
 
-        match self.execute_read_only(&tool_call) {
+        match self.execute_read_only(runtime, &tool_call) {
             Ok(ToolOutcome::Allowed { result }) => Self::record_observation(
                 runtime,
                 tool_call,
@@ -521,10 +525,20 @@ impl ToolOrchestrator {
                 self.workspace_root.display().to_string(),
             )
         };
-        let seam = EffectSeam::with_sandbox(
-            self.policy.clone(),
-            Sandbox::workspace(&self.workspace_root),
-        );
+        let seam = match Self::session_effect_seam(runtime) {
+            Ok(seam) => seam,
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+        };
         match seam.decide(&effect) {
             crate::EffectDecision::Allow => {}
             crate::EffectDecision::NeedsApproval { reason } => {
@@ -621,7 +635,10 @@ impl ToolOrchestrator {
             Some(self.workspace_root.display().to_string())
         } else if tool_call.name == "web_search" {
             Some("web-search:auto".into())
-        } else if tool_call.name == "web_fetch" {
+        } else if matches!(
+            tool_call.name.as_str(),
+            "web_fetch" | "web_download" | "web_browser" | "web_submit" | "web_upload"
+        ) {
             tool_call
                 .arguments
                 .get("url")
@@ -642,6 +659,7 @@ impl ToolOrchestrator {
 
     fn execute_read_only(
         &self,
+        runtime: &AgentRuntime,
         tool_call: &crate::ToolCall,
     ) -> Result<ToolOutcome, OrchestratorError> {
         let target = tool_call
@@ -673,10 +691,7 @@ impl ToolOrchestrator {
                 reason: error.to_string(),
             }
         })?;
-        let seam = EffectSeam::with_sandbox(
-            self.policy.clone(),
-            Sandbox::workspace(&self.workspace_root),
-        );
+        let seam = Self::session_effect_seam(runtime)?;
         ReadOnlyTools::new(&self.workspace_root)
             .run_with_seam(tool, ActionOrigin::Agent, &artifacts, &seam)
             .map_err(|error| OrchestratorError::ToolFailed {
@@ -713,10 +728,20 @@ impl ToolOrchestrator {
             "goto_definition via agent",
             path.clone(),
         );
-        let seam = EffectSeam::with_sandbox(
-            self.policy.clone(),
-            Sandbox::workspace(&self.workspace_root),
-        );
+        let seam = match Self::session_effect_seam(runtime) {
+            Ok(seam) => seam,
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+        };
         match seam.decide(&effect) {
             crate::EffectDecision::Allow => {}
             crate::EffectDecision::NeedsApproval { reason } => {
@@ -811,12 +836,20 @@ impl ToolOrchestrator {
             action.summary,
             action.target.unwrap_or_else(|| "web:invalid-target".into()),
         );
-        let seam = EffectSeam::with_sandbox(
-            self.policy.clone(),
-            Sandbox::Provisioned {
-                scope: self.policy.scope().clone(),
-            },
-        );
+        let seam = match runtime.effect_seam() {
+            Ok(seam) => seam,
+            Err(error) => {
+                return Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+        };
         match seam.decide(&effect) {
             crate::EffectDecision::Allow => {}
             crate::EffectDecision::NeedsApproval { reason } => {
@@ -967,7 +1000,7 @@ impl ToolOrchestrator {
             ));
         }
         let workspace = runtime.workspace_root()?;
-        let seam = EffectSeam::with_sandbox(runtime.policy(), Sandbox::workspace(&workspace));
+        let seam = Self::session_effect_seam(runtime)?;
         let execution = seam
             .execute_after_approval(
                 crate::DeferredEffect::from_durable(effect, request.clone()),
@@ -1076,7 +1109,7 @@ impl ToolOrchestrator {
         .with_working_dir(workspace.clone())
         .with_workspace_root(workspace.clone())
         .with_allow_network(runtime.policy().scope().allow_network);
-        let seam = EffectSeam::with_sandbox(runtime.policy(), Sandbox::workspace(&workspace));
+        let seam = Self::session_effect_seam(runtime)?;
         let execution = seam
             .execute_after_approval_with_admission(
                 crate::DeferredEffect::from_durable(effect, request.clone()),

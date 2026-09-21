@@ -42,8 +42,8 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
 - [x] Core `ExecutionMode` + IPC v6 `Set`/`Get` + durable `ExecutionModeChanged`
       + projection + harness handlers + client wrappers (#308)
-- [ ] Enforce mode in daemon admission (PLAN denies mutations; not prompt text).
-      **Done:** EffectSeam / runtime uses session mode; prompt cannot escalate.
+- [x] Enforce mode in daemon admission (PLAN denies mutations; not prompt text).
+      EffectSeam + runtime/tool_orchestrator use session `ExecutionMode`.
 - [ ] TUI syncs mode via IPC; drop `prompt_prefix`; show daemon-confirmed state.
       **Done:** local TUI enum replaced / aliased; toast only after Set OK.
 - [ ] Shift+Tab cycles ASK → ACCEPT EDITS → PLAN → AUTO → ASK; Tab unchanged;
@@ -52,11 +52,14 @@ Active work for [#308](https://github.com/1tuz/impetus/issues/308).
 
 ### Auto Risk Gate
 
-- [ ] Daemon `RiskGate` after hard Policy + execution mode: Allow |
-      NeedsHumanApproval | Deny + structured reason (argv/effects aware;
-      opaque shell fail-closed). Separate from `hook_prefilter`.
-      **Done:** AUTO/ACCEPT_EDITS auto-allow safe reads + scoped workspace
-      edits; risky paths need approval; hard denies still win; adversarial tests.
+- [x] Core `DeterministicRiskGate` + `EffectSeam` admission chain (sandbox →
+      policy hard deny → execution mode → RiskGate → decision) with adversarial
+      unit tests (#308)
+- [ ] Production-wide RiskGate coverage (all spawn paths, hook_prefilter wired
+      separately as performance-only prefilter).
+      **Done:** runtime + tool_orchestrator + process argv + IPC read tools use
+      session-aware seam; AUTO/ACCEPT_EDITS auto-allow safe reads + scoped
+      workspace edits; risky paths need approval; hard denies still win.
 - [ ] Wire `hook_prefilter` into live `ProcessExecution` as performance hook
       only (not security classifier).
       **Done:** spawn path calls prefilter; docs say RiskGate ≠ HookPrefilter.
