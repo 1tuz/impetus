@@ -33,8 +33,10 @@ pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
 pub mod execution;
+pub mod explore_child;
 pub mod extension_adapter;
 pub mod extension_compat;
+pub mod extension_id;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
 pub mod harness_api;
@@ -176,12 +178,23 @@ pub use execution::{
     PtySessionManager, PtySessionRecord, PtySessionState, PtySessionStore, PtySessionStoreError,
     SqlitePtySessionStore,
 };
+pub use explore_child::{
+    EXPLORE_ALLOWED_TOOLS, ExploreChildEnv, ExploreChildError, ExploreChildExecutor,
+    ExploreChildOutcome, ExploreChildRequest, ExploreChildRunner, ExploreExecutorError,
+    ExploreExecutorOutput, MockExploreExecutor, ReadOnlyExploreExecutor, is_explore_forbidden_tool,
+    validate_explore_allowed_tools,
+};
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
 pub use extension_compat::{
     AgentProfile, CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, Command,
     CommandArgument, CommandHandler, CompatibilityMatrix, ExtensionSource, ImportCapability,
     ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities, McpModule,
     McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
+};
+pub use extension_id::{
+    ExtensionIdError, ExtensionTypeDir, ensure_owned_extension_path, extension_type_root,
+    is_valid_extension_id, join_under_extension_root, mcp_install_path, normalize_extension_id,
+    skill_install_path,
 };
 pub use extension_lifecycle::{
     ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionState,

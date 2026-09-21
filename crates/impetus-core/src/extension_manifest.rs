@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::extension_id::{ExtensionIdError, is_valid_extension_id};
 use crate::schema::{SCHEMA_EXTENSION, SchemaValidationError, require_version, validate_envelope};
 
 /// Documented schema id for the extension manifest contract.
@@ -51,6 +52,8 @@ pub struct ExtensionManifest {
 pub enum ExtensionManifestError {
     #[error("extension id must be non-empty")]
     EmptyId,
+    #[error(transparent)]
+    InvalidId(#[from] ExtensionIdError),
     #[error("extension version must be non-empty")]
     EmptyVersion,
     #[error("invalid digest `{digest}`: expected sha256: + 64 lowercase hex")]
@@ -90,6 +93,13 @@ impl ExtensionManifest {
     pub fn validate(&self) -> Result<(), ExtensionManifestError> {
         if self.id.trim().is_empty() {
             return Err(ExtensionManifestError::EmptyId);
+        }
+        if !is_valid_extension_id(&self.id) {
+            return Err(ExtensionManifestError::InvalidId(
+                ExtensionIdError::InvalidFormat {
+                    id: self.id.clone(),
+                },
+            ));
         }
         if self.version.trim().is_empty() {
             return Err(ExtensionManifestError::EmptyVersion);
@@ -258,6 +268,16 @@ mod tests {
                 vec!["instructions".into()]
             ),
             Err(ExtensionManifestError::EmptyId)
+        ));
+        assert!(matches!(
+            ExtensionManifest::new(
+                "../../escape",
+                ExtensionManifestKind::Skill,
+                "1.0.0",
+                digest.clone(),
+                vec!["instructions".into()]
+            ),
+            Err(ExtensionManifestError::InvalidId(_))
         ));
         assert!(matches!(
             ExtensionManifest::new(
