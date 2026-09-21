@@ -125,7 +125,8 @@ Agents remain **execution roles**. Workflows own step ordering. Worktrees are
 - [x] Shared schema registry (`schema` module): ids + `schema_version` convention
 - [x] Stable schemas with deterministic validation (partial — registry slice):
   - [ ] `impetus.session.v1`
-  - [ ] `impetus.extension.v1`
+  - [x] `impetus.extension.v1` (minimal manifest: id/kind/version/digest/capabilities;
+        wired into `plan_install` / `InstallPlan`)
   - [ ] `impetus.mcp.v1`
   - [x] `impetus.capabilities.v1`
   - [x] `impetus.approval_detail.v1` wired into shared registry (#189/#191 pattern)
@@ -156,7 +157,8 @@ Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState
       ownership, installation ID
       (`apply_install` + `ExtensionStateStore`; lookup by `installation_id`)
 - [x] Live MCP tools in ToolOrchestrator / agent loop (beyond import-only adapter)
-- [ ] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
+- [x] Small extension contract: `SKILL.md`, MCP config, manifest, capabilities, digest
+      (`extension_manifest` + `impetus.extension.v1`; validated on `plan_install`)
 - [x] Skills import + filesystem instruction path (`InstructionResolver`, CLI)
 - [x] MCP **import** adapter (JSON-RPC client library)
 
