@@ -290,9 +290,10 @@ Do **not** invent a new hard-coded agent type per workflow.
       (`hook_prefilter`: typed `HookRule` + `prefilter(label)` + spawn stub;
       unit tests for skip/deny/no-match; not wired into live `ProcessExecution`)
       (#257)
-- [ ] Security-critical hooks prefer in-daemon / trusted runtime, not arbitrary
-      external processes by default (documented in `hook_prefilter` module docs
-      + ARCHITECTURE; enforcement / policy still open)
+- [x] Security-critical hooks prefer in-daemon / trusted runtime — Partial
+      (`HookTrustLevel::InDaemon` / `External`; security-critical rules require
+      InDaemon; External matcher for critical action → clear Deny/error;
+      unit tests labels-only; no plugin ABI / script runner) (#272)
 - [ ] Measure per-tool-call overhead; add perf tests if hooks land
 - [ ] Avoid large overlapping hook catalogs
 - [x] Event log query baselines (append_next / list / cursor backfill) — Criterion
