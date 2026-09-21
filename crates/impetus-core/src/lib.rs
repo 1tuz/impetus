@@ -48,6 +48,7 @@ pub mod instruction_learning;
 pub mod instructions;
 pub mod ipc;
 pub mod lsp_backend;
+pub mod lsp_process;
 pub mod mcp_adapter;
 pub mod mcp_live;
 pub mod mcp_manifest;
@@ -69,6 +70,7 @@ pub mod ownership;
 pub mod plugins;
 pub mod policy;
 pub mod policy_config;
+pub mod policy_store;
 pub mod profile;
 pub mod projection;
 pub mod provider;
@@ -79,6 +81,7 @@ pub mod reference_store;
 pub mod reference_tools;
 pub mod remote;
 pub mod risk_gate;
+pub mod role_child;
 pub mod rtk_adapter;
 pub mod runtime;
 pub mod schema;
@@ -98,6 +101,7 @@ pub mod tools;
 pub mod user_intent;
 pub mod web_research;
 pub mod workflow_engine;
+pub mod workflow_runtime;
 pub mod worktree_manager;
 
 pub use acp_adapter::AcpAdapter;
@@ -132,7 +136,7 @@ pub use capability_truth::{
 };
 pub use child_concurrency::{
     ChildConcurrencyConfig, ChildConcurrencyError, ChildConcurrencyGate,
-    DEFAULT_CHILD_CONCURRENCY_CAP,
+    DEFAULT_CHILD_CONCURRENCY_CAP, DEFAULT_PER_PARENT_CHILD_CAP,
 };
 pub use child_result_store::{ChildResult, ChildResultError, ChildResultStatus, ChildResultStore};
 pub use ci::{
@@ -162,7 +166,7 @@ pub use context_optimizer::{
 pub use cursor_adapter::CursorAdapter;
 pub use daemon_wiring::{
     DaemonWiringError, build_explore_spawn_bridge, build_explore_spawn_bridge_for_harness,
-    load_daemon_mcp_runtime,
+    load_daemon_hook_prefilter, load_daemon_mcp_runtime, load_daemon_policy_store,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
@@ -225,6 +229,7 @@ pub use extension_manifest::{
     validate_digest as validate_extension_digest,
 };
 pub use harness_api::{Harness, redact_tool_outcome};
+pub use hook_prefilter::HookCatalogLoadError;
 pub use hook_prefilter::{
     HookAction, HookCatalogError, HookPrefilter, HookRule, HookTrustLevel, PrefilterDecision,
     PrefilterError, SpawnStubError, SpawnStubOutcome, spawn_stub,
@@ -236,12 +241,14 @@ pub use instruction_learning::{
 pub use instructions::{
     InstructionKind, InstructionReference, InstructionResolveError, InstructionResolver,
     InstructionScope, InstructionTokenEstimate, ResolveRequest, ResolvedInstructions,
+    governed_instruction_ids,
 };
 pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
 pub use lsp_backend::{
     LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
     LspBackendModule, optional_coding_tools_with_lsp,
 };
+pub use lsp_process::ProcessLspBackend;
 pub use mcp_adapter::McpAdapter;
 pub use mcp_live::{McpLiveBridge, McpLiveCallResult, McpLiveToolEntry};
 pub use mcp_manifest::{
@@ -271,6 +278,10 @@ pub use policy::{
 };
 pub use policy_config::{
     POLICY_CONFIG_VERSION, PolicyConfig, PolicyConfigDecision, PolicyConfigError,
+};
+pub use policy_store::{
+    GovernedInstructionRef, POLICY_STORE_VERSION, PolicyStore, PolicyStoreError,
+    default_policy_store_path,
 };
 pub use profile::{Profile, ProfileConfig, ServiceBinding, ServiceBindings};
 pub use projection::{ProjectionError, SessionProjection, reduce};
@@ -304,6 +315,12 @@ pub use risk_gate::{
     default_risk_gate, is_mutating_effect, is_opaque_shell, is_read_only_effect,
     is_safe_readonly_command,
 };
+pub use role_child::{
+    BUILD_ALLOWED_TOOLS, HarnessRoleSpawn, MockRoleExecutor, ProcessRoleChildExecutor,
+    RESEARCH_ALLOWED_TOOLS, REVIEW_ALLOWED_TOOLS, RoleChildEnv, RoleChildError, RoleChildExecutor,
+    RoleChildOutcome, RoleChildRequest, RoleChildRunner, RoleExecutorError, RoleExecutorOutput,
+    RoleSpawnBridge, allowed_tools_for, default_echo_program,
+};
 pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
 pub use schema::{
     HARNESS_NEST_KEYS, KNOWN_SCHEMAS, NEST_HARNESS, NEST_PROVIDER, PROVIDER_NEST_KEYS,
@@ -316,8 +333,9 @@ pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
 };
 pub use steer_rewrite::{
-    MockSteerRewrite, PassthroughSteerRewrite, SteerActiveContext, SteerRewrite, SteerRewriteError,
-    SteerRewriteOutput, default_steer_rewrite,
+    MockSteerRewrite, PassthroughSteerRewrite, ProviderSteerRewrite, SteerActiveContext,
+    SteerPendingQueue, SteerRewrite, SteerRewriteError, SteerRewriteOutput, default_steer_rewrite,
+    provider_steer_rewrite,
 };
 pub use storage::{
     CheckpointInfo, EventStore, MemoryEventStore, SessionInfo, SqliteEventStore, StoreError,
@@ -349,6 +367,7 @@ pub use workflow_engine::{
     StepCheckpoint, StepStatus, WorkflowBudget, WorkflowEngine, WorkflowError, WorkflowRecipe,
     WorkflowStatus, WorkflowStep,
 };
+pub use workflow_runtime::{WorkflowRuntime, WorkflowRuntimeError};
 pub use worktree_manager::{
     AgentWorkRole, MergeReadyReport, StaleReason, StaleReport, WorktreeAttachedPermissions,
     WorktreeBinding, WorktreeDiffSummary, WorktreeError, WorktreeLifecycleState, WorktreeManager,

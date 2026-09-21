@@ -20,10 +20,14 @@
 //! (performance hook only — not RiskGate). Perf smoke for a small rule set lives
 //! in unit tests (generous wall-clock bound; not a CI gate for absolute latency).
 
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Where a hook rule is evaluated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HookTrustLevel {
     /// In-process inside the daemon — allowed for security-critical rules.
     InDaemon,
@@ -32,7 +36,8 @@ pub enum HookTrustLevel {
 }
 
 /// Action taken when a rule's pattern matches a command/tool label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HookAction {
     /// Match is informative only — continue toward spawn.
     AllowContinue,
@@ -145,6 +150,23 @@ pub enum PrefilterError {
     ExternalForCritical { label: String },
 }
 
+/// Failures loading a daemon hook catalog from disk.
+#[derive(Debug, Error)]
+pub enum HookCatalogLoadError {
+    #[error("failed to read hook catalog {path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("invalid hook catalog JSON in {path}: {source}")]
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error(transparent)]
+    Catalog(#[from] HookCatalogError),
+}
+
 /// Catalog registration failures (duplicate / overlap hygiene).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum HookCatalogError {
@@ -214,6 +236,34 @@ impl HookPrefilter {
     ///
     /// Security-critical + [`HookTrustLevel::External`] →
     /// [`PrefilterError::ExternalForCritical`] (clear Deny/error path).
+    /// Load daemon catalog from `{data_root}/hooks.json` and/or `{data_root}/hooks/*.json`.
+    ///
+    /// Missing paths → empty catalog. Any present file must parse as a JSON array of
+    /// hook rules; invalid JSON or duplicate rules fail closed.
+    pub fn load_daemon_catalog(data_root: &Path) -> Result<Self, HookCatalogLoadError> {
+        let mut rules = Vec::new();
+        let hooks_file = data_root.join("hooks.json");
+        if hooks_file.is_file() {
+            rules.extend(load_rules_from_file(&hooks_file)?);
+        }
+        let hooks_dir = data_root.join("hooks");
+        if hooks_dir.is_dir() {
+            let mut entries: Vec<PathBuf> = fs::read_dir(&hooks_dir)
+                .map_err(|source| HookCatalogLoadError::Io {
+                    path: hooks_dir.clone(),
+                    source,
+                })?
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .collect();
+            entries.sort();
+            for path in entries {
+                rules.extend(load_rules_from_file(&path)?);
+            }
+        }
+        Self::try_new(rules).map_err(HookCatalogLoadError::Catalog)
+    }
+
     pub fn prefilter(&self, label: &str) -> Result<PrefilterDecision, PrefilterError> {
         for rule in &self.rules {
             if rule.pattern == label {
@@ -254,6 +304,41 @@ impl From<PrefilterError> for SpawnStubError {
         match err {
             PrefilterError::ExternalForCritical { label } => Self::ExternalForCritical { label },
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HookRuleWire {
+    id: Option<String>,
+    pattern: String,
+    action: HookAction,
+    #[serde(default)]
+    trust: Option<HookTrustLevel>,
+    #[serde(default)]
+    security_critical: bool,
+}
+
+fn load_rules_from_file(path: &Path) -> Result<Vec<HookRule>, HookCatalogLoadError> {
+    let raw = fs::read_to_string(path).map_err(|source| HookCatalogLoadError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let wires: Vec<HookRuleWire> =
+        serde_json::from_str(&raw).map_err(|source| HookCatalogLoadError::Json {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(wires.into_iter().map(rule_from_wire).collect())
+}
+
+fn rule_from_wire(wire: HookRuleWire) -> HookRule {
+    let pattern = wire.pattern;
+    HookRule {
+        id: wire.id.unwrap_or_else(|| pattern.clone()),
+        pattern,
+        action: wire.action,
+        trust: wire.trust.unwrap_or(HookTrustLevel::InDaemon),
+        security_critical: wire.security_critical,
     }
 }
 
@@ -491,6 +576,82 @@ mod tests {
     /// Perf smoke: small rule set × many label lookups stay under a generous
     /// ceiling. Documents overhead for the pre-spawn label scan.
     /// Not a CI wall-time gate — bound is loose for disk/CPU noise.
+    #[test]
+    fn load_daemon_catalog_missing_paths_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog = HookPrefilter::load_daemon_catalog(dir.path()).expect("empty");
+        assert!(catalog.rules().is_empty());
+    }
+
+    #[test]
+    fn load_daemon_catalog_from_hooks_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("hooks.json"),
+            r#"[
+              {"pattern":"expensive-lint","action":"skip_spawn"},
+              {"id":"deny-rm","pattern":"rm","action":"deny","security_critical":true}
+            ]"#,
+        )
+        .expect("write");
+        let catalog = HookPrefilter::load_daemon_catalog(dir.path()).expect("load");
+        assert_eq!(catalog.rules().len(), 2);
+        assert_eq!(
+            catalog.prefilter("expensive-lint").unwrap(),
+            PrefilterDecision::SkipSpawn
+        );
+        assert_eq!(catalog.prefilter("rm").unwrap(), PrefilterDecision::Deny);
+    }
+
+    #[test]
+    fn load_daemon_catalog_merges_hooks_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hooks_dir = dir.path().join("hooks");
+        std::fs::create_dir_all(&hooks_dir).expect("mkdir");
+        std::fs::write(
+            hooks_dir.join("a.json"),
+            r#"[{"pattern":"echo","action":"allow_continue"}]"#,
+        )
+        .expect("write");
+        std::fs::write(
+            hooks_dir.join("b.json"),
+            r#"[{"pattern":"sleep","action":"deny"}]"#,
+        )
+        .expect("write");
+        let catalog = HookPrefilter::load_daemon_catalog(dir.path()).expect("load");
+        assert_eq!(catalog.rules().len(), 2);
+        assert_eq!(catalog.prefilter("sleep").unwrap(), PrefilterDecision::Deny);
+    }
+
+    #[test]
+    fn load_daemon_catalog_rejects_invalid_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("hooks.json"), b"{").expect("write");
+        assert!(matches!(
+            HookPrefilter::load_daemon_catalog(dir.path()),
+            Err(HookCatalogLoadError::Json { .. })
+        ));
+    }
+
+    #[test]
+    fn load_daemon_catalog_rejects_duplicate_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("hooks.json"),
+            r#"[
+              {"pattern":"echo","action":"deny","id":"a"},
+              {"pattern":"echo","action":"deny","id":"b"}
+            ]"#,
+        )
+        .expect("write");
+        assert!(matches!(
+            HookPrefilter::load_daemon_catalog(dir.path()),
+            Err(HookCatalogLoadError::Catalog(
+                HookCatalogError::Duplicate { .. }
+            ))
+        ));
+    }
+
     #[test]
     fn prefilter_small_catalog_overhead_smoke() {
         use std::time::{Duration, Instant};

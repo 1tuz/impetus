@@ -2,17 +2,23 @@
 //!
 //! When Steer is accepted (active run required by [`crate::UserIntentRouter`]),
 //! harness calls [`SteerRewrite`] with active-run context + steer text. Default
-//! [`PassthroughSteerRewrite`] is deterministic and offline — **no live provider
-//! wire** yet (out of scope). Origin / Policy stay unchanged.
+//! [`PassthroughSteerRewrite`] is deterministic and offline. When a
+//! [`ModelProvider`] is wired, [`ProviderSteerRewrite`] performs a one-shot
+//! rewrite (with passthrough fallback on provider failure).
 //!
-//! Tests inject [`MockSteerRewrite`]. Live model rewrite remains deferred.
+//! Rewritten fragments queue on [`SteerPendingQueue`] and drain into the active
+//! [`crate::AgentLoop`] between turns. Durable Intent events keep the original
+//! user steer text (origin / Policy unchanged).
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::provider::ProviderMessage;
+use crate::provider_trait::{ModelProvider, StreamEvent};
+use crate::{ProviderError, ProviderMessage};
 
 /// Active-run context supplied to a rewriter (labels/text only; no secrets).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,8 +65,6 @@ pub trait SteerRewrite: Send + Sync {
 }
 
 /// Default offline rewriter — deterministic nudge fragment, no network.
-///
-/// ponytail: live LLM rewrite deferred; this seam proves the harness hook.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PassthroughSteerRewrite;
 
@@ -83,6 +87,139 @@ impl SteerRewrite for PassthroughSteerRewrite {
             _ => format!("[steer] {steer_text}"),
         };
         Ok(SteerRewriteOutput::from_fragment(fragment))
+    }
+}
+
+/// In-memory queue of rewritten steer fragments keyed by session id.
+///
+/// Harness pushes after accept; active [`crate::AgentLoop`] drains between turns.
+#[derive(Clone, Default)]
+pub struct SteerPendingQueue {
+    pending: Arc<Mutex<HashMap<Uuid, VecDeque<String>>>>,
+}
+
+impl SteerPendingQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&self, session_id: Uuid, fragment: impl Into<String>) {
+        let fragment = fragment.into();
+        if fragment.is_empty() {
+            return;
+        }
+        let mut guard = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.entry(session_id).or_default().push_back(fragment);
+    }
+
+    pub fn drain(&self, session_id: Uuid) -> Vec<String> {
+        let mut guard = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.remove(&session_id).map(Vec::from).unwrap_or_default()
+    }
+
+    pub fn pending_count(&self, session_id: Uuid) -> usize {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .map(|queue| queue.len())
+            .unwrap_or(0)
+    }
+}
+
+/// Live one-shot rewrite via [`ModelProvider`]; falls back to passthrough offline.
+#[derive(Clone)]
+pub struct ProviderSteerRewrite {
+    provider: Arc<dyn ModelProvider>,
+    fallback: PassthroughSteerRewrite,
+}
+
+impl ProviderSteerRewrite {
+    pub fn new(provider: Arc<dyn ModelProvider>) -> Self {
+        Self {
+            provider,
+            fallback: PassthroughSteerRewrite::new(),
+        }
+    }
+
+    fn build_rewrite_messages(
+        context: &SteerActiveContext,
+        steer_text: &str,
+    ) -> Vec<ProviderMessage> {
+        let system = ProviderMessage::system(
+            "Rewrite the user's steer instruction into a concise nudge for the active coding agent. \
+             Output only the nudge text with no preamble.",
+        );
+        let user = match context.active_prompt.as_deref() {
+            Some(prompt) if !prompt.is_empty() => ProviderMessage::user(format!(
+                "Active task:\n{prompt}\n\nSteer instruction:\n{steer_text}"
+            )),
+            _ => ProviderMessage::user(format!("Steer instruction:\n{steer_text}")),
+        };
+        vec![system, user]
+    }
+
+    fn collect_provider_fragment(
+        &self,
+        context: &SteerActiveContext,
+        steer_text: &str,
+    ) -> Result<String, ProviderError> {
+        let messages = Self::build_rewrite_messages(context, steer_text);
+        let cancel = CancellationToken::new();
+        let provider = self.provider.clone();
+        block_on_steer(async move {
+            let fragment = Arc::new(Mutex::new(String::new()));
+            let capture = fragment.clone();
+            provider
+                .stream_messages(
+                    &messages,
+                    None,
+                    None,
+                    cancel,
+                    Box::new(move |event| {
+                        if let StreamEvent::TextDelta { delta } = event
+                            && let Ok(mut out) = capture.lock()
+                        {
+                            out.push_str(&delta);
+                        }
+                        Ok(())
+                    }),
+                )
+                .await?;
+            Ok(fragment
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .trim()
+                .to_string())
+        })
+    }
+}
+
+impl std::fmt::Debug for ProviderSteerRewrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderSteerRewrite")
+            .field("provider_id", &self.provider.provider_id())
+            .field("model_id", &self.provider.model_id())
+            .finish()
+    }
+}
+
+impl SteerRewrite for ProviderSteerRewrite {
+    fn rewrite(
+        &self,
+        context: &SteerActiveContext,
+        steer_text: &str,
+    ) -> Result<SteerRewriteOutput, SteerRewriteError> {
+        match self.collect_provider_fragment(context, steer_text) {
+            Ok(fragment) if !fragment.is_empty() => Ok(SteerRewriteOutput::from_fragment(fragment)),
+            _ => self.fallback.rewrite(context, steer_text),
+        }
     }
 }
 
@@ -149,15 +286,35 @@ impl SteerRewrite for MockSteerRewrite {
     }
 }
 
-/// Shared default rewriter for harness construction.
+/// Shared default rewriter for harness construction (offline passthrough).
 pub fn default_steer_rewrite() -> Arc<dyn SteerRewrite> {
     Arc::new(PassthroughSteerRewrite::new())
+}
+
+/// Build provider-backed rewriter when a live model is available.
+pub fn provider_steer_rewrite(provider: Arc<dyn ModelProvider>) -> Arc<dyn SteerRewrite> {
+    Arc::new(ProviderSteerRewrite::new(provider))
+}
+
+/// ponytail: sync trait forces block_on. Ceiling — nested runtime / worker thread.
+fn block_on_steer<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("steer rewrite runtime")
+            .block_on(fut),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::mock_provider::{MockProvider, MockStreamItem};
     fn ctx(prompt: Option<&str>) -> SteerActiveContext {
         SteerActiveContext {
             session_id: Uuid::new_v4(),
@@ -210,5 +367,43 @@ mod tests {
         // Compile-time seam check: API takes only context + text — no ActionOrigin.
         let _: fn(&dyn SteerRewrite, &SteerActiveContext, &str) =
             |r, c, t| r.rewrite(c, t).map(|_| ()).unwrap_or(());
+    }
+
+    #[test]
+    fn pending_queue_drains_in_order() {
+        let queue = SteerPendingQueue::new();
+        let session = Uuid::new_v4();
+        queue.push(session, "first");
+        queue.push(session, "second");
+        assert_eq!(queue.pending_count(session), 2);
+        assert_eq!(queue.drain(session), vec!["first", "second"]);
+        assert_eq!(queue.pending_count(session), 0);
+    }
+
+    #[test]
+    fn provider_rewrite_uses_mock_provider_offline() {
+        let provider = Arc::new(MockProvider::scripted(
+            "steer-mock",
+            "test-model",
+            [vec![MockStreamItem::Chunk {
+                chunk_id: 1,
+                text: "Focus on unit tests.".into(),
+            }]],
+        ));
+        let rewriter = ProviderSteerRewrite::new(provider);
+        let out = rewriter
+            .rewrite(&ctx(Some("implement feature")), "prefer tests")
+            .expect("rewrite");
+        assert_eq!(out.fragment, "Focus on unit tests.");
+    }
+
+    #[test]
+    fn provider_rewrite_falls_back_when_stream_empty() {
+        let provider = Arc::new(MockProvider::new("steer-mock", "test-model", []));
+        let rewriter = ProviderSteerRewrite::new(provider);
+        let out = rewriter
+            .rewrite(&ctx(None), "go faster")
+            .expect("fallback rewrite");
+        assert_eq!(out.fragment, "[steer] go faster");
     }
 }

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -114,6 +114,242 @@ impl SearchBackend for ApiSearchBackendModule {
             API_SEARCH_HTTP_NOT_IMPLEMENTED,
         ))
     }
+}
+
+/// Resolve API keys from Keychain labels (never log the secret).
+pub trait ApiKeyResolver: Send + Sync {
+    fn resolve(&self, service: &str, account: &str) -> Result<Option<String>, WebError>;
+}
+
+/// Test double: fixed map of (service, account) → key.
+#[derive(Debug, Default, Clone)]
+pub struct MapApiKeyResolver {
+    keys: HashMap<(String, String), String>,
+}
+
+impl MapApiKeyResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_key(
+        mut self,
+        service: impl Into<String>,
+        account: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Self {
+        self.keys
+            .insert((service.into(), account.into()), key.into());
+        self
+    }
+}
+
+impl ApiKeyResolver for MapApiKeyResolver {
+    fn resolve(&self, service: &str, account: &str) -> Result<Option<String>, WebError> {
+        Ok(self
+            .keys
+            .get(&(service.to_string(), account.to_string()))
+            .cloned())
+    }
+}
+
+/// Real HTTP Tavily/Exa client behind Keychain labels (#264 / #311).
+pub struct HttpApiSearchBackend {
+    module: ApiSearchBackendModule,
+    resolver: Arc<dyn ApiKeyResolver>,
+    /// Override base URL for tests (no network in unit tests when unset + no key).
+    base_url_override: Option<String>,
+}
+
+impl HttpApiSearchBackend {
+    pub fn new(module: ApiSearchBackendModule, resolver: Arc<dyn ApiKeyResolver>) -> Self {
+        Self {
+            module,
+            resolver,
+            base_url_override: None,
+        }
+    }
+
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url_override = Some(url.into());
+        self
+    }
+
+    fn resolve_key(&self) -> Result<String, WebError> {
+        let cred = self.module.credential_ref();
+        match self.resolver.resolve(&cred.service, &cred.account)? {
+            Some(key) if !key.trim().is_empty() => Ok(key),
+            _ => Err(WebError::new(
+                WebErrorKind::BackendUnavailable,
+                "API search Keychain label unresolved (fail-closed; no network)",
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl SearchBackend for HttpApiSearchBackend {
+    fn id(&self) -> &str {
+        self.module.kind().id()
+    }
+
+    async fn search(&self, request: &SearchRequest) -> Result<SearchResponse, WebError> {
+        let key = self.resolve_key()?;
+        let started = Instant::now();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| {
+                WebError::new(
+                    WebErrorKind::BackendUnavailable,
+                    format!("http client: {e}"),
+                )
+            })?;
+
+        let (url, body) = match self.module.kind() {
+            ApiSearchProviderKind::Tavily => {
+                let base = self
+                    .base_url_override
+                    .clone()
+                    .unwrap_or_else(|| "https://api.tavily.com/search".into());
+                (
+                    base,
+                    serde_json::json!({
+                        "api_key": key,
+                        "query": request.query,
+                        "max_results": request.normalized_limit(),
+                    }),
+                )
+            }
+            ApiSearchProviderKind::Exa => {
+                let base = self
+                    .base_url_override
+                    .clone()
+                    .unwrap_or_else(|| "https://api.exa.ai/search".into());
+                (
+                    base,
+                    serde_json::json!({
+                        "query": request.query,
+                        "numResults": request.normalized_limit(),
+                    }),
+                )
+            }
+        };
+
+        let mut req = client.post(&url).json(&body);
+        if self.module.kind() == ApiSearchProviderKind::Exa {
+            req = req.header("x-api-key", &key);
+        }
+        // Never log `key`.
+        let response = req.send().await.map_err(|e| {
+            WebError::new(
+                WebErrorKind::BackendUnavailable,
+                format!("api search http: {e}"),
+            )
+        })?;
+        if !response.status().is_success() {
+            return Err(WebError::new(
+                WebErrorKind::BackendUnavailable,
+                format!("api search status {}", response.status()),
+            ));
+        }
+        let value: serde_json::Value = response.json().await.map_err(|e| {
+            WebError::new(
+                WebErrorKind::BackendUnavailable,
+                format!("api search json: {e}"),
+            )
+        })?;
+        let hits = parse_api_hits(self.module.kind(), self.id(), &value);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let outcome = if hits.is_empty() {
+            WebOutcome::NoResults
+        } else {
+            WebOutcome::Success
+        };
+        Ok(SearchResponse {
+            outcome,
+            backend: self.id().into(),
+            query: request.query.clone(),
+            hits,
+            attempts: vec![SearchAttempt {
+                backend: self.id().into(),
+                endpoint: url,
+                outcome,
+                detail: None,
+            }],
+            elapsed_ms,
+        })
+    }
+}
+
+fn parse_api_hits(
+    kind: ApiSearchProviderKind,
+    backend_id: &str,
+    value: &serde_json::Value,
+) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    match kind {
+        ApiSearchProviderKind::Tavily => {
+            if let Some(results) = value.get("results").and_then(|v| v.as_array()) {
+                for (i, item) in results.iter().enumerate() {
+                    let title = item
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let url = item
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let snippet = item
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    hits.push(SearchHit {
+                        rank: i + 1,
+                        title,
+                        url: url.clone(),
+                        snippet,
+                        backend: backend_id.into(),
+                        citation_id: citation_id("tavily", &url),
+                    });
+                }
+            }
+        }
+        ApiSearchProviderKind::Exa => {
+            if let Some(results) = value.get("results").and_then(|v| v.as_array()) {
+                for (i, item) in results.iter().enumerate() {
+                    let title = item
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let url = item
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let snippet = item
+                        .get("text")
+                        .or_else(|| item.get("snippet"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    hits.push(SearchHit {
+                        rank: i + 1,
+                        title,
+                        url: url.clone(),
+                        snippet,
+                        backend: backend_id.into(),
+                        citation_id: citation_id("exa", &url),
+                    });
+                }
+            }
+        }
+    }
+    hits
 }
 
 /// Always-unavailable backend — proves optional path fail-closed without network.
@@ -371,6 +607,20 @@ mod tests {
             .await
             .expect_err("no http");
         assert_eq!(err.message, API_SEARCH_HTTP_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn http_backend_fail_closed_without_key() {
+        let module = ApiSearchBackendModule::tavily(
+            ApiSearchCredentialRef::new("impetus.search.tavily", "api-key").unwrap(),
+        );
+        let backend = HttpApiSearchBackend::new(module, Arc::new(MapApiKeyResolver::new()));
+        let err = backend
+            .search(&SearchRequest::new("q"))
+            .await
+            .expect_err("no key");
+        assert_eq!(err.kind, WebErrorKind::BackendUnavailable);
+        assert!(err.message.contains("unresolved"));
     }
 
     #[tokio::test]

@@ -385,6 +385,10 @@ impl UiBackend for MockBackend {
         .to_string())
     }
 
+    async fn list_child_runs(&self, _session_id: Uuid) -> Result<String> {
+        Ok("demo-child  Explore  completed  mock-ok".into())
+    }
+
     async fn get_execution_mode(&self, session_id: Uuid) -> Result<ExecutionMode> {
         Ok(self
             .inner

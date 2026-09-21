@@ -28,6 +28,10 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "coding_definition",
     "execution_mode",
     "reload_policy_config",
+    "reload_policy_store",
+    "list_child_runs",
+    "coding_hover",
+    "workflow_control",
     "approval_scope_file_edits",
     "approval_scope_full_auto",
 ];
@@ -149,6 +153,42 @@ pub enum IpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config_json: Option<String>,
     },
+    /// Load / replace governed-instruction PolicyStore from path or JSON.
+    ReloadPolicyStore {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<std::path::PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        store_json: Option<String>,
+    },
+    /// Export current PolicyStore (empty catalog when unset).
+    GetPolicyStore,
+    /// List durable child-run results for a parent session.
+    ListChildRuns {
+        session_id: Uuid,
+    },
+    /// Load one child-run result by child_id.
+    GetChildRun {
+        child_id: String,
+    },
+    /// Resolve hover via optional coding-tools provider.
+    Hover {
+        path: std::path::PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Start a workflow recipe for a session (bug|feature|refactor).
+    StartWorkflow {
+        session_id: Uuid,
+        recipe: String,
+    },
+    /// Cancel session workflow + child admissions.
+    CancelWorkflow {
+        session_id: Uuid,
+    },
+    /// Advance one ready workflow step (live child spawn).
+    AdvanceWorkflow {
+        session_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -234,6 +274,24 @@ pub enum IpcResponse {
     },
     PolicyConfig {
         config: crate::PolicyConfig,
+    },
+    PolicyStore {
+        store: crate::PolicyStore,
+    },
+    ChildRuns {
+        session_id: Uuid,
+        runs: Vec<crate::ChildResult>,
+    },
+    ChildRun {
+        run: crate::ChildResult,
+    },
+    Hover {
+        info: Option<crate::HoverInfo>,
+    },
+    WorkflowStatus {
+        session_id: Uuid,
+        status: String,
+        last_summary: Option<String>,
     },
     Incompatible {
         supported_version: u16,

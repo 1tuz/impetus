@@ -6,6 +6,7 @@
 //! Does **not** spawn children, cap concurrency, or wire AgentScheduler.
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -13,7 +14,8 @@ use thiserror::Error;
 use crate::subagent_metadata::{ChildRunMetadata, SubagentRole};
 
 /// Outcome label for a finished child run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChildResultStatus {
     Completed,
     Failed,
@@ -40,7 +42,7 @@ impl ChildResultStatus {
 }
 
 /// Durable child result — reference labels only, no secret material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildResult {
     pub child_id: String,
     pub parent_id: String,

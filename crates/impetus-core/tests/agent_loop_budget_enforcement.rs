@@ -60,7 +60,13 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
 
     // First turn should succeed
     let result = agent_loop
-        .execute(run_id, mock.clone(), messages.clone(), cancellation.clone())
+        .execute(
+            run_id,
+            mock.clone(),
+            messages.clone(),
+            cancellation.clone(),
+            None,
+        )
         .await;
 
     // Agent loop completes normally (no tool calls)
@@ -101,6 +107,7 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
             mock.clone(),
             messages.clone(),
             cancellation.clone(),
+            None,
         )
         .await;
 
@@ -161,6 +168,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             mock.clone(),
             messages.clone(),
             cancellation.clone(),
+            None,
         )
         .await;
     assert!(result.is_ok());
@@ -177,6 +185,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             mock.clone(),
             messages.clone(),
             cancellation.clone(),
+            None,
         )
         .await;
     assert!(result.is_ok());
@@ -193,6 +202,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             mock.clone(),
             messages.clone(),
             cancellation.clone(),
+            None,
         )
         .await;
 
@@ -246,7 +256,7 @@ async fn budget_events_emitted_on_approaching_limit() {
     // Execute first turn
     let run_id = runtime_arc.start_run().unwrap();
     let _ = impetus_core::AgentLoop::new(runtime_arc.clone())
-        .execute(run_id, mock.clone(), messages, cancellation)
+        .execute(run_id, mock.clone(), messages, cancellation, None)
         .await;
     runtime_arc
         .finish_run(impetus_core::RunEvent::Completed { run_id })

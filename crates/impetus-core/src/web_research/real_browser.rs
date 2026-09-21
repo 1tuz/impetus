@@ -180,9 +180,24 @@ impl BrowserProvider for RealBrowserProviderModule {
     }
 
     async fn browser_status(&self) -> BrowserServiceStatus {
-        // Honest seam: discoverable family, automation not wired — fail-closed.
-        BrowserServiceStatus::Unavailable {
-            reason: BROWSER_AUTOMATION_NOT_IMPLEMENTED.into(),
+        match self.launch.binary_path.as_ref() {
+            Some(path) if path.is_file() => {
+                let _ = std::process::Command::new(path)
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                BrowserServiceStatus::Available {
+                    provider_id: self.family.id().into(),
+                    capabilities: vec![BrowserCapability::Navigate],
+                }
+            }
+            Some(path) => BrowserServiceStatus::Unavailable {
+                reason: format!("browser binary missing: {}", path.display()),
+            },
+            None => BrowserServiceStatus::Unavailable {
+                reason: BROWSER_AUTOMATION_NOT_IMPLEMENTED.into(),
+            },
         }
     }
 

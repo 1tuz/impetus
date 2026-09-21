@@ -105,6 +105,7 @@ impl AgentLoop {
         provider: Arc<dyn ModelProvider>,
         initial_messages: Vec<ProviderMessage>,
         cancellation: CancellationToken,
+        steer_pending: Option<&crate::SteerPendingQueue>,
     ) -> Result<(), AgentLoopError> {
         let mut messages = initial_messages;
         let mut iteration = 0;
@@ -119,6 +120,12 @@ impl AgentLoop {
             }
 
             iteration += 1;
+
+            if let Some(queue) = steer_pending {
+                for fragment in queue.drain(self.runtime.session_id()) {
+                    messages.push(ProviderMessage::user(fragment));
+                }
+            }
 
             // Durable compaction when context budget threshold is hit.
             // Prompt messages fold; event log stays append-only with typed state.
@@ -539,6 +546,7 @@ mod tests {
                 provider.clone(),
                 vec![ProviderMessage::user("read evidence")],
                 CancellationToken::new(),
+                None,
             )
             .await
             .expect("agent loop");

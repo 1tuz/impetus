@@ -124,6 +124,7 @@ impl ExploreChildExecutor for AgentLoopExploreExecutor {
             self.provider.clone(),
             messages,
             env.cancel.clone(),
+            None,
         ));
 
         match result {
