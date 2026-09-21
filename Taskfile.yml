@@ -46,6 +46,11 @@ tasks:
       - task: check
       - task: lint
 
+  bench:
+    desc: Local event-log Criterion benches (not a PR CI gate)
+    cmds:
+      - cargo bench -p impetus-core --bench event_log
+
   daemon:
     desc: Запустить impetusd (authoritative daemon) в текущей terminal tab
     cmds:

@@ -110,6 +110,7 @@ Integration tests under `crates/*/tests/` are intentionally outside the PR gate.
 | --- | --- |
 | `task daemon` | Run `impetusd`. |
 | `task client -- <args>` | Run `impetus` CLI. |
+| `task bench` | Local Criterion event-log baselines (not a PR CI / `verify` gate). |
 | `task ci:affected` | Print CI scope for current branch vs `origin/main`. |
 | `task security` | `cargo audit` + `cargo deny`. |
 
