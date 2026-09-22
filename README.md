@@ -55,8 +55,8 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
 - Durable sessions and ordered audit events in SQLite WAL.
 - Versioned local Unix-socket negotiation before a client can act.
 - Typed actions through policy, approval, **path-scope** sandbox, capability, and
-  execution (fail-closed). macOS Seatbelt confinement is spike-only, not yet the
-  live process wrapper.
+  execution (fail-closed). On macOS, process spawn also wraps with Seatbelt
+  (`sandbox-exec`); non-macOS stays path-scope only.
 - Keychain references or a local no-secret provider endpoint; profiles never
   store raw tokens.
 - Typed Rust client transport, CLI, TUI (`impetus ui`), ACP gateway library, and
@@ -66,9 +66,10 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
   diffs use ephemeral in-memory attachments.
 - Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
   shared-prefix fork and checkpoints.
-- Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts). Live
-  MCP: library + `ToolOrchestrator` hook exist; production `AgentLoop` /
-  `impetusd` path not wired yet.
+- Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
+  Production MCP: `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into
+  `ToolProviderRuntime` (fail-closed on bad config; live connect on first tool
+  use). Operator catalog IPC / pickers still open — see [TODO.md](TODO.md) #315.
 - Production model path defaults to Mock or native OpenAI Chat Completions SSE
   (`--provider-profile`); Anthropic library is available but not the default
   daemon path. JSON Schema tool-arg validation runs before policy on builtins.

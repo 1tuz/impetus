@@ -49,7 +49,7 @@ flowchart TB
   end
   WE -->|"begin_step_with_scheduler<br/>complete_step_with_scheduler"| AS
   WE -.->|"Build-role binding<br/>(create_for_role)"| WT
-  AS -.->|"Planned: live spawn"| Spawn["Child process / PTY"]
+  AS -.->|"Role/Explore child spawn (#311)"| Spawn["Child process / Explore loop"]
   WT -->|"enforce_write → SandboxScope"| SB["Sandbox admit"]
 ```
 
@@ -67,9 +67,9 @@ Module links:
   [`explore_child.rs`](crates/impetus-core/src/explore_child.rs) /
   [`explore_agent_loop.rs`](crates/impetus-core/src/explore_agent_loop.rs) (#306)
 
-**Still Planned / open on this stack:** live agent process spawn (beyond
-ExploreChildRunner slice); WorkflowEngine cancel/replace wired to session-run
-intents; cross-machine orchestration.
+**Still Planned / open on this stack:** cross-machine orchestration; richer
+role AgentLoop parity (Research/Build/Review beyond process/echo stubs); live
+WorktreeManager wire into WorkflowRuntime Build steps (today synthetic wt id).
 
 - **AgentScheduler** — schedules agent **roles** (Explore / Research / Build / Review)
   with structured metadata and concurrency caps. Role enum +
@@ -80,11 +80,10 @@ intents; cross-machine orchestration.
   [`ChildResultStore`](crates/impetus-core/src/child_result_store.rs)
   + parent-resume gate stub (#250, labels only); in-memory role scheduler wired into
   [`WorkflowEngine`](crates/impetus-core/src/workflow_engine.rs) step begin/complete
-  ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253 —
-  schedule id / result slot, no live spawn);   Explore library slice (#306 — gate → restricted AgentLoop → durable child
-  result → parent-resume); production `impetusd` wires `explore_spawn` via
-  `daemon_wiring` + default provider (#308); live process spawn for other roles
-  still Planned.
+  ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253);
+  Explore library + production `impetusd` `explore_spawn` (#306 / #308);
+  WorkflowRuntime live role children (#311). Live child **events** on parent
+  session log still open (#315).
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
   steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
@@ -170,12 +169,12 @@ impetusd  — authoritative daemon
 | Optional API search (Tavily/Exa) | Implemented | `HttpApiSearchBackend` + `ApiKeyResolver` (Keychain labels); absent key fail-closed; seam module retained (#264 / #311). |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome modules; **binary-present** health → Available; navigate/fetch still fail-closed without CDP (#268 / #311). |
-| Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam + IPC `coding_definition` + **`coding_hover`**; `ProcessLspBackend` spawns when binary present (fail-closed if absent) (#267 / #282 / #311). Full LSP completeness Parked. |
+| Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam + IPC `coding_definition` + `coding_hover` handlers exist; **`impetusd` does not wire** `ProcessLspBackend` yet (always absent). Full LSP completeness Parked. |
 | Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn (schedule → role/explore child → store); Research/Build/Review via `role_child` + process exec; fair per-parent caps; Cancel/CancelWorkflow + FollowUp drain race closed (#311). WorktreeManager lifecycle unchanged. |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
 | MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
-| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension`; session/mcp Planned |
+| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`; remaining gaps = broader validate-on-wire coverage |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp; execution modes; `/children` child-run list (#311). |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
@@ -215,11 +214,12 @@ Module links:
 - [`user_intent.rs`](crates/impetus-core/src/user_intent.rs) —
   `UserPromptIntent`, `UserIntentRouter`, follow-up drain, `fanout`
 - [`steer_rewrite.rs`](crates/impetus-core/src/steer_rewrite.rs) —
-  `SteerRewrite` seam (Partial, #285 — passthrough + mock; no live provider)
+  `SteerRewrite` seam — **Implemented** live `ProviderSteerRewrite` via default
+  provider (`with_provider_steer_rewrite` in daemon; passthrough offline)
 - [`policy.rs`](crates/impetus-core/src/policy.rs) —
   `PolicyEngine` / `PolicyDecision` (`Deny` | `Allow` | `NeedsApproval`)
 - [`policy_config.rs`](crates/impetus-core/src/policy_config.rs) —
-  JSON overrides (Partial — see [Policy customization](#policy-customization-and-approval-ui-contracts-9))
+  JSON load + IPC `ReloadPolicyConfig` — **Implemented** (see matrix)
 - [`approval.rs`](crates/impetus-core/src/approval.rs) —
   `ApprovalDetail` IPC UI contract (`impetus.approval_detail.v1`)
 
@@ -230,8 +230,8 @@ Completed/Cancelled, harness drains one queued FollowUp into a Prompt turn
 (origin preserved; at-most-once vs cancel race) (#271). Multi-session fanout
 takes an explicit `session_ids` list through `UserIntentRouter::fanout` (#275) —
 empty list rejected; each target routes independently with a per-session ok/err
-map (not broadcast-by-accident; no cross-machine). Steer rewrite seam
-(`SteerRewrite` / passthrough + mock; harness hook on accept) is Partial (#285).
+map (not broadcast-by-accident; no cross-machine). Live SteerRewrite on accept
+is Implemented (#285 / #311).
 
 **Still Planned / open on this path:** fanout over IPC / cross-machine.
 (Daemon-owned execution modes + RiskGate + live SteerRewrite + WorkflowRuntime
