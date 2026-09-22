@@ -123,7 +123,12 @@ In GitHub Repository Settings → General → Pull Requests:
 
 In Branch protection rules for `main`:
 - ✓ "Require status checks to pass before merging"
+- ✓ Required check: **only** `Gate` (workflow `CI`) — do not require
+  macOS / Linux / Security / Site individually (path-aware jobs may skip)
 - Can enable auto-merge for each PR via `gh pr merge --auto --squash`
+
+Head branches delete automatically after merge (`delete_branch_on_merge`).
+Do not leave merged feature branches on the remote.
 
 ### Commit Rules
 
