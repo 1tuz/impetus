@@ -1,23 +1,24 @@
-//! ACP adapter для ModelProvider trait.
+//! ACP adapter for ModelProvider trait.
 //!
-//! Связывает external coding-agent через AcpGatewayV2 с harness ModelProvider.
+//! Links an external coding-agent via AcpGatewayV2 to the harness ModelProvider.
 //! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
 use crate::{
     Action, ActionKind, ActionOrigin, ModelProvider, PolicyDecision, PolicyEngine, ProviderError,
-    ProviderHealth, ProviderMessage, StreamEvent,
+    ProviderHealth, ProviderMessage, StreamEvent, StreamOptions,
 };
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
 use impetus_acp_gateway::{
     AcpGatewayV2, GatewayState, PermissionDecision, PermissionKind, PermissionRequest, StreamUpdate,
 };
+use impetus_protocol::AgentCapabilitySnapshot;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-/// Adapter для ACP gateway V2 как ModelProvider.
+/// Adapter for ACP gateway V2 as ModelProvider.
 #[derive(Debug)]
 pub struct AcpAdapter {
     gateway: Arc<AcpGatewayV2>,
@@ -87,9 +88,25 @@ impl ModelProvider for AcpAdapter {
     }
 
     fn health(&self) -> ProviderHealth {
-        // Блокирующая проверка невозможна с async state, возвращаем Unknown
-        // Реальный health check делается через отдельный monitoring механизм
+        // Blocking check is not possible with async state; return Unknown.
+        // Real health is observed via monitoring / first session.
         ProviderHealth::Unknown
+    }
+
+    fn agent_capabilities(&self) -> Option<AgentCapabilitySnapshot> {
+        // Sync snapshot: try_lock so ListModels never blocks the IPC thread.
+        let Ok(guard) = self.gateway.cached_capabilities_blocking() else {
+            return None;
+        };
+        guard.map(|caps| AgentCapabilitySnapshot {
+            load_session: caps.load_session,
+            prompt_image: caps.prompt_image,
+            prompt_audio: caps.prompt_audio,
+            prompt_embedded_context: caps.prompt_embedded_context,
+            auth_method_ids: caps.auth_method_ids,
+            agent_name: caps.agent_name,
+            agent_version: caps.agent_version,
+        })
     }
 
     async fn stream_messages(
@@ -98,9 +115,25 @@ impl ModelProvider for AcpAdapter {
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: StreamOptions,
         mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        // Проверяем состояние
+        let effective_model = options
+            .model_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(self.model_id.as_str());
+        if effective_model != self.model_id {
+            info!(
+                "ACP session model override selected={} profile={}",
+                effective_model, self.model_id
+            );
+        }
+        if let Some(effort) = options.reasoning_effort.as_deref() {
+            info!("ACP reasoning_effort selection={}", effort);
+        }
+
+        // Check state
         let state = self.gateway.state().await;
         if state == GatewayState::Crashed || state == GatewayState::Incompatible {
             return Err(ProviderError::RequestFailed(format!(
@@ -109,7 +142,8 @@ impl ModelProvider for AcpAdapter {
             )));
         }
 
-        // Формируем prompt из messages
+        // Build prompt from messages (model/reasoning selection is session metadata;
+        // ACP v1 has no vendor-specific set-model RPC in the Impetus UI protocol).
         let prompt = messages
             .iter()
             .map(|msg| format!("{}: {}", msg.role(), msg.content()))
@@ -118,15 +152,12 @@ impl ModelProvider for AcpAdapter {
 
         info!("Starting ACP session with prompt length: {}", prompt.len());
 
-        // Клонируем Arc для spawned task
         let gateway = Arc::clone(&self.gateway);
         let workspace = self.workspace_dir.clone();
 
-        // Запускаем session в отдельной задаче
         let mut session_handle =
             tokio::spawn(async move { gateway.start_session(workspace, prompt).await });
 
-        // Обрабатываем updates и permission requests
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -150,7 +181,6 @@ impl ModelProvider for AcpAdapter {
                         }
                         Some(StreamUpdate::ToolUse { tool_name, status }) => {
                             debug!("Tool use: {} - {}", tool_name, status);
-                            // Можно отправить как chunk или пропустить
                         }
                         Some(StreamUpdate::Status(status)) => {
                             debug!("Status update: {}", status);
@@ -163,7 +193,6 @@ impl ModelProvider for AcpAdapter {
                             return Err(ProviderError::RequestFailed(err));
                         }
                         None => {
-                            // Channel closed
                             break;
                         }
                     }
@@ -177,11 +206,9 @@ impl ModelProvider for AcpAdapter {
                                 request.request_id, request.description
                             );
 
-                            // Route через Policy
                             let decision = if let Some(action) = action_for_permission(&request, &self.workspace_dir) {
                                 match self.policy.evaluate(&action) {
                                     PolicyDecision::Allow => {
-                                        // Выбираем первый AllowOnce/AllowAlways option
                                         let allow_option = request.options.iter().find(|opt| {
                                             matches!(
                                                 opt.kind,
@@ -204,14 +231,11 @@ impl ModelProvider for AcpAdapter {
                                     }
                                     PolicyDecision::NeedsApproval { reason } => {
                                         info!("Policy requires approval: {}", reason);
-                                        // TODO: интеграция с durable approval flow
-                                        // Пока отклоняем, требуется approval broker
                                         PermissionDecision::Deny
                                     }
                                 }
                             } else {
-                                // Think/SwitchMode/Other — не policy-relevant
-                                debug!("Permission kind {:?} не требует Policy evaluation", request.kind);
+                                debug!("Permission kind {:?} does not require Policy evaluation", request.kind);
                                 let allow_option = request.options.iter().find(|opt| {
                                     matches!(
                                         opt.kind,
@@ -231,7 +255,6 @@ impl ModelProvider for AcpAdapter {
                             }
                         }
                         None => {
-                            // Channel closed
                             break;
                         }
                     }
@@ -288,5 +311,22 @@ mod tests {
         assert_eq!(action.origin, crate::ActionOrigin::Agent);
         assert_eq!(action.kind, crate::ActionKind::WriteFile);
         assert_eq!(action.target.as_deref(), target.to_str());
+    }
+
+    #[test]
+    fn agent_capability_snapshot_has_no_vendor_prefix_fields() {
+        let snap = AgentCapabilitySnapshot {
+            load_session: true,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: true,
+            auth_method_ids: vec!["env".into()],
+            agent_name: Some("mock-agent".into()),
+            agent_version: Some("0.1.0".into()),
+        };
+        let encoded = serde_json::to_string(&snap).expect("encode");
+        assert!(!encoded.contains("codex_"));
+        assert!(encoded.contains("load_session"));
+        assert!(encoded.contains("auth_method_ids"));
     }
 }

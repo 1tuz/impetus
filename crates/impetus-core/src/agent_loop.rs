@@ -7,7 +7,7 @@
 use crate::{
     AgentRuntime, BudgetError, EventPayload, FinishReason, ModelProvider, PolicyEngine,
     ProviderError, ProviderMessage, RetryEvent, RuntimeError, RuntimeStatus, StreamEvent,
-    ToolOrchestrator,
+    StreamOptions, ToolOrchestrator,
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -106,6 +106,7 @@ impl AgentLoop {
         initial_messages: Vec<ProviderMessage>,
         cancellation: CancellationToken,
         steer_pending: Option<&crate::SteerPendingQueue>,
+        stream_options: StreamOptions,
     ) -> Result<(), AgentLoopError> {
         let mut messages = initial_messages;
         let mut iteration = 0;
@@ -135,7 +136,7 @@ impl AgentLoop {
 
             // Phase 1: Model inference with retry logic
             let turn_result = self
-                .call_model_with_retry(run_id, &provider, &messages, &cancellation)
+                .call_model_with_retry(run_id, &provider, &messages, &cancellation, &stream_options)
                 .await?;
 
             // Phase 2: Tool calls are already extracted from StreamEvents
@@ -190,6 +191,7 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
+        stream_options: &StreamOptions,
     ) -> Result<ModelTurnResult, AgentLoopError> {
         let mut attempt = 0;
 
@@ -197,7 +199,7 @@ impl AgentLoop {
             attempt += 1;
 
             match self
-                .call_model(run_id, provider, messages, cancellation)
+                .call_model(run_id, provider, messages, cancellation, stream_options)
                 .await
             {
                 Ok(response) => {
@@ -258,6 +260,7 @@ impl AgentLoop {
         provider: &Arc<dyn ModelProvider>,
         messages: &[ProviderMessage],
         cancellation: &CancellationToken,
+        stream_options: &StreamOptions,
     ) -> Result<ModelTurnResult, AgentLoopError> {
         // Check runtime status before calling model
         if !matches!(self.runtime.status(), Ok(RuntimeStatus::Running)) {
@@ -300,6 +303,7 @@ impl AgentLoop {
                 None, // credential resolution handled at provider level
                 Some(self.runtime.clone()),
                 cancellation.clone(),
+                stream_options.clone(),
                 Box::new(move |event| {
                     match event {
                         StreamEvent::TextDelta { delta } => {
@@ -644,6 +648,7 @@ mod tests {
                 vec![ProviderMessage::user("read evidence")],
                 CancellationToken::new(),
                 None,
+                crate::StreamOptions::default(),
             )
             .await
             .expect("agent loop");
@@ -700,6 +705,7 @@ mod tests {
                 vec![ProviderMessage::user("think then answer")],
                 CancellationToken::new(),
                 None,
+                crate::StreamOptions::default(),
             )
             .await
             .expect("agent loop");
@@ -754,6 +760,7 @@ mod tests {
                 vec![ProviderMessage::user("coalesce")],
                 CancellationToken::new(),
                 None,
+                crate::StreamOptions::default(),
             )
             .await
             .expect("agent loop");
@@ -812,6 +819,7 @@ mod tests {
                 vec![ProviderMessage::user("large")],
                 CancellationToken::new(),
                 None,
+                crate::StreamOptions::default(),
             )
             .await
             .expect("agent loop");

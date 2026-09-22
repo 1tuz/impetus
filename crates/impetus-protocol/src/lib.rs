@@ -16,7 +16,7 @@ pub use events::{
     bound_activity_preview, legacy_payload,
 };
 pub use ipc::{
-    IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
-    MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
+    IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode,
+    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
 };
 pub use types::*;

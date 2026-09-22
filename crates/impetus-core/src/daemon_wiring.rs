@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::child_concurrency::ChildConcurrencyGate;
 use crate::child_result_store::ChildResultStore;
 use crate::explore_agent_loop::AgentLoopExploreExecutor;
-use crate::explore_child::{ExploreSpawnBridge, HarnessExploreSpawn};
+use crate::explore_child::{ExploreChildExecutor, ExploreSpawnBridge, HarnessExploreSpawn};
 use crate::extension_compat::McpModule;
 use crate::hook_prefilter::HookPrefilter;
 use crate::mcp_manifest::McpManifest;
@@ -18,7 +18,7 @@ use crate::provider_trait::ModelProvider;
 use crate::storage::{EventStore, MemoryEventStore};
 use crate::tool_provider_runtime::{McpServerSpec, ToolProviderRuntime};
 use crate::worktree_manager::WorktreeManager;
-use crate::{ProviderError, default_artifact_root};
+use crate::{ProviderError, SqlitePtySessionStore, default_artifact_root};
 
 /// Failures building daemon runtime attachments.
 #[derive(Debug, Error)]
@@ -40,6 +40,8 @@ pub enum DaemonWiringError {
     /// fall back to workspace root without managed-worktree preference.
     #[error("worktree manager open: {0}")]
     WorktreeManager(String),
+    #[error("PTY session store open: {0}")]
+    PtySessionStore(String),
 }
 
 /// Binding SQLite under the daemon data root (`worktrees.sqlite3`).
@@ -78,16 +80,49 @@ pub fn build_explore_spawn_bridge(
     parent_events: Arc<dyn EventStore>,
 ) -> Result<Arc<dyn ExploreSpawnBridge>, DaemonWiringError> {
     let child_store = ChildResultStore::open(data_root.join("child_results.sqlite3"))?;
-    let store_factory = Box::new(|_child_id: &str| -> Arc<dyn EventStore> {
-        Arc::new(MemoryEventStore::default())
-    });
-    let executor = AgentLoopExploreExecutor::new(provider, store_factory, policy, artifact_root);
+    let executor = build_agent_loop_explore_executor(provider, policy, artifact_root);
     Ok(Arc::new(HarnessExploreSpawn {
         gate: Arc::new(Mutex::new(ChildConcurrencyGate::new())),
         store: Arc::new(child_store),
-        executor: Arc::new(executor),
+        executor,
         parent_events: Some(parent_events),
     }))
+}
+
+/// Restricted AgentLoop Explore executor (shared by `explore_spawn` + Workflow Explore).
+pub fn build_agent_loop_explore_executor(
+    provider: Arc<dyn ModelProvider>,
+    policy: PolicyEngine,
+    artifact_root: PathBuf,
+) -> Arc<dyn ExploreChildExecutor> {
+    let store_factory = Box::new(|_child_id: &str| -> Arc<dyn EventStore> {
+        Arc::new(MemoryEventStore::default())
+    });
+    Arc::new(AgentLoopExploreExecutor::new(
+        provider,
+        store_factory,
+        policy,
+        artifact_root,
+    ))
+}
+
+/// Convenience: AgentLoop Explore executor from harness default provider.
+pub fn build_agent_loop_explore_executor_for_harness(
+    provider_registry: &crate::ProviderRegistry,
+    default_provider_id: &str,
+    policy: PolicyEngine,
+) -> Result<Arc<dyn ExploreChildExecutor>, DaemonWiringError> {
+    let provider = provider_registry
+        .get(default_provider_id)
+        .map_err(|source| DaemonWiringError::ProviderUnavailable {
+            provider_id: default_provider_id.to_string(),
+            source,
+        })?;
+    Ok(build_agent_loop_explore_executor(
+        provider,
+        policy,
+        default_artifact_root(),
+    ))
 }
 
 /// Convenience wrapper using the harness default provider id.
@@ -113,12 +148,23 @@ pub fn build_explore_spawn_bridge_for_harness(
     )
 }
 
+/// Canonical daemon MCP SoT directory: `{data_root}/mcp/`.
+///
+/// Only this path is autoloaded / reloaded by `impetusd`. Workspace
+/// `{repo}/.impetus/mcp/` (extension lifecycle) is not daemon SoT.
+pub fn daemon_mcp_dir(data_root: &Path) -> PathBuf {
+    data_root.join("mcp")
+}
+
 /// Load MCP server specs from `{data_root}/mcp/*.json` into a session runtime.
 ///
 /// Missing directory → empty runtime (not an error). Any present file must parse
 /// and validate (`impetus.mcp.v1` envelope); bad config fails closed.
+///
+/// `ListMcpServers` reports `connected=false` until first tool use
+/// (`ensure_connected`) — honest lazy health, not a live probe on list.
 pub fn load_daemon_mcp_runtime(data_root: &Path) -> Result<ToolProviderRuntime, DaemonWiringError> {
-    let mcp_dir = data_root.join("mcp");
+    let mcp_dir = daemon_mcp_dir(data_root);
     if !mcp_dir.is_dir() {
         return Ok(ToolProviderRuntime::new());
     }
@@ -147,6 +193,20 @@ pub fn load_daemon_mcp_runtime(data_root: &Path) -> Result<ToolProviderRuntime, 
         });
     }
     Ok(runtime)
+}
+
+/// Durable PTY metadata DB under the daemon data root.
+pub fn default_pty_session_store_path(data_root: &Path) -> PathBuf {
+    data_root.join("pty_sessions.sqlite3")
+}
+
+/// Open SqlitePtySessionStore under `data_root` (fail closed).
+pub fn open_daemon_pty_session_store(
+    data_root: &Path,
+) -> Result<Arc<SqlitePtySessionStore>, DaemonWiringError> {
+    let store = SqlitePtySessionStore::new(default_pty_session_store_path(data_root))
+        .map_err(|error| DaemonWiringError::PtySessionStore(error.to_string()))?;
+    Ok(Arc::new(store))
 }
 
 /// Load hook prefilter catalog from `{data_root}/hooks.json` and/or `hooks/*.json`.
@@ -255,6 +315,30 @@ mod tests {
         .expect("write");
         let runtime = load_daemon_mcp_runtime(data.path()).expect("load");
         assert_eq!(runtime.registered_ids(), vec!["echo".to_string()]);
+        let status = runtime.list_status();
+        assert!(!status[0].connected);
+    }
+
+    #[test]
+    fn pty_session_store_opens_under_data_root() {
+        let data = tempfile::tempdir().expect("data");
+        let store = open_daemon_pty_session_store(data.path()).expect("open");
+        assert!(default_pty_session_store_path(data.path()).is_file());
+        let _ = store;
+    }
+
+    #[test]
+    fn agent_loop_explore_executor_builds_for_mock_provider() {
+        let registry = crate::ProviderRegistry::new();
+        let mock = Arc::new(MockProvider::default_mock());
+        registry.register(mock).expect("register");
+        let exec = build_agent_loop_explore_executor_for_harness(
+            &registry,
+            "mock",
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        )
+        .expect("executor");
+        let _ = exec;
     }
 
     #[test]

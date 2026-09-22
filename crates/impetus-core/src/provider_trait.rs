@@ -6,10 +6,30 @@
 
 use crate::{AgentRuntime, ProviderError, ProviderHealth, ProviderMessage};
 use async_trait::async_trait;
+use impetus_protocol::AgentCapabilitySnapshot;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+/// Per-request stream overrides (session model / reasoning). Empty = profile defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamOptions {
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+/// Result of remote model catalog discovery (OpenAI-compat `/v1/models`, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCatalogResult {
+    /// Remote discovery succeeded with at least one model id.
+    Discovered { model_ids: Vec<String> },
+    /// Discovery unsupported or failed — static profile/catalog only (never fake Healthy).
+    StaticFallback {
+        model_ids: Vec<String>,
+        reason_redacted: String,
+    },
+}
 
 /// Normalized streaming event from a model provider.
 ///
@@ -73,10 +93,25 @@ pub trait ModelProvider: Send + Sync + Debug {
     /// Returns the current health status.
     fn health(&self) -> ProviderHealth;
 
+    /// Vendor-neutral agent caps when this provider is an ACP (or similar) backend.
+    fn agent_capabilities(&self) -> Option<AgentCapabilitySnapshot> {
+        None
+    }
+
+    /// Discover model ids (e.g. OpenAI-compat `GET /v1/models`). Default: static profile model.
+    async fn discover_models(&self) -> ModelCatalogResult {
+        ModelCatalogResult::StaticFallback {
+            model_ids: vec![self.model_id().to_string()],
+            reason_redacted: "remote model discovery not supported".into(),
+        }
+    }
+
     /// Streams messages through the provider.
     ///
     /// The `credential` parameter is resolved transiently by the harness
     /// and never persisted. Implementations must not retain it.
+    ///
+    /// `options` may override profile model id / reasoning effort for this stream.
     ///
     /// The `on_event` callback receives each typed stream event.
     /// Return `Err` from the callback to stop streaming.
@@ -86,6 +121,7 @@ pub trait ModelProvider: Send + Sync + Debug {
         credential: Option<&str>,
         runtime: Option<Arc<AgentRuntime>>,
         cancel: CancellationToken,
+        options: StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError>;
 }

@@ -1,8 +1,8 @@
 //! Adapter for legacy OpenAiCompatibleProvider to work with ModelProvider trait.
 
 use crate::{
-    CredentialResolver, ModelProvider, OpenAiCompatibleProvider, ProviderError, ProviderHealth,
-    ProviderMessage, StreamEvent,
+    CredentialResolver, ModelCatalogResult, ModelProvider, OpenAiCompatibleProvider, ProviderError,
+    ProviderHealth, ProviderMessage, StreamEvent, StreamOptions,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -50,12 +50,36 @@ impl ModelProvider for OpenAiCompatibleAdapter {
         self.provider.health()
     }
 
+    async fn discover_models(&self) -> ModelCatalogResult {
+        let credential = match self.credential_resolver.resolve(self.provider.profile()) {
+            Ok(value) => value,
+            Err(_) => {
+                return ModelCatalogResult::StaticFallback {
+                    model_ids: vec![self.model_id().to_string()],
+                    reason_redacted: "credential unavailable for model discovery".into(),
+                };
+            }
+        };
+        match self
+            .provider
+            .list_remote_models(credential.as_deref())
+            .await
+        {
+            Ok(model_ids) => ModelCatalogResult::Discovered { model_ids },
+            Err(error) => ModelCatalogResult::StaticFallback {
+                model_ids: vec![self.model_id().to_string()],
+                reason_redacted: error.to_string(),
+            },
+        }
+    }
+
     async fn stream_messages(
         &self,
         messages: &[ProviderMessage],
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: StreamOptions,
         mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let credential = self
@@ -67,6 +91,7 @@ impl ModelProvider for OpenAiCompatibleAdapter {
             .stream_messages(
                 messages,
                 credential.as_deref(),
+                &options,
                 cancel,
                 Box::new(move |text| on_event(StreamEvent::TextDelta { delta: text })),
             )

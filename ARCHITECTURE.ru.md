@@ -14,6 +14,10 @@ Impetus — terminal-first, local-first, all-in-one Agent Harness for Engineerin
 durable sessions/events, agent/tool orchestration, safety, credentials и
 execution authority за заменяемыми client surfaces.
 
+**Без root / sudo / password в нормальном режиме:** userspace data dirs,
+Seatbelt через `sandbox-exec`, silent Keychain (`kSecUseAuthenticationUISkip`),
+RiskGate Deny на privilege escalation, PTY без login-shell `-l`.
+
 ## Binary topology
 
 ```text
@@ -129,23 +133,18 @@ Zap adapter ──HarnessClient──┘
 ```
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol
-(`IPC_VERSION` = 12, Hello exact-match), `HarnessClient`, provider registry
-foundation, shared-prefix session forks + named checkpoints, command/JSON
-client, `impetus doctor`, `impetus ui` (Ratatui), Module Runtime foundations,
-**`DurableArtifactStore`** (SHA-256, restart-safe; tools/web/paste upload +
-process large bodies → `ArtifactRef`; Read/Meta/Range IPC + MIME; prod age GC
-7d), и **ephemeral `AttachmentStore`**
-(approvals/diffs в RAM — намеренно не durable). Zap adapter — experimental
-baseline, не target integration architecture. `impetus components` — static
-built-in tool catalog (не live registry через IPC).
+(`IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12; Hello range), `HarnessClient`,
+MCP SoT `$IMPETUS_DATA_DIR/mcp/*.json` + `ReloadMcpServers`, Explore bridge,
+session model IPC, Worktree/Workflow Build → real WorktreeManager, provider
+registry, shared-prefix forks + checkpoints, command/JSON client,
+`impetus doctor`, `impetus ui` (Ratatui), **`DurableArtifactStore`** (SHA-256;
+upload/read/MIME; prod age GC 7d), ephemeral **`AttachmentStore`**. Zap adapter
+— experimental. `impetus components` — static catalog (не live IPC registry).
 
-**Partial / open (см. [ARCHITECTURE.md](ARCHITECTURE.md) matrix + [TODO.md](TODO.md)):**
-workspace Files / Git IPC (v8+; TUI `Ctrl+F` / `Ctrl+B` / Review done;
-Desktop harness Git/Files list+read+search; Review UI polish), daemon-owned
-PTY v12 (`owner_session_id`, cwd containment, Agent Seatbelt on macOS;
-TUI `Ctrl+\` passthrough),
-полный Session DAG, model router, remote agent flow end-to-end, полный
-extension compatibility layer, live module/registry browser.
+**Partial / Planned (см. [ARCHITECTURE.md](ARCHITECTURE.md) + [TODO.md](TODO.md)):**
+Desktop Review/PTY polish; Extension CLI keep (marketplace Won't); Browser
+provider **Planned** (library only; CDP Parked); MemoryStore **Planned** (no
+control-plane IPC); Module Runtime control plane; ACP gaps.
 
 Не путать: `AttachmentStore` ≠ `ArtifactStore`. Doctor описывает оба честно.
 
@@ -159,8 +158,9 @@ extension compatibility layer, live module/registry browser.
 
 ## IPC compatibility (PROTO)
 
-- `IPC_VERSION` = 12. **Hello — exact-match**: version skew → `Incompatible`
-  (нет `min_supported` range до отдельного RFC).
+- `IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12. **Hello принимает
+  `[12, 13]`**; вне диапазона → `Incompatible` (+ `min_supported` /
+  `supported_version`). Cap intersection после version match.
 - Presentation crates берут wire/event DTO из `impetus-client::protocol`
   (façade над `impetus-protocol`). TUI/Desktop не зависят от `impetus-core` для
   **типов**.
@@ -169,14 +169,10 @@ extension compatibility layer, live module/registry browser.
 - Wire DTO живут в runtime-free `impetus-protocol` (без rusqlite/reqwest/Harness).
 - **PTY (v12):** каждый `Pty*` несёт `session_id`; `PtySession` →
   `owner_session_id`. Cross-session deny; events только owner session.
-  Cwd containment (`resolve_pty_working_dir`); Agent → `prepare_pty_sandbox`
-  на macOS; spill coalesce + `MAX_PTY_PENDING_SPILLS=4`.
-- Bump `IPC_VERSION` при добавлении Git / Files / PTY / MCP-model catalog /
-  rich activity caps в Hello. Текущие caps включают workspace Files, Git,
-  `structured_diff` (DiffObservation на GetDiff/GetFileDiff), daemon-owned
-  `pty` (`portable-pty`), read-only `list_mcp` / `list_models`
-  (`ListMcpServers` / `ListModels` — labels/status only; no secrets), и
-  additive `artifact_read` (Read/GetMetadata/Range; MIME on upload).
+  Cwd containment; Agent → `prepare_pty_sandbox` на macOS. Daemon wires
+  `SqlitePtySessionStore` (metadata durable; live PTY не переживает restart).
+- Caps: workspace Files, Git, `structured_diff`, `pty`, `list_mcp` /
+  `list_models`, `mcp_manage`, `session_model` / worktrees, `artifact_read`.
 
 ## Harness Kernel — неподвижные инварианты
 
@@ -601,11 +597,10 @@ source URL, timestamp, content hash, truncation; model gets bounded preview/chun
 
 ### Browser
 
-JS-heavy sites — optional `BrowserService` → `BrowserProvider`. Reference:
-JCode Browser Provider Protocol (normalized contract, capability negotiation,
-replaceable Firefox/Chrome/WebDriver/Safari, health, session, snapshot, click,
-type, wait, screenshot, optional eval/scroll/tabs/downloads). **Не обязателен**
-для ordinary search/fetch. **Не тащить** Chromium/Playwright/Node в mandatory core.
+**Planned** (library contracts only). Daemon negotiate/health IPC нет; doctor
+reports absent. CDP/WebDriver **Parked**. Optional `BrowserService` →
+`BrowserProvider` contract — не Implemented Available. **Не обязателен** для
+ordinary search/fetch. **Не тащить** Chromium/Playwright/Node в mandatory core.
 
 ### Module Runtime wiring
 
@@ -728,13 +723,14 @@ update, disable. Optional component update без полного релиза Im
 | Context | shared-prefix forks, checkpoints, compaction; TUI `Ctrl+B` | lazy modules |
 | DurableArtifactStore | Implemented (SHA-256; upload/read/MIME; prod age GC 7d; TUI `/attach`) | — |
 | AttachmentStore | ephemeral RAM (approvals/diffs) | intentional; not ArtifactStore |
-| IPC | v10 exact-match Hello; Files/Git/pty/`list_mcp`/`list_models` caps | thin protocol crate; Desktop SoT |
-| Agent loop | present; keep hardening | full orchestrator + research loop |
-| Web research | foundations + doctor probes | native search/fetch; optional browser |
-| TUI | `impetus ui` + Files/Git/Review/Activity/PTY | richer UX / polish |
+| IPC | v13 Hello range [12,13]; Files/Git/pty/mcp/session_model caps | Desktop SoT polish |
+| Agent loop | Implemented + Explore bridge | mid-run child stream thin |
+| Web research | search/fetch Implemented; Browser **Planned** | CDP Parked |
+| TUI | `impetus ui` + Files/Git/Review/Activity/PTY | sequence picker polish |
 | Doctor | `impetus doctor` / `--json` | unchanged role |
-| Module Runtime | foundations present | richer registry UX / probing |
-| Extensions | partial compatibility | adapters + canonical model |
+| Module Runtime | library Partial | daemon control plane |
+| Extensions | Partial CLI keep; marketplace Won't | — |
+| MemoryStore | Planned (library only) | control-plane IPC |
 | RTK | dev convention (CodeWhale) | optional output optimizer module |
 | Remote | models/stubs | controlled E2E flow |
 

@@ -45,7 +45,14 @@ async fn transient_error_triggers_retry_with_backoff() {
     let run_id = runtime_arc.start_run().unwrap();
 
     let result = agent_loop
-        .execute(run_id, mock.clone(), messages, cancellation, None)
+        .execute(
+            run_id,
+            mock.clone(),
+            messages,
+            cancellation,
+            None,
+            impetus_core::StreamOptions::default(),
+        )
         .await;
 
     // Should succeed after retry
@@ -125,7 +132,14 @@ async fn permanent_error_fails_immediately() {
     let run_id = runtime_arc.start_run().unwrap();
 
     let result = agent_loop
-        .execute(run_id, mock.clone(), messages, cancellation, None)
+        .execute(
+            run_id,
+            mock.clone(),
+            messages,
+            cancellation,
+            None,
+            impetus_core::StreamOptions::default(),
+        )
         .await;
 
     // Should fail immediately
@@ -189,7 +203,14 @@ async fn retry_exhaustion_emits_exhausted_event() {
     let run_id = runtime_arc.start_run().unwrap();
 
     let result = agent_loop
-        .execute(run_id, mock.clone(), messages, cancellation, None)
+        .execute(
+            run_id,
+            mock.clone(),
+            messages,
+            cancellation,
+            None,
+            impetus_core::StreamOptions::default(),
+        )
         .await;
 
     // Should fail after exhausting retries

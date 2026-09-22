@@ -28,10 +28,10 @@ task security
 Workflow: `.github/workflows/ci.yml` (single PR pipeline).
 
 1. **Detect** — `scripts/ci-affected.sh` vs PR base (`main`).
-2. **macOS** (if Rust changed) — `fmt`, Clippy + `cargo test` on affected
+2. **macOS** (if Rust changed) — Clippy + `cargo test` on affected
    packages with `--lib --bins` (not `--all-targets`); `cargo check` on
    transitive dependants when a shared crate changed.
-3. **Linux** (if Rust changed) — `cargo check` on affected + dependants only
+3. **Linux** (if Rust changed) — `fmt` + `cargo check` on affected + dependants
    (compile guard, not a second full test suite).
 4. **Security** — when `Cargo.toml` / `Cargo.lock` change (also `deny.toml`,
    which does **not** trigger Rust jobs).
@@ -101,6 +101,7 @@ Run the vertical slice locally:
 cargo test -p impetus-core --lib approval_resume_returns_durable_tool_observations_to_the_model
 cargo test -p impetus-core --lib rejected_approval_records_denial_and_resumes_without_execution
 cargo test -p impetus-core --lib security_runtime_pr
+cargo test -p impetus-protocol --lib -- sentinel
 cargo test -p impetus-core --lib -- sentinel
 ```
 

@@ -125,6 +125,7 @@ impl ExploreChildExecutor for AgentLoopExploreExecutor {
             messages,
             env.cancel.clone(),
             None,
+            crate::StreamOptions::default(),
         ));
 
         match result {

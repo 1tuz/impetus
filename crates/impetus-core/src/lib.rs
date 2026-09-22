@@ -73,6 +73,7 @@ pub mod plugins;
 pub mod policy;
 pub mod policy_config;
 pub mod policy_store;
+pub mod privilege_boundaries;
 pub mod profile;
 pub mod projection;
 pub mod provider;
@@ -171,9 +172,12 @@ pub use context_optimizer::{
 };
 pub use cursor_adapter::CursorAdapter;
 pub use daemon_wiring::{
-    DaemonWiringError, build_explore_spawn_bridge, build_explore_spawn_bridge_for_harness,
+    DaemonWiringError, build_agent_loop_explore_executor,
+    build_agent_loop_explore_executor_for_harness, build_explore_spawn_bridge,
+    build_explore_spawn_bridge_for_harness, daemon_mcp_dir, default_pty_session_store_path,
     default_worktree_store_path, default_worktrees_root, load_daemon_hook_prefilter,
-    load_daemon_mcp_runtime, load_daemon_policy_store, open_daemon_worktree_manager,
+    load_daemon_mcp_runtime, load_daemon_policy_store, open_daemon_pty_session_store,
+    open_daemon_worktree_manager,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
@@ -252,12 +256,13 @@ pub use git_ops::{
     get_repository_state, git_status, list_branches, list_changed_files, resolve_session_git_cwd,
     switch_branch,
 };
-pub use harness_api::{Harness, redact_tool_outcome};
+pub use harness_api::{Harness, McpReloadHook, redact_tool_outcome};
 pub use hook_prefilter::HookCatalogLoadError;
 pub use hook_prefilter::{
     HookAction, HookCatalogError, HookPrefilter, HookRule, HookTrustLevel, PrefilterDecision,
     PrefilterError, SpawnStubError, SpawnStubOutcome, spawn_stub,
 };
+pub use impetus_protocol::SessionModelSelection;
 pub use instruction_learning::{
     InstructionLearning, LearningEvidence, ObservationKind, Proposal, ProposalLifecycle,
     ProposalTarget,
@@ -268,8 +273,8 @@ pub use instructions::{
     governed_instruction_ids,
 };
 pub use ipc::{
-    IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
-    MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
+    IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode,
+    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
 };
 pub use lsp_backend::{
     LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
@@ -310,6 +315,9 @@ pub use policy_store::{
     GovernedInstructionRef, POLICY_STORE_VERSION, PolicyStore, PolicyStoreError,
     default_policy_store_path,
 };
+pub use privilege_boundaries::{
+    command_requests_privilege_escalation, pty_argv_is_non_login, risk_gate_denies_sudo,
+};
 pub use profile::{Profile, ProfileConfig, ServiceBinding, ServiceBindings};
 pub use projection::{ProjectionError, SessionProjection, reduce};
 pub use provider::{
@@ -318,7 +326,9 @@ pub use provider::{
 };
 pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
 pub use provider_registry::{ModelProviderHealthLabel, ModelProviderStatus, ProviderRegistry};
-pub use provider_trait::{FinishReason, ModelProvider, StreamEvent};
+pub use provider_trait::{
+    FinishReason, ModelCatalogResult, ModelProvider, StreamEvent, StreamOptions,
+};
 pub use reference_store::{
     DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,
     RecordProvenance, RecordSource, ReferenceRecord, ReferenceService, SearchFilters, SearchResult,

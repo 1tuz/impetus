@@ -100,23 +100,40 @@ impl OpenAiProvider {
         Ok(endpoint)
     }
 
-    fn request_body(&self, messages: &[ProviderMessage]) -> serde_json::Value {
-        match self.profile.openai_http_api {
+    fn request_body(
+        &self,
+        messages: &[ProviderMessage],
+        options: &crate::StreamOptions,
+    ) -> serde_json::Value {
+        let model = options
+            .model_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(self.profile.model.as_str());
+        let mut body = match self.profile.openai_http_api {
             OpenAiHttpApi::ChatCompletions => serde_json::json!({
-                "model": self.profile.model,
+                "model": model,
                 "messages": messages,
                 "stream": true,
                 "tools": openai_tools_payload(),
                 "tool_choice": "auto",
             }),
             OpenAiHttpApi::Responses => serde_json::json!({
-                "model": self.profile.model,
+                "model": model,
                 "input": build_responses_input(messages),
                 "stream": true,
                 "tools": openai_responses_tools_payload(),
                 "tool_choice": "auto",
             }),
+        };
+        if let Some(effort) = options
+            .reasoning_effort
+            .as_deref()
+            .filter(|e| !e.is_empty())
+        {
+            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
         }
+        body
     }
 
     fn update_health(&self, health: ProviderHealth) {
@@ -131,10 +148,11 @@ impl OpenAiProvider {
         credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let url = self.request_url()?;
-        let body = self.request_body(messages);
+        let body = self.request_body(messages, &options);
         let mut attempt = 0u8;
 
         loop {
@@ -354,9 +372,10 @@ impl ModelProvider for OpenAiProvider {
         credential: Option<&str>,
         runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        self.stream_with_retry(messages, credential, runtime, cancel, on_event)
+        self.stream_with_retry(messages, credential, runtime, cancel, options, on_event)
             .await
     }
 }
@@ -479,7 +498,10 @@ mod tests {
         assert_eq!(provider.protocol_id(), "openai_responses");
         let url = provider.request_url().unwrap();
         assert!(url.path().ends_with("/v1/responses"));
-        let body = provider.request_body(&[ProviderMessage::user("hi")]);
+        let body = provider.request_body(
+            &[ProviderMessage::user("hi")],
+            &crate::StreamOptions::default(),
+        );
         assert!(body.get("input").is_some());
         assert!(body.get("messages").is_none());
         assert_eq!(body["tools"][0]["type"], "function");

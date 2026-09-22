@@ -3,11 +3,11 @@
 //! Manages registered providers and routes requests by provider_id.
 //! No central concrete enum: providers are registered at runtime.
 
-use crate::{ModelProvider, ProviderError, ProviderHealth};
+use crate::{ModelCatalogResult, ModelProvider, ProviderError, ProviderHealth};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-pub use impetus_protocol::{ModelProviderHealthLabel, ModelProviderStatus};
+pub use impetus_protocol::{ModelAvailability, ModelProviderHealthLabel, ModelProviderStatus};
 
 impl From<ProviderHealth> for ModelProviderHealthLabel {
     fn from(health: ProviderHealth) -> Self {
@@ -79,20 +79,100 @@ impl ProviderRegistry {
     }
 
     /// Labels + health for every registered provider (sorted by provider_id).
+    /// Sync path: static profile model only (no remote `/v1/models` probe).
     pub fn list_status(&self, default_provider_id: &str) -> Vec<ModelProviderStatus> {
         let mut ids = self.list_provider_ids();
         ids.sort();
         ids.into_iter()
             .filter_map(|provider_id| {
                 let provider = self.get(&provider_id).ok()?;
-                Some(ModelProviderStatus {
-                    is_default: provider_id == default_provider_id,
+                let is_default = provider_id == default_provider_id;
+                let mut status = ModelProviderStatus::basic(
                     provider_id,
-                    model_id: provider.model_id().to_string(),
-                    health: provider.health().into(),
-                })
+                    provider.model_id().to_string(),
+                    provider.health().into(),
+                    is_default,
+                );
+                status.agent_capabilities = provider.agent_capabilities();
+                Some(status)
             })
             .collect()
+    }
+
+    /// Enrich catalog with OpenAI-compat `/v1/models` (or honest static fallback).
+    pub async fn list_status_with_discovery(
+        &self,
+        default_provider_id: &str,
+    ) -> Vec<ModelProviderStatus> {
+        let mut ids = self.list_provider_ids();
+        ids.sort();
+        let mut out = Vec::new();
+        for provider_id in ids {
+            let Ok(provider) = self.get(&provider_id) else {
+                continue;
+            };
+            let agent_caps = provider.agent_capabilities();
+            let catalog = provider.discover_models().await;
+            let is_default_provider = provider_id == default_provider_id;
+            match catalog {
+                ModelCatalogResult::Discovered { model_ids } => {
+                    for (idx, model_id) in model_ids.into_iter().enumerate() {
+                        let mut status = ModelProviderStatus::basic(
+                            provider_id.clone(),
+                            model_id,
+                            ModelProviderHealthLabel::Healthy,
+                            is_default_provider && idx == 0,
+                        );
+                        status.availability = ModelAvailability::Available;
+                        status.agent_capabilities = agent_caps.clone();
+                        status.provider_options = serde_json::json!({
+                            "discovery": "remote_v1_models"
+                        });
+                        out.push(status);
+                    }
+                }
+                ModelCatalogResult::StaticFallback {
+                    model_ids,
+                    reason_redacted,
+                } => {
+                    for (idx, model_id) in model_ids.into_iter().enumerate() {
+                        let mut status = ModelProviderStatus::basic(
+                            provider_id.clone(),
+                            model_id,
+                            // Honest: do not claim Healthy when discovery failed/absent.
+                            ModelProviderHealthLabel::Unknown,
+                            is_default_provider && idx == 0,
+                        );
+                        status.availability = ModelAvailability::Unknown;
+                        status.agent_capabilities = agent_caps.clone();
+                        status.provider_options = serde_json::json!({
+                            "discovery": "static_fallback",
+                            "reason": reason_redacted,
+                        });
+                        out.push(status);
+                    }
+                }
+            }
+        }
+        // Ensure at most one is_default across the whole catalog.
+        let mut saw_default = false;
+        for status in &mut out {
+            if status.is_default {
+                if saw_default {
+                    status.is_default = false;
+                } else {
+                    saw_default = true;
+                }
+            }
+        }
+        if !saw_default
+            && let Some(first) = out
+                .iter_mut()
+                .find(|s| s.provider_id == default_provider_id)
+        {
+            first.is_default = true;
+        }
+        out
     }
 
     /// Check if a provider is registered.
@@ -165,6 +245,23 @@ mod tests {
         assert!(status[0].is_default);
         assert_eq!(status[0].model_id, "model1");
         assert!(!status[1].is_default);
+    }
+
+    #[tokio::test]
+    async fn list_status_with_discovery_static_fallback_is_unknown_not_healthy() {
+        let registry = ProviderRegistry::new();
+        registry
+            .register(Arc::new(MockProvider::default_mock()))
+            .unwrap();
+        let status = registry.list_status_with_discovery("mock").await;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].health, ModelProviderHealthLabel::Unknown);
+        assert_eq!(status[0].availability, ModelAvailability::Unknown);
+        assert_eq!(
+            status[0].provider_options["discovery"],
+            serde_json::json!("static_fallback")
+        );
+        assert!(status[0].is_default);
     }
 
     #[test]

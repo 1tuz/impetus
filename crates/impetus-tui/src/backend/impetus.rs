@@ -45,6 +45,7 @@ impl UiBackend for ImpetusBackend {
                 supported_version,
                 client_version,
                 upgrade_recommendation,
+                ..
             } => bail!(
                 "IPC incompatible: client={client_version}, daemon={supported_version}. {}",
                 upgrade_recommendation
@@ -152,6 +153,7 @@ impl UiBackend for ImpetusBackend {
                 supported_version,
                 client_version,
                 upgrade_recommendation,
+                ..
             } => {
                 bail!(
                     "IPC incompatible: client={client_version}, daemon={supported_version}. {}",
@@ -200,6 +202,7 @@ impl UiBackend for ImpetusBackend {
                 supported_version,
                 client_version,
                 upgrade_recommendation,
+                ..
             } => {
                 bail!(
                     "IPC incompatible: client={client_version}, daemon={supported_version}. {}",

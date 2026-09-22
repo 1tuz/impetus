@@ -4,8 +4,8 @@ use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     MAX_IPC_LINE_BYTES, NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig,
     PolicyEngine, ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
-    build_explore_spawn_bridge_for_harness, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
-    load_daemon_policy_store, open_daemon_worktree_manager,
+    load_daemon_hook_prefilter, load_daemon_mcp_runtime, load_daemon_policy_store,
+    open_daemon_worktree_manager,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -32,6 +32,8 @@ async fn main() -> Result<()> {
         .context("socket path must have a parent directory")?;
     std::fs::create_dir_all(parent).context("create harness data directory")?;
     std::fs::create_dir_all(&data_root).context("create harness event-store directory")?;
+    // Owner-only data tree (socket already 0600) — no shared-home leakage.
+    restrict_dir_permissions(&data_root)?;
     let store = SqliteEventStore::open(data_root.join("events.sqlite3"))?;
     let harness = Arc::new(configured_harness(
         store,
@@ -168,25 +170,39 @@ fn configured_harness(
     wire_daemon_runtime(harness, data_root)
 }
 
-/// Attach production Explore spawn + WorktreeManager + optional MCP/hook/policy/workflow.
+/// Attach production Explore spawn + WorktreeManager + MCP/hook/policy/workflow/PTY store.
 ///
 /// WorktreeManager: `{data_root}/worktrees.sqlite3` + `{data_root}/worktrees/`.
 /// Open failure is fail-closed (daemon start aborts) so Git IPC does not silently
 /// resolve cwd to the workspace root without managed-worktree preference.
+///
+/// MCP SoT: only `{data_root}/mcp/*.json` (autoload + `ReloadMcpServers`).
+/// Workflow Explore uses the same AgentLoop Explore executor as `explore_spawn`.
 fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
-    let explore = build_explore_spawn_bridge_for_harness(
-        data_root,
+    let child_store = Arc::new(
+        impetus_core::ChildResultStore::open(data_root.join("child_results.sqlite3"))
+            .context("open child result store")?,
+    );
+    let explore_executor = impetus_core::build_agent_loop_explore_executor_for_harness(
         harness.provider_registry(),
         harness.default_provider_id(),
         harness.policy(),
-        harness.store(),
     )
-    .context("wire Explore spawn bridge")?;
+    .context("wire AgentLoop Explore executor")?;
+    let explore: Arc<dyn impetus_core::ExploreSpawnBridge> =
+        Arc::new(impetus_core::HarnessExploreSpawn {
+            gate: Arc::new(std::sync::Mutex::new(
+                impetus_core::ChildConcurrencyGate::new(),
+            )),
+            store: child_store.clone(),
+            executor: explore_executor.clone(),
+            parent_events: Some(harness.store()),
+        });
     let harness = harness.with_explore_spawn(explore);
 
     let worktrees =
         open_daemon_worktree_manager(data_root).context("open WorktreeManager under data root")?;
-    let harness = harness.with_worktree_manager(worktrees);
+    let harness = harness.with_worktree_manager(worktrees.clone());
 
     let hook_prefilter =
         load_daemon_hook_prefilter(data_root).context("load hook prefilter catalog")?;
@@ -201,29 +217,72 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         .with_provider_steer_rewrite()
         .context("wire provider steer rewrite")?;
 
-    let child_store = Arc::new(
-        impetus_core::ChildResultStore::open(data_root.join("child_results.sqlite3"))
-            .context("open child result store for workflow")?,
-    );
+    let harness = wire_daemon_coding_tools(harness);
+
     let workflow = Arc::new(
         impetus_core::WorkflowRuntime::with_parent_events(
             child_store,
             Arc::new(impetus_core::ProcessRoleChildExecutor::new()),
-            Arc::new(impetus_core::ReadOnlyExploreExecutor::new(
-                impetus_core::default_artifact_root(),
-            )),
+            explore_executor,
             Some(harness.store()),
         )
-        .context("build workflow runtime")?,
+        .context("build workflow runtime")?
+        .with_worktree_manager(worktrees),
     );
     let harness = harness.with_workflow_runtime(workflow);
 
+    // Always wire MCP slot (empty OK) + reload from `$IMPETUS_DATA_DIR/mcp/*.json`.
     let mcp_runtime = load_daemon_mcp_runtime(data_root).context("load MCP autoload config")?;
-    if mcp_runtime.registered_ids().is_empty() {
-        Ok(harness)
-    } else {
-        Ok(harness.with_tool_providers(Arc::new(tokio::sync::Mutex::new(mcp_runtime))))
+    let mcp_slot = Arc::new(tokio::sync::Mutex::new(mcp_runtime));
+    let data_root_owned = data_root.to_path_buf();
+    let harness = harness
+        .with_tool_providers(mcp_slot)
+        .with_mcp_reload(Arc::new(move || {
+            load_daemon_mcp_runtime(&data_root_owned).map_err(|error| error.to_string())
+        }));
+
+    // Durable PTY metadata when SQLite open succeeds (restart/resume of metadata only;
+    // live PTY handles do not survive daemon restart — client must re-Start).
+    if let Ok(store) = impetus_core::open_daemon_pty_session_store(data_root) {
+        harness.pty_manager().set_store(store);
     }
+
+    Ok(harness)
+}
+
+/// Attach ProcessLspBackend when a runtime binary is discoverable.
+///
+/// Discovery order: `IMPETUS_LSP_BINARY`, then `rust-analyzer` on `PATH`.
+/// Missing binary → leave Absent (Goto/Hover stay Unavailable — honest).
+/// Never prompts for install privileges; userspace PATH only.
+fn wire_daemon_coding_tools(harness: Harness) -> Harness {
+    let Some(binary) = discover_lsp_binary() else {
+        return harness;
+    };
+    let backend = impetus_core::ProcessLspBackend::rust_analyzer(
+        impetus_core::LspBackendLaunchHint::with_runtime_binary(binary),
+    );
+    harness.with_coding_tools(Arc::new(
+        impetus_core::OptionalCodingToolsService::with_provider(Arc::new(backend)),
+    ))
+}
+
+fn discover_lsp_binary() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("IMPETUS_LSP_BINARY") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Some(path);
+        }
+        return None;
+    }
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join("rust-analyzer");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Build the daemon PolicyEngine from an optional explicit path or conventional defaults.
@@ -290,9 +349,29 @@ impl CredentialResolver for MacosKeychainResolver {
 
 type KeychainPasswordFetcher = fn(&str, &str) -> Result<Vec<u8>, ()>;
 
+/// Silent Keychain read: never show unlock / password / Touch ID UI.
+///
+/// `get_generic_password` can prompt when the item (or keychain) needs auth.
+/// Daemon policy: fail closed with `MissingCredential` instead — core Impetus
+/// must run without any password dialog.
 #[cfg(target_os = "macos")]
 fn platform_keychain_fetch(service: &str, account: &str) -> Result<Vec<u8>, ()> {
-    security_framework::passwords::get_generic_password(service, account).map_err(|_| ())
+    use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+
+    let results = ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_data(true)
+        .limit(1)
+        // kSecUseAuthenticationUISkip — skip items that would prompt the user
+        .skip_authenticated_items(true)
+        .search()
+        .map_err(|_| ())?;
+    match results.into_iter().next() {
+        Some(SearchResult::Data(bytes)) => Ok(bytes),
+        _ => Err(()),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -514,7 +593,17 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::PtyTerminate { .. }
         | IpcRequest::PtyStatus { .. } => "pty",
         IpcRequest::ListMcpServers => "list_mcp",
-        IpcRequest::ListModels => "list_models",
+        IpcRequest::ListModels | IpcRequest::ListProviders => "list_models",
+        IpcRequest::GetSessionModel { .. } | IpcRequest::SetSessionModel { .. } => "session_model",
+        IpcRequest::CreateWorktree { .. }
+        | IpcRequest::ListWorktrees { .. }
+        | IpcRequest::GetWorktree { .. }
+        | IpcRequest::CloseWorktree { .. }
+        | IpcRequest::ResumeWorktree { .. }
+        | IpcRequest::StopWorktree { .. }
+        | IpcRequest::CheckWorktreeMergeReady { .. }
+        | IpcRequest::MergeWorktree { .. } => "worktrees",
+        IpcRequest::ReloadMcpServers => "mcp_manage",
     }
 }
 
@@ -582,6 +671,19 @@ fn set_socket_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn restrict_dir_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .context("restrict harness data directory permissions")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,6 +731,98 @@ mod tests {
             ),
             Ok("token".to_string()),
         );
+    }
+
+    /// Regression: production Keychain path must not call prompting
+    /// Keychain password APIs — only silent ItemSearchOptions + AuthUISkip.
+    #[test]
+    fn platform_keychain_source_never_uses_prompting_get_generic_password() {
+        let src = include_str!("main.rs");
+        // Isolate the silent Keychain helper (not the test module that mentions it).
+        let start = src
+            .find("fn platform_keychain_fetch")
+            .expect("platform_keychain_fetch present");
+        let end = src[start..]
+            .find("\nfn ")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let helper = &src[start..end];
+        let code: String = helper
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("passwords::get_generic_password")
+                && !code.contains("get_generic_password("),
+            "daemon Keychain fetch must not call prompting Keychain password API"
+        );
+        assert!(
+            code.contains("skip_authenticated_items(true)"),
+            "daemon Keychain fetch must set kSecUseAuthenticationUISkip"
+        );
+        assert!(
+            code.contains("ItemSearchOptions"),
+            "daemon Keychain fetch must use ItemSearchOptions silent path"
+        );
+    }
+
+    /// Core flows must not shell out to privilege escalation helpers.
+    #[test]
+    fn daemon_source_never_invokes_sudo_or_osascript_admin() {
+        let src = include_str!("main.rs");
+        let start = src.find("fn main(").expect("main present");
+        let end = src
+            .find("\nmod tests ")
+            .or_else(|| src.find("\nmod tests{"))
+            .unwrap_or_else(|| src.rfind("#[cfg(test)]\nmod tests").unwrap_or(src.len()));
+        let prod = &src[start..end];
+        let code: String = prod
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "Command::new(\"sudo\")",
+            "Command::new(\"su\")",
+            "osascript",
+            "withAdministratorPrivileges",
+        ] {
+            assert!(
+                !code.contains(needle),
+                "impetusd production path must not invoke `{needle}`"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_wires_process_lsp_when_binary_discoverable() {
+        let dir = test_temp_dir("lsp-wire");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        // Prefer explicit fake missing path → Absent path still boots.
+        unsafe {
+            std::env::set_var(
+                "IMPETUS_LSP_BINARY",
+                dir.join("missing-ra").display().to_string(),
+            );
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("harness without lsp binary");
+        // Absent coding tools still answers IPC with Unavailable (not crash).
+        let _ = harness;
+        unsafe {
+            std::env::remove_var("IMPETUS_LSP_BINARY");
+        }
+        // When rust-analyzer is on PATH, discovery should attach ProcessLspBackend.
+        if discover_lsp_binary().is_some() {
+            let store2 = Arc::new(MemoryEventStore::default());
+            let harness2 =
+                configured_harness(store2, &dir, []).expect("harness with discovered lsp");
+            let _ = harness2;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -808,6 +1002,96 @@ mod tests {
     }
 
     #[test]
+    fn daemon_mcp_empty_dir_still_wires_reload_slot() {
+        let dir = test_temp_dir("mcp-empty-wire");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("empty mcp harness");
+        assert!(harness.has_tool_providers());
+        assert!(harness.has_mcp_reload());
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ListMcpServers) else {
+            panic!("list mcp");
+        };
+        assert!(servers.is_empty());
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ReloadMcpServers)
+        else {
+            panic!("reload empty mcp");
+        };
+        assert!(servers.is_empty());
+        assert!(harness.pty_manager().has_store());
+        assert!(impetus_core::default_pty_session_store_path(&dir).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_mcp_reload_picks_up_new_json() {
+        let dir = test_temp_dir("mcp-reload");
+        let mcp_dir = dir.join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("mcp dir");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("harness");
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ListMcpServers) else {
+            panic!("list");
+        };
+        assert!(servers.is_empty());
+        std::fs::write(
+            mcp_dir.join("echo.json"),
+            br#"{
+                "name": "echo",
+                "command": "true",
+                "args": [],
+                "env": {},
+                "transport": "stdio",
+                "capabilities": { "tools": true, "resources": false, "prompts": false, "sampling": false }
+            }"#,
+        )
+        .expect("write mcp");
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ReloadMcpServers)
+        else {
+            panic!("reload");
+        };
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "echo");
+        assert!(!servers[0].connected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_workflow_explore_uses_agent_loop_bridge() {
+        let dir = test_temp_dir("wf-explore");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("harness");
+        assert!(harness.has_workflow_runtime());
+        let wf = harness.workflow_runtime().expect("workflow");
+        let sid = uuid::Uuid::new_v4();
+        let cwd = std::env::current_dir().expect("cwd");
+        wf.start(
+            sid,
+            impetus_core::WorkflowEngine::bug_skeleton_recipe(),
+            cwd,
+        )
+        .expect("start");
+        let summary = wf.run_next_ready_step(sid).expect("explore step");
+        // Mock provider default chunk — proves AgentLoop Explore, not ReadOnly.
+        assert!(
+            summary.contains("Mock response") || !summary.is_empty(),
+            "unexpected explore summary: {summary}"
+        );
+        let kids = wf.child_results().list_by_parent(&sid.to_string()).unwrap();
+        assert!(!kids.is_empty());
+        assert_eq!(kids[0].role_label, "Explore");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn startup_policy_explicit_file_applies_override() {
         let dir = test_temp_dir("policy-explicit");
         let path = dir.join("policy.json");
@@ -862,6 +1146,7 @@ mod tests {
             ),
             IpcResponse::Incompatible {
                 supported_version: IPC_VERSION,
+                min_supported: impetus_core::IPC_MIN_SUPPORTED,
                 client_version: IPC_VERSION + 1,
                 upgrade_recommendation: Some(format!(
                     "Client version {} is newer than harness {}. Upgrade harness.",

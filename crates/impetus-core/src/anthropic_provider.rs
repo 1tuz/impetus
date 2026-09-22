@@ -96,6 +96,7 @@ impl AnthropicProvider {
     fn build_request_body(
         &self,
         messages: &[ProviderMessage],
+        options: &crate::StreamOptions,
     ) -> Result<serde_json::Value, ProviderError> {
         let mut system_parts: Vec<String> = Vec::new();
         let mut anthropic_messages: Vec<serde_json::Value> = Vec::new();
@@ -121,8 +122,13 @@ impl AnthropicProvider {
             }
         }
 
+        let model = options
+            .model_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(self.profile.model.as_str());
         let mut body = serde_json::json!({
-            "model": self.profile.model,
+            "model": model,
             "messages": anthropic_messages,
             "stream": true,
             "max_tokens": 8192,
@@ -131,6 +137,14 @@ impl AnthropicProvider {
 
         if !system_parts.is_empty() {
             body["system"] = serde_json::Value::String(system_parts.join("\n\n"));
+        }
+        if let Some(effort) = options
+            .reasoning_effort
+            .as_deref()
+            .filter(|e| !e.is_empty())
+        {
+            // Vendor-neutral effort label; Anthropic may ignore unknown fields.
+            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
         }
 
         Ok(body)
@@ -142,10 +156,11 @@ impl AnthropicProvider {
         credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let url = self.messages_url()?;
-        let body = self.build_request_body(messages)?;
+        let body = self.build_request_body(messages, &options)?;
         let mut attempt = 0u8;
 
         loop {
@@ -336,9 +351,10 @@ impl ModelProvider for AnthropicProvider {
         credential: Option<&str>,
         runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
-        self.stream_with_retry(messages, credential, runtime, cancel, on_event)
+        self.stream_with_retry(messages, credential, runtime, cancel, options, on_event)
             .await
     }
 }

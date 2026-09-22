@@ -15,6 +15,14 @@ orchestration, safety decisions, credentials, and execution authority stay
 together behind replaceable terminal and remote clients. A client restart
 cannot silently discard an in-flight session or expand its access.
 
+**No root / sudo / password in normal mode.** `impetus` and `impetusd` run
+entirely in userspace under `$HOME` (or `IMPETUS_DATA_DIR`). Seatbelt is
+userspace `sandbox-exec`. Keychain reads are silent
+(`kSecUseAuthenticationUISkip`) — missing credentials fail closed; the daemon
+never shows an unlock / password dialog. Privilege escalation (`sudo` / `su` /
+login-shell `-l`) is refused by policy. Optional admin-only features stay
+opt-in and never block core flows.
+
 ## Why it exists
 
 Engineering agents need long-lived state and controlled tools without making a
@@ -67,16 +75,17 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
 - Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
   shared-prefix fork and checkpoints.
 - Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
-  Production MCP: `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into
-  `ToolProviderRuntime` (fail-closed on bad config; live connect on first tool
-  use). Read-only catalog IPC: `ListMcpServers` / `ListModels` (labels/status;
-  no secrets). TUI/Desktop pickers UI still polish — see [TODO.md](TODO.md).
+  Lifecycle CLI keep (`impetus extension plan|install|…`); no marketplace.
+  Production MCP SoT: `impetusd` autoloads **only** `$IMPETUS_DATA_DIR/mcp/*.json`
+  + live `ReloadMcpServers`; `ListMcpServers` / `ListModels` IPC
+  (`connected=false` until first tool use). Explore child + Workflow Explore
+  share one AgentLoop bridge. MemoryStore / Browser daemon IPC still **Planned**.
 - Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
-  containment; Agent origin Seatbelt-wrapped on macOS; TUI passthrough
-  (`Ctrl+\` / `/pty`).
-- Production model path defaults to Mock or native OpenAI Chat Completions SSE
-  (`--provider-profile`); Anthropic library is available but not the default
-  daemon path. JSON Schema tool-arg validation runs before policy on builtins.
+  containment; Agent origin Seatbelt on macOS; optional Sqlite metadata store;
+  live PTY not restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).
+- Session model IPC (`ListProviders` / Get/SetSessionModel) + OpenAI Chat
+  Completions SSE default (`--provider-profile`); Anthropic library not default
+  daemon path. JSON Schema tool-arg validation before policy on builtins.
 
 ## Request control flow
 

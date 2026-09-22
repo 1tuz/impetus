@@ -2,10 +2,11 @@ use crate::Event;
 use crate::types::{
     ApprovalDetail, CheckpointInfo, ChildResult, DurableArtifactMeta, DurableArtifactRef,
     ExecutionMode, GitBranchInfo, GitChangedFile, GitCurrentBranch, GitDiffPayload,
-    GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus, ModelProviderStatus,
-    PolicyConfig, PolicyStore, PtySessionState, ReadOnlyToolKind, ResolvedInstructions,
-    RuntimeStatus, SessionInfo, SourceLocation, SubsystemHealth, ToolOutcome, UserPromptIntent,
-    WorkspaceDirListing, WorkspaceFileContent, WorkspaceFileMetadata, WorkspaceSearchResult,
+    GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus, MergeReadyReport,
+    ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState, ReadOnlyToolKind,
+    ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection, SourceLocation,
+    SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent,
+    WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -51,7 +52,9 @@ fn events_frame_len(session_id: Uuid, events: &[Event]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-pub const IPC_VERSION: u16 = 12;
+pub const IPC_VERSION: u16 = 13;
+/// Inclusive lower bound for Hello negotiation (clients on 12..13 accepted).
+pub const IPC_MIN_SUPPORTED: u16 = 12;
 
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
@@ -98,6 +101,12 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     // Daemon SoT MCP / model catalog (labels + status only; no secrets).
     "list_mcp",
     "list_models",
+    "list_providers",
+    "session_model",
+    // Managed git worktrees lifecycle (IPC v13).
+    "worktrees",
+    // MCP SoT mutate/reload under $IMPETUS_DATA_DIR/mcp (IPC v13).
+    "mcp_manage",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -388,6 +397,52 @@ pub enum IpcRequest {
     ListMcpServers,
     /// List registered model providers (ids + health; no credentials).
     ListModels,
+    /// List provider catalog (same SoT as ListModels; explicit cap for clients).
+    ListProviders,
+    /// Current session model selection (daemon SoT).
+    GetSessionModel {
+        session_id: Uuid,
+    },
+    /// Override session model / reasoning without rebinding ProviderProfile.
+    SetSessionModel {
+        session_id: Uuid,
+        provider_id: String,
+        model_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+    },
+    /// Create a managed git worktree bound to the session (Build role when `for_build`).
+    CreateWorktree {
+        session_id: Uuid,
+        #[serde(default)]
+        for_build: bool,
+    },
+    ListWorktrees {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<Uuid>,
+    },
+    GetWorktree {
+        worktree_id: String,
+    },
+    CloseWorktree {
+        worktree_id: String,
+    },
+    ResumeWorktree {
+        session_id: Uuid,
+    },
+    StopWorktree {
+        session_id: Uuid,
+    },
+    CheckWorktreeMergeReady {
+        session_id: Uuid,
+        base_ref: String,
+    },
+    MergeWorktree {
+        session_id: Uuid,
+        base_ref: String,
+    },
+    /// Reload MCP catalog from daemon SoT (`$IMPETUS_DATA_DIR/mcp/*.json`).
+    ReloadMcpServers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -585,8 +640,31 @@ pub enum IpcResponse {
     Models {
         providers: Vec<ModelProviderStatus>,
     },
+    /// Session model selection (daemon SoT).
+    SessionModel {
+        session_id: Uuid,
+        selection: SessionModelSelection,
+    },
+    Worktree {
+        worktree: WorktreeInfo,
+    },
+    Worktrees {
+        worktrees: Vec<WorktreeInfo>,
+    },
+    WorktreeMergeReady {
+        report: MergeReadyReport,
+    },
+    WorktreeMerged {
+        worktree: WorktreeInfo,
+    },
+    McpReloaded {
+        servers: Vec<McpServerStatus>,
+    },
     Incompatible {
         supported_version: u16,
+        /// Inclusive lower bound the server still accepts.
+        #[serde(default = "default_min_supported")]
+        min_supported: u16,
         client_version: u16,
         upgrade_recommendation: Option<String>,
     },
@@ -594,6 +672,10 @@ pub enum IpcResponse {
         code: IpcErrorCode,
         message: String,
     },
+}
+
+fn default_min_supported() -> u16 {
+    IPC_MIN_SUPPORTED
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -610,10 +692,9 @@ pub enum IpcErrorCode {
 mod sentinel_protocol {
     //! PR-safe IPC protocol lib suite (TODO P2 CI / #315).
     //!
-    //! Filter: `cargo test -p impetus-core --lib sentinel_protocol`
-    //! All named sentinels: `cargo test -p impetus-core --lib -- sentinel`
-    //!
-    //! Hello/version/capability DTOs + message round-trips. No daemon socket.
+    //! Filter: `cargo test -p impetus-protocol --lib sentinel_protocol`
+    //! All named sentinels: `cargo test -p impetus-protocol --lib -- sentinel`
+    //!                     + `cargo test -p impetus-core --lib -- sentinel`
 
     use super::*;
 
@@ -956,12 +1037,12 @@ mod sentinel_protocol {
         );
 
         let models_response = IpcResponse::Models {
-            providers: vec![ModelProviderStatus {
-                provider_id: "mock".into(),
-                model_id: "mock-model".into(),
-                health: crate::types::ModelProviderHealthLabel::Healthy,
-                is_default: true,
-            }],
+            providers: vec![ModelProviderStatus::basic(
+                "mock",
+                "mock-model",
+                crate::types::ModelProviderHealthLabel::Healthy,
+                true,
+            )],
         };
         assert_eq!(
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&models_response).unwrap())
@@ -971,7 +1052,10 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"list_mcp"));
         assert!(IPC_CAPABILITIES.contains(&"list_models"));
         assert!(IPC_CAPABILITIES.contains(&"structured_diff"));
-        assert_eq!(IPC_VERSION, 12);
+        assert!(IPC_CAPABILITIES.contains(&"worktrees"));
+        assert!(IPC_CAPABILITIES.contains(&"session_model"));
+        assert_eq!(IPC_VERSION, 13);
+        assert_eq!(IPC_MIN_SUPPORTED, 12);
     }
 
     #[test]

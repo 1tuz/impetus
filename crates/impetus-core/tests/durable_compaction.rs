@@ -122,7 +122,14 @@ async fn agent_loop_emits_durable_compaction_events_with_structural_state() {
     let runtime = Arc::new(runtime);
     let run_id = runtime.start_run().expect("run");
     AgentLoop::new(runtime.clone())
-        .execute(run_id, mock, compacted, CancellationToken::new(), None)
+        .execute(
+            run_id,
+            mock,
+            compacted,
+            CancellationToken::new(),
+            None,
+            impetus_core::StreamOptions::default(),
+        )
         .await
         .expect("loop after compaction");
 }
