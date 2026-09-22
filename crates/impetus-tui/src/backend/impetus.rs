@@ -428,24 +428,25 @@ impl UiBackend for ImpetusBackend {
             .await
     }
 
-    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()> {
-        self.client.pty_input(pty_id, data).await
+    async fn pty_input(&self, session_id: Uuid, pty_id: u64, data: &[u8]) -> Result<()> {
+        self.client.pty_input(session_id, pty_id, data).await
     }
 
     async fn pty_output(
         &self,
+        session_id: Uuid,
         pty_id: u64,
         max_bytes: Option<usize>,
     ) -> Result<impetus_client::PtyOutputView> {
-        self.client.pty_output(pty_id, max_bytes).await
+        self.client.pty_output(session_id, pty_id, max_bytes).await
     }
 
-    async fn pty_resize(&self, pty_id: u64, cols: u16, rows: u16) -> Result<()> {
-        self.client.pty_resize(pty_id, cols, rows).await
+    async fn pty_resize(&self, session_id: Uuid, pty_id: u64, cols: u16, rows: u16) -> Result<()> {
+        self.client.pty_resize(session_id, pty_id, cols, rows).await
     }
 
-    async fn pty_detach(&self, pty_id: u64) -> Result<()> {
-        self.client.pty_detach(pty_id).await
+    async fn pty_detach(&self, session_id: Uuid, pty_id: u64) -> Result<()> {
+        self.client.pty_detach(session_id, pty_id).await
     }
 
     async fn subscribe(

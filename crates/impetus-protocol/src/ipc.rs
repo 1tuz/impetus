@@ -51,7 +51,7 @@ fn events_frame_len(session_id: Uuid, events: &[Event]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-pub const IPC_VERSION: u16 = 11;
+pub const IPC_VERSION: u16 = 12;
 
 pub const IPC_CAPABILITIES: &[&str] = &[
     "session_create",
@@ -336,7 +336,7 @@ pub enum IpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_ref: Option<String>,
     },
-    /// Spawn a daemon-owned PTY (policy origin=user). Emits Notice lifecycle.
+    /// Spawn a daemon-owned PTY (policy origin=user). Emits Pty lifecycle on owner session.
     PtyStart {
         session_id: Uuid,
         command: String,
@@ -348,33 +348,40 @@ pub enum IpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rows: Option<u16>,
     },
-    /// Re-attach a previously detached live PTY.
+    /// Re-attach a previously detached live PTY owned by `session_id`.
     PtyAttach {
+        session_id: Uuid,
         pty_id: u64,
     },
-    /// Write bytes to PTY stdin (base64).
+    /// Write bytes to PTY stdin (base64). Caller must own the PTY.
     PtyInput {
+        session_id: Uuid,
         pty_id: u64,
         data_b64: String,
     },
     /// Drain bounded output from the PTY ring buffer.
     PtyOutput {
+        session_id: Uuid,
         pty_id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_bytes: Option<usize>,
     },
     PtyResize {
+        session_id: Uuid,
         pty_id: u64,
         cols: u16,
         rows: u16,
     },
     PtyDetach {
+        session_id: Uuid,
         pty_id: u64,
     },
     PtyTerminate {
+        session_id: Uuid,
         pty_id: u64,
     },
     PtyStatus {
+        session_id: Uuid,
         pty_id: u64,
     },
     /// List daemon MCP catalog (labels + connected flag; no env/args/secrets).
@@ -552,6 +559,7 @@ pub enum IpcResponse {
     },
     PtySession {
         pty_id: u64,
+        owner_session_id: Uuid,
         state: PtySessionState,
         command: String,
         cols: u16,
@@ -963,7 +971,7 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"list_mcp"));
         assert!(IPC_CAPABILITIES.contains(&"list_models"));
         assert!(IPC_CAPABILITIES.contains(&"structured_diff"));
-        assert_eq!(IPC_VERSION, 11);
+        assert_eq!(IPC_VERSION, 12);
     }
 
     #[test]

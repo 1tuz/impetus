@@ -61,7 +61,10 @@ surface (migration note, не deletion).
   Production MCP: `impetusd` autoload `$IMPETUS_DATA_DIR/mcp/*.json` в
   `ToolProviderRuntime` (fail-closed на bad config; live connect на first tool
   use). Read-only catalog IPC: `ListMcpServers` / `ListModels` (labels/status;
-  no secrets). Pickers UI ещё open — см. [TODO.md](TODO.md).
+  no secrets). Pickers UI ещё polish — см. [TODO.md](TODO.md).
+- Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
+  containment; Agent origin — Seatbelt на macOS; TUI passthrough
+  (`Ctrl+\` / `/pty`).
 - Production model path: Mock или native OpenAI Chat Completions SSE
   (`--provider-profile`); Anthropic library есть, но не default daemon path.
   JSON Schema tool-arg validation — до policy на builtins.

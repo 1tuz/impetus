@@ -8,13 +8,12 @@ license.workspace = true
 [features]
 default = []
 # Embedded/test harness that drives `Harness` in-process. Unix socket path does
-# not need this. Enabling still pulls full `impetus-core` (no rusqlite/reqwest
-# strip until a core feature-split / thin protocol crate).
-in-memory = []
+# not need this.
+in-memory = ["dep:impetus-core"]
 
 [dependencies]
 impetus-protocol = { path = "../impetus-protocol" }
-impetus-core = { path = "../impetus-core" }
+impetus-core = { path = "../impetus-core", optional = true }
 anyhow.workspace = true
 base64 = "0.23.1"
 serde_json.workspace = true
@@ -22,4 +21,5 @@ tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+impetus-core = { path = "../impetus-core" }
 tempfile = "3.15"

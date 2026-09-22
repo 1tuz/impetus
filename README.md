@@ -69,7 +69,11 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
 - Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
   Production MCP: `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into
   `ToolProviderRuntime` (fail-closed on bad config; live connect on first tool
-  use). Operator catalog IPC / pickers still open — see [TODO.md](TODO.md) #315.
+  use). Read-only catalog IPC: `ListMcpServers` / `ListModels` (labels/status;
+  no secrets). TUI/Desktop pickers UI still polish — see [TODO.md](TODO.md).
+- Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
+  containment; Agent origin Seatbelt-wrapped on macOS; TUI passthrough
+  (`Ctrl+\` / `/pty`).
 - Production model path defaults to Mock or native OpenAI Chat Completions SSE
   (`--provider-profile`); Anthropic library is available but not the default
   daemon path. JSON Schema tool-arg validation runs before policy on builtins.

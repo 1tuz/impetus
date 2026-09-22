@@ -129,7 +129,7 @@ Zap adapter ──HarnessClient──┘
 ```
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol
-(`IPC_VERSION` = 11, Hello exact-match), `HarnessClient`, provider registry
+(`IPC_VERSION` = 12, Hello exact-match), `HarnessClient`, provider registry
 foundation, shared-prefix session forks + named checkpoints, command/JSON
 client, `impetus doctor`, `impetus ui` (Ratatui), Module Runtime foundations,
 **`DurableArtifactStore`** (SHA-256, restart-safe; tools/web/paste upload +
@@ -140,9 +140,10 @@ baseline, не target integration architecture. `impetus components` — static
 built-in tool catalog (не live registry через IPC).
 
 **Partial / open (см. [ARCHITECTURE.md](ARCHITECTURE.md) matrix + [TODO.md](TODO.md)):**
-workspace Files / Git IPC (v8 caps; TUI `Ctrl+F` / `Ctrl+B` / Review done;
-Desktop local-git / Files wire still open), daemon-owned PTY
-(`portable-pty`, cap `pty`; TUI `/attach` ArtifactRef UI done),
+workspace Files / Git IPC (v8+; TUI `Ctrl+F` / `Ctrl+B` / Review done;
+Desktop harness Git/Files list+read+search; Review UI polish), daemon-owned
+PTY v12 (`owner_session_id`, cwd containment, Agent Seatbelt on macOS;
+TUI `Ctrl+\` passthrough),
 полный Session DAG, model router, remote agent flow end-to-end, полный
 extension compatibility layer, live module/registry browser.
 
@@ -158,16 +159,18 @@ extension compatibility layer, live module/registry browser.
 
 ## IPC compatibility (PROTO)
 
-- `IPC_VERSION` = 11. **Hello — exact-match**: version skew → `Incompatible`
+- `IPC_VERSION` = 12. **Hello — exact-match**: version skew → `Incompatible`
   (нет `min_supported` range до отдельного RFC).
 - Presentation crates берут wire/event DTO из `impetus-client::protocol`
   (façade над `impetus-protocol`). TUI/Desktop не зависят от `impetus-core` для
   **типов**.
-- Optional Cargo feature `impetus-client/in-memory` → `InMemoryTransport`;
-  production default — Unix socket.
+- Optional Cargo feature `impetus-client/in-memory` → `InMemoryTransport` +
+  optional `impetus-core`; production default — Unix socket (без core dep).
 - Wire DTO живут в runtime-free `impetus-protocol` (без rusqlite/reqwest/Harness).
-  Client всё ещё path-deps `impetus-core` для Unix / `Harness` / `in-memory` —
-  см. TODO.md PROTO.
+- **PTY (v12):** каждый `Pty*` несёт `session_id`; `PtySession` →
+  `owner_session_id`. Cross-session deny; events только owner session.
+  Cwd containment (`resolve_pty_working_dir`); Agent → `prepare_pty_sandbox`
+  на macOS; spill coalesce + `MAX_PTY_PENDING_SPILLS=4`.
 - Bump `IPC_VERSION` при добавлении Git / Files / PTY / MCP-model catalog /
   rich activity caps в Hello. Текущие caps включают workspace Files, Git,
   `structured_diff` (DiffObservation на GetDiff/GetFileDiff), daemon-owned

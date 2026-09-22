@@ -95,6 +95,74 @@ pub fn production_sandbox_provider() -> Arc<dyn SandboxProvider> {
     }
 }
 
+/// Keeps Seatbelt session temp dirs alive for the lifetime of a PTY child.
+pub struct PtySandboxKeepAlive {
+    _session_temp: SessionTempDirectory,
+}
+
+/// Argv + env for spawning a Seatbelt-wrapped command under `portable-pty`.
+pub struct PreparedPtySandbox {
+    pub executable: String,
+    pub args: Vec<String>,
+    pub working_dir: PathBuf,
+    pub env: Vec<(String, String)>,
+    pub keepalive: PtySandboxKeepAlive,
+    pub decision: SandboxDecision,
+}
+
+/// Prepare macOS Seatbelt wrap for agent-origin PTY (same profile rules as process).
+pub fn prepare_pty_sandbox(
+    executable: &str,
+    args: &[String],
+    workspace_root: &Path,
+    working_dir: &Path,
+    explicit_env: &[(String, String)],
+    allow_network: bool,
+) -> Result<PreparedPtySandbox, SandboxError> {
+    let request = SandboxCommandRequest {
+        executable,
+        args,
+        workspace_root,
+        working_dir,
+        explicit_env,
+        allow_network,
+    };
+    let provider = MacosSeatbeltSandbox;
+    provider.probe()?;
+    let paths = CanonicalSandboxPaths::new(&request)?;
+    let session_temp = SessionTempDirectory::create()?;
+    let profile = seatbelt_profile(&request, &paths, session_temp.path())?;
+
+    let mut wrapped_args = vec!["-p".to_string(), profile, executable.to_string()];
+    wrapped_args.extend(args.iter().cloned());
+
+    let mut env = vec![
+        ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+        ("HOME".into(), session_temp.home().display().to_string()),
+        ("TMPDIR".into(), session_temp.tmp().display().to_string()),
+        ("LANG".into(), "C".into()),
+        ("LC_ALL".into(), "C".into()),
+        ("TERM".into(), "dumb".into()),
+    ];
+    for (key, value) in explicit_env {
+        if !safe_environment_key(key) {
+            return Err(SandboxError::InvalidConfiguration);
+        }
+        env.push((key.clone(), value.clone()));
+    }
+
+    Ok(PreparedPtySandbox {
+        executable: SANDBOX_EXEC.to_string(),
+        args: wrapped_args,
+        working_dir: paths.working_dir,
+        env,
+        keepalive: PtySandboxKeepAlive {
+            _session_temp: session_temp,
+        },
+        decision: prepared_sandbox_decision(provider.backend_name(), &request),
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MacosSeatbeltSandbox;
 

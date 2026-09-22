@@ -212,6 +212,16 @@ pub enum WorktreeError {
     NotMergeReady(String),
     #[error("merge into {base_ref} would conflict: {detail}")]
     MergeConflict { base_ref: String, detail: String },
+    #[error("working tree has uncommitted changes")]
+    Dirty,
+    #[error("repository has an in-progress merge/rebase/cherry-pick or conflicts")]
+    ConflictInProgress,
+    #[error("unknown branch: {0}")]
+    UnknownBranch(String),
+    #[error("invalid branch name: {0}")]
+    InvalidBranchName(String),
+    #[error("branch already exists: {0}")]
+    BranchExists(String),
 }
 
 /// Creates, stops, resumes, closes, detects stale, and salvages git worktrees.
@@ -902,6 +912,72 @@ impl WorktreeManager {
         }
         Ok(())
     }
+
+    fn set_branch(&self, worktree_id: &str, branch: &str) -> Result<(), WorktreeError> {
+        let conn = self.conn.lock().expect("worktree db lock");
+        let n = conn.execute(
+            "UPDATE worktree_bindings SET branch = ?1, updated_unix_ms = ?2
+             WHERE worktree_id = ?3",
+            params![branch, now_unix_ms() as i64, worktree_id],
+        )?;
+        if n == 0 {
+            return Err(WorktreeError::CorruptState(format!(
+                "missing worktree_id {worktree_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Checkout `name` inside the managed worktree, then persist `binding.branch`.
+    ///
+    /// Failed checkout leaves the persisted binding unchanged.
+    pub fn switch_bound_branch(
+        &self,
+        session_id: Uuid,
+        name: &str,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        validate_branch_name_wt(name)?;
+        let binding = self.require_open(session_id)?;
+        if binding.state == WorktreeLifecycleState::Stale {
+            return Err(WorktreeError::InvalidTransition {
+                from: binding.state,
+                op: "switch_bound_branch",
+            });
+        }
+        refuse_dirty_wt(&binding.path)?;
+        refuse_conflict_wt(&binding.path)?;
+        if !branch_exists_wt(&binding.path, name)? {
+            return Err(WorktreeError::UnknownBranch(name.to_string()));
+        }
+        git(&binding.path, &["checkout", "--quiet", name])?;
+        self.set_branch(&binding.worktree_id, name)?;
+        self.get_by_worktree_id(&binding.worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFound(session_id))
+    }
+
+    /// Create branch in managed worktree; when `checkout`, update binding.branch.
+    pub fn create_bound_branch(
+        &self,
+        session_id: Uuid,
+        name: &str,
+        checkout: bool,
+    ) -> Result<WorktreeBinding, WorktreeError> {
+        validate_branch_name_wt(name)?;
+        let binding = self.require_open(session_id)?;
+        refuse_conflict_wt(&binding.path)?;
+        if branch_exists_wt(&binding.path, name)? {
+            return Err(WorktreeError::BranchExists(name.to_string()));
+        }
+        if checkout {
+            refuse_dirty_wt(&binding.path)?;
+            git(&binding.path, &["checkout", "-b", name])?;
+            self.set_branch(&binding.worktree_id, name)?;
+        } else {
+            git(&binding.path, &["branch", name])?;
+        }
+        self.get_by_worktree_id(&binding.worktree_id)?
+            .ok_or_else(|| WorktreeError::NotFound(session_id))
+    }
 }
 
 fn row_to_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeBinding> {
@@ -1012,6 +1088,61 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, WorktreeError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn validate_branch_name_wt(name: &str) -> Result<(), WorktreeError> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.contains("..")
+        || name.contains([' ', '\t', '\n', '~', '^', ':', '?', '*', '[', '\\'])
+    {
+        return Err(WorktreeError::InvalidBranchName(name.to_string()));
+    }
+    Ok(())
+}
+
+fn refuse_dirty_wt(path: &Path) -> Result<(), WorktreeError> {
+    if worktree_is_dirty(path)? {
+        Err(WorktreeError::Dirty)
+    } else {
+        Ok(())
+    }
+}
+
+fn refuse_conflict_wt(path: &Path) -> Result<(), WorktreeError> {
+    for marker in [
+        "MERGE_HEAD",
+        "REBASE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+    ] {
+        let p = path.join(".git").join(marker);
+        if p.exists() {
+            return Err(WorktreeError::ConflictInProgress);
+        }
+    }
+    // Also check common conflict markers via ls-files.
+    let out = git(path, &["ls-files", "-u"])?;
+    if !out.trim().is_empty() {
+        return Err(WorktreeError::ConflictInProgress);
+    }
+    Ok(())
+}
+
+fn branch_exists_wt(path: &Path, name: &str) -> Result<bool, WorktreeError> {
+    match git(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    ) {
+        Ok(_) => Ok(true),
+        Err(WorktreeError::Git(_)) => Ok(false),
+        Err(other) => Err(other),
+    }
+}
+
 fn ensure_commit_ref(repo_root: &Path, rev: &str) -> Result<(), WorktreeError> {
     let spec = format!("{rev}^{{commit}}");
     git(repo_root, &["rev-parse", "--verify", &spec]).map(|_| ())
@@ -1115,6 +1246,41 @@ mod tests {
         assert!(binding.path.is_dir());
         assert!(binding.path.join("README").is_file());
         assert!(binding.branch.starts_with("impetus/wt-"));
+    }
+
+    #[test]
+    fn switch_bound_branch_updates_persisted_binding() {
+        let (_store, repo, manager, _) = temp_manager();
+        let session = Uuid::new_v4();
+        let binding = manager.create(session, repo.path()).expect("create");
+        let old_branch = binding.branch.clone();
+
+        git(repo.path(), &["branch", "feature/sync"]).expect("branch");
+        let updated = manager
+            .switch_bound_branch(session, "feature/sync")
+            .expect("switch");
+        assert_eq!(updated.branch, "feature/sync");
+        assert_ne!(updated.branch, old_branch);
+
+        let head = git(&updated.path, &["rev-parse", "--abbrev-ref", "HEAD"]).expect("head");
+        assert_eq!(head.trim(), "feature/sync");
+
+        let reloaded = manager
+            .get_by_worktree_id(&updated.worktree_id)
+            .expect("reload")
+            .expect("present");
+        assert_eq!(reloaded.branch, "feature/sync");
+
+        // Failed checkout (unknown branch) must leave binding unchanged.
+        let err = manager
+            .switch_bound_branch(session, "does-not-exist")
+            .expect_err("unknown");
+        assert!(matches!(err, WorktreeError::UnknownBranch(_)));
+        let still = manager
+            .get_by_worktree_id(&updated.worktree_id)
+            .expect("reload2")
+            .expect("present");
+        assert_eq!(still.branch, "feature/sync");
     }
 
     #[test]

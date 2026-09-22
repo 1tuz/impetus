@@ -139,14 +139,15 @@ pub trait UiBackend: Send + Sync {
         cols: Option<u16>,
         rows: Option<u16>,
     ) -> Result<impetus_client::PtySessionView>;
-    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()>;
+    async fn pty_input(&self, session_id: Uuid, pty_id: u64, data: &[u8]) -> Result<()>;
     async fn pty_output(
         &self,
+        session_id: Uuid,
         pty_id: u64,
         max_bytes: Option<usize>,
     ) -> Result<impetus_client::PtyOutputView>;
-    async fn pty_resize(&self, pty_id: u64, cols: u16, rows: u16) -> Result<()>;
-    async fn pty_detach(&self, pty_id: u64) -> Result<()>;
+    async fn pty_resize(&self, session_id: Uuid, pty_id: u64, cols: u16, rows: u16) -> Result<()>;
+    async fn pty_detach(&self, session_id: Uuid, pty_id: u64) -> Result<()>;
     async fn subscribe(
         &self,
         session_id: Uuid,

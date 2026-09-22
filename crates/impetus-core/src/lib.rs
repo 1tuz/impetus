@@ -202,12 +202,14 @@ pub use events::{
 };
 pub use execution::{
     DEFAULT_PTY_READ_BYTES, MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES,
-    MAX_PTY_RING_BYTES, MacosSeatbeltSandbox, PreparedSandboxCommand, ProcessExecution,
-    ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtyOutputChunk, PtySession,
+    MAX_PTY_PENDING_SPILLS, MAX_PTY_RING_BYTES, MacosSeatbeltSandbox, PTY_SPILL_COALESCE_BYTES,
+    PreparedPtySandbox, PreparedSandboxCommand, ProcessExecution, ProcessExecutionError,
+    ProcessExecutionRequest, ProcessOutput, PtyOutputChunk, PtySandboxKeepAlive, PtySession,
     PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
     PtySessionStore, PtySessionStoreError, SandboxCommandRequest, SandboxDecision,
     SandboxDecisionState, SandboxError, SandboxProvider, SqlitePtySessionStore,
-    UnavailableSandboxProvider, production_sandbox_provider,
+    UnavailableSandboxProvider, prepare_pty_sandbox, production_sandbox_provider,
+    resolve_pty_working_dir,
 };
 pub use execution_mode::ExecutionMode;
 pub use explore_agent_loop::{

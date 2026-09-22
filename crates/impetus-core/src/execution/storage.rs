@@ -21,6 +21,7 @@ pub enum PtySessionStoreError {
 #[derive(Debug, Clone)]
 pub struct PtySessionRecord {
     pub id: PtySessionId,
+    pub owner_session_id: uuid::Uuid,
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: PathBuf,
@@ -35,6 +36,7 @@ impl From<PtySession> for PtySessionRecord {
     fn from(session: PtySession) -> Self {
         Self {
             id: session.id,
+            owner_session_id: session.owner_session_id,
             command: session.command,
             args: session.args,
             working_dir: session.working_dir,
@@ -54,6 +56,7 @@ impl From<PtySessionRecord> for PtySession {
     fn from(record: PtySessionRecord) -> Self {
         Self {
             id: record.id,
+            owner_session_id: record.owner_session_id,
             command: record.command,
             args: record.args,
             working_dir: record.working_dir,
@@ -106,11 +109,25 @@ impl SqlitePtySessionStore {
                 state_data TEXT,
                 origin TEXT NOT NULL,
                 created_at_unix_ms INTEGER NOT NULL,
-                updated_at_unix_ms INTEGER NOT NULL
+                updated_at_unix_ms INTEGER NOT NULL,
+                owner_session_id TEXT NOT NULL DEFAULT ''
             )
             "#,
             [],
         )?;
+
+        // Migration for stores created before owner_session_id existed.
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(pty_sessions)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !cols.iter().any(|c| c == "owner_session_id") {
+            conn.execute(
+                "ALTER TABLE pty_sessions ADD COLUMN owner_session_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pty_sessions_state ON pty_sessions(state_type)",
@@ -203,12 +220,13 @@ impl PtySessionStore for SqlitePtySessionStore {
         conn.execute(
             r#"
             INSERT INTO pty_sessions 
-            (id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            (id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms, owner_session_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 state_type = ?6,
                 state_data = ?7,
-                updated_at_unix_ms = ?10
+                updated_at_unix_ms = ?10,
+                owner_session_id = ?11
             "#,
             params![
                 session.id.0,
@@ -221,6 +239,7 @@ impl PtySessionStore for SqlitePtySessionStore {
                 origin,
                 session.created_at_unix_ms,
                 session.updated_at_unix_ms,
+                session.owner_session_id.to_string(),
             ],
         )?;
 
@@ -236,7 +255,7 @@ impl PtySessionStore for SqlitePtySessionStore {
         let result = conn
             .query_row(
                 r#"
-                SELECT id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms
+                SELECT id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms, owner_session_id
                 FROM pty_sessions
                 WHERE id = ?1
                 "#,
@@ -246,6 +265,7 @@ impl PtySessionStore for SqlitePtySessionStore {
                     let state_data: Option<String> = row.get(6)?;
                     let origin_str: String = row.get(7)?;
 
+                    let owner_raw: String = row.get(10)?;
                     Ok((
                         PtySessionId(row.get(0)?),
                         row.get::<_, String>(1)?,
@@ -257,6 +277,7 @@ impl PtySessionStore for SqlitePtySessionStore {
                         origin_str,
                         row.get(8)?,
                         row.get(9)?,
+                        owner_raw,
                     ))
                 },
             )
@@ -275,15 +296,19 @@ impl PtySessionStore for SqlitePtySessionStore {
                 origin_str,
                 created_at,
                 updated_at,
+                owner_raw,
             )) => {
                 let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
                 let env: Vec<(String, String)> =
                     serde_json::from_str(&env_json).unwrap_or_default();
                 let state = Self::decode_state(&state_type, state_data.as_deref())?;
                 let origin = Self::decode_origin(&origin_str)?;
+                let owner_session_id =
+                    uuid::Uuid::parse_str(&owner_raw).unwrap_or(uuid::Uuid::nil());
 
                 Ok(Some(PtySessionRecord {
                     id,
+                    owner_session_id,
                     command,
                     args,
                     working_dir: PathBuf::from(working_dir),
@@ -302,7 +327,7 @@ impl PtySessionStore for SqlitePtySessionStore {
 
         let mut stmt = conn.prepare(
             r#"
-            SELECT id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms
+            SELECT id, command, args, working_dir, env, state_type, state_data, origin, created_at_unix_ms, updated_at_unix_ms, owner_session_id
             FROM pty_sessions
             ORDER BY created_at_unix_ms DESC
             "#,
@@ -313,6 +338,7 @@ impl PtySessionStore for SqlitePtySessionStore {
             let state_data: Option<String> = row.get(6)?;
             let origin_str: String = row.get(7)?;
 
+            let owner_raw: String = row.get(10)?;
             Ok((
                 PtySessionId(row.get(0)?),
                 row.get::<_, String>(1)?,
@@ -324,6 +350,7 @@ impl PtySessionStore for SqlitePtySessionStore {
                 origin_str,
                 row.get(8)?,
                 row.get(9)?,
+                owner_raw,
             ))
         })?;
 
@@ -340,14 +367,17 @@ impl PtySessionStore for SqlitePtySessionStore {
                 origin_str,
                 created_at,
                 updated_at,
+                owner_raw,
             ) = row_result?;
             let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
             let env: Vec<(String, String)> = serde_json::from_str(&env_json).unwrap_or_default();
             let state = Self::decode_state(&state_type, state_data.as_deref())?;
             let origin = Self::decode_origin(&origin_str)?;
+            let owner_session_id = uuid::Uuid::parse_str(&owner_raw).unwrap_or(uuid::Uuid::nil());
 
             sessions.push(PtySessionRecord {
                 id,
+                owner_session_id,
                 command,
                 args,
                 working_dir: PathBuf::from(working_dir),
@@ -416,6 +446,7 @@ mod tests {
         let store = temp_db();
         let session = PtySessionRecord {
             id: PtySessionId(1),
+            owner_session_id: uuid::Uuid::nil(),
             command: "bash".into(),
             args: vec!["-c".into(), "echo test".into()],
             working_dir: PathBuf::from("/tmp"),
@@ -445,6 +476,7 @@ mod tests {
         let store = temp_db();
         let session = PtySessionRecord {
             id: PtySessionId(2),
+            owner_session_id: uuid::Uuid::nil(),
             command: "bash".into(),
             args: vec![],
             working_dir: PathBuf::from("/tmp"),
@@ -476,6 +508,7 @@ mod tests {
         for i in 1..=3 {
             let session = PtySessionRecord {
                 id: PtySessionId(i + 100),
+                owner_session_id: uuid::Uuid::nil(),
                 command: format!("cmd{}", i),
                 args: vec![],
                 working_dir: PathBuf::from("/tmp"),
@@ -500,6 +533,7 @@ mod tests {
         let store = temp_db();
         let session = PtySessionRecord {
             id: PtySessionId(200),
+            owner_session_id: uuid::Uuid::nil(),
             command: "rm".into(),
             args: vec![],
             working_dir: PathBuf::from("/tmp"),
@@ -545,6 +579,7 @@ mod tests {
         let store = temp_db();
         let session = PtySessionRecord {
             id: PtySessionId(300),
+            owner_session_id: uuid::Uuid::nil(),
             command: "echo".into(),
             args: vec!["first".into()],
             working_dir: PathBuf::from("/tmp"),
@@ -558,6 +593,7 @@ mod tests {
 
         let updated = PtySessionRecord {
             id: PtySessionId(300),
+            owner_session_id: uuid::Uuid::nil(),
             command: "echo".into(),
             args: vec!["second".into()],
             working_dir: PathBuf::from("/tmp"),
@@ -594,6 +630,7 @@ mod tests {
         for (i, state) in states.iter().enumerate() {
             let session = PtySessionRecord {
                 id: PtySessionId(400 + i as u64),
+                owner_session_id: uuid::Uuid::nil(),
                 command: "test".into(),
                 args: vec![],
                 working_dir: PathBuf::from("/tmp"),
@@ -620,6 +657,7 @@ mod tests {
         for (i, origin) in [ActionOrigin::User, ActionOrigin::Agent].iter().enumerate() {
             let session = PtySessionRecord {
                 id: PtySessionId(500 + i as u64),
+                owner_session_id: uuid::Uuid::nil(),
                 command: "test".into(),
                 args: vec![],
                 working_dir: PathBuf::from("/tmp"),
@@ -749,6 +787,7 @@ mod tests {
     fn pty_session_record_from_pty_session() {
         let session = PtySession {
             id: PtySessionId(1),
+            owner_session_id: uuid::Uuid::nil(),
             command: "ls".into(),
             args: vec!["-la".into()],
             working_dir: PathBuf::from("/home"),
@@ -776,6 +815,7 @@ mod tests {
     fn pty_session_from_pty_session_record() {
         let record = PtySessionRecord {
             id: PtySessionId(2),
+            owner_session_id: uuid::Uuid::nil(),
             command: "cat".into(),
             args: vec!["file.txt".into()],
             working_dir: PathBuf::from("/var"),
