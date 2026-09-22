@@ -12,11 +12,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
 
-/// Hard cap for a single assembled upload (8 MiB).
-pub const MAX_ARTIFACT_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
-
-/// Max raw chunk size before base64. Keeps one IPC JSON line under 64 KiB.
-pub const MAX_ARTIFACT_UPLOAD_CHUNK_BYTES: usize = 24 * 1024;
+pub use impetus_protocol::{MAX_ARTIFACT_UPLOAD_BYTES, MAX_ARTIFACT_UPLOAD_CHUNK_BYTES};
 
 /// Concurrent pending uploads per harness process.
 const MAX_CONCURRENT_UPLOADS: usize = 16;
@@ -48,6 +44,7 @@ pub enum ArtifactUploadError {
 #[derive(Debug)]
 struct PendingUpload {
     declared_bytes: Option<usize>,
+    content_type: Option<String>,
     next_seq: u64,
     buffer: Vec<u8>,
 }
@@ -75,6 +72,7 @@ impl ArtifactUploadStore {
         &self,
         _session_id: Uuid,
         declared_bytes: Option<usize>,
+        content_type: Option<String>,
     ) -> Result<Uuid, ArtifactUploadError> {
         if let Some(declared) = declared_bytes
             && declared > MAX_ARTIFACT_UPLOAD_BYTES
@@ -96,6 +94,7 @@ impl ArtifactUploadStore {
             upload_id,
             PendingUpload {
                 declared_bytes,
+                content_type,
                 next_seq: 0,
                 buffer: Vec::with_capacity(capacity),
             },
@@ -181,7 +180,7 @@ impl ArtifactUploadStore {
         let store = DurableArtifactStore::open(&self.artifact_root)
             .map_err(|_| ArtifactUploadError::Store)?;
         store
-            .store(&upload.buffer)
+            .store_with_content_type(&upload.buffer, upload.content_type.as_deref())
             .map_err(|_| ArtifactUploadError::Store)
     }
 
@@ -239,7 +238,7 @@ mod tests {
         let (_dir, uploads) = temp_uploads();
         let session = Uuid::new_v4();
         let body = b"large paste body for artifact upload";
-        let upload_id = uploads.begin(session, Some(body.len())).unwrap();
+        let upload_id = uploads.begin(session, Some(body.len()), None).unwrap();
 
         let received = uploads.append(upload_id, 0, body).unwrap();
         assert_eq!(received, body.len());
@@ -258,7 +257,7 @@ mod tests {
     fn multi_chunk_assembles_correctly() {
         let (_dir, uploads) = temp_uploads();
         let session = Uuid::new_v4();
-        let upload_id = uploads.begin(session, None).unwrap();
+        let upload_id = uploads.begin(session, None, None).unwrap();
         uploads.append(upload_id, 0, b"hello ").unwrap();
         uploads.append(upload_id, 1, b"world").unwrap();
         let art = uploads.finish(upload_id).unwrap();
@@ -267,14 +266,29 @@ mod tests {
     }
 
     #[test]
+    fn finish_persists_content_type() {
+        let (_dir, uploads) = temp_uploads();
+        let session = Uuid::new_v4();
+        let body = b"typed upload";
+        let upload_id = uploads
+            .begin(session, Some(body.len()), Some("text/plain".into()))
+            .unwrap();
+        uploads.append(upload_id, 0, body).unwrap();
+        let art = uploads.finish(upload_id).unwrap();
+        let durable = DurableArtifactStore::open(uploads.artifact_root()).unwrap();
+        let meta = durable.metadata(&art.id).unwrap().unwrap();
+        assert_eq!(meta.content_type.as_deref(), Some("text/plain"));
+    }
+
+    #[test]
     fn rejects_oversized_declared_and_chunk() {
         let (_dir, uploads) = temp_uploads();
         let session = Uuid::new_v4();
         assert_eq!(
-            uploads.begin(session, Some(MAX_ARTIFACT_UPLOAD_BYTES + 1)),
+            uploads.begin(session, Some(MAX_ARTIFACT_UPLOAD_BYTES + 1), None),
             Err(ArtifactUploadError::TooLarge)
         );
-        let upload_id = uploads.begin(session, None).unwrap();
+        let upload_id = uploads.begin(session, None, None).unwrap();
         let big = vec![0u8; MAX_ARTIFACT_UPLOAD_CHUNK_BYTES + 1];
         assert_eq!(
             uploads.append(upload_id, 0, &big),
@@ -286,7 +300,7 @@ mod tests {
     fn base64_append_and_abort() {
         let (_dir, uploads) = temp_uploads();
         let session = Uuid::new_v4();
-        let upload_id = uploads.begin(session, None).unwrap();
+        let upload_id = uploads.begin(session, None, None).unwrap();
         let b64 = BASE64.encode(b"secret-token-should-not-leak");
         uploads.append_b64(upload_id, 0, &b64).unwrap();
         uploads.abort(upload_id).unwrap();

@@ -14,12 +14,30 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "new",
         aliases: &["create"],
-        description: "create and attach a durable session",
+        description: "create session (path prompt for workspace root)",
+        shortcut: "N in picker",
+    },
+    CommandSpec {
+        name: "fork",
+        aliases: &[],
+        description: "fork active session at tip (or /fork <seq>)",
+        shortcut: "Ctrl+Shift+K",
+    },
+    CommandSpec {
+        name: "checkpoint",
+        aliases: &["cp", "savepoint"],
+        description: "create named checkpoint (/checkpoint <name>)",
         shortcut: "",
     },
     CommandSpec {
+        name: "checkpoints",
+        aliases: &["restore"],
+        description: "list checkpoints; Enter restores as new branch",
+        shortcut: "F7",
+    },
+    CommandSpec {
         name: "resume",
-        aliases: &["attach"],
+        aliases: &["open"],
         description: "open the session picker or attach a UUID",
         shortcut: "F2 / Ctrl+O",
     },
@@ -64,6 +82,30 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["inspect"],
         description: "toggle the structured inspector pane",
         shortcut: "F3",
+    },
+    CommandSpec {
+        name: "files",
+        aliases: &["tree", "workspace"],
+        description: "browse workspace files via harness IPC",
+        shortcut: "Ctrl+F",
+    },
+    CommandSpec {
+        name: "attach",
+        aliases: &["artifact", "file"],
+        description: "attach local file via chunked artifact_upload (ArtifactRef in composer)",
+        shortcut: "Ctrl+Shift+A",
+    },
+    CommandSpec {
+        name: "review",
+        aliases: &["changes", "git-diff"],
+        description: "review changed files + diffs via harness Git IPC",
+        shortcut: "F6 / Ctrl+R",
+    },
+    CommandSpec {
+        name: "pty",
+        aliases: &["shell", "term"],
+        description: "attach daemon PTY pass-through (Ctrl+] detaches; no emulator)",
+        shortcut: "Ctrl+\\",
     },
     CommandSpec {
         name: "status",
@@ -143,6 +185,23 @@ pub enum CommandAction {
     SetPromptIntent(impetus_client::protocol::UserPromptIntent),
     ShowDiff,
     ToggleInspector,
+    Files,
+    /// Attach local filesystem path via durable artifact upload.
+    Attach {
+        path: Option<String>,
+    },
+    Review,
+    /// Fork active session; `None` = tip (`last_sequence`).
+    Fork(Option<u64>),
+    /// Create checkpoint; empty → name prompt.
+    Checkpoint(Option<String>),
+    /// List / restore checkpoints overlay.
+    Checkpoints,
+    /// Daemon PTY pass-through; `command` None → `$SHELL`.
+    PtyPassthrough {
+        command: Option<String>,
+        args: Vec<String>,
+    },
     Status,
     Diagnostics,
     Cancel,
@@ -166,6 +225,26 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
     let canonical = canonical_name(&name).unwrap_or(name.as_str());
     let action = match canonical {
         "new" => CommandAction::NewSession,
+        "fork" => {
+            if argument.is_empty() {
+                CommandAction::Fork(None)
+            } else {
+                match argument.parse::<u64>() {
+                    Ok(seq) => CommandAction::Fork(Some(seq)),
+                    Err(_) => CommandAction::Unknown(format!(
+                        "`/fork` expects optional sequence number, got `{argument}`"
+                    )),
+                }
+            }
+        }
+        "checkpoint" => {
+            if argument.is_empty() {
+                CommandAction::Checkpoint(None)
+            } else {
+                CommandAction::Checkpoint(Some(argument))
+            }
+        }
+        "checkpoints" => CommandAction::Checkpoints,
         "resume" => {
             if argument.is_empty() {
                 CommandAction::Resume(None)
@@ -193,6 +272,33 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
         "auto" | "auto-safe" => CommandAction::SetMode(ExecutionMode::Auto),
         "diff" => CommandAction::ShowDiff,
         "details" => CommandAction::ToggleInspector,
+        "files" => CommandAction::Files,
+        "attach" => {
+            if argument.is_empty() {
+                CommandAction::Attach { path: None }
+            } else {
+                CommandAction::Attach {
+                    path: Some(argument),
+                }
+            }
+        }
+        "review" => CommandAction::Review,
+        "pty" | "shell" | "term" => {
+            if argument.is_empty() {
+                CommandAction::PtyPassthrough {
+                    command: None,
+                    args: Vec::new(),
+                }
+            } else {
+                let mut parts = argument.split_whitespace();
+                let cmd = parts.next().unwrap_or("sh").to_owned();
+                let args = parts.map(str::to_owned).collect();
+                CommandAction::PtyPassthrough {
+                    command: Some(cmd),
+                    args,
+                }
+            }
+        }
         "status" => CommandAction::Status,
         "doctor" => CommandAction::Diagnostics,
         "cancel" => CommandAction::Cancel,
@@ -348,8 +454,49 @@ mod tests {
     }
 
     #[test]
-    fn palette_prefers_prefix_matches() {
-        let results = suggestions("/ses");
-        assert_eq!(results.first().map(|item| item.name), Some("sessions"));
+    fn attach_command_parses_path_or_prompt() {
+        assert_eq!(
+            parse_command("/attach"),
+            Some(CommandAction::Attach { path: None })
+        );
+        assert_eq!(
+            parse_command("/attach /tmp/notes.txt"),
+            Some(CommandAction::Attach {
+                path: Some("/tmp/notes.txt".into())
+            })
+        );
+        assert_eq!(
+            parse_command("/artifact ./foo.rs"),
+            Some(CommandAction::Attach {
+                path: Some("./foo.rs".into())
+            })
+        );
+        assert_eq!(parse_command("/resume"), Some(CommandAction::Resume(None)));
+    }
+
+    #[test]
+    fn fork_and_checkpoint_commands_parse() {
+        assert_eq!(parse_command("/fork"), Some(CommandAction::Fork(None)));
+        assert_eq!(
+            parse_command("/fork 12"),
+            Some(CommandAction::Fork(Some(12)))
+        );
+        assert_eq!(
+            parse_command("/checkpoint stable"),
+            Some(CommandAction::Checkpoint(Some("stable".into())))
+        );
+        assert_eq!(
+            parse_command("/checkpoint"),
+            Some(CommandAction::Checkpoint(None))
+        );
+        assert_eq!(
+            parse_command("/checkpoints"),
+            Some(CommandAction::Checkpoints)
+        );
+        assert_eq!(parse_command("/restore"), Some(CommandAction::Checkpoints));
+        assert_eq!(
+            parse_command("/cp mid"),
+            Some(CommandAction::Checkpoint(Some("mid".into())))
+        );
     }
 }

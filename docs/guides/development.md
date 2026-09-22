@@ -93,6 +93,7 @@ met by existing `--lib` tests — **no duplicate** under
 | Error path (reject) | `harness_api::rejected_approval_records_denial_and_resumes_without_execution` |
 | Error path (cancel) | `harness_api::cancellation_stops_an_active_agent_run_without_a_final_answer` |
 | Complementary EffectSeam slice | `security_runtime_pr` (#174): approve/reject, sandbox deny, redaction, artifacts |
+| Named capability sentinels (#315) | `sentinel_protocol` / `sentinel_git` / `sentinel_files` / `sentinel_events` / `sentinel_artifacts` |
 
 Run the vertical slice locally:
 
@@ -100,6 +101,7 @@ Run the vertical slice locally:
 cargo test -p impetus-core --lib approval_resume_returns_durable_tool_observations_to_the_model
 cargo test -p impetus-core --lib rejected_approval_records_denial_and_resumes_without_execution
 cargo test -p impetus-core --lib security_runtime_pr
+cargo test -p impetus-core --lib -- sentinel
 ```
 
 Honest boundary: these are colocated lib tests (same binaries PR CI already

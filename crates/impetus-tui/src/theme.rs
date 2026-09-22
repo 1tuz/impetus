@@ -186,7 +186,7 @@ impl Theme {
             ItemKind::User => self.blue,
             ItemKind::Assistant => self.accent,
             ItemKind::Plan => self.cyan,
-            ItemKind::Tool => self.green,
+            ItemKind::Tool | ItemKind::Activity => self.green,
             ItemKind::Approval => self.yellow,
             ItemKind::Notice => self.muted,
             ItemKind::Error => self.red,

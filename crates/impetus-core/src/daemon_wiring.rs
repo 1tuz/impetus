@@ -17,6 +17,7 @@ use crate::policy_store::{PolicyStore, default_policy_store_path};
 use crate::provider_trait::ModelProvider;
 use crate::storage::{EventStore, MemoryEventStore};
 use crate::tool_provider_runtime::{McpServerSpec, ToolProviderRuntime};
+use crate::worktree_manager::WorktreeManager;
 use crate::{ProviderError, default_artifact_root};
 
 /// Failures building daemon runtime attachments.
@@ -35,6 +36,37 @@ pub enum DaemonWiringError {
     HookCatalog(String),
     #[error("policy store load: {0}")]
     PolicyStore(String),
+    /// WorktreeManager open failed — fail closed so Git IPC does not silently
+    /// fall back to workspace root without managed-worktree preference.
+    #[error("worktree manager open: {0}")]
+    WorktreeManager(String),
+}
+
+/// Binding SQLite under the daemon data root (`worktrees.sqlite3`).
+pub fn default_worktree_store_path(data_root: &Path) -> PathBuf {
+    data_root.join("worktrees.sqlite3")
+}
+
+/// Checkout directory root for managed worktrees (`worktrees/`).
+pub fn default_worktrees_root(data_root: &Path) -> PathBuf {
+    data_root.join("worktrees")
+}
+
+/// Open or create [`WorktreeManager`] under `data_root`.
+///
+/// Paths: `{data_root}/worktrees.sqlite3` (bindings) + `{data_root}/worktrees/`
+/// (checkouts). Fail closed on open/IO errors — production daemon must attach
+/// the manager so session Git cwd prefers managed worktrees; without it
+/// `resolve_session_git_cwd` would silently use the workspace root.
+pub fn open_daemon_worktree_manager(
+    data_root: &Path,
+) -> Result<Arc<WorktreeManager>, DaemonWiringError> {
+    let manager = WorktreeManager::open(
+        default_worktree_store_path(data_root),
+        default_worktrees_root(data_root),
+    )
+    .map_err(|error| DaemonWiringError::WorktreeManager(error.to_string()))?;
+    Ok(Arc::new(manager))
 }
 
 /// Build Explore spawn bridge for production daemon (restricted AgentLoop + durable child store).
@@ -43,6 +75,7 @@ pub fn build_explore_spawn_bridge(
     provider: Arc<dyn ModelProvider>,
     policy: PolicyEngine,
     artifact_root: PathBuf,
+    parent_events: Arc<dyn EventStore>,
 ) -> Result<Arc<dyn ExploreSpawnBridge>, DaemonWiringError> {
     let child_store = ChildResultStore::open(data_root.join("child_results.sqlite3"))?;
     let store_factory = Box::new(|_child_id: &str| -> Arc<dyn EventStore> {
@@ -53,6 +86,7 @@ pub fn build_explore_spawn_bridge(
         gate: Arc::new(Mutex::new(ChildConcurrencyGate::new())),
         store: Arc::new(child_store),
         executor: Arc::new(executor),
+        parent_events: Some(parent_events),
     }))
 }
 
@@ -62,6 +96,7 @@ pub fn build_explore_spawn_bridge_for_harness(
     provider_registry: &crate::ProviderRegistry,
     default_provider_id: &str,
     policy: PolicyEngine,
+    parent_events: Arc<dyn EventStore>,
 ) -> Result<Arc<dyn ExploreSpawnBridge>, DaemonWiringError> {
     let provider = provider_registry
         .get(default_provider_id)
@@ -69,7 +104,13 @@ pub fn build_explore_spawn_bridge_for_harness(
             provider_id: default_provider_id.to_string(),
             source,
         })?;
-    build_explore_spawn_bridge(data_root, provider, policy, default_artifact_root())
+    build_explore_spawn_bridge(
+        data_root,
+        provider,
+        policy,
+        default_artifact_root(),
+        parent_events,
+    )
 }
 
 /// Load MCP server specs from `{data_root}/mcp/*.json` into a session runtime.
@@ -145,11 +186,13 @@ mod tests {
             }]],
         ));
         let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let parent_events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
         let bridge = build_explore_spawn_bridge(
             data.path(),
             provider,
             policy,
             workspace.path().to_path_buf(),
+            parent_events,
         )
         .expect("bridge");
 
@@ -238,6 +281,17 @@ mod tests {
     }
 
     #[test]
+    fn worktree_manager_opens_under_data_root() {
+        let data = tempfile::tempdir().expect("data");
+        let mgr = open_daemon_worktree_manager(data.path()).expect("open");
+        assert!(default_worktree_store_path(data.path()).is_file());
+        assert!(default_worktrees_root(data.path()).is_dir());
+        // Re-open same store (daemon restart).
+        let _again = open_daemon_worktree_manager(data.path()).expect("reopen");
+        let _ = mgr;
+    }
+
+    #[test]
     fn explore_bridge_maps_provider_errors() {
         let data = tempfile::tempdir().expect("data");
         let registry = crate::ProviderRegistry::new();
@@ -247,6 +301,7 @@ mod tests {
                 &registry,
                 "missing",
                 PolicyEngine::new(SandboxScope::local_workspace(".")),
+                Arc::new(MemoryEventStore::default()),
             ),
             Err(DaemonWiringError::ProviderUnavailable { .. })
         ));

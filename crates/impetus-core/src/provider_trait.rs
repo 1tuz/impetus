@@ -39,7 +39,7 @@ pub enum StreamEvent {
     /// Stream completion reason.
     Finish { reason: FinishReason },
 
-    /// Provider-specific reasoning trace (e.g., Claude thinking).
+    /// Provider-supplied reasoning **summary** only (never hidden CoT).
     Reasoning { content: String },
 }
 

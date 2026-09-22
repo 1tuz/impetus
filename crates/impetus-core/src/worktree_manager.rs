@@ -30,34 +30,15 @@ use uuid::Uuid;
 use crate::SandboxScope;
 
 /// Lifecycle state for a managed worktree binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorktreeLifecycleState {
-    Active,
-    Stopped,
-    /// Binding still present, but disk/git registration looks abandoned.
-    Stale,
-    Closed,
-}
+pub use impetus_protocol::WorktreeLifecycleState;
 
-impl WorktreeLifecycleState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Stopped => "stopped",
-            Self::Stale => "stale",
-            Self::Closed => "closed",
-        }
-    }
-
-    fn parse(raw: &str) -> Result<Self, WorktreeError> {
-        match raw {
-            "active" => Ok(Self::Active),
-            "stopped" => Ok(Self::Stopped),
-            "stale" => Ok(Self::Stale),
-            "closed" => Ok(Self::Closed),
-            other => Err(WorktreeError::CorruptState(other.to_string())),
-        }
+fn parse_worktree_lifecycle_state(raw: &str) -> Result<WorktreeLifecycleState, WorktreeError> {
+    match raw {
+        "active" => Ok(WorktreeLifecycleState::Active),
+        "stopped" => Ok(WorktreeLifecycleState::Stopped),
+        "stale" => Ok(WorktreeLifecycleState::Stale),
+        "closed" => Ok(WorktreeLifecycleState::Closed),
+        other => Err(WorktreeError::CorruptState(other.to_string())),
     }
 }
 
@@ -925,7 +906,7 @@ impl WorktreeManager {
 
 fn row_to_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeBinding> {
     let state_raw: String = row.get(5)?;
-    let state = WorktreeLifecycleState::parse(&state_raw).map_err(|err| {
+    let state = parse_worktree_lifecycle_state(&state_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             5,
             rusqlite::types::Type::Text,

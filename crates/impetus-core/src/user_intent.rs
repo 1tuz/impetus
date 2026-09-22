@@ -34,35 +34,12 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::policy::ActionOrigin;
 
-/// Distinct client intents for user-authored text (not collapsed into Prompt).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UserPromptIntent {
-    /// Normal baseline user message.
-    #[default]
-    Prompt,
-    /// Nudge / steer an active run.
-    Steer,
-    /// Enqueue after the current run finishes.
-    FollowUp,
-}
-
-impl UserPromptIntent {
-    /// Short label for TUI composer / status (stable ASCII).
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Prompt => "prompt",
-            Self::Steer => "steer",
-            Self::FollowUp => "follow-up",
-        }
-    }
-}
+pub use impetus_protocol::UserPromptIntent;
 
 /// One typed submission. `origin` is preserved for Policy — never rewritten here.
 #[derive(Debug, Clone, PartialEq, Eq)]

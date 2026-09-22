@@ -110,6 +110,40 @@ impl TerminalSession {
             None => Ok(()),
         }
     }
+
+    /// Leave Ratatui alternate screen for raw PTY pass-through.
+    ///
+    /// Keeps raw mode so key bytes can be forwarded; panic hook still owns
+    /// full restore via [`RESTORE_PENDING`].
+    pub fn suspend_for_passthrough(&mut self) -> Result<()> {
+        let backend = self.terminal.backend_mut();
+        if self.mouse {
+            execute!(backend, DisableMouseCapture).context("disable mouse for PTY")?;
+        }
+        if self.inline {
+            execute!(backend, DisableBracketedPaste, Show).context("suspend inline TUI for PTY")?;
+        } else {
+            execute!(backend, DisableBracketedPaste, LeaveAlternateScreen, Show)
+                .context("leave alternate screen for PTY")?;
+        }
+        Ok(())
+    }
+
+    /// Re-enter Ratatui after PTY pass-through (raw mode already on).
+    pub fn resume_from_passthrough(&mut self) -> Result<()> {
+        let backend = self.terminal.backend_mut();
+        if self.inline {
+            execute!(backend, EnableBracketedPaste, Hide).context("resume inline TUI after PTY")?;
+        } else {
+            execute!(backend, EnterAlternateScreen, EnableBracketedPaste, Hide)
+                .context("re-enter alternate screen after PTY")?;
+        }
+        if self.mouse {
+            execute!(backend, EnableMouseCapture).context("re-enable mouse after PTY")?;
+        }
+        self.terminal.clear().context("clear terminal after PTY")?;
+        Ok(())
+    }
 }
 
 fn create_terminal(options: &RunOptions) -> Result<Terminal<CrosstermBackend<Stdout>>> {

@@ -43,15 +43,7 @@ pub struct ModulePermissions {
     pub remote: bool,
 }
 
-/// Module execution semantics
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionSemantics {
-    ReadOnly,
-    Idempotent,
-    Mutating,
-    NonReplayable,
-}
+pub use impetus_protocol::ExecutionSemantics;
 
 /// Module lifecycle state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

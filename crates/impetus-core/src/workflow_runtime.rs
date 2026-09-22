@@ -18,6 +18,7 @@ use crate::explore_child::{
     EXPLORE_ALLOWED_TOOLS, ExploreChildExecutor, ExploreChildRequest, ExploreChildRunner,
 };
 use crate::role_child::{RoleChildExecutor, RoleChildRequest, RoleChildRunner, allowed_tools_for};
+use crate::storage::EventStore;
 use crate::subagent_metadata::SubagentRole;
 use crate::user_intent::{QueuedFollowUp, UserIntentRouter};
 use crate::workflow_engine::{WorkflowEngine, WorkflowError, WorkflowRecipe, WorkflowStatus};
@@ -52,6 +53,7 @@ pub struct WorkflowRuntime {
     store: Arc<ChildResultStore>,
     role_executor: Arc<dyn RoleChildExecutor>,
     explore_executor: Arc<dyn ExploreChildExecutor>,
+    parent_events: Option<Arc<dyn EventStore>>,
     sessions: Mutex<HashMap<Uuid, SessionWorkflow>>,
 }
 
@@ -60,6 +62,15 @@ impl WorkflowRuntime {
         store: Arc<ChildResultStore>,
         role_executor: Arc<dyn RoleChildExecutor>,
         explore_executor: Arc<dyn ExploreChildExecutor>,
+    ) -> Result<Self, WorkflowRuntimeError> {
+        Self::with_parent_events(store, role_executor, explore_executor, None)
+    }
+
+    pub fn with_parent_events(
+        store: Arc<ChildResultStore>,
+        role_executor: Arc<dyn RoleChildExecutor>,
+        explore_executor: Arc<dyn ExploreChildExecutor>,
+        parent_events: Option<Arc<dyn EventStore>>,
     ) -> Result<Self, WorkflowRuntimeError> {
         let gate = ChildConcurrencyGate::from_config(
             ChildConcurrencyConfig::fair(4, 2).expect("fair caps"),
@@ -70,6 +81,7 @@ impl WorkflowRuntime {
             store,
             role_executor,
             explore_executor,
+            parent_events,
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -271,6 +283,9 @@ impl WorkflowRuntime {
         };
         let mut gate = self.gate.lock().expect("workflow gate");
         let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
+        if let Some(events) = self.parent_events.as_ref() {
+            runner = runner.with_parent_events(events.as_ref());
+        }
         let out = runner
             .run(request, cancel, self.role_executor.as_ref())
             .map_err(|e| WorkflowRuntimeError::RoleChild(e.to_string()))?;
@@ -299,6 +314,9 @@ impl WorkflowRuntime {
         };
         let mut gate = self.gate.lock().expect("workflow gate");
         let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
+        if let Some(events) = self.parent_events.as_ref() {
+            runner = runner.with_parent_events(events.as_ref());
+        }
         let out = runner
             .run(request, cancel, self.explore_executor.as_ref())
             .map_err(|e| WorkflowRuntimeError::ExploreChild(e.to_string()))?;

@@ -63,6 +63,10 @@ pub fn render_event_block(event: &Event) -> Option<Block> {
                 text: text.clone(),
                 is_final: true,
             }),
+            impetus_core::AgentEvent::ReasoningSummary { text, .. } => Some(Block::Status {
+                state: "reasoning".to_string(),
+                detail: Some(text.clone()),
+            }),
         },
         EventPayload::Backend(backend_event) => {
             use impetus_core::BackendEvent;

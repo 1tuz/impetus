@@ -437,16 +437,39 @@ impl ToolOrchestrator {
                 .await;
         }
 
+        if tool_call.name == "search" {
+            let pattern = tool_call
+                .arguments
+                .get("pattern")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let target = tool_call
+                .arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".")
+                .to_owned();
+            let _ = runtime.record_event(crate::EventPayload::Tool(ToolEvent::SearchStarted {
+                tool_call_id: tool_call.id.clone(),
+                pattern,
+                target,
+            }));
+        }
+
         match self.execute_read_only(runtime, &tool_call) {
-            Ok(ToolOutcome::Allowed { result }) => Self::record_observation(
-                runtime,
-                tool_call,
-                arguments_summary,
-                ToolOutcomeStatus::Success,
-                result.preview,
-                result.artifact,
-                None,
-            ),
+            Ok(ToolOutcome::Allowed { result }) => {
+                Self::emit_read_search_activity(runtime, &tool_call, &result.preview);
+                Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Success,
+                    result.preview,
+                    result.artifact,
+                    None,
+                )
+            }
             Ok(ToolOutcome::Denied { reason, .. }) => Self::record_observation(
                 runtime,
                 tool_call,
@@ -465,6 +488,44 @@ impl ToolOrchestrator {
                 None,
                 Some(error.to_string()),
             ),
+        }
+    }
+
+    /// Typed FileRead / SearchResult on durable session log (not tool-name scrape).
+    fn emit_read_search_activity(
+        runtime: &AgentRuntime,
+        tool_call: &crate::ToolCall,
+        preview: &str,
+    ) {
+        let preview = crate::bound_activity_preview(preview);
+        match tool_call.name.as_str() {
+            "read_file" => {
+                let path = tool_call
+                    .arguments
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(".")
+                    .to_owned();
+                let bytes = preview.len() as u64;
+                let _ = runtime.record_event(crate::EventPayload::Tool(ToolEvent::FileRead {
+                    tool_call_id: tool_call.id.clone(),
+                    path,
+                    bytes,
+                    preview,
+                }));
+            }
+            "search" => {
+                let match_count = preview
+                    .lines()
+                    .filter(|line| !line.trim().is_empty() && !line.starts_with("..."))
+                    .count() as u32;
+                let _ = runtime.record_event(crate::EventPayload::Tool(ToolEvent::SearchResult {
+                    tool_call_id: tool_call.id.clone(),
+                    match_count,
+                    preview,
+                }));
+            }
+            _ => {}
         }
     }
 
@@ -932,6 +993,10 @@ impl ToolOrchestrator {
         artifact: Option<crate::DurableArtifactRef>,
         error: Option<String>,
     ) -> ToolObservation {
+        let _ = runtime.record_tool_started(&tool_call.name, Some(&tool_call.id));
+        if !preview.is_empty() {
+            let _ = runtime.record_tool_output(&tool_call.id, &tool_call.name, &preview);
+        }
         let _ = runtime.record_event(crate::EventPayload::Tool(ToolEvent::Observed {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
@@ -941,6 +1006,12 @@ impl ToolOrchestrator {
             artifact: artifact.clone(),
             error: error.clone(),
         }));
+        let finish_summary = error
+            .as_deref()
+            .filter(|e| !e.is_empty())
+            .map(|e| e.to_owned())
+            .unwrap_or_else(|| format!("{outcome:?}"));
+        let _ = runtime.record_tool_finished(&tool_call.name, &finish_summary, Some(&tool_call.id));
         ToolObservation {
             tool_call_id: tool_call.id,
             tool_name: tool_call.name,
@@ -1120,6 +1191,10 @@ impl ToolOrchestrator {
         .with_workspace_root(workspace.clone())
         .with_allow_network(runtime.policy().scope().allow_network)
         .with_hook_prefilter(hook_prefilter.clone());
+        let _ = runtime.record_event(crate::EventPayload::Command(crate::CommandEvent::Started {
+            tool_call_id: tool_call_id.clone(),
+            command: command.to_owned(),
+        }));
         let seam = Self::session_effect_seam(runtime)?;
         let execution = seam
             .execute_after_approval_with_admission(
@@ -1151,21 +1226,56 @@ impl ToolOrchestrator {
             })?;
         let (outcome, preview, artifact, error) = match execution {
             crate::EffectExecution::Executed(output) => {
+                if let Some(decision) = &output.sandbox_decision {
+                    let _ = runtime.record_event(crate::EventPayload::Sandbox(
+                        crate::SandboxEvent::from_decision(decision),
+                    ));
+                }
                 let preview = crate::tools::redact_text(&format!(
                     "exit_code={:?}\nstdout:\n{}\nstderr:\n{}",
                     output.exit_code, output.stdout, output.stderr
                 ));
+                let bounded = crate::bound_activity_preview(&preview);
+                let _ = runtime.record_event(crate::EventPayload::Command(
+                    crate::CommandEvent::Output {
+                        tool_call_id: tool_call_id.clone(),
+                        preview: bounded.clone(),
+                    },
+                ));
+                let _ = runtime.record_event(crate::EventPayload::Command(
+                    crate::CommandEvent::Finished {
+                        tool_call_id: tool_call_id.clone(),
+                        exit_code: output.exit_code,
+                        summary: Some(format!("exit {:?}", output.exit_code)),
+                    },
+                ));
                 (ToolOutcomeStatus::Success, preview, output.artifact, None)
             }
             crate::EffectExecution::Denied { reason } => {
+                let _ = runtime.record_event(crate::EventPayload::Command(
+                    crate::CommandEvent::Finished {
+                        tool_call_id: tool_call_id.clone(),
+                        exit_code: None,
+                        summary: Some(reason.clone()),
+                    },
+                ));
                 (ToolOutcomeStatus::Denied, String::new(), None, Some(reason))
             }
-            crate::EffectExecution::NeedsApproval { reason } => (
-                ToolOutcomeStatus::ApprovalRequired,
-                String::new(),
-                None,
-                Some(reason),
-            ),
+            crate::EffectExecution::NeedsApproval { reason } => {
+                let _ = runtime.record_event(crate::EventPayload::Command(
+                    crate::CommandEvent::Finished {
+                        tool_call_id: tool_call_id.clone(),
+                        exit_code: None,
+                        summary: Some(reason.clone()),
+                    },
+                ));
+                (
+                    ToolOutcomeStatus::ApprovalRequired,
+                    String::new(),
+                    None,
+                    Some(reason),
+                )
+            }
         };
         Ok(Self::record_observation(
             runtime,
@@ -1478,6 +1588,19 @@ mod tests {
                 }) if tool_call_id == "call_1"
             )
         }));
+        assert!(
+            runtime.events().unwrap().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::Tool(crate::ToolEvent::FileRead {
+                        tool_call_id,
+                        path,
+                        ..
+                    }) if tool_call_id == "call_1" && path == "evidence.txt"
+                )
+            }),
+            "read_file must emit typed FileRead on durable session log"
+        );
     }
 
     #[tokio::test]

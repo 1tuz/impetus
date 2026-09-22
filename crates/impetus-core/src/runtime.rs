@@ -1,27 +1,16 @@
 use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
-    BudgetChecker, BudgetConfig, DeferredEffect, EffectSeam, Event, EventPayload, EventStore,
-    ExecutionMode, IntentEvent, NoticeEvent, PolicyEngine, ProjectionError, RunEvent, Sandbox,
-    ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
+    BudgetChecker, BudgetConfig, ChildEvent, DeferredEffect, EffectSeam, Event, EventPayload,
+    EventStore, ExecutionMode, IntentEvent, NoticeEvent, PolicyEngine, ProjectionError, RunEvent,
+    Sandbox, ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeStatus {
-    Idle,
-    AwaitingApproval,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    InterruptedUnknown,
-}
+pub use impetus_protocol::RuntimeStatus;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -68,6 +57,45 @@ fn policy_for_workspace(policy: &PolicyEngine, workspace_root: PathBuf) -> Polic
     let mut scope = policy.scope().clone();
     scope.workspace_root = workspace_root;
     PolicyEngine::with_config(scope, policy.config())
+}
+
+/// Max inline bytes stored in a durable `AgentEvent::Chunk` row. Larger bodies
+/// spill to [`crate::DurableArtifactStore`] with a bounded preview + ArtifactRef.
+pub const MAX_AGENT_CHUNK_EVENT_BYTES: usize = 16 * 1024;
+
+/// Accumulate tiny stream deltas until this many bytes before flushing one
+/// durable chunk (keeps chunk_id ordering; fewer event rows).
+pub const AGENT_CHUNK_COALESCE_BYTES: usize = 512;
+
+/// Preview kept in the event when a chunk spills to an artifact.
+pub const AGENT_CHUNK_PREVIEW_BYTES: usize = 256;
+
+fn truncate_agent_chunk_preview(input: &str) -> String {
+    if input.len() <= AGENT_CHUNK_PREVIEW_BYTES {
+        return input.to_owned();
+    }
+    let mut end = AGENT_CHUNK_PREVIEW_BYTES;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut preview = input[..end].to_owned();
+    preview.push('…');
+    preview
+}
+
+/// Bound chunk text for durable persistence. Returns `(preview_or_full, artifact)`.
+pub fn bound_agent_chunk_text(
+    text: String,
+    artifact_store: Option<&crate::DurableArtifactStore>,
+) -> (String, Option<crate::DurableArtifactRef>) {
+    if text.len() <= MAX_AGENT_CHUNK_EVENT_BYTES {
+        return (text, None);
+    }
+    match artifact_store.and_then(|store| store.store(text.as_bytes()).ok()) {
+        Some(artifact) => (truncate_agent_chunk_preview(&text), Some(artifact)),
+        // Prefer an oversized event row over silently dropping the stream body.
+        None => (text, None),
+    }
 }
 
 /// Latest `worktree_id` snapped into a durable CompactionCompleted structural payload.
@@ -525,6 +553,19 @@ impl AgentRuntime {
         chunk_id: u64,
         text: impl Into<String>,
     ) -> Result<bool, RuntimeError> {
+        self.record_agent_chunk_with_store(run_id, chunk_id, text, None)
+    }
+
+    /// Record an agent text chunk, optionally spilling oversized bodies to
+    /// [`DurableArtifactStore`]. When `artifact_store` is `None`, opens the
+    /// default root on demand (same pattern as durable compaction).
+    pub fn record_agent_chunk_with_store(
+        &self,
+        run_id: Uuid,
+        chunk_id: u64,
+        text: impl Into<String>,
+        artifact_store: Option<&crate::DurableArtifactStore>,
+    ) -> Result<bool, RuntimeError> {
         let projection = self.projection()?;
         if projection.active_run_id != Some(run_id) {
             return Err(RuntimeError::InactiveRun(run_id));
@@ -536,10 +577,19 @@ impl AgentRuntime {
         {
             return Ok(false);
         }
+        let text = text.into();
+        let owned_store = if artifact_store.is_none() && text.len() > MAX_AGENT_CHUNK_EVENT_BYTES {
+            crate::DurableArtifactStore::open(crate::default_artifact_root()).ok()
+        } else {
+            None
+        };
+        let store = artifact_store.or(owned_store.as_ref());
+        let (text, artifact) = bound_agent_chunk_text(text, store);
         self.record(EventPayload::Agent(crate::AgentEvent::Chunk {
             run_id,
             chunk_id,
-            text: text.into(),
+            text,
+            artifact,
         }))?;
         Ok(true)
     }
@@ -549,13 +599,59 @@ impl AgentRuntime {
         run_id: Uuid,
         text: impl Into<String>,
     ) -> Result<(), RuntimeError> {
+        let projection = self.projection()?;
+        if projection.active_run_id != Some(run_id) {
+            return Err(RuntimeError::InactiveRun(run_id));
+        }
+        // When chunks already recorded the stream body, keep Final compact so a
+        // large answer is not duplicated as a second megabyte event row.
+        let text = text.into();
+        let text = if projection.agent_chunk_ids.contains_key(&run_id)
+            && text.len() > MAX_AGENT_CHUNK_EVENT_BYTES
+        {
+            truncate_agent_chunk_preview(&text)
+        } else {
+            text
+        };
+        self.record(EventPayload::Agent(crate::AgentEvent::Final {
+            run_id,
+            text,
+        }))
+    }
+
+    /// Record a provider reasoning **summary** (never hidden chain-of-thought).
+    ///
+    /// Empty / whitespace-only content is skipped. Long input is truncated so a
+    /// misbehaving provider cannot dump unbounded CoT into the event log.
+    pub fn record_agent_reasoning_summary(
+        &self,
+        run_id: Uuid,
+        text: impl Into<String>,
+    ) -> Result<bool, RuntimeError> {
         if self.projection()?.active_run_id != Some(run_id) {
             return Err(RuntimeError::InactiveRun(run_id));
         }
-        self.record(EventPayload::Agent(crate::AgentEvent::Final {
+        let trimmed = text.into();
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        const MAX_SUMMARY_CHARS: usize = 2_048;
+        let bounded = if trimmed.chars().count() > MAX_SUMMARY_CHARS {
+            let end = trimmed
+                .char_indices()
+                .nth(MAX_SUMMARY_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(trimmed.len());
+            format!("{}…", &trimmed[..end])
+        } else {
+            trimmed.to_owned()
+        };
+        self.record(EventPayload::Agent(crate::AgentEvent::ReasoningSummary {
             run_id,
-            text: text.into(),
-        }))
+            text: bounded,
+        }))?;
+        Ok(true)
     }
 
     pub fn request_action(&self, action: Action) -> Result<RuntimeStatus, RuntimeError> {
@@ -597,16 +693,105 @@ impl AgentRuntime {
         }
     }
 
-    pub fn record_tool_started(&self, name: &str) -> Result<(), RuntimeError> {
+    pub fn record_tool_started(
+        &self,
+        name: &str,
+        tool_call_id: Option<&str>,
+    ) -> Result<(), RuntimeError> {
         self.record(EventPayload::Tool(ToolEvent::Started {
             name: name.to_owned(),
+            tool_call_id: tool_call_id.map(str::to_owned),
         }))
     }
 
-    pub fn record_tool_finished(&self, name: &str, summary: &str) -> Result<(), RuntimeError> {
+    pub fn record_tool_finished(
+        &self,
+        name: &str,
+        summary: &str,
+        tool_call_id: Option<&str>,
+    ) -> Result<(), RuntimeError> {
         self.record(EventPayload::Tool(ToolEvent::Finished {
             name: name.to_owned(),
             summary: summary.to_owned(),
+            tool_call_id: tool_call_id.map(str::to_owned),
+        }))
+    }
+
+    /// Bounded mid-tool output preview (chars, not bytes).
+    pub const TOOL_OUTPUT_PREVIEW_CHARS: usize = 256;
+
+    pub fn record_tool_output(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        preview: &str,
+    ) -> Result<(), RuntimeError> {
+        let bounded: String = preview
+            .chars()
+            .take(Self::TOOL_OUTPUT_PREVIEW_CHARS)
+            .collect();
+        let preview = if preview.chars().count() > Self::TOOL_OUTPUT_PREVIEW_CHARS {
+            format!("{bounded}…")
+        } else {
+            bounded
+        };
+        self.record(EventPayload::Tool(ToolEvent::Output {
+            tool_call_id: tool_call_id.to_owned(),
+            tool_name: tool_name.to_owned(),
+            preview,
+        }))
+    }
+
+    /// Append `Child*` to parent session log when `parent_session_id` is a Uuid.
+    /// Non-uuid labels (legacy tests) and missing sessions are no-ops.
+    pub fn emit_parent_child_event(
+        store: &dyn EventStore,
+        parent_session_id: &str,
+        event: ChildEvent,
+    ) -> Result<(), RuntimeError> {
+        let Ok(parent_id) = Uuid::parse_str(parent_session_id.trim()) else {
+            return Ok(());
+        };
+        match store.append_next(parent_id, EventPayload::Child(event)) {
+            Ok(_) => Ok(()),
+            Err(crate::storage::StoreError::MissingSession(_)) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub fn record_child_started(&self, child_id: &str, role: &str) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Child(ChildEvent::Started {
+            child_id: child_id.to_owned(),
+            parent_id: self.session_id.to_string(),
+            role: role.to_owned(),
+        }))
+    }
+
+    pub fn record_child_status_changed(
+        &self,
+        child_id: &str,
+        status: &str,
+        current_action: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Child(ChildEvent::StatusChanged {
+            child_id: child_id.to_owned(),
+            status: status.to_owned(),
+            current_action: current_action.map(str::to_owned),
+        }))
+    }
+
+    pub fn record_child_finished(
+        &self,
+        child_id: &str,
+        status: &str,
+        summary: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Child(ChildEvent::Finished {
+            child_id: child_id.to_owned(),
+            status: status.to_owned(),
+            summary: summary.map(str::to_owned),
+            error: error.map(str::to_owned),
         }))
     }
 
@@ -739,7 +924,7 @@ impl AgentRuntime {
         self.status()
     }
 
-    fn projection(&self) -> Result<crate::SessionProjection, RuntimeError> {
+    pub(crate) fn projection(&self) -> Result<crate::SessionProjection, RuntimeError> {
         reduce(&self.events()?)?.ok_or(RuntimeError::MissingSession(self.session_id))
     }
 
@@ -1373,5 +1558,88 @@ mod tests {
         assert_ne!(restored.session_id(), source_id);
         assert_eq!(restored.events().expect("restored").len(), 2);
         assert_eq!(source.events().expect("source").len(), 4);
+    }
+
+    #[test]
+    fn large_agent_chunk_spills_to_artifact_and_keeps_bounded_preview() {
+        let artifact_root = tempfile::tempdir().expect("artifact root");
+        let store =
+            crate::DurableArtifactStore::open(artifact_root.path()).expect("open artifact store");
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        let run_id = runtime.start_run().expect("start run");
+        let megabyte = "x".repeat(MAX_AGENT_CHUNK_EVENT_BYTES + 64 * 1024);
+        assert!(
+            runtime
+                .record_agent_chunk_with_store(run_id, 1, megabyte.clone(), Some(&store))
+                .expect("record")
+        );
+
+        let events = runtime.events().expect("events");
+        let chunk = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Agent(crate::AgentEvent::Chunk {
+                    text,
+                    artifact,
+                    chunk_id,
+                    ..
+                }) => Some((text.clone(), artifact.clone(), *chunk_id)),
+                _ => None,
+            })
+            .expect("chunk event");
+        assert_eq!(chunk.2, 1);
+        assert!(chunk.0.len() <= AGENT_CHUNK_PREVIEW_BYTES + 4);
+        assert!(chunk.0.len() < megabyte.len());
+        let artifact = chunk.1.expect("artifact ref");
+        assert_eq!(artifact.byte_count, megabyte.len());
+        let body = store.read(&artifact.id).expect("read artifact");
+        assert_eq!(body, megabyte.as_bytes());
+
+        // Duplicate chunk_id is skipped (reconnect/resume).
+        assert!(
+            !runtime
+                .record_agent_chunk_with_store(run_id, 1, "dup", Some(&store))
+                .expect("dup")
+        );
+        assert_eq!(
+            runtime
+                .events()
+                .expect("events")
+                .iter()
+                .filter(|event| matches!(
+                    event.payload,
+                    EventPayload::Agent(crate::AgentEvent::Chunk { .. })
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn large_final_with_chunks_stays_bounded() {
+        let runtime = AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        let run_id = runtime.start_run().expect("start run");
+        runtime.record_agent_chunk(run_id, 1, "hi").expect("chunk");
+        let megabyte = "y".repeat(MAX_AGENT_CHUNK_EVENT_BYTES + 1024);
+        runtime
+            .record_agent_final(run_id, megabyte.clone())
+            .expect("final");
+        let final_text = runtime
+            .events()
+            .expect("events")
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Agent(crate::AgentEvent::Final { text, .. }) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("final");
+        assert!(final_text.len() <= AGENT_CHUNK_PREVIEW_BYTES + 4);
+        assert!(final_text.len() < megabyte.len());
     }
 }

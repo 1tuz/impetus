@@ -64,7 +64,7 @@ impl StatusBar {
             EventPayload::Tool(tool_event) => {
                 use impetus_core::ToolEvent;
                 match tool_event {
-                    ToolEvent::Started { name } => {
+                    ToolEvent::Started { name, .. } => {
                         state.current_action = Some(format!("Tool: {}", name));
                     }
                     ToolEvent::Finished { .. } => {
@@ -75,6 +75,46 @@ impl StatusBar {
                     }
                     ToolEvent::Deferred { tool_name, .. } => {
                         state.current_action = Some(format!("Approval required: {tool_name}"));
+                    }
+                    ToolEvent::Output { tool_name, .. } => {
+                        state.current_action = Some(format!("Tool: {tool_name}"));
+                    }
+                    ToolEvent::FileRead { path, .. } => {
+                        state.current_action = Some(format!("Read: {path}"));
+                    }
+                    ToolEvent::SearchStarted { pattern, .. } => {
+                        state.current_action = Some(format!("Search: {pattern}"));
+                    }
+                    ToolEvent::SearchResult { match_count, .. } => {
+                        state.current_action = Some(format!("Search: {match_count} hits"));
+                    }
+                }
+            }
+            EventPayload::Pty(pty_event) => {
+                use impetus_core::PtyEvent;
+                match pty_event {
+                    PtyEvent::Started { command, .. } => {
+                        state.current_action = Some(format!("Pty: {command}"));
+                    }
+                    PtyEvent::Output { .. } | PtyEvent::Spill { .. } => {
+                        state.current_action = Some("Pty: output".into());
+                    }
+                    PtyEvent::Exited { .. } => {
+                        state.current_action = None;
+                    }
+                }
+            }
+            EventPayload::Command(command_event) => {
+                use impetus_core::CommandEvent;
+                match command_event {
+                    CommandEvent::Started { command, .. } => {
+                        state.current_action = Some(format!("Cmd: {command}"));
+                    }
+                    CommandEvent::Output { .. } => {
+                        state.current_action = Some("Cmd: running".into());
+                    }
+                    CommandEvent::Finished { .. } => {
+                        state.current_action = None;
                     }
                 }
             }
@@ -208,6 +248,7 @@ mod tests {
         bar.update_from_event(&make_event(EventPayload::Tool(
             impetus_core::ToolEvent::Started {
                 name: "read_file".to_string(),
+                tool_call_id: None,
             },
         )));
         assert!(bar.render().contains("Tool: read_file"));

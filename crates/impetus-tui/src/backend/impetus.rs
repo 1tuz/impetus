@@ -2,8 +2,9 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use impetus_client::protocol::ExecutionMode;
 use impetus_client::protocol::{
-    AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, Event, EventPayload,
-    IpcRequest, IpcResponse, NoticeEvent, RetryEvent, RunEvent, SessionEvent, ToolEvent,
+    AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
+    Event, EventPayload, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, NoticeEvent, PtyEvent,
+    RetryEvent, RunEvent, SandboxEvent, SessionEvent, ToolEvent,
 };
 use impetus_client::{EventSubscription, HarnessClient, UnixSocketTransport};
 use std::collections::BTreeSet;
@@ -15,8 +16,6 @@ use crate::model::{
     ApprovalCard, ApprovalDetailView, BudgetState, ConnectionInfo, SessionSummary, UiEvent,
     UiEventKind,
 };
-
-const MAX_IPC_LINE_BYTES: usize = 64 * 1024;
 
 pub struct ImpetusBackend {
     client: UnixSocketTransport,
@@ -78,6 +77,32 @@ impl UiBackend for ImpetusBackend {
         self.client.create_session(workspace_root).await
     }
 
+    async fn fork_session(&self, session_id: Uuid, up_to_sequence: u64) -> Result<Uuid> {
+        self.client.fork_session(session_id, up_to_sequence).await
+    }
+
+    async fn create_checkpoint(
+        &self,
+        session_id: Uuid,
+        name: String,
+        sequence: Option<u64>,
+    ) -> Result<impetus_client::protocol::CheckpointInfo> {
+        self.client
+            .create_checkpoint(session_id, name, sequence)
+            .await
+    }
+
+    async fn list_checkpoints(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<impetus_client::protocol::CheckpointInfo>> {
+        self.client.list_checkpoints(session_id).await
+    }
+
+    async fn restore_checkpoint(&self, checkpoint_id: Uuid) -> Result<Uuid> {
+        self.client.restore_checkpoint(checkpoint_id).await
+    }
+
     async fn resume_session(&self, session_id: Uuid) -> Result<String> {
         Ok(format!(
             "{:?}",
@@ -90,11 +115,12 @@ impl UiBackend for ImpetusBackend {
         session_id: Uuid,
         text: String,
         intent: impetus_client::protocol::UserPromptIntent,
+        artifact: Option<impetus_client::protocol::DurableArtifactRef>,
     ) -> Result<String> {
         let request = IpcRequest::Prompt {
             session_id,
             text,
-            artifact: None,
+            artifact,
             intent,
         };
         let encoded_len = serde_json::to_vec(&request)?.len().saturating_add(1);
@@ -159,6 +185,53 @@ impl UiBackend for ImpetusBackend {
         }
     }
 
+    async fn upload_artifact(
+        &self,
+        session_id: Uuid,
+        bytes: Vec<u8>,
+        content_type: Option<String>,
+    ) -> Result<impetus_client::protocol::DurableArtifactRef> {
+        let hello = self.client.hello().await?;
+        let supports_upload = match &hello {
+            IpcResponse::Hello { capabilities, .. } => {
+                capabilities.iter().any(|cap| cap == "artifact_upload")
+            }
+            IpcResponse::Incompatible {
+                supported_version,
+                client_version,
+                upgrade_recommendation,
+            } => {
+                bail!(
+                    "IPC incompatible: client={client_version}, daemon={supported_version}. {}",
+                    upgrade_recommendation
+                        .as_deref()
+                        .unwrap_or("Upgrade the client or daemon.")
+                );
+            }
+            response => bail!("unexpected hello response: {response:?}"),
+        };
+        if !supports_upload {
+            bail!(
+                "daemon does not expose artifact_upload; cannot attach file ({} bytes)",
+                bytes.len()
+            );
+        }
+        self.client
+            .upload_artifact(session_id, &bytes, content_type)
+            .await
+            .map_err(|error| anyhow::anyhow!("artifact upload failed: {error}"))
+    }
+
+    async fn get_artifact_metadata(
+        &self,
+        artifact_id: String,
+    ) -> Result<impetus_client::protocol::DurableArtifactMeta> {
+        self.client
+            .get_artifact_metadata(artifact_id)
+            .await
+            .map_err(|error| anyhow::anyhow!("artifact metadata failed: {error}"))
+    }
+
     async fn cancel(&self, session_id: Uuid) -> Result<String> {
         Ok(format!("{:?}", self.client.cancel(session_id).await?))
     }
@@ -189,6 +262,7 @@ impl UiBackend for ImpetusBackend {
         {
             IpcResponse::ApprovalDetail { detail, .. } => Ok(ApprovalDetailView {
                 diff_preview: detail.diff_preview,
+                diff_observation: detail.diff_observation,
                 affected_files: detail.affected_files,
                 estimated_scope: detail.estimated_scope.map(|scope| format!("{scope:?}")),
                 attachment_refs: detail.attachment_refs,
@@ -248,6 +322,132 @@ impl UiBackend for ImpetusBackend {
         self.client.set_execution_mode(session_id, mode).await
     }
 
+    async fn list_workspace_dir(
+        &self,
+        session_id: Uuid,
+        path: PathBuf,
+    ) -> Result<impetus_client::protocol::WorkspaceDirListing> {
+        self.client.list_workspace_dir(session_id, path).await
+    }
+
+    async fn read_workspace_file(
+        &self,
+        session_id: Uuid,
+        path: PathBuf,
+        max_bytes: Option<usize>,
+    ) -> Result<impetus_client::protocol::WorkspaceFileContent> {
+        self.client
+            .read_workspace_file(session_id, path, max_bytes)
+            .await
+    }
+
+    async fn search_workspace_files(
+        &self,
+        session_id: Uuid,
+        path: PathBuf,
+        pattern: String,
+    ) -> Result<impetus_client::protocol::WorkspaceSearchResult> {
+        self.client
+            .search_workspace_files(session_id, path, pattern)
+            .await
+    }
+
+    async fn list_branches(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<impetus_client::protocol::GitBranchInfo>> {
+        self.client.list_branches(session_id).await
+    }
+
+    async fn get_current_branch(
+        &self,
+        session_id: Uuid,
+    ) -> Result<impetus_client::protocol::GitCurrentBranch> {
+        self.client.get_current_branch(session_id).await
+    }
+
+    async fn create_branch(
+        &self,
+        session_id: Uuid,
+        name: String,
+        checkout: bool,
+    ) -> Result<impetus_client::protocol::GitCurrentBranch> {
+        self.client.create_branch(session_id, name, checkout).await
+    }
+
+    async fn switch_branch(
+        &self,
+        session_id: Uuid,
+        name: String,
+    ) -> Result<impetus_client::protocol::GitCurrentBranch> {
+        self.client.switch_branch(session_id, name).await
+    }
+
+    async fn git_status(
+        &self,
+        session_id: Uuid,
+    ) -> Result<impetus_client::protocol::GitStatusSnapshot> {
+        self.client.git_status(session_id).await
+    }
+
+    async fn list_changed_files(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<impetus_client::protocol::GitChangedFile>> {
+        self.client.list_changed_files(session_id).await
+    }
+
+    async fn get_diff(
+        &self,
+        session_id: Uuid,
+        base_ref: Option<String>,
+    ) -> Result<impetus_client::protocol::GitDiffPayload> {
+        self.client.get_diff(session_id, base_ref).await
+    }
+
+    async fn get_file_diff(
+        &self,
+        session_id: Uuid,
+        path: PathBuf,
+        base_ref: Option<String>,
+    ) -> Result<impetus_client::protocol::GitDiffPayload> {
+        self.client.get_file_diff(session_id, path, base_ref).await
+    }
+
+    async fn pty_start(
+        &self,
+        session_id: Uuid,
+        command: String,
+        args: Vec<String>,
+        working_dir: Option<PathBuf>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<impetus_client::PtySessionView> {
+        self.client
+            .pty_start(session_id, command, args, working_dir, cols, rows)
+            .await
+    }
+
+    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()> {
+        self.client.pty_input(pty_id, data).await
+    }
+
+    async fn pty_output(
+        &self,
+        pty_id: u64,
+        max_bytes: Option<usize>,
+    ) -> Result<impetus_client::PtyOutputView> {
+        self.client.pty_output(pty_id, max_bytes).await
+    }
+
+    async fn pty_resize(&self, pty_id: u64, cols: u16, rows: u16) -> Result<()> {
+        self.client.pty_resize(pty_id, cols, rows).await
+    }
+
+    async fn pty_detach(&self, pty_id: u64) -> Result<()> {
+        self.client.pty_detach(pty_id).await
+    }
+
     async fn subscribe(
         &self,
         session_id: Uuid,
@@ -291,7 +491,10 @@ fn map_event(event: Event) -> UiEvent {
         EventPayload::Session(SessionEvent::ExecutionModeChanged { mode }) => {
             UiEventKind::ExecutionModeChanged { mode }
         }
-        EventPayload::Intent(intent) => UiEventKind::UserInput { text: intent.text },
+        EventPayload::Intent(intent) => UiEventKind::UserInput {
+            text: intent.text,
+            artifact: intent.artifact,
+        },
         EventPayload::Plan(plan) => UiEventKind::Plan {
             summary: plan.summary,
         },
@@ -308,6 +511,7 @@ fn map_event(event: Event) -> UiEvent {
             run_id,
             chunk_id,
             text,
+            ..
         }) => UiEventKind::AgentChunk {
             run_id,
             chunk_id,
@@ -316,10 +520,26 @@ fn map_event(event: Event) -> UiEvent {
         EventPayload::Agent(AgentEvent::Final { run_id, text }) => {
             UiEventKind::AgentFinal { run_id, text }
         }
-        EventPayload::Tool(ToolEvent::Started { name }) => UiEventKind::ToolStarted { name },
-        EventPayload::Tool(ToolEvent::Finished { name, summary }) => {
+        EventPayload::Agent(AgentEvent::ReasoningSummary { run_id, text }) => {
+            UiEventKind::ReasoningSummary { run_id, text }
+        }
+        EventPayload::Tool(ToolEvent::Started { name, .. }) => UiEventKind::ToolStarted { name },
+        EventPayload::Tool(ToolEvent::Finished { name, summary, .. }) => {
             UiEventKind::ToolFinished { name, summary }
         }
+        EventPayload::Tool(ToolEvent::Output {
+            tool_call_id,
+            tool_name,
+            preview,
+        }) => UiEventKind::ToolObserved {
+            call_id: tool_call_id,
+            name: tool_name,
+            arguments: String::new(),
+            outcome: "running".to_owned(),
+            preview,
+            artifact: None,
+            error: None,
+        },
         EventPayload::Tool(ToolEvent::Observed {
             tool_call_id,
             tool_name,
@@ -348,6 +568,127 @@ fn map_event(event: Event) -> UiEvent {
             name: tool_name,
             arguments: serde_json::to_string_pretty(&arguments)
                 .unwrap_or_else(|_| arguments.to_string()),
+        },
+        EventPayload::Tool(ToolEvent::FileRead { path, preview, .. }) => {
+            UiEventKind::ActivityStep {
+                label: format!("read · {path}"),
+                detail: Some(preview),
+                is_error: false,
+            }
+        }
+        EventPayload::Tool(ToolEvent::SearchStarted {
+            pattern, target, ..
+        }) => UiEventKind::ActivityStep {
+            label: format!("search · {pattern}"),
+            detail: Some(format!("target: {target}")),
+            is_error: false,
+        },
+        EventPayload::Tool(ToolEvent::SearchResult {
+            match_count,
+            preview,
+            ..
+        }) => UiEventKind::ActivityStep {
+            label: format!("search · {match_count} hits"),
+            detail: Some(preview),
+            is_error: false,
+        },
+        EventPayload::Pty(pty) => match pty {
+            PtyEvent::Started {
+                pty_id, command, ..
+            } => UiEventKind::ActivityStep {
+                label: format!("pty {pty_id} · {command}"),
+                detail: None,
+                is_error: false,
+            },
+            PtyEvent::Output {
+                pty_id,
+                preview,
+                eof,
+                ..
+            } => UiEventKind::ActivityStep {
+                label: format!("pty {pty_id} · output"),
+                detail: Some(if eof {
+                    format!("{preview}\n(eof)")
+                } else {
+                    preview
+                }),
+                is_error: false,
+            },
+            PtyEvent::Spill {
+                pty_id,
+                artifact,
+                dropped_bytes,
+            } => UiEventKind::ActivityStep {
+                label: format!("pty {pty_id} · spill"),
+                detail: Some(format!("{dropped_bytes} bytes → artifact {}", artifact.id)),
+                is_error: false,
+            },
+            PtyEvent::Exited { pty_id, exit_code } => UiEventKind::ActivityStep {
+                label: format!("pty {pty_id} · exit {exit_code:?}"),
+                detail: None,
+                is_error: exit_code.is_some_and(|code| code != 0),
+            },
+        },
+        EventPayload::Command(cmd) => match cmd {
+            CommandEvent::Started {
+                tool_call_id,
+                command,
+            } => UiEventKind::ActivityStep {
+                label: format!("cmd · {command}"),
+                detail: Some(format!("call_id: {tool_call_id}")),
+                is_error: false,
+            },
+            CommandEvent::Output {
+                tool_call_id,
+                preview,
+            } => UiEventKind::ActivityStep {
+                label: "cmd · output".to_owned(),
+                detail: Some(format!("call_id: {tool_call_id}\n{preview}")),
+                is_error: false,
+            },
+            CommandEvent::Finished {
+                tool_call_id,
+                exit_code,
+                summary,
+            } => UiEventKind::ActivityStep {
+                label: format!("cmd · exit {exit_code:?}"),
+                detail: Some(format!(
+                    "call_id: {tool_call_id}{}",
+                    summary.map(|s| format!("\n{s}")).unwrap_or_default()
+                )),
+                is_error: exit_code.is_some_and(|code| code != 0),
+            },
+        },
+        EventPayload::Child(child) => match child {
+            ChildEvent::Started {
+                child_id,
+                parent_id,
+                role,
+            } => UiEventKind::ChildStarted {
+                child_id,
+                role,
+                parent_id,
+            },
+            ChildEvent::StatusChanged {
+                child_id,
+                status,
+                current_action,
+            } => UiEventKind::ChildStatus {
+                child_id,
+                status,
+                current_action,
+            },
+            ChildEvent::Finished {
+                child_id,
+                status,
+                summary,
+                error,
+            } => UiEventKind::ChildFinished {
+                child_id,
+                status,
+                summary,
+                error,
+            },
         },
         EventPayload::Approval(ApprovalEvent::Requested { request }) => {
             let fingerprint = serde_json::to_string(&request.action_fingerprint)
@@ -515,6 +856,31 @@ fn map_event(event: Event) -> UiEvent {
             message: format!("{attempts} attempts · {last_error}"),
             failed: true,
         },
+        EventPayload::Sandbox(sandbox) => {
+            let (title, message) = match sandbox {
+                SandboxEvent::Decision {
+                    backend,
+                    prepare_state,
+                    network_allowed,
+                    writable_root_count,
+                    reason_code,
+                } => (
+                    format!("sandbox · {backend}"),
+                    format!(
+                        "{prepare_state:?} · network={network_allowed} · writable_roots={writable_root_count}{}",
+                        reason_code
+                            .map(|code| format!(" · {code}"))
+                            .unwrap_or_default()
+                    ),
+                ),
+            };
+            UiEventKind::Notice {
+                title,
+                message,
+                error: false,
+                remediation: None,
+            }
+        }
     };
 
     UiEvent {

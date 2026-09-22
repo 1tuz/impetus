@@ -1,6 +1,5 @@
 use crate::policy_config::{PolicyConfig, PolicyConfigDecision, PolicyConfigError};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -33,63 +32,17 @@ impl PolicySnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionOrigin {
-    User,
-    Agent,
+pub use impetus_protocol::{
+    Action, ActionFingerprint, ActionKind, ActionOrigin, ExecutionSemantics, PolicyDecision,
+};
+
+/// Web capability mapping kept in core (depends on web_research types).
+pub trait ActionKindExt {
+    fn web_capability(self) -> Option<crate::web_research::WebCapability>;
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionKind {
-    ReadFile,
-    WriteFile,
-    SpawnProcess,
-    NetworkConnect,
-    SshConnect,
-    SftpTransfer,
-    TmuxAttach,
-    WebSearch,
-    WebFetch,
-    WebDownload,
-    WebBrowser,
-    WebSubmit,
-    WebUpload,
-}
-
-impl ActionKind {
-    /// Classify action for parallel execution safety
-    pub fn execution_semantics(&self) -> crate::module::ExecutionSemantics {
-        use crate::module::ExecutionSemantics;
-        match self {
-            ActionKind::ReadFile => ExecutionSemantics::ReadOnly,
-            ActionKind::WriteFile => ExecutionSemantics::Mutating,
-            ActionKind::SpawnProcess => ExecutionSemantics::NonReplayable,
-            ActionKind::NetworkConnect => ExecutionSemantics::Idempotent,
-            ActionKind::SshConnect => ExecutionSemantics::NonReplayable,
-            ActionKind::SftpTransfer => ExecutionSemantics::Mutating,
-            ActionKind::TmuxAttach => ExecutionSemantics::NonReplayable,
-            ActionKind::WebSearch => ExecutionSemantics::Idempotent,
-            ActionKind::WebFetch => ExecutionSemantics::ReadOnly,
-            ActionKind::WebDownload => ExecutionSemantics::Mutating,
-            ActionKind::WebBrowser => ExecutionSemantics::NonReplayable,
-            ActionKind::WebSubmit => ExecutionSemantics::Mutating,
-            ActionKind::WebUpload => ExecutionSemantics::Mutating,
-        }
-    }
-
-    /// Check if action can be executed in parallel with other actions
-    pub fn can_parallelize(&self) -> bool {
-        matches!(
-            self.execution_semantics(),
-            crate::module::ExecutionSemantics::ReadOnly
-                | crate::module::ExecutionSemantics::Idempotent
-        )
-    }
-
-    /// Map web action kinds onto the fine-grained [`WebCapability`] model.
-    pub fn web_capability(&self) -> Option<crate::web_research::WebCapability> {
+impl ActionKindExt for ActionKind {
+    fn web_capability(self) -> Option<crate::web_research::WebCapability> {
         use crate::web_research::WebCapability;
         match self {
             ActionKind::WebSearch => Some(WebCapability::Search),
@@ -100,43 +53,6 @@ impl ActionKind {
             ActionKind::WebUpload => Some(WebCapability::Upload),
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Action {
-    pub origin: ActionOrigin,
-    pub kind: ActionKind,
-    pub summary: String,
-    pub target: Option<String>,
-}
-
-/// A stable digest of the complete, normalized action that a person reviews.
-/// It is persisted with an approval so a different action cannot reuse it.
-/// Includes capability version to prevent reuse across incompatible changes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct ActionFingerprint(String);
-
-impl ActionFingerprint {
-    pub fn for_action(action: &Action) -> Self {
-        Self::for_action_with_version(action, None)
-    }
-
-    pub fn for_action_with_version(action: &Action, version: Option<u32>) -> Self {
-        let mut payload = serde_json::to_vec(action).expect("action serialization is infallible");
-        if let Some(v) = version {
-            payload.extend_from_slice(b"\0version:");
-            payload.extend_from_slice(v.to_string().as_bytes());
-        }
-        let digest = Sha256::digest([b"impetus-action-v1\0".as_slice(), &payload].concat());
-        Self(digest.iter().map(|byte| format!("{byte:02x}")).collect())
-    }
-}
-
-impl Action {
-    pub fn fingerprint(&self) -> ActionFingerprint {
-        ActionFingerprint::for_action(self)
     }
 }
 
@@ -220,13 +136,6 @@ impl SandboxScope {
             .canonicalize()
             .is_ok_and(|ancestor| ancestor.starts_with(root))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PolicyDecision {
-    Allow,
-    NeedsApproval { reason: String },
-    Deny { reason: String },
 }
 
 #[derive(Debug, Clone)]
@@ -902,6 +811,27 @@ mod tests {
                 "{kind:?} => {decision:?}"
             );
         }
+    }
+
+    #[test]
+    fn config_cannot_allow_write_outside_workspace() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let config = PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+            .expect("config");
+        let policy = PolicyEngine::with_config(SandboxScope::local_workspace(workspace), config);
+        let decision = policy.evaluate(&Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write outside".into(),
+            target: Some("/etc/hosts".into()),
+        });
+        assert!(
+            matches!(
+                decision,
+                PolicyDecision::Deny { ref reason } if reason.contains("outside the workspace")
+            ),
+            "{decision:?}"
+        );
     }
 
     #[test]

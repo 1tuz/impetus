@@ -28,59 +28,112 @@ impetusd  → local-first daemon (authoritative runtime)
 `impetusd` владеет durable sessions, Event Log, SQLite, policy, execution и
 credential references. Клиенты не владеют authoritative state.
 
-**CURRENT.** `impetusd` + CLI `impetus` через Unix-socket IPC и `HarnessClient`,
-provider registry foundation, экспериментальный Zap adapter. Также доступны:
-`impetus doctor`, `impetus ui` (Ratatui TUI) и foundations Module Runtime.
-Второй CLI `impetus-cli` остаётся поддерживаемым для своих workflow; `impetus` —
-более полный surface (doctor, ui, skills, …). Dual CLI намеренно.
+**CURRENT.** `impetusd` + CLI `impetus` через versioned Unix-socket IPC и
+`HarnessClient`, provider registry foundation, экспериментальный Zap adapter.
+Также доступны: `impetus doctor`, `impetus ui` (Ratatui TUI) и foundations
+Module Runtime. Primary CLI — `impetus`; `impetus-cli` — legacy/secondary
+surface (migration note, не deletion).
 
 **TARGET.** Модульный harness: `impetus` — first-class CLI/TUI; Zap — ещё один
-`HarnessClient` consumer. См. [Architecture](ARCHITECTURE.md).
+`HarnessClient` consumer. Честный adapter checklist: [Architecture — Zap path
+(#5)](ARCHITECTURE.md#zap-path-vs-standalone-clitui-5). См.
+[Architecture](ARCHITECTURE.md).
 
 ## Что работает сейчас
 
+Честный статус (детали: [ARCHITECTURE.md](ARCHITECTURE.md)):
+
 - Durable sessions и упорядоченные audit events в SQLite WAL.
-- Versioned Unix-socket negotiation.
-- Путь typed action: Policy → Approval → Sandbox → Capability → Execution.
-- macOS Keychain reference или local no-secret provider; raw token не хранится.
-- Typed Rust client transport, reference CLI, ACP gateway library и
-  экспериментальный Zap integration baseline.
+- Versioned local Unix-socket negotiation перед действиями клиента.
+- Typed actions через policy, approval, **path-scope** sandbox, capability и
+  execution (fail-closed). На macOS process spawn также обернут Seatbelt
+  (`sandbox-exec`); non-macOS — только path-scope.
+- Keychain references или local no-secret provider endpoint; profiles не
+  хранят raw tokens.
+- Typed Rust client transport, CLI, TUI (`impetus ui`), ACP gateway library и
+  экспериментальный Zap adapter.
+- Agent-loop vertical: filesystem reads + approval-gated writes/shell; большие
+  tool/web/paste bodies — durable content-addressed artifacts
+  (`DurableArtifactStore`); approval diffs — ephemeral in-memory attachments.
+- Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
+  shared-prefix fork и checkpoints.
+- Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
+  Production MCP: `impetusd` autoload `$IMPETUS_DATA_DIR/mcp/*.json` в
+  `ToolProviderRuntime` (fail-closed на bad config; live connect на first tool
+  use). Read-only catalog IPC: `ListMcpServers` / `ListModels` (labels/status;
+  no secrets). Pickers UI ещё open — см. [TODO.md](TODO.md).
+- Production model path: Mock или native OpenAI Chat Completions SSE
+  (`--provider-profile`); Anthropic library есть, но не default daemon path.
+  JSON Schema tool-arg validation — до policy на builtins.
 
-## Текущая разработка
+## Установка
 
-Пока доступен только developer checkout, без готового installer или prebuilt
-binaries.
+Landing: [1tuz.github.io/impetus](https://1tuz.github.io/impetus/).
+
+### Быстрая установка
+
+Платформы: macOS Apple Silicon, Linux x86_64
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/1tuz/impetus/main/scripts/install.sh | zsh
+```
+
+Бинарники → `~/.local/bin`. Добавь в PATH:
+
+```zsh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Из исходников
 
 ```zsh
 git clone https://github.com/1tuz/impetus.git
 cd impetus
 task setup
 task verify
+cargo build --release -p impetus -p impetusd
 ```
 
-В первом terminal — daemon:
+## Использование
+
+Daemon:
 
 ```zsh
-task daemon
-# или напрямую:
-cargo run -p impetusd
+impetusd
 ```
 
-Во втором — client CLI:
+В другом terminal:
 
 ```zsh
-task client -- create
-# или напрямую:
-cargo run -p impetus -- create
-cargo run -p impetus -- prompt <session-id> "Опиши этот репозиторий"
-cargo run -p impetus -- stream <session-id>
+impetus create
+impetus prompt <session-id> "Опиши этот репозиторий"
+impetus stream <session-id>
+# Когда stream показывает pending approval:
+impetus approve <session-id> <approval-id>
+# Или reject — модель продолжит с denial observation:
+impetus approve <session-id> <approval-id> --reject
 ```
 
-## Planned distribution
+Конфиг провайдера: [configuration docs](docs/guides/configuration.md).
 
-Целевой distribution path: prebuilt CLI, checksums, curl installer,
-clean-machine smoke и update/uninstall docs. Это roadmap, а не текущая команда
-установки.
+## Удаление
+
+Бинарники:
+
+```zsh
+rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+```
+
+Данные и сессии:
+
+```zsh
+rm -rf ~/Library/Application\ Support/Impetus  # macOS
+```
+
+Credentials из macOS Keychain — через **Keychain Access.app** или
+`security delete-generic-password`.
+
+Подробнее: [getting started](docs/guides/getting-started.md#uninstall).
 
 ## Design stance
 

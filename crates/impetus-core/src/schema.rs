@@ -65,6 +65,7 @@ pub const SCHEMA_APPROVAL_DETAIL: SchemaSpec = SchemaSpec {
         "schema_version",
         "request",
         "diff_preview",
+        "diff_observation",
         "affected_files",
         "estimated_scope",
         "attachment_refs",

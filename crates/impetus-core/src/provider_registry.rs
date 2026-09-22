@@ -3,9 +3,25 @@
 //! Manages registered providers and routes requests by provider_id.
 //! No central concrete enum: providers are registered at runtime.
 
-use crate::{ModelProvider, ProviderError};
+use crate::{ModelProvider, ProviderError, ProviderHealth};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+pub use impetus_protocol::{ModelProviderHealthLabel, ModelProviderStatus};
+
+impl From<ProviderHealth> for ModelProviderHealthLabel {
+    fn from(health: ProviderHealth) -> Self {
+        match health {
+            ProviderHealth::Unknown => Self::Unknown,
+            ProviderHealth::Healthy => Self::Healthy,
+            ProviderHealth::Unavailable {
+                last_error_redacted,
+            } => Self::Unavailable {
+                last_error_redacted,
+            },
+        }
+    }
+}
 
 /// Registry of available model providers.
 ///
@@ -60,6 +76,23 @@ impl ProviderRegistry {
         } else {
             Vec::new()
         }
+    }
+
+    /// Labels + health for every registered provider (sorted by provider_id).
+    pub fn list_status(&self, default_provider_id: &str) -> Vec<ModelProviderStatus> {
+        let mut ids = self.list_provider_ids();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|provider_id| {
+                let provider = self.get(&provider_id).ok()?;
+                Some(ModelProviderStatus {
+                    is_default: provider_id == default_provider_id,
+                    provider_id,
+                    model_id: provider.model_id().to_string(),
+                    health: provider.health().into(),
+                })
+            })
+            .collect()
     }
 
     /// Check if a provider is registered.
@@ -125,6 +158,13 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"mock1".to_string()));
         assert!(ids.contains(&"mock2".to_string()));
+
+        let status = registry.list_status("mock1");
+        assert_eq!(status.len(), 2);
+        assert_eq!(status[0].provider_id, "mock1");
+        assert!(status[0].is_default);
+        assert_eq!(status[0].model_id, "model1");
+        assert!(!status[1].is_default);
     }
 
     #[test]

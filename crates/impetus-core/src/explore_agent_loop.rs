@@ -330,6 +330,7 @@ mod tests {
             gate: Arc::new(Mutex::new(ChildConcurrencyGate::new())),
             store: Arc::new(child_store),
             executor: Arc::new(executor),
+            parent_events: None,
         };
         let out = bridge
             .spawn_explore(

@@ -68,6 +68,9 @@ jobs:
       - name: Clippy (affected)
         # Prefer --lib --bins over --all-targets: PR CI skips heavy crates/*/tests/
         # (those stay local via task verify). Still deny warnings.
+        # Named lib sentinels (local filter, not a separate CI job):
+        #   cargo test -p impetus-core --lib -- sentinel
+        # → sentinel_{protocol,git,files,events,artifacts} (+ security_runtime_pr)
         run: cargo clippy ${{ needs.detect.outputs.packages }} --lib --bins -- -D warnings
       - name: Test (affected lib/bins)
         run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins

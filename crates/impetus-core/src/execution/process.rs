@@ -76,6 +76,9 @@ pub struct ProcessOutput {
     /// Full redacted process body (`exit_code` + stdout + stderr) when larger
     /// than [`MAX_PROCESS_PREVIEW_BYTES`] or capture-truncated.
     pub artifact: Option<DurableArtifactRef>,
+    /// Seatbelt (or other) prepare evidence when spawn was sandboxed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_decision: Option<crate::SandboxDecision>,
 }
 
 /// Process execution request with policy check and bounded output.
@@ -206,6 +209,7 @@ impl ProcessExecutionRequest {
             }
         }
         let mut spawned = self.spawn_child()?;
+        let sandbox_decision = spawned.sandbox_decision.take();
         let child = &mut spawned.child;
 
         let stdout = child.stdout.take().expect("stdout piped");
@@ -245,6 +249,7 @@ impl ProcessExecutionRequest {
             capture_truncated,
             duration_ms,
             artifacts,
+            sandbox_decision,
         )
     }
 
@@ -281,6 +286,7 @@ impl ProcessExecutionRequest {
         Ok(SpawnedChild {
             child,
             _sandbox: None,
+            sandbox_decision: None,
         })
     }
 
@@ -305,6 +311,7 @@ impl ProcessExecutionRequest {
         let mut prepared = production_sandbox_provider()
             .prepare(&request)
             .map_err(map_sandbox_error)?;
+        let sandbox_decision = Some(prepared.decision().clone());
         let child = prepared
             .command_mut()
             .spawn()
@@ -312,6 +319,7 @@ impl ProcessExecutionRequest {
         Ok(SpawnedChild {
             child,
             _sandbox: Some(prepared),
+            sandbox_decision,
         })
     }
 }
@@ -321,6 +329,7 @@ struct SpawnedChild {
     child: tokio::process::Child,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     _sandbox: Option<SandboxKeepAlive>,
+    sandbox_decision: Option<crate::SandboxDecision>,
 }
 
 #[cfg(target_os = "macos")]
@@ -346,6 +355,7 @@ fn finalize_process_output(
     capture_truncated: bool,
     duration_ms: u64,
     artifacts: &DurableArtifactStore,
+    sandbox_decision: Option<crate::SandboxDecision>,
 ) -> Result<ProcessOutput, ProcessExecutionError> {
     let full = crate::tools::redact_text(&format!(
         "exit_code={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -375,6 +385,7 @@ fn finalize_process_output(
         truncated: needs_artifact,
         duration_ms,
         artifact,
+        sandbox_decision,
     })
 }
 
@@ -386,6 +397,7 @@ fn skipped_by_prefilter_output(duration_ms: u64, label: &str) -> ProcessOutput {
         truncated: false,
         duration_ms,
         artifact: None,
+        sandbox_decision: None,
     }
 }
 

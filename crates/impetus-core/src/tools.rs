@@ -6,10 +6,9 @@
 //! normalized into policy actions before any filesystem access.
 
 use crate::{
-    ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectExecution, EffectSeam,
-    EventPayload, NormalizedEffect, NoticeEvent,
+    ActionOrigin, DurableArtifactStore, EffectExecution, EffectSeam, EventPayload,
+    NormalizedEffect, NoticeEvent,
 };
-use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -26,13 +25,7 @@ pub const MAX_TOOL_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 /// Largest artifact that memory testing should exercise without a disk write.
 pub const ARTIFACT_CHUNK_SIZE: usize = 32 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadOnlyToolKind {
-    List,
-    Read,
-    Search,
-}
+pub use impetus_protocol::ReadOnlyToolKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadOnlyTool {
@@ -77,31 +70,7 @@ pub(crate) fn write_file_in_scope(
     std::fs::write(target, content).map_err(|error| ToolError::Io(error.to_string()))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolProvenance {
-    pub workspace_root: PathBuf,
-    pub relative_path: PathBuf,
-    pub in_scope: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub tool: ReadOnlyToolKind,
-    pub provenance: ToolProvenance,
-    pub preview: String,
-    pub truncated: bool,
-    pub artifact: Option<DurableArtifactRef>,
-    pub line_count: usize,
-    pub byte_count: usize,
-    pub original_tokens: usize,
-    pub reduced_tokens: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolOutcome {
-    Allowed { result: ToolResult },
-    Denied { reason: String, target: PathBuf },
-}
+pub use impetus_protocol::{ToolOutcome, ToolProvenance, ToolResult};
 
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -468,7 +437,7 @@ pub fn record_tool_outcome(
                 ReadOnlyToolKind::Read => "read",
                 ReadOnlyToolKind::Search => "search",
             };
-            runtime.record_tool_started(name)?;
+            runtime.record_tool_started(name, None)?;
             let summary = if result.truncated {
                 format!(
                     "{} lines/{} bytes, truncated, artifact {}",
@@ -483,7 +452,7 @@ pub fn record_tool_outcome(
             } else {
                 format!("{} lines/{} bytes", result.line_count, result.byte_count)
             };
-            runtime.record_tool_finished(name, &summary)?;
+            runtime.record_tool_finished(name, &summary, None)?;
         }
         ToolOutcome::Denied { reason, .. } => {
             runtime.record_event(EventPayload::Notice(NoticeEvent::PolicyDenied {

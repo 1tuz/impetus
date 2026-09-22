@@ -23,51 +23,7 @@ use thiserror::Error;
 pub const ABSENT_CODING_TOOLS_REASON: &str =
     "no coding-tools provider registered (optional; no LSP binary required)";
 
-/// Zero-based line/column position in a source file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SourcePosition {
-    pub line: u32,
-    pub character: u32,
-}
-
-/// Inclusive-start / exclusive-end range (LSP-style).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SourceRange {
-    pub start: SourcePosition,
-    pub end: SourcePosition,
-}
-
-impl SourceRange {
-    pub fn new(start_line: u32, start_character: u32, end_line: u32, end_character: u32) -> Self {
-        Self {
-            start: SourcePosition {
-                line: start_line,
-                character: start_character,
-            },
-            end: SourcePosition {
-                line: end_line,
-                character: end_character,
-            },
-        }
-    }
-}
-
-/// Path + range location. Path is a workspace-relative or absolute label string
-/// (never a secret).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SourceLocation {
-    pub path: PathBuf,
-    pub range: SourceRange,
-}
-
-impl SourceLocation {
-    pub fn new(path: impl Into<PathBuf>, range: SourceRange) -> Self {
-        Self {
-            path: path.into(),
-            range,
-        }
-    }
-}
+pub use impetus_protocol::{HoverInfo, SourceLocation, SourcePosition, SourceRange};
 
 /// Query at a point in a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,14 +90,6 @@ pub struct DocumentSymbol {
     pub location: SourceLocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
-}
-
-/// Hover payload: markdown/plain label + optional range.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HoverInfo {
-    pub contents: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<SourceRange>,
 }
 
 /// Failures from the coding-tools seam (fail-closed when backend absent).

@@ -5,57 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const CACHE_LIMIT: usize = 128;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum InstructionKind {
-    Soul,
-    ProjectRules,
-    Convention,
-    Guide,
-    Skill,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum InstructionScope {
-    Global,
-    Workspace,
-    Path(String),
-    Ecosystem(String),
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct InstructionReference {
-    pub id: String,
-    pub kind: InstructionKind,
-    pub scope: InstructionScope,
-    pub relative_path: PathBuf,
-    pub content_hash: String,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct InstructionTokenEstimate {
-    pub project_rules: usize,
-    pub conventions: usize,
-    pub guides: usize,
-    pub skills: usize,
-}
-
-impl InstructionTokenEstimate {
-    pub fn total(&self) -> usize {
-        self.project_rules + self.conventions + self.guides + self.skills
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ResolvedInstructions {
-    pub references: Vec<InstructionReference>,
-    pub estimated_tokens: InstructionTokenEstimate,
-}
+pub use impetus_protocol::{
+    InstructionKind, InstructionReference, InstructionScope, InstructionTokenEstimate,
+    ResolvedInstructions,
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolveRequest {

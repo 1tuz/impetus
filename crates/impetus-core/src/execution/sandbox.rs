@@ -1,6 +1,5 @@
 //! Replaceable OS sandbox backend for agent-controlled child processes.
 
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -11,32 +10,18 @@ use uuid::Uuid;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SandboxDecisionState {
-    Prepared,
-    Denied,
-}
+pub use impetus_protocol::{SandboxDecision, SandboxDecisionState};
 
-/// Secret-free execution evidence suitable for the durable event log.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxDecision {
-    pub backend: String,
-    pub state: SandboxDecisionState,
-    pub network_allowed: bool,
-    pub writable_root_count: u32,
-    pub reason_code: Option<String>,
-}
-
-impl SandboxDecision {
-    fn prepared(backend: &str, request: &SandboxCommandRequest<'_>) -> Self {
-        Self {
-            backend: backend.into(),
-            state: SandboxDecisionState::Prepared,
-            network_allowed: request.allow_network,
-            writable_root_count: 2,
-            reason_code: None,
-        }
+fn prepared_sandbox_decision(
+    backend: &str,
+    request: &SandboxCommandRequest<'_>,
+) -> SandboxDecision {
+    SandboxDecision {
+        backend: backend.into(),
+        state: SandboxDecisionState::Prepared,
+        network_allowed: request.allow_network,
+        writable_root_count: 2,
+        reason_code: None,
     }
 }
 
@@ -175,7 +160,7 @@ impl SandboxProvider for MacosSeatbeltSandbox {
 
         Ok(PreparedSandboxCommand {
             command,
-            decision: SandboxDecision::prepared(self.backend_name(), request),
+            decision: prepared_sandbox_decision(self.backend_name(), request),
             _session_temp: session_temp,
         })
     }

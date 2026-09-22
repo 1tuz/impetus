@@ -92,15 +92,20 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
             EventPayload::Plan(PlanEvent { summary }) => {
                 projection.latest_plan = Some(summary.clone())
             }
-            EventPayload::Tool(ToolEvent::Started { name }) => {
+            EventPayload::Tool(ToolEvent::Started { name, .. }) => {
                 projection
                     .tool_summaries
                     .insert(name.clone(), "running".into());
             }
-            EventPayload::Tool(ToolEvent::Finished { name, summary }) => {
+            EventPayload::Tool(ToolEvent::Finished { name, summary, .. }) => {
                 projection
                     .tool_summaries
                     .insert(name.clone(), summary.clone());
+            }
+            EventPayload::Tool(ToolEvent::Output { tool_name, .. }) => {
+                projection
+                    .tool_summaries
+                    .insert(tool_name.clone(), "running".into());
             }
             EventPayload::Tool(ToolEvent::Observed {
                 tool_name, outcome, ..
@@ -124,15 +129,21 @@ pub fn reduce(events: &[Event]) -> Result<Option<SessionProjection>, ProjectionE
                 run_id,
                 chunk_id,
                 text,
+                ..
             }) => {
                 let last_chunk_id = projection.agent_chunk_ids.entry(*run_id).or_insert(0);
                 if *chunk_id > *last_chunk_id {
                     *last_chunk_id = *chunk_id;
+                    // Preview only when spilled; Final / artifact materialization
+                    // reconstitutes the full assistant body for context rebuild.
                     projection.agent_output.push_str(text);
                 }
             }
-            EventPayload::Agent(AgentEvent::Final { text, .. }) => {
-                projection.agent_output.push_str(text)
+            EventPayload::Agent(AgentEvent::Final { run_id, text }) => {
+                // Chunks already accumulated the same text; Final is durable marker only.
+                if !projection.agent_chunk_ids.contains_key(run_id) {
+                    projection.agent_output.push_str(text);
+                }
             }
             EventPayload::Approval(ApprovalEvent::Requested { request }) => {
                 projection
@@ -229,5 +240,71 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn final_does_not_double_append_chunk_text() {
+        let session_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let events = vec![
+            Event::new(
+                session_id,
+                1,
+                EventPayload::Run(RunEvent::Started { run_id }),
+            ),
+            Event::new(
+                session_id,
+                2,
+                EventPayload::Agent(AgentEvent::Chunk {
+                    run_id,
+                    chunk_id: 1,
+                    text: "hello".into(),
+                    artifact: None,
+                }),
+            ),
+            Event::new(
+                session_id,
+                3,
+                EventPayload::Agent(AgentEvent::Chunk {
+                    run_id,
+                    chunk_id: 2,
+                    text: " world".into(),
+                    artifact: None,
+                }),
+            ),
+            Event::new(
+                session_id,
+                4,
+                EventPayload::Agent(AgentEvent::Final {
+                    run_id,
+                    text: "hello world".into(),
+                }),
+            ),
+        ];
+        let projection = reduce(&events).expect("replay").expect("projection");
+        assert_eq!(projection.agent_output, "hello world");
+    }
+
+    #[test]
+    fn final_without_chunks_still_projects() {
+        let session_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let events = vec![
+            Event::new(
+                session_id,
+                1,
+                EventPayload::Run(RunEvent::Started { run_id }),
+            ),
+            Event::new(
+                session_id,
+                2,
+                EventPayload::Agent(AgentEvent::Final {
+                    run_id,
+                    text: "only final".into(),
+                }),
+            ),
+        ];
+        let projection = reduce(&events).expect("replay").expect("projection");
+        assert_eq!(projection.agent_output, "only final");
     }
 }

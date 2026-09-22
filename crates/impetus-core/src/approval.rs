@@ -1,139 +1,26 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
-use crate::policy::{Action, ActionFingerprint};
 use crate::schema::{SCHEMA_APPROVAL_DETAIL, require_version};
 
-pub type ApprovalId = Uuid;
+pub use impetus_protocol::{
+    APPROVAL_DETAIL_SCHEMA_ID, APPROVAL_DETAIL_SCHEMA_VERSION, ApprovalDetail, ApprovalId,
+    ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState, ScopeEstimate,
+};
 
-/// Documented schema id for the ApprovalDetail IPC UI contract.
-/// Stable string clients may advertise or log alongside `schema_version`.
-/// Sourced from the shared schema registry ([`SCHEMA_APPROVAL_DETAIL`]).
-pub const APPROVAL_DETAIL_SCHEMA_ID: &str = SCHEMA_APPROVAL_DETAIL.id;
-
-/// Current ApprovalDetail payload schema version (IPC UI contract).
-pub const APPROVAL_DETAIL_SCHEMA_VERSION: u16 = SCHEMA_APPROVAL_DETAIL.version;
-
-fn default_approval_detail_schema_version() -> u16 {
-    APPROVAL_DETAIL_SCHEMA_VERSION
+/// Bridge ApprovalDetail validation to the core schema registry.
+pub trait ApprovalDetailSchemaExt {
+    fn validate_against_registry(&self) -> Result<(), crate::schema::SchemaValidationError>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ApprovalState {
-    Pending,
-    Approved,
-    Rejected,
-}
-
-/// The only authority that can resolve a pending approval. An agent/backend
-/// may request an action, but may never approve its own request.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalResolver {
-    User,
-    Agent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ApprovalResolution {
-    pub id: ApprovalId,
-    pub action_fingerprint: ActionFingerprint,
-    pub intent_revision: u64,
-    pub accepted: bool,
-    pub resolver: ApprovalResolver,
-}
-
-impl ApprovalResolution {
-    pub fn user(request: &ApprovalRequest, accepted: bool) -> Self {
-        Self {
-            id: request.id,
-            action_fingerprint: request.action_fingerprint.clone(),
-            intent_revision: request.intent_revision,
-            accepted,
-            resolver: ApprovalResolver::User,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ApprovalRequest {
-    pub id: ApprovalId,
-    pub action: Action,
-    pub action_fingerprint: ActionFingerprint,
-    /// Capability version for exact approval matching.
-    pub capability_version: Option<u32>,
-    /// Durable sequence of the user intent that authorized this review.
-    pub intent_revision: u64,
-    pub reason: String,
-    pub state: ApprovalState,
-}
-
-/// Extended approval detail for structured client presentation.
-/// Provides diff preview, scope estimate, and attachment references.
-///
-/// IPC UI contract: schema id [`APPROVAL_DETAIL_SCHEMA_ID`], version field
-/// [`Self::schema_version`]. Older payloads without the field deserialize as v1.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ApprovalDetail {
-    /// Version of this UI contract. Omitted JSON defaults to v1.
-    #[serde(default = "default_approval_detail_schema_version")]
-    pub schema_version: u16,
-    pub request: ApprovalRequest,
-    /// Diff preview for write actions (unified format, max 50 lines).
-    pub diff_preview: Option<String>,
-    /// Affected file paths.
-    pub affected_files: Vec<String>,
-    /// Estimated scope: line count, byte size, or operation count.
-    pub estimated_scope: Option<ScopeEstimate>,
-    /// Artifact/output attachment IDs for full content retrieval.
-    pub attachment_refs: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum ScopeEstimate {
-    Lines(u32),
-    Bytes(u64),
-    Operations(u32),
-}
-
-impl ApprovalDetail {
-    /// Reject payloads whose `schema_version` does not match the registry.
-    pub fn validate_schema_version(&self) -> Result<(), crate::schema::SchemaValidationError> {
+impl ApprovalDetailSchemaExt for ApprovalDetail {
+    fn validate_against_registry(&self) -> Result<(), crate::schema::SchemaValidationError> {
         require_version(&SCHEMA_APPROVAL_DETAIL, self.schema_version)
-    }
-}
-
-impl ApprovalRequest {
-    pub fn pending(action: Action, reason: String, intent_revision: u64) -> Self {
-        Self::pending_with_version(action, reason, intent_revision, None)
-    }
-
-    pub fn pending_with_version(
-        action: Action,
-        reason: String,
-        intent_revision: u64,
-        capability_version: Option<u32>,
-    ) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            action_fingerprint: crate::policy::ActionFingerprint::for_action_with_version(
-                &action,
-                capability_version,
-            ),
-            action,
-            capability_version,
-            intent_revision,
-            reason,
-            state: ApprovalState::Pending,
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{ActionKind, ActionOrigin};
+    use crate::policy::{Action, ActionKind, ActionOrigin};
+    use uuid::Uuid;
 
     fn sample_detail() -> ApprovalDetail {
         let request = ApprovalRequest::pending(
@@ -150,9 +37,9 @@ mod tests {
             schema_version: APPROVAL_DETAIL_SCHEMA_VERSION,
             request,
             diff_preview: Some("--- a\n+++ b\n@@\n-old\n+new".into()),
+            diff_observation: None,
             affected_files: vec!["src/main.rs".into()],
             estimated_scope: Some(ScopeEstimate::Lines(2)),
-            // Attachment refs are opaque UUIDs only — never secrets/tokens.
             attachment_refs: vec![Uuid::nil()],
         }
     }
@@ -167,51 +54,10 @@ mod tests {
             SCHEMA_APPROVAL_DETAIL.version
         );
         sample_detail()
-            .validate_schema_version()
+            .validate_against_registry()
             .expect("v1 detail ok");
-    }
-
-    #[test]
-    fn approval_detail_version_mismatch_fails() {
-        let mut detail = sample_detail();
-        detail.schema_version = 99;
-        let err = detail.validate_schema_version().unwrap_err();
-        assert!(err.to_string().contains("version mismatch"));
-    }
-
-    #[test]
-    fn approval_detail_serde_round_trip() {
-        let original = sample_detail();
-        let json = serde_json::to_value(&original).expect("serialize");
-        assert_eq!(json["schema_version"], 1);
-        assert!(json.get("token").is_none());
-        assert!(json.get("api_key").is_none());
-        let restored: ApprovalDetail = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(restored, original);
-        assert_eq!(restored.schema_version, APPROVAL_DETAIL_SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn approval_detail_missing_schema_version_defaults_to_v1() {
-        let mut json = serde_json::to_value(sample_detail()).expect("serialize");
-        json.as_object_mut()
-            .expect("object")
-            .remove("schema_version");
-        let restored: ApprovalDetail = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(restored.schema_version, APPROVAL_DETAIL_SCHEMA_VERSION);
-        assert_eq!(restored.affected_files, vec!["src/main.rs".to_string()]);
-    }
-
-    #[test]
-    fn scope_estimate_serde_round_trip() {
-        for estimate in [
-            ScopeEstimate::Lines(10),
-            ScopeEstimate::Bytes(1024),
-            ScopeEstimate::Operations(3),
-        ] {
-            let json = serde_json::to_value(&estimate).expect("serialize");
-            let restored: ScopeEstimate = serde_json::from_value(json).expect("deserialize");
-            assert_eq!(restored, estimate);
-        }
+        sample_detail()
+            .validate_schema_version()
+            .expect("protocol validate ok");
     }
 }

@@ -5,7 +5,7 @@
 //! [`McpLiveBridge`] into [`crate::ToolOrchestrator`] when configured.
 //! Explore children must not receive this runtime.
 
-use crate::extension_compat::McpModule;
+use crate::extension_compat::{McpCapabilities, McpModule};
 use crate::mcp_adapter::McpAdapter;
 use crate::mcp_live::{McpLiveBridge, McpLiveToolEntry};
 use std::collections::HashMap;
@@ -20,6 +20,8 @@ pub struct McpServerSpec {
     pub id: String,
     pub module: McpModule,
 }
+
+pub use impetus_protocol::McpServerStatus;
 
 struct ServerSlot {
     module: Option<McpModule>,
@@ -75,6 +77,32 @@ impl ToolProviderRuntime {
         let mut ids: Vec<_> = self.servers.keys().cloned().collect();
         ids.sort();
         ids
+    }
+
+    /// Labels + connection flag for every registered server (no secrets/env/args).
+    pub fn list_status(&self) -> Vec<McpServerStatus> {
+        self.registered_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let slot = self.servers.get(&id)?;
+                let connected = slot.bridge.is_some();
+                let (name, transport, capabilities) = match &slot.module {
+                    Some(module) => (
+                        module.name.clone(),
+                        Some(module.transport),
+                        module.capabilities.clone(),
+                    ),
+                    None => (id.clone(), None, McpCapabilities::default()),
+                };
+                Some(McpServerStatus {
+                    id,
+                    name,
+                    transport,
+                    connected,
+                    capabilities,
+                })
+            })
+            .collect()
     }
 
     /// Connect + discover for one registered server; cache the bridge.
@@ -249,6 +277,20 @@ mod tests {
         });
         assert!(!runtime.is_connected("mock"));
         assert!(runtime.bridge(None).is_none());
+        let status = runtime.list_status();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].id, "mock");
+        assert!(!status[0].connected);
+        assert_eq!(
+            status[0].transport,
+            Some(crate::extension_compat::McpTransport::Stdio)
+        );
+        // Catalog status must not expose env/args/command secrets surface.
+        let encoded = serde_json::to_string(&status[0]).expect("encode");
+        assert!(!encoded.contains("command"));
+        assert!(!encoded.contains("args"));
+        assert!(!encoded.contains("\"env\""));
+        assert!(!encoded.contains("API_KEY"));
     }
 
     #[tokio::test]

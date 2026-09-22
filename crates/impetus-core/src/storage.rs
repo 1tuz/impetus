@@ -1,7 +1,6 @@
 use crate::budget::BudgetState;
 use crate::events::{Event, EventPayload, SessionEvent, legacy_payload};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -37,29 +36,21 @@ pub enum StoreError {
     EmptyCheckpointName,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionInfo {
-    pub id: Uuid,
-    pub created_at_unix_ms: u64,
-    pub updated_at_unix_ms: u64,
-    pub parent_session_id: Option<Uuid>,
-    pub fork_sequence: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckpointInfo {
-    pub id: Uuid,
-    pub session_id: Uuid,
-    pub name: String,
-    pub sequence: u64,
-    pub created_at_unix_ms: u64,
-}
+pub use impetus_protocol::{CheckpointInfo, SessionInfo};
 
 pub trait EventStore: Send + Sync {
     fn create_session(&self) -> Result<Uuid, StoreError>;
     fn append(&self, event: &Event) -> Result<(), StoreError>;
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError>;
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError>;
+    /// Events with logical `sequence > after_sequence`, oldest first, at most `limit`.
+    /// `limit == 0` → empty. Use `usize::MAX` for unbounded remaining tail.
+    fn list_after(
+        &self,
+        session_id: Uuid,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError>;
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError>;
 
     /// Delete session and all its events.
@@ -159,6 +150,62 @@ impl Default for MemoryEventStore {
     }
 }
 
+impl MemoryEventStore {
+    fn logical_head_sequence(&self, session_id: Uuid) -> Result<u64, StoreError> {
+        let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
+        let sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
+        let ancestry = memory_ancestry(&sessions, session_id);
+        let mut total = 0u64;
+        for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
+            let is_current = idx == ancestry.len() - 1;
+            total += events
+                .iter()
+                .filter(|e| {
+                    if e.session_id != *sid {
+                        return false;
+                    }
+                    if is_current {
+                        true
+                    } else if let Some(up_to) = up_to_seq_opt {
+                        e.sequence <= *up_to
+                    } else {
+                        false
+                    }
+                })
+                .count() as u64;
+        }
+        Ok(total)
+    }
+}
+
+fn memory_ancestry(
+    sessions: &[MemorySessionMetadata],
+    session_id: Uuid,
+) -> Vec<(Uuid, Option<u64>)> {
+    let mut ancestry = Vec::new();
+    let mut current_id = session_id;
+    let mut current_fork_seq: Option<u64> = None;
+
+    loop {
+        let session_meta = sessions.iter().find(|s| s.id == current_id);
+        if let Some(meta) = session_meta {
+            if let Some(parent_id) = meta.parent_session_id {
+                ancestry.push((current_id, current_fork_seq));
+                current_id = parent_id;
+                current_fork_seq = meta.fork_sequence;
+            } else {
+                ancestry.push((current_id, current_fork_seq));
+                break;
+            }
+        } else {
+            ancestry.push((current_id, current_fork_seq));
+            break;
+        }
+    }
+    ancestry.reverse();
+    ancestry
+}
+
 impl EventStore for MemoryEventStore {
     fn create_session(&self) -> Result<Uuid, StoreError> {
         let session_id = Uuid::new_v4();
@@ -188,9 +235,7 @@ impl EventStore for MemoryEventStore {
     }
 
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError> {
-        // Get logical last sequence by reading full history (prefix + suffix)
-        let current_events = self.list(session_id)?;
-        let last_sequence = current_events.last().map(|e| e.sequence).unwrap_or(0);
+        let last_sequence = self.logical_head_sequence(session_id)?;
         let sequence = last_sequence + 1;
 
         let event = Event::new(session_id, sequence, payload);
@@ -201,44 +246,30 @@ impl EventStore for MemoryEventStore {
         let _ = self.notifier.send((event.session_id, event.sequence));
         Ok(event)
     }
+
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError> {
+        self.list_after(session_id, 0, usize::MAX)
+    }
+
+    fn list_after(
+        &self,
+        session_id: Uuid,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let events = self.events.lock().map_err(|_| StoreError::Poisoned)?;
         let sessions = self.sessions.lock().map_err(|_| StoreError::Poisoned)?;
+        let ancestry = memory_ancestry(&sessions, session_id);
 
-        // Build ancestry chain
-        let mut ancestry = Vec::new();
-        let mut current_id = session_id;
-        let mut current_fork_seq: Option<u64> = None;
-
-        loop {
-            let session_meta = sessions.iter().find(|s| s.id == current_id);
-            if let Some(meta) = session_meta {
-                if let Some(parent_id) = meta.parent_session_id {
-                    ancestry.push((current_id, current_fork_seq));
-                    current_id = parent_id;
-                    current_fork_seq = meta.fork_sequence;
-                } else {
-                    // Root session
-                    ancestry.push((current_id, current_fork_seq));
-                    break;
-                }
-            } else {
-                // No metadata found, treat as root
-                ancestry.push((current_id, current_fork_seq));
-                break;
-            }
-        }
-
-        // Reverse to get root -> ... -> current
-        ancestry.reverse();
-
-        // Collect events with logical renumbering
-        let mut all_events = Vec::new();
-        let mut logical_sequence = 0u64;
+        let mut out = Vec::new();
+        let mut logical_end = 0u64;
 
         for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
             let is_current = idx == ancestry.len() - 1;
-            let session_events: Vec<Event> = events
+            let session_events: Vec<&Event> = events
                 .iter()
                 .filter(|e| {
                     if e.session_id != *sid {
@@ -252,17 +283,28 @@ impl EventStore for MemoryEventStore {
                         false
                     }
                 })
-                .cloned()
                 .collect();
 
-            for mut event in session_events {
-                logical_sequence += 1;
-                event.sequence = logical_sequence;
-                all_events.push(event);
+            let count = session_events.len() as u64;
+            let segment_start = logical_end;
+            if segment_start + count <= after_sequence {
+                logical_end += count;
+                continue;
+            }
+            let skip = after_sequence.saturating_sub(segment_start) as usize;
+            let take = (count as usize - skip).min(limit - out.len());
+            for event in session_events.into_iter().skip(skip).take(take) {
+                let mut event = event.clone();
+                event.sequence = after_sequence + out.len() as u64 + 1;
+                out.push(event);
+            }
+            logical_end = after_sequence + out.len() as u64;
+            if out.len() >= limit {
+                break;
             }
         }
 
-        Ok(all_events)
+        Ok(out)
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError> {
@@ -448,6 +490,72 @@ impl SqliteEventStore {
             notifier,
         }))
     }
+
+    fn logical_head_sequence(&self, session_id: Uuid) -> Result<u64, StoreError> {
+        let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let ancestry = sqlite_ancestry(&conn, session_id)?;
+        let mut total = 0u64;
+        for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
+            let is_current = idx == ancestry.len() - 1;
+            let count: u64 = if is_current {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                    params![sid.to_string()],
+                    |row| row.get(0),
+                )?
+            } else {
+                let up_to = up_to_seq_opt.ok_or_else(|| StoreError::MissingSession(*sid))?;
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND sequence <= ?2",
+                    params![sid.to_string(), up_to],
+                    |row| row.get(0),
+                )?
+            };
+            total += count;
+        }
+        Ok(total)
+    }
+}
+
+fn sqlite_ancestry(
+    conn: &Connection,
+    session_id: Uuid,
+) -> Result<Vec<(Uuid, Option<u64>)>, StoreError> {
+    let mut ancestry = Vec::new();
+    let mut current_id = session_id;
+    let mut current_fork_seq: Option<u64> = None;
+
+    loop {
+        let parent_info: Option<(String, u64)> = conn
+            .query_row(
+                "SELECT parent_session_id, fork_sequence FROM sessions WHERE id = ?1",
+                params![current_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<u64>>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+            .and_then(|(p, f)| p.zip(f));
+
+        if let Some((parent_id_str, fork_seq)) = parent_info {
+            let parent_id =
+                Uuid::parse_str(&parent_id_str).map_err(|_| StoreError::InvalidUuid {
+                    field: "parent_session_id",
+                    value: parent_id_str.to_string(),
+                })?;
+            ancestry.push((current_id, current_fork_seq));
+            current_id = parent_id;
+            current_fork_seq = Some(fork_seq);
+        } else {
+            ancestry.push((current_id, current_fork_seq));
+            break;
+        }
+    }
+    ancestry.reverse();
+    Ok(ancestry)
 }
 
 impl EventStore for SqliteEventStore {
@@ -484,10 +592,7 @@ impl EventStore for SqliteEventStore {
     }
 
     fn append_next(&self, session_id: Uuid, payload: EventPayload) -> Result<Event, StoreError> {
-        // Get logical last sequence by reading full history (prefix + suffix)
-        let current_events = self.list(session_id)?;
-        let last_sequence = current_events.last().map(|e| e.sequence).unwrap_or(0);
-        let next_sequence = last_sequence + 1;
+        let next_sequence = self.logical_head_sequence(session_id)? + 1;
 
         let mut conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -507,60 +612,85 @@ impl EventStore for SqliteEventStore {
     }
 
     fn list(&self, session_id: Uuid) -> Result<Vec<Event>, StoreError> {
+        self.list_after(session_id, 0, usize::MAX)
+    }
+
+    fn list_after(
+        &self,
+        session_id: Uuid,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let conn = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let ancestry = sqlite_ancestry(&conn, session_id)?;
 
-        // Build ancestry chain: current session <- parent <- grandparent ...
-        let mut ancestry = Vec::new();
-        let mut current_id = session_id;
-        let mut current_fork_seq: Option<u64> = None;
-
-        loop {
-            let parent_info: Option<(String, u64)> = conn
-                .query_row(
-                    "SELECT parent_session_id, fork_sequence FROM sessions WHERE id = ?1",
-                    params![current_id.to_string()],
+        // Root-only fast path: physical sequence == logical sequence.
+        if ancestry.len() == 1 {
+            let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
+                 FROM events WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
+            )?;
+            let rows = stmt
+                .query_map(
+                    params![session_id.to_string(), after_sequence, limit_i64],
                     |row| {
                         Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<u64>>(1)?,
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, Option<u16>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
                         ))
                     },
-                )
-                .optional()?
-                .and_then(|(p, f)| p.zip(f));
-
-            if let Some((parent_id_str, fork_seq)) = parent_info {
-                let parent_id =
-                    Uuid::parse_str(&parent_id_str).map_err(|_| StoreError::InvalidUuid {
-                        field: "parent_session_id",
-                        value: parent_id_str.to_string(),
-                    })?;
-                ancestry.push((current_id, current_fork_seq));
-                current_id = parent_id;
-                current_fork_seq = Some(fork_seq);
-            } else {
-                // Root session
-                ancestry.push((current_id, current_fork_seq));
-                break;
-            }
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            return rows.into_iter().map(decode_event).collect();
         }
 
-        // Reverse to get root -> ... -> current
-        ancestry.reverse();
-
-        // Collect events: for each ancestor, read events up to fork_sequence (or all for current)
-        let mut all_events = Vec::new();
-        let mut logical_sequence = 0u64;
+        let mut out = Vec::new();
+        let mut logical_end = 0u64;
 
         for (idx, (sid, up_to_seq_opt)) in ancestry.iter().enumerate() {
             let is_current = idx == ancestry.len() - 1;
-            let events_query = if is_current {
-                // Current session: read all its own events
+            let count: u64 = if is_current {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                    params![sid.to_string()],
+                    |row| row.get(0),
+                )?
+            } else {
+                let up_to = up_to_seq_opt.ok_or_else(|| StoreError::MissingSession(*sid))?;
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND sequence <= ?2",
+                    params![sid.to_string(), up_to],
+                    |row| row.get(0),
+                )?
+            };
+
+            let segment_start = logical_end;
+            if segment_start + count <= after_sequence {
+                logical_end += count;
+                continue;
+            }
+
+            let skip = after_sequence.saturating_sub(segment_start);
+            let take = (count - skip).min((limit - out.len()) as u64);
+            let skip_i64 = i64::try_from(skip).unwrap_or(i64::MAX);
+            let take_i64 = i64::try_from(take).unwrap_or(i64::MAX);
+
+            let rows = if is_current {
                 let mut stmt = conn.prepare(
                     "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
-                     FROM events WHERE session_id = ?1 ORDER BY sequence"
+                     FROM events WHERE session_id = ?1 ORDER BY sequence LIMIT ?2 OFFSET ?3",
                 )?;
-                stmt.query_map([sid.to_string()], |row| {
+                stmt.query_map(params![sid.to_string(), take_i64, skip_i64], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -574,13 +704,12 @@ impl EventStore for SqliteEventStore {
                 })?
                 .collect::<Result<Vec<_>, _>>()?
             } else {
-                // Ancestor: read events up to fork_sequence
                 let up_to = up_to_seq_opt.ok_or_else(|| StoreError::MissingSession(*sid))?;
                 let mut stmt = conn.prepare(
                     "SELECT id, session_id, sequence, at_unix_ms, kind_json, body_json, schema_version, payload_json \
-                     FROM events WHERE session_id = ?1 AND sequence <= ?2 ORDER BY sequence"
+                     FROM events WHERE session_id = ?1 AND sequence <= ?2 ORDER BY sequence LIMIT ?3 OFFSET ?4",
                 )?;
-                stmt.query_map(params![sid.to_string(), up_to], |row| {
+                stmt.query_map(params![sid.to_string(), up_to, take_i64, skip_i64], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -595,16 +724,18 @@ impl EventStore for SqliteEventStore {
                 .collect::<Result<Vec<_>, _>>()?
             };
 
-            for row in events_query {
+            for row in rows {
                 let mut event = decode_event(row)?;
-                // Renumber to logical sequence
-                logical_sequence += 1;
-                event.sequence = logical_sequence;
-                all_events.push(event);
+                event.sequence = after_sequence + out.len() as u64 + 1;
+                out.push(event);
+            }
+            logical_end = after_sequence + out.len() as u64;
+            if out.len() >= limit {
+                break;
             }
         }
 
-        Ok(all_events)
+        Ok(out)
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionInfo>, StoreError> {
@@ -1401,5 +1532,115 @@ mod tests {
         assert_eq!(source_events.len(), 3, "source history stays immutable");
 
         std::fs::remove_dir_all(test_root).expect("cleanup");
+    }
+
+    fn seed_three_intents(store: &dyn EventStore) -> Uuid {
+        let session_id = store.create_session().expect("create");
+        for text in ["a", "b", "c"] {
+            store
+                .append_next(
+                    session_id,
+                    EventPayload::Intent(IntentEvent {
+                        text: text.into(),
+                        artifact: None,
+                        intent: crate::UserPromptIntent::Prompt,
+                    }),
+                )
+                .expect("append");
+        }
+        session_id
+    }
+
+    #[test]
+    fn memory_list_after_cursor_and_empty_at_head() {
+        let store = MemoryEventStore::default();
+        let session_id = seed_three_intents(&store);
+        // Created + 3 intents → sequences 1..=4
+        let after_two = store
+            .list_after(session_id, 2, usize::MAX)
+            .expect("list_after");
+        assert_eq!(after_two.len(), 2);
+        assert_eq!(after_two[0].sequence, 3);
+        assert_eq!(after_two[1].sequence, 4);
+        assert!(matches!(&after_two[0].payload, EventPayload::Intent(i) if i.text == "b"));
+
+        let limited = store.list_after(session_id, 1, 1).expect("limit");
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].sequence, 2);
+
+        let head = store
+            .list(session_id)
+            .expect("list")
+            .last()
+            .unwrap()
+            .sequence;
+        let empty = store
+            .list_after(session_id, head, usize::MAX)
+            .expect("at head");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn sqlite_list_after_cursor_and_empty_at_head() {
+        let test_root = std::env::temp_dir().join(format!("impetus-list-after-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&test_root).expect("mkdir");
+        let store = SqliteEventStore::open(test_root.join("events.sqlite3")).expect("open");
+        let session_id = seed_three_intents(store.as_ref());
+
+        let after_two = store
+            .list_after(session_id, 2, usize::MAX)
+            .expect("list_after");
+        assert_eq!(after_two.len(), 2);
+        assert_eq!(after_two[0].sequence, 3);
+        assert_eq!(after_two[1].sequence, 4);
+
+        let head = store
+            .list(session_id)
+            .expect("list")
+            .last()
+            .unwrap()
+            .sequence;
+        let empty = store
+            .list_after(session_id, head, usize::MAX)
+            .expect("at head");
+        assert!(empty.is_empty());
+
+        // append_next still assigns contiguous sequences without full-list semantics change
+        let next = store
+            .append_next(
+                session_id,
+                EventPayload::Notice(NoticeEvent::Runtime {
+                    message: "tail".into(),
+                }),
+            )
+            .expect("append_next");
+        assert_eq!(next.sequence, head + 1);
+
+        std::fs::remove_dir_all(test_root).expect("cleanup");
+    }
+
+    #[test]
+    fn list_after_respects_fork_prefix() {
+        let store = MemoryEventStore::default();
+        let source_id = seed_three_intents(&store);
+        let forked = store.fork_session(source_id, 2).expect("fork");
+        // Fork prefix is sequences 1..=2; no own events yet.
+        let at_head = store.list_after(forked, 2, usize::MAX).expect("head");
+        assert!(at_head.is_empty());
+        let prefix = store.list_after(forked, 0, usize::MAX).expect("prefix");
+        assert_eq!(prefix.len(), 2);
+        assert_eq!(prefix[1].sequence, 2);
+
+        store
+            .append_next(
+                forked,
+                EventPayload::Notice(NoticeEvent::Runtime {
+                    message: "child".into(),
+                }),
+            )
+            .expect("child append");
+        let after = store.list_after(forked, 2, usize::MAX).expect("after");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].sequence, 3);
     }
 }

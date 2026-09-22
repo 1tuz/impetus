@@ -30,6 +30,7 @@ pub mod cursor_adapter;
 pub mod daemon_wiring;
 pub mod deepseek_harness_adapter;
 pub mod diagnostics;
+pub mod diff_observation;
 pub mod durable_artifacts;
 pub mod effects;
 pub mod events;
@@ -42,6 +43,7 @@ pub mod extension_compat;
 pub mod extension_id;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
+pub mod git_ops;
 pub mod harness_api;
 pub mod hook_prefilter;
 pub mod instruction_learning;
@@ -102,6 +104,7 @@ pub mod user_intent;
 pub mod web_research;
 pub mod workflow_engine;
 pub mod workflow_runtime;
+pub mod workspace_files;
 pub mod worktree_manager;
 
 pub use acp_adapter::AcpAdapter;
@@ -138,7 +141,10 @@ pub use child_concurrency::{
     ChildConcurrencyConfig, ChildConcurrencyError, ChildConcurrencyGate,
     DEFAULT_CHILD_CONCURRENCY_CAP, DEFAULT_PER_PARENT_CHILD_CAP,
 };
-pub use child_result_store::{ChildResult, ChildResultError, ChildResultStatus, ChildResultStore};
+pub use child_result_store::{
+    ChildResult, ChildResultError, ChildResultStatus, ChildResultStore, child_result_from_metadata,
+    child_result_role,
+};
 pub use ci::{
     CiBackend, CiError, CiProject, Job, JobStatus, LocalCiEvent, LocalGitlabBackend, LocalRun,
     Pipeline, PipelineStatus, RemoteGitlabBackend, Stage,
@@ -166,15 +172,21 @@ pub use context_optimizer::{
 pub use cursor_adapter::CursorAdapter;
 pub use daemon_wiring::{
     DaemonWiringError, build_explore_spawn_bridge, build_explore_spawn_bridge_for_harness,
-    load_daemon_hook_prefilter, load_daemon_mcp_runtime, load_daemon_policy_store,
+    default_worktree_store_path, default_worktrees_root, load_daemon_hook_prefilter,
+    load_daemon_mcp_runtime, load_daemon_policy_store, open_daemon_worktree_manager,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
 };
 pub use diagnostics::{SubsystemHealth, SubsystemStatus};
+pub use diff_observation::{
+    MAX_HUNK_PREVIEW_LINES, MAX_HUNKS, MAX_UNIFIED_PREVIEW_LINES, from_git_diff, from_texts,
+    from_unified, unified_preview,
+};
 pub use durable_artifacts::{
-    ArtifactMeta as DurableArtifactMeta, ArtifactRef as DurableArtifactRef, DurableArtifactStore,
-    default_artifact_root,
+    ARTIFACT_GC_INTERVAL, ARTIFACT_GC_RETENTION, ArtifactMeta as DurableArtifactMeta,
+    ArtifactRef as DurableArtifactRef, DurableArtifactStore, default_artifact_root,
+    run_artifact_gc,
 };
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
@@ -182,15 +194,18 @@ pub use effects::{
     normalized_effect_from_action,
 };
 pub use events::{
-    AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, CompactionStructuralState,
-    EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent, NoticeEvent, PlanEvent, RetryEvent,
-    RunEvent, SessionEvent, ToolEvent, ToolEventOutcome,
+    AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
+    CompactionStructuralState, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent,
+    MAX_ACTIVITY_PREVIEW_CHARS, NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent,
+    SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent, ToolEventOutcome,
+    bound_activity_preview,
 };
 pub use execution::{
-    MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, MacosSeatbeltSandbox,
-    PreparedSandboxCommand, ProcessExecution, ProcessExecutionError, ProcessExecutionRequest,
-    ProcessOutput, PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord,
-    PtySessionState, PtySessionStore, PtySessionStoreError, SandboxCommandRequest, SandboxDecision,
+    DEFAULT_PTY_READ_BYTES, MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES,
+    MAX_PTY_RING_BYTES, MacosSeatbeltSandbox, PreparedSandboxCommand, ProcessExecution,
+    ProcessExecutionError, ProcessExecutionRequest, ProcessOutput, PtyOutputChunk, PtySession,
+    PtySessionError, PtySessionId, PtySessionManager, PtySessionRecord, PtySessionState,
+    PtySessionStore, PtySessionStoreError, SandboxCommandRequest, SandboxDecision,
     SandboxDecisionState, SandboxError, SandboxProvider, SqlitePtySessionStore,
     UnavailableSandboxProvider, production_sandbox_provider,
 };
@@ -228,6 +243,13 @@ pub use extension_manifest::{
     ExtensionManifestKind, validate_capabilities as validate_extension_capabilities,
     validate_digest as validate_extension_digest,
 };
+pub use git_ops::{
+    GIT_DIFF_MAX_BYTES, GitBranchInfo, GitChangeKind, GitChangedFile, GitCurrentBranch,
+    GitDiffPayload, GitOpsError, GitRepositoryState, GitSessionCwd, GitStatusSnapshot,
+    apply_worktree_diff_counts, create_branch, get_current_branch, get_diff, get_file_diff,
+    get_repository_state, git_status, list_branches, list_changed_files, resolve_session_git_cwd,
+    switch_branch,
+};
 pub use harness_api::{Harness, redact_tool_outcome};
 pub use hook_prefilter::HookCatalogLoadError;
 pub use hook_prefilter::{
@@ -243,7 +265,10 @@ pub use instructions::{
     InstructionScope, InstructionTokenEstimate, ResolveRequest, ResolvedInstructions,
     governed_instruction_ids,
 };
-pub use ipc::{IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse};
+pub use ipc::{
+    IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
+    MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
+};
 pub use lsp_backend::{
     LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
     LspBackendModule, optional_coding_tools_with_lsp,
@@ -290,7 +315,7 @@ pub use provider::{
     OpenAiHttpApi, ProviderError, ProviderHealth, ProviderMessage, ProviderProfile, RetryBudget,
 };
 pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
-pub use provider_registry::ProviderRegistry;
+pub use provider_registry::{ModelProviderHealthLabel, ModelProviderStatus, ProviderRegistry};
 pub use provider_trait::{FinishReason, ModelProvider, StreamEvent};
 pub use reference_store::{
     DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,
@@ -321,7 +346,10 @@ pub use role_child::{
     RoleChildOutcome, RoleChildRequest, RoleChildRunner, RoleExecutorError, RoleExecutorOutput,
     RoleSpawnBridge, allowed_tools_for, default_echo_program,
 };
-pub use runtime::{AgentRuntime, RuntimeError, RuntimeStatus};
+pub use runtime::{
+    AGENT_CHUNK_COALESCE_BYTES, AGENT_CHUNK_PREVIEW_BYTES, AgentRuntime,
+    MAX_AGENT_CHUNK_EVENT_BYTES, RuntimeError, RuntimeStatus, bound_agent_chunk_text,
+};
 pub use schema::{
     HARNESS_NEST_KEYS, KNOWN_SCHEMAS, NEST_HARNESS, NEST_PROVIDER, PROVIDER_NEST_KEYS,
     SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_EXTENSION, SCHEMA_MCP, SCHEMA_SESSION,
@@ -349,7 +377,7 @@ pub use tool_orchestrator::{
     OrchestratorError, ToolObservation, ToolOrchestrator, ToolOutcomeStatus, ToolRequest,
 };
 pub use tool_provider_runtime::{
-    McpServerSpec, ToolProviderRuntime, filter_mcp_catalog, parse_mcp_catalog_name,
+    McpServerSpec, McpServerStatus, ToolProviderRuntime, filter_mcp_catalog, parse_mcp_catalog_name,
 };
 pub use tool_schema::{
     BuiltinToolSchema, ToolArgError, builtin_tool_schemas, canonical_tool_name, schema_for_tool,
@@ -368,6 +396,11 @@ pub use workflow_engine::{
     WorkflowStatus, WorkflowStep,
 };
 pub use workflow_runtime::{WorkflowRuntime, WorkflowRuntimeError};
+pub use workspace_files::{
+    BINARY_PROBE_BYTES, IGNORED_DIR_NAMES, MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_SEARCH_FILES,
+    MAX_WORKSPACE_SEARCH_HITS, WorkspaceDirEntry, WorkspaceDirListing, WorkspaceFileContent,
+    WorkspaceFileMetadata, WorkspaceFilesError, WorkspaceSearchHit, WorkspaceSearchResult,
+};
 pub use worktree_manager::{
     AgentWorkRole, MergeReadyReport, StaleReason, StaleReport, WorktreeAttachedPermissions,
     WorktreeBinding, WorktreeDiffSummary, WorktreeError, WorktreeLifecycleState, WorktreeManager,

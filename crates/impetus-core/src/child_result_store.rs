@@ -6,7 +6,6 @@
 //! Does **not** spawn children, cap concurrency, or wire AgentScheduler.
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -14,76 +13,34 @@ use thiserror::Error;
 use crate::subagent_metadata::{ChildRunMetadata, SubagentRole};
 
 /// Outcome label for a finished child run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChildResultStatus {
-    Completed,
-    Failed,
-    Cancelled,
-}
+pub use impetus_protocol::{ChildResult, ChildResultStatus};
 
-impl ChildResultStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-
-    fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "completed" => Some(Self::Completed),
-            "failed" => Some(Self::Failed),
-            "cancelled" => Some(Self::Cancelled),
-            _ => None,
-        }
+/// Build a result from validated child metadata + outcome labels.
+pub fn child_result_from_metadata(
+    child_id: impl Into<String>,
+    metadata: &ChildRunMetadata,
+    status: ChildResultStatus,
+    summary_label: impl Into<String>,
+) -> ChildResult {
+    ChildResult {
+        child_id: child_id.into(),
+        parent_id: metadata.parent_id.clone(),
+        role_label: metadata.role.as_str().to_string(),
+        status,
+        summary_label: summary_label.into(),
+        artifact_ref_labels: Vec::new(),
+        recorded_unix_ms: 0,
     }
 }
 
-/// Durable child result — reference labels only, no secret material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChildResult {
-    pub child_id: String,
-    pub parent_id: String,
-    /// Role label (`SubagentRole::as_str`), not a free-form secret.
-    pub role_label: String,
-    pub status: ChildResultStatus,
-    /// Short human/status label (e.g. "tests-green"); never a token/key.
-    pub summary_label: String,
-    /// Optional durable artifact id labels (SHA refs / store keys), not bodies.
-    pub artifact_ref_labels: Vec<String>,
-    pub recorded_unix_ms: u64,
-}
-
-impl ChildResult {
-    /// Build a result from validated child metadata + outcome labels.
-    pub fn from_metadata(
-        child_id: impl Into<String>,
-        metadata: &ChildRunMetadata,
-        status: ChildResultStatus,
-        summary_label: impl Into<String>,
-    ) -> Self {
-        Self {
-            child_id: child_id.into(),
-            parent_id: metadata.parent_id.clone(),
-            role_label: metadata.role.as_str().to_string(),
-            status,
-            summary_label: summary_label.into(),
-            artifact_ref_labels: Vec::new(),
-            recorded_unix_ms: 0,
-        }
-    }
-
-    /// Role parsed from stored label when it matches a known [`SubagentRole`].
-    pub fn role(&self) -> Option<SubagentRole> {
-        match self.role_label.as_str() {
-            "Explore" => Some(SubagentRole::Explore),
-            "Research" => Some(SubagentRole::Research),
-            "Build" => Some(SubagentRole::Build),
-            "Review" => Some(SubagentRole::Review),
-            _ => None,
-        }
+/// Role parsed from stored label when it matches a known [`SubagentRole`].
+pub fn child_result_role(result: &ChildResult) -> Option<SubagentRole> {
+    match result.role_label.as_str() {
+        "Explore" => Some(SubagentRole::Explore),
+        "Research" => Some(SubagentRole::Research),
+        "Build" => Some(SubagentRole::Build),
+        "Review" => Some(SubagentRole::Review),
+        _ => None,
     }
 }
 
@@ -342,9 +299,9 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = explore_meta("parent-a");
         let mut a =
-            ChildResult::from_metadata("child-1", &meta, ChildResultStatus::Completed, "ok");
+            child_result_from_metadata("child-1", &meta, ChildResultStatus::Completed, "ok");
         a.artifact_ref_labels = vec!["artifact:sha256:abc".into()];
-        let b = ChildResult::from_metadata(
+        let b = child_result_from_metadata(
             "child-2",
             &meta,
             ChildResultStatus::Failed,
@@ -361,7 +318,7 @@ mod tests {
         assert_eq!(loaded.child_id, "child-1");
         assert_eq!(loaded.parent_id, "parent-a");
         assert_eq!(loaded.role_label, "Explore");
-        assert_eq!(loaded.role(), Some(SubagentRole::Explore));
+        assert_eq!(child_result_role(&loaded), Some(SubagentRole::Explore));
         assert_eq!(loaded.status, ChildResultStatus::Completed);
         assert_eq!(loaded.summary_label, "ok");
         assert_eq!(loaded.artifact_ref_labels, vec!["artifact:sha256:abc"]);
@@ -379,7 +336,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = explore_meta("parent-a");
         store
-            .record_result(&ChildResult::from_metadata(
+            .record_result(&child_result_from_metadata(
                 "child-1",
                 &meta,
                 ChildResultStatus::Failed,
@@ -387,7 +344,7 @@ mod tests {
             ))
             .expect("first");
         store
-            .record_result(&ChildResult::from_metadata(
+            .record_result(&child_result_from_metadata(
                 "child-1",
                 &meta,
                 ChildResultStatus::Completed,
@@ -409,7 +366,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = explore_meta("parent-a");
         store
-            .record_result(&ChildResult::from_metadata(
+            .record_result(&child_result_from_metadata(
                 "child-1",
                 &meta,
                 ChildResultStatus::Completed,
@@ -438,7 +395,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = explore_meta("parent-a");
         store
-            .record_result(&ChildResult::from_metadata(
+            .record_result(&child_result_from_metadata(
                 "child-1",
                 &meta,
                 ChildResultStatus::Completed,
@@ -457,7 +414,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = explore_meta("parent-a");
         let mut bad =
-            ChildResult::from_metadata("child-1", &meta, ChildResultStatus::Completed, "ok");
+            child_result_from_metadata("child-1", &meta, ChildResultStatus::Completed, "ok");
         bad.child_id = "  ".into();
         assert!(matches!(
             store.record_result(&bad),

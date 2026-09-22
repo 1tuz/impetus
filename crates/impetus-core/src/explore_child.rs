@@ -25,9 +25,11 @@ use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
 use crate::child_result_store::{
     ChildResult, ChildResultError, ChildResultStatus, ChildResultStore,
 };
+use crate::runtime::AgentRuntime;
+use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
 use crate::tools::{ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome};
-use crate::{ActionOrigin, DurableArtifactStore};
+use crate::{ActionOrigin, ChildEvent, DurableArtifactStore};
 
 /// Explore may only claim these read-only tool labels.
 pub const EXPLORE_ALLOWED_TOOLS: &[&str] = &["list", "read", "search"];
@@ -129,6 +131,8 @@ pub struct HarnessExploreSpawn {
     pub gate: Arc<Mutex<ChildConcurrencyGate>>,
     pub store: Arc<ChildResultStore>,
     pub executor: Arc<dyn ExploreChildExecutor>,
+    /// Parent session event log (production daemon wires the shared store).
+    pub parent_events: Option<Arc<dyn EventStore>>,
 }
 
 impl ExploreSpawnBridge for HarnessExploreSpawn {
@@ -139,6 +143,9 @@ impl ExploreSpawnBridge for HarnessExploreSpawn {
     ) -> Result<ExploreChildOutcome, ExploreChildError> {
         let mut gate = self.gate.lock().unwrap();
         let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
+        if let Some(events) = self.parent_events.as_ref() {
+            runner = runner.with_parent_events(events.as_ref());
+        }
         runner.run(request, cancel, self.executor.as_ref())
     }
 
@@ -250,11 +257,21 @@ pub fn resume_parent_after_explore(
 pub struct ExploreChildRunner<'a> {
     pub gate: &'a mut ChildConcurrencyGate,
     pub store: &'a ChildResultStore,
+    parent_events: Option<&'a dyn EventStore>,
 }
 
 impl<'a> ExploreChildRunner<'a> {
     pub fn new(gate: &'a mut ChildConcurrencyGate, store: &'a ChildResultStore) -> Self {
-        Self { gate, store }
+        Self {
+            gate,
+            store,
+            parent_events: None,
+        }
+    }
+
+    pub fn with_parent_events(mut self, parent_events: &'a dyn EventStore) -> Self {
+        self.parent_events = Some(parent_events);
+        self
     }
 
     /// Run Explore child end-to-end with structural restrictions.
@@ -269,6 +286,23 @@ impl<'a> ExploreChildRunner<'a> {
 
         self.gate
             .admit_child(&request.child_id, &request.parent_session_id)?;
+
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::Started {
+                child_id: request.child_id.clone(),
+                parent_id: request.parent_session_id.clone(),
+                role: metadata.role.as_str().to_string(),
+            },
+        );
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::StatusChanged {
+                child_id: request.child_id.clone(),
+                status: "running".into(),
+                current_action: Some(request.context_label.clone()),
+            },
+        );
 
         let env = ExploreChildEnv {
             child_id: request.child_id.clone(),
@@ -302,7 +336,7 @@ impl<'a> ExploreChildRunner<'a> {
             }
         };
 
-        let mut result = ChildResult::from_metadata(
+        let mut result = crate::child_result_store::child_result_from_metadata(
             request.child_id.clone(),
             &metadata,
             status,
@@ -319,6 +353,21 @@ impl<'a> ExploreChildRunner<'a> {
         self.store
             .gate_parent_resume(&request.parent_session_id, &[&request.child_id])?;
 
+        let (summary, error) = match status {
+            ChildResultStatus::Completed => (Some(summary_label.clone()), None),
+            ChildResultStatus::Failed => (None, Some(summary_label.clone())),
+            ChildResultStatus::Cancelled => (Some(summary_label.clone()), None),
+        };
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::Finished {
+                child_id: request.child_id.clone(),
+                status: status.as_str().to_string(),
+                summary,
+                error,
+            },
+        );
+
         Ok(ExploreChildOutcome {
             child_id: request.child_id,
             parent_session_id: request.parent_session_id,
@@ -326,6 +375,12 @@ impl<'a> ExploreChildRunner<'a> {
             summary_label,
             metadata,
         })
+    }
+
+    fn emit_parent_child(&self, parent_session_id: &str, event: ChildEvent) {
+        if let Some(store) = self.parent_events {
+            let _ = AgentRuntime::emit_parent_child_event(store, parent_session_id, event);
+        }
     }
 }
 
@@ -541,6 +596,78 @@ mod tests {
             max_time_ms: 30_000,
             max_depth: 1,
         }
+    }
+
+    #[test]
+    fn parent_event_log_gets_child_started_then_finished() {
+        use crate::EventPayload;
+        use crate::storage::MemoryEventStore;
+
+        let (_dir, child_store) = temp_store();
+        let event_store = Arc::new(MemoryEventStore::default());
+        let parent_id = event_store.create_session().expect("parent session");
+        let cwd = tempfile::tempdir().expect("cwd");
+
+        let mut gate = ChildConcurrencyGate::new();
+        let mut runner = ExploreChildRunner::new(&mut gate, &child_store)
+            .with_parent_events(event_store.as_ref());
+        let mut request = sample_request(cwd.path().to_path_buf());
+        request.parent_session_id = parent_id.to_string();
+
+        let out = runner
+            .run(
+                request,
+                CancellationToken::new(),
+                &MockExploreExecutor::completing("explore-summary"),
+            )
+            .expect("run");
+        assert_eq!(out.status, ChildResultStatus::Completed);
+
+        let events = event_store.list(parent_id).expect("list");
+        let child_payloads: Vec<_> = events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Child(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                child_payloads.first(),
+                Some(ChildEvent::Started {
+                    child_id,
+                    parent_id: pid,
+                    role,
+                }) if child_id == "child-explore-1"
+                    && pid == &parent_id.to_string()
+                    && role == "Explore"
+            ),
+            "expected ChildStarted first, got {child_payloads:?}"
+        );
+        assert!(
+            matches!(
+                child_payloads.last(),
+                Some(ChildEvent::Finished {
+                    child_id,
+                    status,
+                    summary: Some(summary),
+                    error: None,
+                }) if child_id == "child-explore-1"
+                    && status == "completed"
+                    && summary == "explore-summary"
+            ),
+            "expected ChildFinished last, got {child_payloads:?}"
+        );
+        assert!(
+            child_payloads.iter().any(|e| matches!(
+                e,
+                ChildEvent::StatusChanged {
+                    status,
+                    ..
+                } if status == "running"
+            )),
+            "expected StatusChanged(running)"
+        );
     }
 
     #[test]

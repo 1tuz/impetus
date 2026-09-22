@@ -92,7 +92,10 @@ WorktreeManager wire into WorkflowRuntime Build steps (today synthetic wt id).
 - **WorktreeManager** — managed git worktree lifecycle (create/resume/stop/diff/
   merge-ready/conflict/stale/close/salvage) with durable ownership and restart
   recovery; Build-role bindings attach sandbox/write permissions to the isolated
-  worktree (`create_for_role` + `enforce_write`).
+  worktree (`create_for_role` + `enforce_write`). **Production daemon:**
+  `impetusd` opens `{data_root}/worktrees.sqlite3` + `{data_root}/worktrees/`
+  via `open_daemon_worktree_manager` → `Harness::with_worktree_manager`
+  (fail-closed on open) so Git IPC session cwd prefers managed bindings.
 - **ToolOrchestrator** — JSON Schema arg validation (`tool_schema`) before
   policy/sandbox/exec; OpenAI/Anthropic HTTP requests include `tools` from
   `builtin_tool_schemas()`.
@@ -134,15 +137,17 @@ impetusd  — authoritative daemon
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Durable EventStore + reconnect cursor | Implemented | `storage.rs`, IPC stream/backfill tests; local Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
+| Durable EventStore + reconnect cursor | Implemented | `storage.rs` `list_after` + COUNT head for `append_next`; IPC Stream/Subscribe; agent Chunk coalesce (`AGENT_CHUNK_COALESCE_BYTES`) + spill over `MAX_AGENT_CHUNK_EVENT_BYTES` → DurableArtifactStore (preview + ArtifactRef); Stream/Subscribe `Events` batches trimmed to `IPC_EVENTS_FRAME_BUDGET` (≤60 KiB under `MAX_IPC_LINE_BYTES`); Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
-| PolicyConfig JSON load / reload | Implemented | **Startup load** in `impetusd` (`--policy-config` / env / `policy.json`). **IPC v7** `ReloadPolicyConfig` (`reload_policy_config` capability) applies live overrides without daemon restart; invalid reload keeps prior policy + audit Notice. Library `AgentRuntime::reload_policy_config*`. |
+| PolicyConfig JSON load / reload | Implemented | **Startup load** in `impetusd` (`--policy-config` / env / `policy.json`). **IPC** `ReloadPolicyConfig` (`reload_policy_config` capability) applies live overrides without daemon restart; invalid reload keeps prior policy + audit Notice. Library `AgentRuntime::reload_policy_config*`. Soft `Allow` skips RiskGate `NeedsHuman`; hard Deny (path/network/sandbox + RiskGate Deny e.g. sudo) still wins (`effects` / `policy` tests). **Risk:** in-flight `AgentLoop` keeps a PolicyEngine clone — mid-run reload applies on next Prompt only (`mid_run_policy_clone_ignores_later_reload`). |
+| Workspace Files (list/stat/read/search) | Implemented | **IPC v8+** `ListWorkspaceDir` / `StatWorkspaceFile` / `ReadWorkspaceFile` / `SearchWorkspaceFiles` + caps `workspace_*`; `workspace_files.rs` path resolve matches `memory_store` (no `..` / absolute / symlink escape); reject huge + binary; ignore `.git`/`target`/`node_modules`. TUI `Ctrl+F` / `/files` + `/` daemon search + name filter + 500-entry dir cap. Desktop FileTree list/read/search via harness (no local walk). |
+| Git (repo/branches/status/diff) | Partial | **IPC v11** `git` + `structured_diff`; `GetRepositoryState` / `ListBranches` / `GetCurrentBranch` / `CreateBranch` / `SwitchBranch` / `GitStatus` / `ListChangedFiles` / `GetDiff` / `GetFileDiff` (`GitDiffPayload.patch` + optional `observation` hunks via `diff_observation`; WorktreeManager numstat counts overlay when `base_ref` + binding); `git_ops.rs` via system git (dirty/conflict/stale refuse); session cwd prefers daemon `WorktreeManager` (`impetusd` opens `{data_root}/worktrees.sqlite3` + `worktrees/`, fail-closed). TUI `Ctrl+B` branch picker. Desktop must drop local git. |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; `tests/macos_sandbox_production.rs`. Non-macOS stays path-scope only. |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Default daemon / CI use `NoCredentialResolver`. `CI` / `IMPETUS_NONINTERACTIVE` fail closed without Keychain GUI (#308). |
 | Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Implemented | Daemon IPC `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI Shift+Tab/F4/slash via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). |
-| DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload paths |
+| DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload/read IPC; optional MIME; prod age GC 7d (`run_artifact_gc`, `impetusd` startup+6h; age-only, no ref-tracking); TUI `/attach` · `Ctrl+Shift+A` filesystem upload → ArtifactRef in composer |
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
 | AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests |
@@ -159,26 +164,44 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into `ToolProviderRuntime` at start (`impetusd_autoload: true`; fail closed on bad config; no marketplace/UI). Live connect/health on first tool use. |
+| Extension **runtime** MCP / skills in agent loop | Partial | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop (harness inject; tests). **Production daemon:** `impetusd` autoloads `$IMPETUS_DATA_DIR/mcp/*.json` into `ToolProviderRuntime` at start (`impetusd_autoload: true`; fail closed on bad config; no marketplace/UI). Live connect/health on first tool use. Read IPC: `ListMcpServers` / `ListModels` (labels + status only). |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` `wire_daemon_runtime` sets `explore_spawn` with default provider (#308). TUI `/children` + IPC `ListChildRuns` (#311). |
 | `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn). **Production daemon:** autoload from `$IMPETUS_DATA_DIR/hooks.json` / `hooks/*.json` via `wire_daemon_runtime` → Harness → ToolOrchestrator. Not RiskGate. |
 | `SteerRewrite` (live provider) | Implemented | `ProviderSteerRewrite` one-shot via default `ModelProvider`; daemon `with_provider_steer_rewrite`; passthrough fallback offline (#285 / #311). |
-| Auto `RiskGate` (post-policy, mode-aware) | Implemented | `DeterministicRiskGate` in `EffectSeam`; all `AgentRuntime::request_action` via seam; process argv; tool_orchestrator; remote/PTY helpers use `with_sandbox` (Ask + RiskGate). Separate from `hook_prefilter`. |
+| Auto `RiskGate` (post-policy, mode-aware) | Implemented | `DeterministicRiskGate` in `EffectSeam`; all `AgentRuntime::request_action` via seam; process argv; tool_orchestrator; remote/PTY helpers use `with_sandbox` (Ask + RiskGate). Separate from `hook_prefilter`. Soft PolicyConfig `Allow` skips `NeedsHumanApproval` only — RiskGate hard `Deny` still wins. |
 | Web search/fetch + SSRF egress | Implemented | `web_research/` |
 | Optional API search (Tavily/Exa) | Implemented | `HttpApiSearchBackend` + `ApiKeyResolver` (Keychain labels); absent key fail-closed; seam module retained (#264 / #311). |
 | Session web outbound / private-network grants | Implemented | `SandboxScope.allow_web_outbound`, `allow_private_network` |
 | Browser provider (mock negotiate/health) | Partial | Contracts + Mock/Absent + Firefox/Chrome modules; **binary-present** health → Available; navigate/fetch still fail-closed without CDP (#268 / #311). |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam + IPC `coding_definition` + `coding_hover` handlers exist; **`impetusd` does not wire** `ProcessLspBackend` yet (always absent). Full LSP completeness Parked. |
-| Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn (schedule → role/explore child → store); Research/Build/Review via `role_child` + process exec; fair per-parent caps; Cancel/CancelWorkflow + FollowUp drain race closed (#311). WorktreeManager lifecycle unchanged. |
+| Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn (schedule → role/explore child → store); Research/Build/Review via `role_child` + process exec; fair per-parent caps; Cancel/CancelWorkflow + FollowUp drain race closed (#311). **WorktreeManager** attached in `impetusd` for Git cwd; Workflow Build still uses synthetic wt id. |
 | Extension lifecycle (plan/apply/ownership/doctor/repair) | Partial | Dry-run + apply + state store; CLI `extension plan|install|remove|doctor|repair`; install IDs allowlisted (`extension_id`, #296) |
 | MemoryStore (contextual knowledge) | Partial | `memory_store`: no auto-promote + scopes/provenance + `redact_text` + create-only/`append` + disposable derived index / symlink-safe path resolve; human-readable `export_jsonl` / `export_markdown` (+ import) exist |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`; remaining gaps = broader validate-on-wire coverage |
 | ACP as ModelProvider backend | Partial | `--acp-profile` + `impetus-acp-gateway` V2 + `AcpAdapter`; see [ACP production hardening checklist (#66)](#acp-production-hardening-checklist-66) |
-| TUI (`impetus ui`) | Partial | Shell, composer, paste upload, streaming; Prompt/Steer/FollowUp; execution modes; `/children` child-run list (#311). |
+| TUI (`impetus ui`) | Partial | Shell, composer, paste + filesystem attach (`/attach` · `Ctrl+Shift+A`), streaming; Prompt/Steer/FollowUp; execution modes; `/children`; Files `Ctrl+F`; git branch `Ctrl+B`; Review F6/`Ctrl+R`/`/review`; Activity fold; PTY `Ctrl+\` passthrough; fork `/fork`+`Ctrl+Shift+K` / checkpoints F7/`/checkpoint` / workspace path prompt on `/new` (#311/#315). Remaining: sequence picker polish. |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | Path-aware PR: macOS clippy/`--lib --bins`; Linux fmt + `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
+
+## IPC compatibility (PROTO)
+
+- `IPC_VERSION` = 11. **Hello is exact-match**: version skew → `Incompatible`
+  (no `min_supported` range until a dedicated RFC).
+- Presentation crates import wire/event DTOs from
+  `impetus-client::protocol` (façade over `impetus-protocol`). Do not depend on
+  `impetus-core` from TUI/Desktop for **types**.
+- Optional Cargo feature `impetus-client/in-memory` gates
+  `InMemoryTransport`; Unix socket remains the default production path.
+- Wire DTOs live in runtime-free `impetus-protocol` (no rusqlite/reqwest/Harness).
+  Client still path-deps `impetus-core` for Unix transport / `Harness` /
+  `in-memory` — see TODO.md PROTO.
+- Bump `IPC_VERSION` when adding Git / Files / PTY / MCP-model catalog /
+  rich activity capabilities to Hello. Current caps include workspace Files,
+  Git, `structured_diff` (DiffObservation on GetDiff/GetFileDiff), daemon-owned
+  `pty`, read-only `list_mcp` / `list_models`, and additive `artifact_read`
+  (Read/GetMetadata/Range; MIME on upload).
 
 ## Request path
 
@@ -293,6 +316,12 @@ JSON overrides on top of fail-closed defaults
   `reload_policy_config_from_path`
 - Fail-closed Denies (workspace path scope, network disabled, private-web hard
   denies) stay **ahead** of overrides — config cannot soften them
+- Soft override `allow` is authoritative vs RiskGate `NeedsHumanApproval` only;
+  RiskGate hard `Deny` (sudo / destructive) and sandbox path/network still win
+- Mid-run: `AgentLoop` / `ToolOrchestrator` hold a PolicyEngine **clone**;
+  `ReloadPolicyConfig` updates harness live policy — in-flight Prompt keeps
+  pre-reload clone until next Prompt (same for PTY seam snapshot; see harness
+  `ponytail` note). Upgrade path: shared `Arc` policy inside EffectSeam.
 - Secrets: none in the format or fixed decision reason strings
 
 Example:
@@ -315,8 +344,9 @@ Shipped under #9: format (#193), in-process reload (#201).
 
 `GetApprovalDetail` / `IpcResponse::ApprovalDetail` returns
 [`ApprovalDetail`](crates/impetus-core/src/approval.rs) for client presentation
-(diff preview, affected paths, scope estimate, attachment refs). This is a
-**versioned UI contract**, not a user policy file format:
+(diff preview, optional `diff_observation` hunks, affected paths, scope
+estimate, attachment refs). This is a **versioned UI contract**, not a user
+policy file format:
 
 - Schema id: `impetus.approval_detail.v1`
   (`APPROVAL_DETAIL_SCHEMA_ID` / registry `SCHEMA_APPROVAL_DETAIL`)
@@ -325,7 +355,9 @@ Shipped under #9: format (#193), in-process reload (#201).
 - Capability: `get_approval_detail` (Hello negotiation)
 - Secrets never appear in the payload — only labels/paths/opaque attachment
   UUIDs
-- TUI rendering: `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (#165)
+- TUI rendering: `Overlay::Approval` / `ApprovalDetail` in `impetus-tui` (#165);
+  structured `diff_observation` preferred over unified `diff_preview` when
+  present (`render_approval_diff`)
 
 Shipped under #9: contract (#189/#191), TUI approval UI (#165/#169).
 
@@ -355,7 +387,7 @@ a production Zap protocol or copy Zap/Warp client internals into the harness.
 | --- | --- | --- |
 | CLI (`impetus`) | Primary user-facing commands via `HarnessClient` | Implemented (surface still growing) |
 | CLI (`impetus-cli`) | Legacy/secondary; keep for existing workflows; migrate toward `impetus` | Implemented (do not delete) |
-| Standalone TUI (`impetus ui` / `impetus-tui`) | First-class Ratatui client; ANSI/scrollback stay client-side | Partial — Phase 7 open |
+| Standalone TUI (`impetus ui` / `impetus-tui`) | First-class Ratatui client; ANSI/scrollback stay client-side; PTY = pass-through only (`Ctrl+\` / `/pty`, detach `Ctrl+]`); Files/Git/Review/Activity/fork/checkpoint/attach over harness IPC | Partial — polish |
 | Zap | Zap owns UI; Impetus is agent backend after connect/authorize | Partial — experimental adapter only |
 
 Boundaries (see [AGENTS.md](AGENTS.md)):

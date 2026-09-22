@@ -5,7 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Embedded/test harness that drives `Harness` in-process. Unix socket path does
+# not need this. Enabling still pulls full `impetus-core` (no rusqlite/reqwest
+# strip until a core feature-split / thin protocol crate).
+in-memory = []
+
 [dependencies]
+impetus-protocol = { path = "../impetus-protocol" }
 impetus-core = { path = "../impetus-core" }
 anyhow.workspace = true
 base64 = "0.23.1"
