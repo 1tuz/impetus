@@ -77,7 +77,11 @@ impl AcpGateway {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .env_clear();
+        for (key, value) in crate::profile::filtered_agent_process_env(&self.profile.env) {
+            cmd.env(key, value);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             error!("Failed to spawn agent process: {}", e);

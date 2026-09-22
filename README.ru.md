@@ -67,7 +67,10 @@ surface (migration note, не deletion).
   Production MCP SoT: `impetusd` autoload **только** `$IMPETUS_DATA_DIR/mcp/*.json`
   + live `ReloadMcpServers`; `ListMcpServers` / `ListModels` IPC
   (`connected=false` до first tool use). Explore + Workflow Explore — один
-  AgentLoop bridge. MemoryStore / Browser daemon IPC — **Planned**.
+  AgentLoop bridge. MemoryStore control-plane IPC — **Implemented** + AgentLoop
+  project-scope context inject on Prompt/FollowUp/ResolveApproval resume
+  (approval-resume). Browser daemon health/negotiate — **Partial** (honest
+  Absent; CDP Parked).
 - Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
   containment; Agent Seatbelt на macOS; optional Sqlite metadata; live PTY не
   restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).

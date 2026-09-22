@@ -1,11 +1,17 @@
 //! Extension install planning and apply.
 //!
-//! Lifecycle (TODO P1 §2):
+//! Lifecycle:
 //! `Manifest → ResolutionPlan → InstallPlan → Apply → ExtensionState`
+//! plus enable / disable / unload over durable install state.
 //!
 //! Covers **ResolutionPlan → InstallPlan → Apply → ExtensionState**:
 //! dry-run plan, register-before-write ownership, and durable install state.
-//! CLI: `impetus extension plan | install | remove | doctor | repair`.
+//! CLI is the control plane (no marketplace IPC):
+//! `impetus extension plan | install | remove | enable | disable | unload | list | doctor | repair`.
+//!
+//! Disabled / unloaded installs sideline owned files as `{path}.disabled` so
+//! InstructionResolver and workspace MCP loaders skip them. Daemon restart
+//! reloads via [`ExtensionRuntime::reload_from_store`] (Enabled only).
 
 use crate::agent_skills_adapter::AgentSkillsAdapter;
 use crate::extension_compat::{ExtensionSource, McpModule, McpTransport};
@@ -18,6 +24,7 @@ use crate::mcp_manifest::{McpManifest, McpManifestError};
 use crate::ownership::{OwnershipError, OwnershipRecord, OwnershipStore, content_digest, path_key};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -74,6 +81,31 @@ pub enum PlanError {
     PathKey(String),
 }
 
+/// Durable lifecycle status for an installed extension.
+///
+/// - [`Enabled`](Self::Enabled) — active on disk; included in runtime reload.
+/// - [`Disabled`](Self::Disabled) — install kept; owned files sidelined; not loaded.
+/// - [`Unloaded`](Self::Unloaded) — same on-disk sidelining as disabled; not loaded;
+///   distinct status for operators (runtime drop without uninstall).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionLifecycleStatus {
+    #[default]
+    Enabled,
+    Disabled,
+    Unloaded,
+}
+
+impl ExtensionLifecycleStatus {
+    pub fn is_active_on_disk(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+
+    pub fn is_loaded_in_runtime(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 /// Durable result of applying an [`InstallPlan`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionState {
@@ -83,6 +115,9 @@ pub struct ExtensionState {
     pub modified_paths: Vec<PathBuf>,
     /// Ownership rows written or updated for this install.
     pub ownership: Vec<OwnershipRecord>,
+    /// Enable / disable / unload status (default Enabled for older rows).
+    #[serde(default)]
+    pub status: ExtensionLifecycleStatus,
 }
 
 #[derive(Debug, Error)]
@@ -153,6 +188,20 @@ impl ExtensionStateStore {
             }
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// Replace install state JSON for an existing `installation_id` (status updates).
+    ///
+    /// Returns `Ok(false)` when no row matched (caller maps to not-found).
+    pub fn update(&self, state: &ExtensionState) -> Result<bool, ApplyError> {
+        let json = serde_json::to_string(state)
+            .map_err(|e| ApplyError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let conn = self.conn.lock().expect("install state db lock");
+        let n = conn.execute(
+            "UPDATE extension_install_state SET state_json = ?1 WHERE installation_id = ?2",
+            params![&json, &state.installation_id],
+        )?;
+        Ok(n > 0)
     }
 
     /// Lookup install state by `installation_id`.
@@ -436,6 +485,7 @@ pub fn apply_install(
         created_paths: plan.created_paths.clone(),
         modified_paths: plan.modified_paths.clone(),
         ownership: ownership_records,
+        status: ExtensionLifecycleStatus::Enabled,
     };
     state_store.put(&state)?;
     Ok(state)
@@ -470,6 +520,12 @@ pub fn remove_install(
     let mut removed_paths = Vec::with_capacity(records.len());
     for record in &records {
         let path = PathBuf::from(&record.path);
+        // Clear sidelined twin first (disable/unload); ownership tracks active path.
+        let side = sidelined_path(&path);
+        if side.exists() {
+            fs::remove_file(&side).map_err(ApplyError::from)?;
+            removed_paths.push(side);
+        }
         ownership.uninstall(&path, OWNER_IMPETUS)?;
         removed_paths.push(path);
     }
@@ -479,6 +535,182 @@ pub fn remove_install(
         installation_id: installation_id.to_string(),
         removed_paths,
     })
+}
+
+/// Sideline suffix for disabled / unloaded owned paths (`{path}.disabled`).
+fn sidelined_path(active: &Path) -> PathBuf {
+    let mut os = active.as_os_str().to_owned();
+    os.push(".disabled");
+    PathBuf::from(os)
+}
+
+/// Result of enable / disable / unload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleResult {
+    pub installation_id: String,
+    pub status: ExtensionLifecycleStatus,
+    pub touched_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Error)]
+pub enum LifecycleError {
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Ownership(#[from] OwnershipError),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("install state not found for id: {0}")]
+    StateNotFound(String),
+    #[error("invalid extension id: {0}")]
+    InvalidId(#[from] ExtensionIdError),
+}
+
+/// Enable a previously disabled or unloaded install (restore sidelined files).
+pub fn enable_install(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<LifecycleResult, LifecycleError> {
+    set_lifecycle_status(
+        installation_id,
+        ownership,
+        state_store,
+        ExtensionLifecycleStatus::Enabled,
+    )
+}
+
+/// Disable install: sideline owned files; persist Disabled (not loaded on restart).
+pub fn disable_install(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<LifecycleResult, LifecycleError> {
+    set_lifecycle_status(
+        installation_id,
+        ownership,
+        state_store,
+        ExtensionLifecycleStatus::Disabled,
+    )
+}
+
+/// Unload install: sideline owned files; persist Unloaded (drop from runtime).
+pub fn unload_install(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+) -> Result<LifecycleResult, LifecycleError> {
+    set_lifecycle_status(
+        installation_id,
+        ownership,
+        state_store,
+        ExtensionLifecycleStatus::Unloaded,
+    )
+}
+
+fn set_lifecycle_status(
+    installation_id: &str,
+    ownership: &OwnershipStore,
+    state_store: &ExtensionStateStore,
+    target: ExtensionLifecycleStatus,
+) -> Result<LifecycleResult, LifecycleError> {
+    let mut state = state_store
+        .get(installation_id)?
+        .ok_or_else(|| LifecycleError::StateNotFound(installation_id.to_string()))?;
+    let type_dir = type_dir_for_source(&state.resolution.source)?;
+
+    let records = ownership.list_by_installation_id(installation_id)?;
+    for record in &records {
+        ensure_owned_extension_path(
+            Path::new(&record.path),
+            type_dir,
+            &state.resolution.module_id,
+        )?;
+    }
+
+    let mut touched_paths = Vec::new();
+    if target.is_active_on_disk() {
+        for record in &records {
+            let active = PathBuf::from(&record.path);
+            let side = sidelined_path(&active);
+            if side.exists() && !active.exists() {
+                if let Some(parent) = active.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::rename(&side, &active)?;
+                touched_paths.push(active);
+            } else if active.exists() {
+                touched_paths.push(active);
+            }
+        }
+    } else {
+        for record in &records {
+            let active = PathBuf::from(&record.path);
+            let side = sidelined_path(&active);
+            if active.exists() {
+                fs::rename(&active, &side)?;
+                touched_paths.push(side);
+            } else if side.exists() {
+                touched_paths.push(side);
+            }
+        }
+    }
+    touched_paths.sort();
+    touched_paths.dedup();
+
+    state.status = target;
+    if !state_store.update(&state)? {
+        return Err(LifecycleError::StateNotFound(installation_id.to_string()));
+    }
+
+    Ok(LifecycleResult {
+        installation_id: installation_id.to_string(),
+        status: target,
+        touched_paths,
+    })
+}
+
+/// In-memory loaded set rebuilt from durable install state on process restart.
+///
+/// Only [`ExtensionLifecycleStatus::Enabled`] rows are loaded. CLI is the
+/// control plane; this type is the restart/reload seam for daemon or tests.
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionRuntime {
+    loaded: BTreeMap<String, ExtensionState>,
+}
+
+impl ExtensionRuntime {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Reload loaded set from store: Enabled only; Disabled/Unloaded excluded.
+    pub fn reload_from_store(store: &ExtensionStateStore) -> Result<Self, ApplyError> {
+        let mut loaded = BTreeMap::new();
+        for state in store.list_all()? {
+            if state.status.is_loaded_in_runtime() {
+                loaded.insert(state.installation_id.clone(), state);
+            }
+        }
+        Ok(Self { loaded })
+    }
+
+    pub fn is_loaded(&self, installation_id: &str) -> bool {
+        self.loaded.contains_key(installation_id)
+    }
+
+    pub fn loaded_ids(&self) -> Vec<String> {
+        self.loaded.keys().cloned().collect()
+    }
+
+    pub fn loaded_states(&self) -> Vec<&ExtensionState> {
+        self.loaded.values().collect()
+    }
+
+    /// Drop one install from the in-memory set (does not mutate durable store).
+    pub fn unload_in_memory(&mut self, installation_id: &str) -> bool {
+        self.loaded.remove(installation_id).is_some()
+    }
 }
 
 /// On-disk health of one owned path relative to its ownership record.
@@ -594,14 +826,38 @@ pub fn repair_install(
     let mut skipped_ok = Vec::new();
 
     for record in &records {
-        let path = PathBuf::from(&record.path);
-        let health = check_owned_path(record);
+        let active = PathBuf::from(&record.path);
+        let health_path = if state.status.is_active_on_disk() {
+            active.clone()
+        } else {
+            let side = sidelined_path(&active);
+            if side.exists() || !active.exists() {
+                side
+            } else {
+                active.clone()
+            }
+        };
+        let health = check_owned_path(record, state.status);
         if matches!(health.status, PathHealthStatus::Ok) {
-            skipped_ok.push(path);
+            skipped_ok.push(health_path);
             continue;
         }
-        ownership.repair(&path, &bytes, force)?;
-        repaired_paths.push(path);
+        if let Some(parent) = active.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        ownership.repair(&active, &bytes, force)?;
+        if state.status.is_active_on_disk() {
+            repaired_paths.push(active);
+        } else {
+            let side = sidelined_path(&active);
+            if side.exists() {
+                fs::remove_file(&side)?;
+            }
+            if active.exists() {
+                fs::rename(&active, &side)?;
+            }
+            repaired_paths.push(side);
+        }
     }
 
     repaired_paths.sort();
@@ -652,8 +908,15 @@ fn doctor_one(
     state_store: &ExtensionStateStore,
 ) -> Result<InstallHealthReport, DoctorError> {
     let state = state_store.get(installation_id)?;
+    let status = state
+        .as_ref()
+        .map(|s| s.status)
+        .unwrap_or(ExtensionLifecycleStatus::Enabled);
     let records = ownership.list_by_installation_id(installation_id)?;
-    let paths: Vec<PathHealthReport> = records.iter().map(check_owned_path).collect();
+    let paths: Vec<PathHealthReport> = records
+        .iter()
+        .map(|record| check_owned_path(record, status))
+        .collect();
     let healthy = paths.iter().all(|p| p.status.is_ok());
     Ok(InstallHealthReport {
         installation_id: installation_id.to_string(),
@@ -664,12 +927,51 @@ fn doctor_one(
     })
 }
 
-fn check_owned_path(record: &OwnershipRecord) -> PathHealthReport {
+fn check_owned_path(
+    record: &OwnershipRecord,
+    lifecycle: ExtensionLifecycleStatus,
+) -> PathHealthReport {
     let path = PathBuf::from(&record.path);
-    let status = if !path.exists() {
+    let status = if lifecycle.is_active_on_disk() {
+        check_active_owned_path(&path, record)
+    } else {
+        // Disabled/Unloaded: active path sidelined as `{path}.disabled`.
+        let side = sidelined_path(&path);
+        if side.exists() {
+            match fs::read(&side) {
+                Ok(bytes) => {
+                    let actual = content_digest(&bytes);
+                    if actual == record.digest {
+                        PathHealthStatus::Ok
+                    } else {
+                        PathHealthStatus::DigestMismatch {
+                            expected: record.digest.clone(),
+                            actual,
+                        }
+                    }
+                }
+                Err(err) => PathHealthStatus::Unreadable {
+                    reason: err.to_string(),
+                },
+            }
+        } else if path.exists() {
+            // Status says sidelined but active still present — treat as digest check.
+            check_active_owned_path(&path, record)
+        } else {
+            PathHealthStatus::Missing
+        }
+    };
+    PathHealthReport {
+        path: record.path.clone(),
+        status,
+    }
+}
+
+fn check_active_owned_path(path: &Path, record: &OwnershipRecord) -> PathHealthStatus {
+    if !path.exists() {
         PathHealthStatus::Missing
     } else {
-        match fs::read(&path) {
+        match fs::read(path) {
             Ok(bytes) => {
                 let actual = content_digest(&bytes);
                 if actual == record.digest {
@@ -685,10 +987,6 @@ fn check_owned_path(record: &OwnershipRecord) -> PathHealthReport {
                 reason: err.to_string(),
             },
         }
-    };
-    PathHealthReport {
-        path: record.path.clone(),
-        status,
     }
 }
 
@@ -1453,5 +1751,81 @@ mod tests {
             matches!(err, RepairError::InvalidId(_)),
             "unexpected: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn enable_disable_unload_and_restart_reload() {
+        let src = tempfile::tempdir().expect("src");
+        let target = tempfile::tempdir().expect("target");
+        let skill_md = write_skill(src.path(), "demo-skill", "Do the thing.");
+        let (ownership, state_store) = open_stores(target.path());
+        let plan = plan_install(
+            &ExtensionInstallIntent::Skill {
+                path: skill_md.parent().unwrap().to_path_buf(),
+            },
+            target.path(),
+        )
+        .await
+        .expect("plan");
+        let state = apply_install(&plan, &ownership, &state_store).expect("apply");
+        let active = &plan.created_paths[0];
+        assert!(active.exists());
+        assert_eq!(state.status, ExtensionLifecycleStatus::Enabled);
+
+        let runtime = ExtensionRuntime::reload_from_store(&state_store).expect("reload");
+        assert!(runtime.is_loaded(&state.installation_id));
+
+        let disabled =
+            disable_install(&state.installation_id, &ownership, &state_store).expect("disable");
+        assert_eq!(disabled.status, ExtensionLifecycleStatus::Disabled);
+        assert!(!active.exists());
+        assert!(sidelined_path(active).exists());
+
+        // Simulate process restart: reopen store, reload — disabled stays out.
+        let state_store2 = ExtensionStateStore::open(target.path().join("install_state.db"))
+            .expect("reopen store");
+        let runtime2 = ExtensionRuntime::reload_from_store(&state_store2).expect("reload2");
+        assert!(!runtime2.is_loaded(&state.installation_id));
+        let persisted = state_store2
+            .get(&state.installation_id)
+            .expect("get")
+            .expect("row");
+        assert_eq!(persisted.status, ExtensionLifecycleStatus::Disabled);
+
+        let enabled =
+            enable_install(&state.installation_id, &ownership, &state_store2).expect("enable");
+        assert_eq!(enabled.status, ExtensionLifecycleStatus::Enabled);
+        assert!(active.exists());
+        assert!(!sidelined_path(active).exists());
+
+        let unloaded =
+            unload_install(&state.installation_id, &ownership, &state_store2).expect("unload");
+        assert_eq!(unloaded.status, ExtensionLifecycleStatus::Unloaded);
+        assert!(!active.exists());
+        assert!(sidelined_path(active).exists());
+
+        let runtime3 = ExtensionRuntime::reload_from_store(&state_store2).expect("reload3");
+        assert!(!runtime3.is_loaded(&state.installation_id));
+        assert!(runtime3.loaded_ids().is_empty());
+
+        // Remove after unload clears sidelined twin + state.
+        let removed =
+            remove_install(&state.installation_id, &ownership, &state_store2).expect("remove");
+        assert!(!sidelined_path(active).exists());
+        assert!(
+            state_store2
+                .get(&state.installation_id)
+                .expect("get")
+                .is_none()
+        );
+        assert!(!removed.removed_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_unknown_id_fails_closed() {
+        let target = tempfile::tempdir().expect("target");
+        let (ownership, state_store) = open_stores(target.path());
+        let err = disable_install("no-such-id", &ownership, &state_store).expect_err("missing");
+        assert!(matches!(err, LifecycleError::StateNotFound(_)));
     }
 }

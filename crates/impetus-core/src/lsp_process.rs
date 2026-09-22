@@ -62,10 +62,26 @@ impl ProcessLspBackend {
         Ok(path)
     }
 
-    fn ensure_session(&self) -> Result<(), CodingToolsError> {
+    pub(crate) fn ensure_session(&self) -> Result<(), CodingToolsError> {
         let mut guard = self.session.lock().expect("lsp session");
-        if guard.is_some() {
+        let needs_respawn = match guard.as_mut() {
+            None => true,
+            Some(session) => match session.child.try_wait() {
+                Ok(None) => false,
+                Ok(Some(_)) => true,
+                Err(e) => {
+                    return Err(CodingToolsError::Unavailable(format!(
+                        "LSP process status: {e}"
+                    )));
+                }
+            },
+        };
+        if !needs_respawn {
             return Ok(());
+        }
+        if let Some(mut dead) = guard.take() {
+            let _ = dead.child.kill();
+            let _ = dead.child.wait();
         }
         let binary = self.resolve_binary()?;
         let mut child = Command::new(&binary)
@@ -97,7 +113,9 @@ impl ProcessLspBackend {
                 "rootUri": null
             }),
         )?;
-        session.notify("initialized", json!({}))?;
+        // Child may die immediately after initialize (crash/restart path).
+        // Keep session anyway so try_wait detects death and ensure_session respawns.
+        let _ = session.notify("initialized", json!({}));
         *guard = Some(session);
         Ok(())
     }
@@ -415,5 +433,50 @@ done
         let hs = backend.handshake();
         assert!(hs.spawn_implemented);
         assert!(hs.ready, "handshake reason: {}", hs.reason);
+    }
+
+    #[test]
+    fn crashed_child_is_respawned_on_next_ensure() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("exit-after-init.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+# Answer one initialize, linger briefly so client can send initialized, then exit.
+IFS= read -r line || exit 0
+case "$line" in
+  Content-Length:*)
+    len=${line#Content-Length: }
+    len=$(echo "$len" | tr -d '\r')
+    IFS= read -r _
+    body=$(dd bs=1 count="$len" 2>/dev/null)
+    if echo "$body" | grep -q '"method":"initialize"'; then
+      id=$(echo "$body" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+      resp="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}"
+      printf "Content-Length: %s\r\n\r\n%s" "${#resp}" "$resp"
+    fi
+    ;;
+esac
+# Allow initialized notify to land, then crash.
+sleep 0.2
+exit 0
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let backend =
+            ProcessLspBackend::rust_analyzer(LspBackendLaunchHint::with_runtime_binary(script));
+        assert!(backend.handshake().ready);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            backend.ensure_session().is_ok(),
+            "respawn after crash must succeed"
+        );
     }
 }

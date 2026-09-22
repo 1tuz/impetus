@@ -21,3 +21,11 @@ uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"
+
+[dev-dependencies]
+impetus-client = { path = "../impetus-client" }
+impetus-protocol = { path = "../impetus-protocol" }
+serde_json.workspace = true
+tempfile = "3.15"
+tokio.workspace = true
+uuid.workspace = true

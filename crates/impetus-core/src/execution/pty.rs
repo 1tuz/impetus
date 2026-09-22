@@ -316,7 +316,47 @@ impl PtySessionManager {
     ///
     /// Restart/resume: rows survive process restart; live PTY handles do not —
     /// client must re-`PtyStart` / attach after daemon restart.
+    ///
+    /// Hydrates in-memory metadata, marks formerly-live rows as
+    /// [`PtySessionState::Failed`] (stale handle), and advances `next_id` past
+    /// the max durable id so restart never reuses a stored session id.
     pub fn set_store(&self, store: Arc<dyn PtySessionStore>) {
+        let records = block_on_pty_store(async { store.list_sessions().await.unwrap_or_default() });
+        let mut max_id = 0u64;
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for mut record in records {
+                max_id = max_id.max(record.id.0);
+                let was_live_looking = matches!(
+                    record.state,
+                    PtySessionState::Starting
+                        | PtySessionState::Running { .. }
+                        | PtySessionState::Detached { .. }
+                );
+                if was_live_looking {
+                    record.state = PtySessionState::Failed {
+                        reason: "pty handle lost after daemon restart; re-PtyStart required".into(),
+                    };
+                    let updated = record.clone();
+                    let store_ref = Arc::clone(&store);
+                    let _ =
+                        block_on_pty_store(async move { store_ref.save_session(&updated).await });
+                }
+                sessions.insert(record.id, PtySession::from(record));
+            }
+        }
+        if max_id > 0 {
+            let mut next_id = self
+                .next_id
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *next_id <= max_id {
+                *next_id = max_id + 1;
+            }
+        }
         *self
             .store
             .lock()
@@ -1312,6 +1352,64 @@ mod tests {
         assert!(matches!(err, PtySessionError::UnsafeWorkingDir(_)));
         let ok = resolve_pty_working_dir(&root, None).expect("default");
         assert_eq!(ok, root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_store_hydrates_stale_and_advances_next_id() {
+        use crate::SqlitePtySessionStore;
+
+        let dir = tempfile::tempdir().expect("temp");
+        let db = dir.path().join("pty_sessions.sqlite3");
+        let store = Arc::new(SqlitePtySessionStore::new(&db).expect("open store"));
+        let owner = Uuid::new_v4();
+        store
+            .save_session(&PtySessionRecord {
+                id: PtySessionId(7),
+                owner_session_id: owner,
+                command: "cat".into(),
+                args: vec![],
+                working_dir: std::env::temp_dir(),
+                env: vec![],
+                state: PtySessionState::Running { pid: 4242 },
+                origin: ActionOrigin::User,
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 1,
+            })
+            .await
+            .expect("save");
+
+        let manager = PtySessionManager::new(test_seam());
+        manager.set_store(Arc::clone(&store) as Arc<dyn PtySessionStore>);
+
+        let stale = manager.get_session(PtySessionId(7)).expect("hydrated");
+        assert_eq!(stale.owner_session_id, owner);
+        assert!(matches!(
+            stale.state,
+            PtySessionState::Failed { ref reason } if reason.contains("daemon restart")
+        ));
+        assert!(matches!(
+            manager.attach(PtySessionId(7)),
+            Err(PtySessionError::NotLive(_)) | Err(PtySessionError::SessionNotFound(_)) | Err(_)
+        ));
+
+        let fresh = manager
+            .start(
+                owner,
+                "true",
+                vec![],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                80,
+                24,
+                1,
+            )
+            .expect("start after hydrate");
+        assert!(
+            fresh.id.0 > 7,
+            "next_id must advance past durable max; got {}",
+            fresh.id.0
+        );
+        manager.terminate(fresh.id).ok();
     }
 
     #[test]

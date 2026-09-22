@@ -66,9 +66,11 @@ impl CapabilityTruthReport {
         let native_wired = registered_providers
             .iter()
             .any(|id| id == "openai" || id.starts_with("openai-"));
-        // Daemon `--provider-profile` registers OpenAiCompatibleAdapter today, not OpenAiProvider.
-        let compat_wired =
-            !registered_providers.is_empty() && registered_providers.iter().any(|id| id != "mock");
+        // Daemon `--provider-profile` registers OpenAiNativeAdapter (OpenAiProvider),
+        // not the legacy OpenAiCompatibleAdapter text stream.
+        let compat_wired = registered_providers
+            .iter()
+            .any(|id| id.contains("compat") || id.ends_with("-compat") || id == "openai-compat");
         let openai_native_level = if native_wired {
             CapabilityLevel::Implemented
         } else {
@@ -77,7 +79,7 @@ impl CapabilityTruthReport {
         let openai_native_summary = if native_wired {
             "Native OpenAI Chat Completions tool-call SSE wired in provider registry"
         } else {
-            "OpenAiProvider (tool-call SSE) exists; daemon --provider-profile uses OpenAiCompatibleAdapter"
+            "OpenAiProvider (tool-call SSE) exists; daemon --provider-profile wires OpenAiNativeAdapter"
         };
 
         Self {
@@ -152,9 +154,9 @@ impl CapabilityTruthReport {
                         CapabilityLevel::Partial
                     },
                     if compat_wired {
-                        "OpenAiCompatibleAdapter registered via --provider-profile"
+                        "OpenAiCompatibleAdapter registered (legacy text stream)"
                     } else {
-                        "OpenAiCompatibleAdapter in tree; not registered until --provider-profile"
+                        "OpenAiCompatibleAdapter in tree; not daemon default (--provider-profile uses native)"
                     },
                     Some(serde_json::json!({
                         "registered_providers": registered_providers,
@@ -189,14 +191,15 @@ impl CapabilityTruthReport {
                 ),
                 entry(
                     "extension_runtime",
-                    CapabilityLevel::Implemented,
-                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads+reloads only $IMPETUS_DATA_DIR/mcp/*.json; ListMcpServers connected=false until first use",
+                    CapabilityLevel::Partial,
+                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads Enabled inventory into Harness (ListExtensions/GetExtensionStatus); AgentLoop ExtensionRuntime skill inject Remaining; MCP SoT $IMPETUS_DATA_DIR/mcp/*.json; ListMcpServers connected=false until first use",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "mcp_live_library": true,
                         "mcp_live_orchestrator_hook": true,
                         "mcp_live_tools_in_loop": true,
                         "harness_inject": true,
+                        "agent_loop_skill_inject": false,
                         "impetusd_autoload": true,
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
@@ -278,12 +281,16 @@ mod tests {
         );
 
         let ext_rt = report.entry("extension_runtime").expect("ext runtime");
-        assert_eq!(ext_rt.level, CapabilityLevel::Implemented);
+        assert_eq!(ext_rt.level, CapabilityLevel::Partial);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["mcp_live_tools_in_loop"],
             true
         );
         assert_eq!(ext_rt.details.as_ref().unwrap()["harness_inject"], true);
+        assert_eq!(
+            ext_rt.details.as_ref().unwrap()["agent_loop_skill_inject"],
+            false
+        );
         assert_eq!(ext_rt.details.as_ref().unwrap()["impetusd_autoload"], true);
         assert_eq!(ext_rt.details.as_ref().unwrap()["mcp_live_library"], true);
         assert_eq!(

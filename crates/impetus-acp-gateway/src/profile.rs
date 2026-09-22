@@ -98,17 +98,26 @@ impl AcpProfile {
                     "ACP profile environment must not contain credentials",
                 ));
             }
+            if is_control_plane_env_name(name) {
+                return Err(ProfileError::InvalidProfile(
+                    "ACP profile environment must not forward Impetus control-plane variables",
+                ));
+            }
         }
 
         Ok(())
     }
 
     /// Convert the validated profile into the official SDK launch config.
+    ///
+    /// Official SDK spawn inherits the parent environment and only overlays
+    /// `.envs(...)` (no `env_clear`). Overlay blanks forbidden control-plane /
+    /// secret names and always sets [`ACP_CHILD_ENV`].
     pub fn to_agent_config(&self) -> Result<AcpAgentConfig, ProfileError> {
         self.validate()?;
         Ok(AcpAgentConfig::new(&self.command)
             .args(self.args.clone())
-            .envs(self.env.clone()))
+            .envs(agent_sdk_env_overlay(&self.env)))
     }
 
     /// Manual executable profile для тестирования.
@@ -130,6 +139,23 @@ impl AcpProfile {
     }
 }
 
+/// Marker on ACP agent child processes for future peer / IPC filtering.
+pub const ACP_CHILD_ENV: &str = "IMPETUS_ACP_CHILD";
+
+/// Impetus control-plane names that must never reach an ACP agent child.
+///
+/// SDK spawn cannot `env_clear`; these are blanked in the overlay. Known names
+/// are always blanked even when unset in the parent, so a later parent export
+/// cannot sneak through an empty overlay map.
+const CONTROL_PLANE_ENV_ALWAYS_BLANK: &[&str] = &[
+    "IMPETUS_SOCKET",
+    "IMPETUS_DATA_DIR",
+    "IMPETUS_POLICY_CONFIG",
+    "IMPETUS_NONINTERACTIVE",
+    "IMPETUS_CREDENTIAL_BACKEND",
+    "IMPETUS_LSP_BINARY",
+];
+
 fn is_safe_env_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -148,6 +174,72 @@ fn is_secret_env_name(name: &str) -> bool {
         "TOKEN",
     ];
     SECRET_MARKERS.iter().any(|marker| name.contains(marker))
+}
+
+fn is_control_plane_env_name(name: &str) -> bool {
+    if name == ACP_CHILD_ENV || name.starts_with("IMPETUS_ACP_MOCK") {
+        return false;
+    }
+    name.starts_with("IMPETUS_")
+}
+
+fn is_forbidden_inherited_env(name: &str) -> bool {
+    is_secret_env_name(name) || is_control_plane_env_name(name)
+}
+
+/// Env overlay for official SDK spawn: blank forbidden inherited names, apply
+/// profile allow-list, set [`ACP_CHILD_ENV`]=`1`.
+pub fn agent_sdk_env_overlay(profile_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    build_sdk_env_overlay(std::env::vars(), profile_env)
+}
+
+/// Testable core for [`agent_sdk_env_overlay`].
+pub fn build_sdk_env_overlay(
+    parent: impl IntoIterator<Item = (String, String)>,
+    profile_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (name, _) in parent {
+        if is_forbidden_inherited_env(&name) {
+            out.insert(name, String::new());
+        }
+    }
+    for name in CONTROL_PLANE_ENV_ALWAYS_BLANK {
+        out.insert((*name).to_string(), String::new());
+    }
+    for (name, value) in profile_env {
+        out.insert(name.clone(), value.clone());
+    }
+    out.insert(ACP_CHILD_ENV.to_string(), "1".to_string());
+    out
+}
+
+/// Full child env when the caller can `env_clear` (legacy gateway spawn).
+///
+/// Keeps non-forbidden parent vars + profile allow-list + [`ACP_CHILD_ENV`].
+pub fn filtered_agent_process_env(
+    profile_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    build_filtered_agent_process_env(std::env::vars(), profile_env)
+}
+
+/// Testable core for [`filtered_agent_process_env`].
+pub fn build_filtered_agent_process_env(
+    parent: impl IntoIterator<Item = (String, String)>,
+    profile_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (name, value) in parent {
+        if is_forbidden_inherited_env(&name) {
+            continue;
+        }
+        out.insert(name, value);
+    }
+    for (name, value) in profile_env {
+        out.insert(name.clone(), value.clone());
+    }
+    out.insert(ACP_CHILD_ENV.to_string(), "1".to_string());
+    out
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -207,6 +299,16 @@ mod tests {
 
         assert_eq!(config.arguments(), &["acp", "--stdio"]);
         assert_eq!(config.environment().get("RUST_LOG"), Some(&"info".into()));
+        assert_eq!(
+            config.environment().get(ACP_CHILD_ENV),
+            Some(&"1".into()),
+            "agent child must be marked for peer filtering"
+        );
+        assert_eq!(
+            config.environment().get("IMPETUS_SOCKET"),
+            Some(&"".into()),
+            "SDK overlay must blank harness socket even when unset in parent"
+        );
     }
 
     #[test]
@@ -218,6 +320,61 @@ mod tests {
             .insert("PROVIDER_API_TOKEN".into(), "opaque-value".into());
 
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_rejects_impetus_socket_in_forwarded_env() {
+        let mut profile =
+            AcpProfile::manual_executable("test", "Test", PathBuf::from("/usr/bin/test"));
+        profile
+            .env
+            .insert("IMPETUS_SOCKET".into(), "/tmp/harness.sock".into());
+
+        assert!(profile.validate().is_err());
+        assert!(profile.to_agent_config().is_err());
+    }
+
+    #[test]
+    fn sdk_overlay_blanks_parent_control_plane_and_tokens() {
+        let parent = [
+            ("PATH".into(), "/usr/bin".into()),
+            ("IMPETUS_SOCKET".into(), "/tmp/harness.sock".into()),
+            ("IMPETUS_DATA_DIR".into(), "/tmp/impetus-data".into()),
+            ("CI_JOB_TOKEN".into(), "leak-me".into()),
+            ("OPENAI_API_KEY".into(), "sk-test".into()),
+        ];
+        let mut profile_env = BTreeMap::new();
+        profile_env.insert("NO_COLOR".into(), "1".into());
+
+        let overlay = build_sdk_env_overlay(parent, &profile_env);
+
+        assert_eq!(overlay.get("NO_COLOR"), Some(&"1".into()));
+        assert_eq!(overlay.get(ACP_CHILD_ENV), Some(&"1".into()));
+        assert_eq!(overlay.get("IMPETUS_SOCKET"), Some(&"".into()));
+        assert_eq!(overlay.get("IMPETUS_DATA_DIR"), Some(&"".into()));
+        assert_eq!(overlay.get("CI_JOB_TOKEN"), Some(&"".into()));
+        assert_eq!(overlay.get("OPENAI_API_KEY"), Some(&"".into()));
+        assert!(
+            !overlay.contains_key("PATH"),
+            "SDK overlay only carries blanks + allow-list; PATH stays via inheritance"
+        );
+    }
+
+    #[test]
+    fn filtered_process_env_strips_control_plane_instead_of_inheriting() {
+        let parent = [
+            ("PATH".into(), "/usr/bin".into()),
+            ("IMPETUS_SOCKET".into(), "/tmp/harness.sock".into()),
+            ("GITHUB_TOKEN".into(), "ghs_leak".into()),
+        ];
+        let profile_env = BTreeMap::new();
+
+        let env = build_filtered_agent_process_env(parent, &profile_env);
+
+        assert_eq!(env.get("PATH"), Some(&"/usr/bin".into()));
+        assert_eq!(env.get(ACP_CHILD_ENV), Some(&"1".into()));
+        assert!(!env.contains_key("IMPETUS_SOCKET"));
+        assert!(!env.contains_key("GITHUB_TOKEN"));
     }
 
     #[test]

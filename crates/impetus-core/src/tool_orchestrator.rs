@@ -97,8 +97,8 @@ impl ToolOrchestrator {
 
     /// Build a restricted orchestrator for Explore subagents.
     ///
-    /// `allowed_tools` uses Explore labels (`list`/`read`/`search`). Call-time
-    /// checks also accept mapped schema names (`list_files`/`read_file`/`search`).
+    /// `allowed_tools` uses Explore/role labels (`list`/`read`/`search`/`write`/`web`).
+    /// Call-time checks also accept mapped schema names (`list_files`/`read_file`/…).
     /// Empty allowlist means everything denied.
     pub fn for_explore(
         policy: PolicyEngine,
@@ -250,9 +250,9 @@ impl ToolOrchestrator {
         mut tool_call: crate::ToolCall,
         runtime: &Arc<AgentRuntime>,
     ) -> ToolObservation {
-        // Step 0: Explore allowlist — accept explore labels and mapped schema names.
+        // Step 0: Child allowlist — Explore/role labels and mapped schema names.
         if let Some(allowed) = &self.allowed_tools {
-            if !explore_tool_allowed(allowed, &tool_call.name) {
+            if !child_tool_allowed(allowed, &tool_call.name) {
                 return Self::record_observation(
                     runtime,
                     tool_call.clone(),
@@ -260,18 +260,17 @@ impl ToolOrchestrator {
                     ToolOutcomeStatus::Denied,
                     String::new(),
                     None,
-                    Some(format!(
-                        "tool `{}` not in Explore allowlist",
-                        tool_call.name
-                    )),
+                    Some(format!("tool `{}` not in tool allowlist", tool_call.name)),
                 );
             }
 
-            // Map Explore labels to internal tool names
+            // Map role/Explore labels to internal tool names
             tool_call.name = match tool_call.name.as_str() {
                 "list" => "list_files".to_string(),
                 "read" => "read_file".to_string(),
                 "search" => "search".to_string(),
+                "write" => "write_file".to_string(),
+                "web" => "web_search".to_string(),
                 name => name.to_string(),
             };
         }
@@ -1293,22 +1292,28 @@ impl ToolOrchestrator {
     }
 }
 
-fn explore_canonical_tool_name(name: &str) -> Option<&'static str> {
+fn child_canonical_tool_name(name: &str) -> Option<&'static str> {
     match name.trim() {
         "list" | "list_files" => Some("list_files"),
         "read" | "read_file" => Some("read_file"),
         "search" => Some("search"),
+        "write" | "write_file" | "edit_file" => Some("write_file"),
+        "web_search" => Some("web_search"),
+        "web_fetch" => Some("web_fetch"),
         _ => None,
     }
 }
 
-/// Allow Explore labels and mapped provider/schema names interchangeably.
-fn explore_tool_allowed(allowed: &[String], called: &str) -> bool {
-    let Some(called_canonical) = explore_canonical_tool_name(called) else {
+/// Allow Explore/role labels and mapped provider/schema names interchangeably.
+///
+/// Role label `web` matches read-oriented web tools (`web_search`, `web_fetch`).
+fn child_tool_allowed(allowed: &[String], called: &str) -> bool {
+    let Some(called_canonical) = child_canonical_tool_name(called) else {
         return false;
     };
-    allowed.iter().any(|entry| {
-        explore_canonical_tool_name(entry).is_some_and(|name| name == called_canonical)
+    allowed.iter().any(|entry| match entry.trim() {
+        "web" => matches!(called_canonical, "web_search" | "web_fetch"),
+        other => child_canonical_tool_name(other).is_some_and(|name| name == called_canonical),
     })
 }
 

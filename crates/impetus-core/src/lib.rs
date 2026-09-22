@@ -54,6 +54,7 @@ pub mod lsp_process;
 pub mod mcp_adapter;
 pub mod mcp_live;
 pub mod mcp_manifest;
+pub mod memory_runtime;
 pub mod memory_store;
 pub mod mock_provider;
 pub mod model_router;
@@ -84,6 +85,7 @@ pub mod reference_store;
 pub mod reference_tools;
 pub mod remote;
 pub mod risk_gate;
+pub mod role_agent_loop;
 pub mod role_child;
 pub mod rtk_adapter;
 pub mod runtime;
@@ -92,6 +94,7 @@ pub mod schema;
 mod security_runtime_pr;
 pub mod service_contract;
 pub mod service_provider;
+pub mod session_model_store;
 pub mod steer_rewrite;
 pub mod storage;
 pub mod subagent_metadata;
@@ -109,7 +112,7 @@ pub mod workspace_files;
 pub mod worktree_manager;
 
 pub use acp_adapter::AcpAdapter;
-pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall};
+pub use agent_loop::{AgentLoop, AgentLoopError, ToolCall, inject_memory_context};
 pub use agent_plugins_adapter::{AgentPluginsAdapter, PluginCommandEntry};
 pub use agent_scheduler::{
     AgentSchedulerError, InMemoryAgentScheduler, RoleScheduleTask, ScheduleAdmission,
@@ -173,11 +176,13 @@ pub use context_optimizer::{
 pub use cursor_adapter::CursorAdapter;
 pub use daemon_wiring::{
     DaemonWiringError, build_agent_loop_explore_executor,
-    build_agent_loop_explore_executor_for_harness, build_explore_spawn_bridge,
-    build_explore_spawn_bridge_for_harness, daemon_mcp_dir, default_pty_session_store_path,
-    default_worktree_store_path, default_worktrees_root, load_daemon_hook_prefilter,
-    load_daemon_mcp_runtime, load_daemon_policy_store, open_daemon_pty_session_store,
-    open_daemon_worktree_manager,
+    build_agent_loop_explore_executor_for_harness, build_agent_loop_role_executor,
+    build_agent_loop_role_executor_for_harness, build_explore_spawn_bridge,
+    build_explore_spawn_bridge_for_harness, daemon_extension_state_db, daemon_mcp_dir,
+    default_pty_session_store_path, default_worktree_store_path, default_worktrees_root,
+    load_daemon_extension_runtime, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
+    load_daemon_policy_store, open_daemon_pty_session_store, open_daemon_worktree_manager,
+    remove_daemon_mcp_server, set_daemon_mcp_enabled, upsert_daemon_mcp_server,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,
@@ -239,10 +244,11 @@ pub use extension_id::{
     skill_install_path,
 };
 pub use extension_lifecycle::{
-    ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionState,
-    ExtensionStateStore, InstallHealthReport, InstallPlan, PathHealthReport, PathHealthStatus,
-    PlanError, RemoveError, RemoveResult, RepairError, RepairResult, ResolutionPlan, apply_install,
-    doctor_install, plan_install, remove_install, repair_install,
+    ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionLifecycleStatus,
+    ExtensionRuntime, ExtensionState, ExtensionStateStore, InstallHealthReport, InstallPlan,
+    LifecycleError, LifecycleResult, PathHealthReport, PathHealthStatus, PlanError, RemoveError,
+    RemoveResult, RepairError, RepairResult, ResolutionPlan, apply_install, disable_install,
+    doctor_install, enable_install, plan_install, remove_install, repair_install, unload_install,
 };
 pub use extension_manifest::{
     EXTENSION_SCHEMA_ID, EXTENSION_SCHEMA_VERSION, ExtensionManifest, ExtensionManifestError,
@@ -287,6 +293,10 @@ pub use mcp_manifest::{
     MCP_SCHEMA_ID, MCP_SCHEMA_VERSION, McpManifest, McpManifestError,
     validate_env_keys as validate_mcp_env_keys,
 };
+pub use memory_runtime::{
+    MEMORY_PROMPT_CONTEXT_HEADER, SessionMemoryRuntime, daemon_memory_dir,
+    format_prompt_context_block, open_daemon_memory_runtime,
+};
 pub use memory_store::{
     DERIVED_INDEX_DIR, MemoryDerivedIndex, MemoryEntry, MemoryPromotionTarget, MemoryProvenance,
     MemoryScope, MemoryStore, MemoryStoreError, MemoryTrustError, evaluate_with_memory_context,
@@ -327,7 +337,7 @@ pub use provider::{
 pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
 pub use provider_registry::{ModelProviderHealthLabel, ModelProviderStatus, ProviderRegistry};
 pub use provider_trait::{
-    FinishReason, ModelCatalogResult, ModelProvider, StreamEvent, StreamOptions,
+    FinishReason, ModelCatalogEntry, ModelCatalogResult, ModelProvider, StreamEvent, StreamOptions,
 };
 pub use reference_store::{
     DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,
@@ -352,6 +362,9 @@ pub use risk_gate::{
     default_risk_gate, is_mutating_effect, is_opaque_shell, is_read_only_effect,
     is_safe_readonly_command,
 };
+pub use role_agent_loop::{
+    AgentLoopRoleExecutor, role_provider_tool_names, role_provider_tool_schemas,
+};
 pub use role_child::{
     BUILD_ALLOWED_TOOLS, HarnessRoleSpawn, MockRoleExecutor, ProcessRoleChildExecutor,
     RESEARCH_ALLOWED_TOOLS, REVIEW_ALLOWED_TOOLS, RoleChildEnv, RoleChildError, RoleChildExecutor,
@@ -371,6 +384,9 @@ pub use schema::{
 };
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,
+};
+pub use session_model_store::{
+    SessionModelStore, daemon_session_models_dir, open_daemon_session_model_store,
 };
 pub use steer_rewrite::{
     MockSteerRewrite, PassthroughSteerRewrite, ProviderSteerRewrite, SteerActiveContext,

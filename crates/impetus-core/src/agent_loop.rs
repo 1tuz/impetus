@@ -17,6 +17,21 @@ use uuid::Uuid;
 /// Maximum iterations per agent loop run to prevent infinite loops.
 const MAX_ITERATIONS: u32 = 50;
 
+/// Insert a MemoryStore context system message after leading system messages.
+///
+/// No-op when `block` is `None` or blank — never invents content. Harness builds
+/// the block via [`crate::SessionMemoryRuntime::prompt_context_block`].
+pub fn inject_memory_context(messages: &mut Vec<ProviderMessage>, block: Option<&str>) {
+    let Some(block) = block.map(str::trim).filter(|b| !b.is_empty()) else {
+        return;
+    };
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role() != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, ProviderMessage::system(block.to_string()));
+}
+
 /// Maximum retry attempts for transient errors
 const MAX_RETRY_ATTEMPTS: u32 = 3;
 
@@ -606,6 +621,24 @@ mod tests {
             "in-flight AgentLoop clone must keep pre-reload decision"
         );
         assert_eq!(live.evaluate(&write), PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn inject_memory_context_inserts_after_system_messages() {
+        let mut messages = vec![
+            ProviderMessage::system("rules"),
+            ProviderMessage::user("hi"),
+        ];
+        inject_memory_context(&mut messages, Some("## Impetus memory\nnote"));
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role(), "system");
+        assert_eq!(messages[0].content(), "rules");
+        assert_eq!(messages[1].role(), "system");
+        assert!(messages[1].content().contains("Impetus memory"));
+        assert_eq!(messages[2].role(), "user");
+        inject_memory_context(&mut messages, None);
+        inject_memory_context(&mut messages, Some("  "));
+        assert_eq!(messages.len(), 3, "empty/None must be no-op");
     }
 
     // extract_tool_calls tests removed: tool calls now come from StreamEvent::ToolCall

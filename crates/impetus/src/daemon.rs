@@ -96,3 +96,53 @@ fn find_impetusd_binary() -> Result<String> {
         "impetusd not found in PATH or next to impetus binary. Install it or ensure it's in PATH."
     )
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ensure_daemon_spawn_has_no_privilege_escalation() {
+        let src = include_str!("daemon.rs");
+        let start = src
+            .find("pub async fn ensure_daemon_running")
+            .expect("ensure_daemon_running present");
+        let end = src[start..]
+            .find("\nfn find_impetusd_binary")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let spawn_path = &src[start..end];
+        for needle in [
+            "sudo",
+            "osascript",
+            "withAdministratorPrivileges",
+            "AuthorizationCreate",
+            "SMJobBless",
+            "PrivilegedHelperTools",
+        ] {
+            assert!(
+                !spawn_path.contains(needle),
+                "CLI daemon spawn must not escalate via `{needle}`"
+            );
+        }
+        assert!(
+            spawn_path.contains("Command::new(&impetusd_path)"),
+            "CLI must spawn impetusd directly as the current user"
+        );
+    }
+
+    #[test]
+    fn discover_socket_defaults_under_user_application_support() {
+        let src = include_str!("daemon.rs");
+        let start = src
+            .find("pub fn discover_socket_path")
+            .expect("discover_socket_path present");
+        let end = src[start..]
+            .find("\npub async fn ensure_daemon_running")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let discover = &src[start..end];
+        assert!(discover.contains("IMPETUS_SOCKET"));
+        assert!(discover.contains("Library/Application Support/Impetus/harness.sock"));
+        assert!(!discover.contains("/var/lib"));
+        assert!(!discover.contains("PrivilegedHelperTools"));
+    }
+}

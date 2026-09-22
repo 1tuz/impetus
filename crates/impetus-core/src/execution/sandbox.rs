@@ -430,4 +430,12 @@ mod tests {
             "/tmp/a\\\\b\\\"c"
         );
     }
+
+    /// Seatbelt wrap is ordinary userspace `sandbox-exec` — no admin password UI.
+    #[test]
+    fn seatbelt_wrap_is_sandbox_exec_only() {
+        assert_eq!(SANDBOX_EXEC, "/usr/bin/sandbox-exec");
+        let provider = MacosSeatbeltSandbox;
+        assert_eq!(provider.backend_name(), "macos_seatbelt");
+    }
 }

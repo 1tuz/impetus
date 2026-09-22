@@ -1,8 +1,9 @@
 //! Live child spawn for Research / Build / Review roles (#311).
 //!
 //! Mirrors [`crate::explore_child`] structural path: validate metadata → admit
-//! [`ChildConcurrencyGate`] → injectable executor (process or mock) →
-//! [`ChildResultStore`]. Explore stays in its dedicated module.
+//! [`ChildConcurrencyGate`] → injectable executor (AgentLoop production or
+//! process/mock for tests) → [`ChildResultStore`]. Explore stays in its
+//! dedicated module.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -296,7 +297,9 @@ impl<'a> RoleChildRunner<'a> {
     }
 }
 
-/// Live OS process executor — program/args from request (labels only).
+/// OS process executor for unit tests that pass explicit program/args.
+///
+/// Production WorkflowRuntime injects [`crate::AgentLoopRoleExecutor`] instead.
 #[derive(Debug, Default)]
 pub struct ProcessRoleChildExecutor;
 

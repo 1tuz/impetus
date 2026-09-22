@@ -28,8 +28,10 @@ use crate::{
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// Per-session cancel handle keyed by run so a drained follow-up cannot be
 /// cleared by the previous loop's cleanup (cancel/replace race).
@@ -99,6 +101,14 @@ pub struct Harness {
     ///
     /// When set, `ReloadMcpServers` re-reads the catalog into `tool_providers`.
     mcp_reload: Option<McpReloadHook>,
+    /// Daemon MCP SoT root (`$IMPETUS_DATA_DIR`) for upsert/remove/enable/disable.
+    mcp_sot_root: Option<PathBuf>,
+    /// Optional session-associated contextual MemoryStore control-plane.
+    memory: Option<Arc<crate::SessionMemoryRuntime>>,
+    /// Optional daemon ExtensionRuntime inventory (Enabled installs; CLI SoT).
+    extension_runtime: Option<Arc<Mutex<crate::ExtensionRuntime>>>,
+    /// Optional durable session model/reasoning selection (`session_models/`).
+    session_model_store: Option<Arc<crate::SessionModelStore>>,
     /// Daemon-owned hook prefilter catalog for process spawn paths.
     hook_prefilter: crate::HookPrefilter,
     /// Optional governed-instruction catalog (labels/refs only; not PolicyConfig).
@@ -111,6 +121,11 @@ pub struct Harness {
     pty: Arc<crate::PtySessionManager>,
     /// Per-session model override (Provider → Model); daemon SoT for picker.
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    /// Monotonic connection ids for Unix-socket peers (`serve_client`).
+    next_connection_id: AtomicU64,
+    /// Session → connection allowed to `ResolveApproval` (Create/Attach/Fork/Restore).
+    /// In-process `handle()` leaves sessions unbound → no check (tests / legacy).
+    approval_owners: Mutex<HashMap<Uuid, u64>>,
 }
 
 impl Harness {
@@ -151,11 +166,17 @@ impl Harness {
             explore_spawn: None,
             tool_providers: None,
             mcp_reload: None,
+            mcp_sot_root: None,
+            memory: None,
+            extension_runtime: None,
+            session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
+            next_connection_id: AtomicU64::new(1),
+            approval_owners: Mutex::new(HashMap::new()),
             pty,
         }
     }
@@ -212,6 +233,47 @@ impl Harness {
     pub fn with_mcp_reload(mut self, hook: McpReloadHook) -> Self {
         self.mcp_reload = Some(hook);
         self
+    }
+
+    /// Attach daemon data root for MCP manage CRUD (`mcp/*.json` under this path).
+    pub fn with_mcp_sot_root(mut self, data_root: impl Into<PathBuf>) -> Self {
+        self.mcp_sot_root = Some(data_root.into());
+        self
+    }
+
+    /// Attach session-associated contextual MemoryStore control-plane.
+    pub fn with_memory(mut self, memory: Arc<crate::SessionMemoryRuntime>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    /// Attach daemon ExtensionRuntime inventory (Enabled installs from durable store).
+    ///
+    /// CLI remains the control plane for enable/disable/unload. This slot makes
+    /// loaded inventory queryable via `ListExtensions` / `GetExtensionStatus`.
+    /// AgentLoop skill-path inject is separate and not implied by this wire.
+    pub fn with_extension_runtime(mut self, runtime: Arc<Mutex<crate::ExtensionRuntime>>) -> Self {
+        self.extension_runtime = Some(runtime);
+        self
+    }
+
+    /// Attach durable session model/reasoning store (`$IMPETUS_DATA_DIR/session_models`).
+    pub fn with_session_model_store(mut self, store: Arc<crate::SessionModelStore>) -> Self {
+        self.session_model_store = Some(store);
+        self
+    }
+
+    /// Test-only: seed RAM session-model map without SetSessionModel validation.
+    #[cfg(test)]
+    fn seed_session_model_ram_for_test(
+        &self,
+        session_id: uuid::Uuid,
+        selection: crate::SessionModelSelection,
+    ) {
+        self.session_models
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(session_id, selection);
     }
 
     /// Attach daemon-owned hook prefilter catalog for process spawn paths.
@@ -344,11 +406,17 @@ impl Harness {
             explore_spawn: None,
             tool_providers: None,
             mcp_reload: None,
+            mcp_sot_root: None,
+            memory: None,
+            extension_runtime: None,
+            session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
+            next_connection_id: AtomicU64::new(1),
+            approval_owners: Mutex::new(HashMap::new()),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -422,11 +490,17 @@ impl Harness {
             explore_spawn: None,
             tool_providers: None,
             mcp_reload: None,
+            mcp_sot_root: None,
+            memory: None,
+            extension_runtime: None,
+            session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
+            next_connection_id: AtomicU64::new(1),
+            approval_owners: Mutex::new(HashMap::new()),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -490,11 +564,17 @@ impl Harness {
             explore_spawn: None,
             tool_providers: None,
             mcp_reload: None,
+            mcp_sot_root: None,
+            memory: None,
+            extension_runtime: None,
+            session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
+            next_connection_id: AtomicU64::new(1),
+            approval_owners: Mutex::new(HashMap::new()),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -546,12 +626,58 @@ impl Harness {
         self.worktree_manager.is_some()
     }
 
+    pub fn has_extension_runtime(&self) -> bool {
+        self.extension_runtime.is_some()
+    }
+
+    /// Mint a connection-scoped id for one Unix-socket peer (`serve_client`).
+    pub fn mint_connection_id(&self) -> u64 {
+        self.next_connection_id.fetch_add(1, Ordering::Relaxed)
+    }
+
     /// Resolve a single client request into a response.
     ///
     /// No global lock: EventStore and AgentRuntime use internal coordination.
     /// Independent sessions can execute concurrently.
+    ///
+    /// In-process callers (tests / `InMemoryTransport`) use this path: sessions
+    /// stay unbound and `ResolveApproval` is not connection-gated.
     pub fn handle(&self, request: IpcRequest) -> IpcResponse {
-        handle_request(
+        self.handle_with_connection(None, request)
+    }
+
+    /// Daemon path: bind `ResolveApproval` to the connection that created the
+    /// session. Attach / Fork / Restore bind only when unbound or already owned
+    /// by this connection — foreign Attach must not steal. Other connections get
+    /// `Unavailable`. `None` connection id keeps legacy unbound behavior.
+    ///
+    /// Residual: owner disconnect is not detected; a new connection cannot
+    /// reclaim `ResolveApproval` via Attach (no transfer API yet — YAGNI).
+    pub fn handle_with_connection(
+        &self,
+        connection_id: Option<u64>,
+        request: IpcRequest,
+    ) -> IpcResponse {
+        if let Some(cid) = connection_id
+            && let IpcRequest::ResolveApproval { session_id, .. } = &request
+            && let Some(owner) = self.approval_owner_of(*session_id)
+            && owner != cid
+        {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: "resolve_approval is bound to another client connection".into(),
+            };
+        }
+
+        let create_binds = matches!(&request, IpcRequest::CreateSession { .. });
+        let soft_binds = matches!(
+            &request,
+            IpcRequest::Attach { .. }
+                | IpcRequest::ForkSession { .. }
+                | IpcRequest::RestoreCheckpoint { .. }
+        );
+
+        let response = handle_request(
             self.store.clone(),
             self.policy.clone(),
             self.provider_registry.clone(),
@@ -569,6 +695,10 @@ impl Harness {
             self.steer_pending.clone(),
             self.tool_providers.clone(),
             self.mcp_reload.clone(),
+            self.mcp_sot_root.clone(),
+            self.memory.clone(),
+            self.extension_runtime.clone(),
+            self.session_model_store.clone(),
             self.hook_prefilter.clone(),
             self.policy_store.clone(),
             self.workflow_runtime.clone(),
@@ -577,7 +707,48 @@ impl Harness {
             self.pty.clone(),
             self.session_models.clone(),
             request,
-        )
+        );
+
+        if let Some(cid) = connection_id
+            && let IpcResponse::Session { session_id, .. } = &response
+        {
+            if create_binds {
+                self.bind_approval_owner(*session_id, cid);
+            } else if soft_binds {
+                self.bind_approval_owner_if_unbound_or_same(*session_id, cid);
+            }
+        }
+        response
+    }
+
+    fn bind_approval_owner(&self, session_id: Uuid, connection_id: u64) {
+        self.approval_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id, connection_id);
+    }
+
+    /// Bind only when unbound or already this connection. Never steal.
+    fn bind_approval_owner_if_unbound_or_same(&self, session_id: Uuid, connection_id: u64) {
+        let mut owners = self
+            .approval_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match owners.get(&session_id) {
+            None => {
+                owners.insert(session_id, connection_id);
+            }
+            Some(&existing) if existing == connection_id => {}
+            Some(_) => {}
+        }
+    }
+
+    fn approval_owner_of(&self, session_id: Uuid) -> Option<u64> {
+        self.approval_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .copied()
     }
 }
 
@@ -647,6 +818,10 @@ fn handle_request(
     steer_pending: SteerPendingQueue,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
     mcp_reload: Option<McpReloadHook>,
+    mcp_sot_root: Option<PathBuf>,
+    memory: Option<Arc<crate::SessionMemoryRuntime>>,
+    extension_runtime: Option<Arc<Mutex<crate::ExtensionRuntime>>>,
+    session_model_store: Option<Arc<crate::SessionModelStore>>,
     hook_prefilter: crate::HookPrefilter,
     policy_store_slot: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
@@ -661,37 +836,58 @@ fn handle_request(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     match request {
-        IpcRequest::Hello { version, .. }
-            if !(IPC_MIN_SUPPORTED..=IPC_VERSION).contains(&version) =>
-        {
-            let upgrade_recommendation = if version < IPC_MIN_SUPPORTED {
-                Some(format!(
-                    "Client version {version} is older than min supported {IPC_MIN_SUPPORTED}. Upgrade client."
-                ))
+        IpcRequest::Hello {
+            version: client_max,
+            min_version,
+            capabilities,
+        } => {
+            let client_min = min_version.unwrap_or(client_max);
+            if client_min > client_max {
+                IpcResponse::Incompatible {
+                    supported_version: IPC_VERSION,
+                    min_supported: IPC_MIN_SUPPORTED,
+                    client_version: client_max,
+                    upgrade_recommendation: Some(format!(
+                        "Client min_version {client_min} exceeds preferred version {client_max}"
+                    )),
+                }
             } else {
-                Some(format!(
-                    "Client version {version} is newer than harness {IPC_VERSION}. Upgrade harness."
-                ))
-            };
-            IpcResponse::Incompatible {
-                supported_version: IPC_VERSION,
-                min_supported: IPC_MIN_SUPPORTED,
-                client_version: version,
-                upgrade_recommendation,
+                let lo = client_min.max(IPC_MIN_SUPPORTED);
+                let hi = client_max.min(IPC_VERSION);
+                if lo > hi {
+                    let upgrade_recommendation = if client_max < IPC_MIN_SUPPORTED {
+                        Some(format!(
+                            "Client max version {client_max} is older than min supported {IPC_MIN_SUPPORTED}. Upgrade client."
+                        ))
+                    } else {
+                        Some(format!(
+                            "Client min version {client_min} is newer than harness {IPC_VERSION}. Upgrade harness."
+                        ))
+                    };
+                    IpcResponse::Incompatible {
+                        supported_version: IPC_VERSION,
+                        min_supported: IPC_MIN_SUPPORTED,
+                        client_version: client_max,
+                        upgrade_recommendation,
+                    }
+                } else {
+                    // Prefer highest mutually supported version in the overlap.
+                    let selected = hi;
+                    IpcResponse::Hello {
+                        version: selected,
+                        capabilities: IPC_CAPABILITIES
+                            .iter()
+                            .filter(|supported| {
+                                capabilities
+                                    .iter()
+                                    .any(|requested| requested == **supported)
+                            })
+                            .map(|capability| (*capability).to_owned())
+                            .collect(),
+                    }
+                }
             }
         }
-        IpcRequest::Hello { capabilities, .. } => IpcResponse::Hello {
-            version: IPC_VERSION,
-            capabilities: IPC_CAPABILITIES
-                .iter()
-                .filter(|supported| {
-                    capabilities
-                        .iter()
-                        .any(|requested| requested == **supported)
-                })
-                .map(|capability| (*capability).to_owned())
-                .collect(),
-        },
         IpcRequest::CreateSession { workspace_root } => {
             match AgentRuntime::create_with_workspace(
                 store,
@@ -871,7 +1067,7 @@ fn handle_request(
                         let _ = router.set_active_run(session_id, Some(run_id));
                     }
                     let session_workspace = runtime.workspace_root()?;
-                    let provider_messages = resolve_provider_messages(
+                    let mut provider_messages = resolve_provider_messages(
                         &session_workspace,
                         &runtime,
                         Some(&artifact_root),
@@ -882,6 +1078,32 @@ fn handle_request(
                             runtime_intent(&runtime).unwrap_or_default(),
                         )]
                     });
+                    let memory_block = memory
+                        .as_ref()
+                        .and_then(|rt| rt.prompt_context_block(session_id));
+                    crate::inject_memory_context(
+                        &mut provider_messages,
+                        memory_block.as_deref(),
+                    );
+                    // Hydrate durable session model into RAM (daemon restart) and
+                    // fail closed if saved selection is no longer valid.
+                    get_or_default_session_model(
+                        &session_models,
+                        session_model_store.as_ref(),
+                        &store,
+                        &policy,
+                        &provider_registry,
+                        &default_provider_id,
+                        session_id,
+                    )
+                    .map_err(|resp| match resp {
+                        IpcResponse::Error { message, .. } => {
+                            RuntimeError::Denied(message)
+                        }
+                        other => RuntimeError::Denied(format!(
+                            "session model unavailable: {other:?}"
+                        )),
+                    })?;
                     launch_agent_run(
                         runtime.clone(),
                         run_id,
@@ -901,6 +1123,8 @@ fn handle_request(
                         hook_prefilter.clone(),
                         policy_store.clone(),
                         session_models.clone(),
+                        session_model_store.clone(),
+                        memory.clone(),
                     )?;
                     runtime.status()
                 }) {
@@ -964,6 +1188,8 @@ fn handle_request(
                             hook_prefilter.clone(),
                             policy_store.clone(),
                             session_models.clone(),
+                            session_model_store.clone(),
+                            memory.clone(),
                             session_id,
                             run_id,
                             false,
@@ -1042,6 +1268,11 @@ fn handle_request(
                     .pending_approval(approval_id)?
                     .ok_or(RuntimeError::MissingApproval(approval_id))?;
                 let deferred = runtime.deferred_tool(approval_id)?;
+                // Tool-orchestrator path stores deferred work and needs a resume
+                // launch. ACP permission broker waits in-stream with no deferred
+                // tool — ResolveApproval must only settle durable state (never
+                // spawn a concurrent agent run over the blocked stream).
+                let resume_after_tool_approval = deferred.is_some();
                 let resolution = crate::ApprovalResolution {
                     id: approval_id,
                     resolver: crate::ApprovalResolver::User,
@@ -1075,15 +1306,37 @@ fn handle_request(
                         crate::ToolOrchestrator::record_approval_rejection(&runtime, deferred);
                     }
                 }
-                if let Some(run_id) = runtime.active_run_id()? {
+                if resume_after_tool_approval
+                    && let Some(run_id) = runtime.active_run_id()?
+                {
                     let workspace_root = runtime.workspace_root()?;
-                    let messages = resolve_provider_messages(
+                    let mut messages = resolve_provider_messages(
                         &workspace_root,
                         &runtime,
                         Some(uploads.artifact_root()),
                         policy_store.as_deref(),
                     )
                     .map_err(|error| RuntimeError::Denied(error.to_string()))?;
+                    let memory_block = memory
+                        .as_ref()
+                        .and_then(|rt| rt.prompt_context_block(session_id));
+                    crate::inject_memory_context(&mut messages, memory_block.as_deref());
+                    // Same fail-closed gate as Prompt before resume stream.
+                    get_or_default_session_model(
+                        &session_models,
+                        session_model_store.as_ref(),
+                        &store,
+                        &policy,
+                        &provider_registry,
+                        &default_provider_id,
+                        session_id,
+                    )
+                    .map_err(|resp| match resp {
+                        IpcResponse::Error { message, .. } => RuntimeError::Denied(message),
+                        other => RuntimeError::Denied(format!(
+                            "session model unavailable: {other:?}"
+                        )),
+                    })?;
                     launch_agent_run(
                         runtime.clone(),
                         run_id,
@@ -1103,6 +1356,8 @@ fn handle_request(
                         hook_prefilter.clone(),
                         policy_store.clone(),
                         session_models.clone(),
+                        session_model_store.clone(),
+                        memory.clone(),
                     )?;
                 }
                 Ok(session_id)
@@ -1265,6 +1520,9 @@ fn handle_request(
             }
         }
         IpcRequest::SetExecutionMode { session_id, mode } => {
+            // Capability gate is the negotiated Hello set (daemon enforces).
+            // Harness still fail-closes when the mode declares a required cap
+            // that this build does not advertise at all.
             if let Some(required) = mode.required_ipc_capability()
                 && !IPC_CAPABILITIES.contains(&required)
             {
@@ -1450,9 +1708,13 @@ fn handle_request(
             }
         }
         IpcRequest::CancelWorkflow { session_id } => {
-            if let Some(rt) = &workflow_runtime {
-                rt.cancel_session(session_id);
-            }
+            let Some(rt) = workflow_runtime.as_ref() else {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: "workflow runtime not configured".into(),
+                };
+            };
+            rt.cancel_session(session_id);
             IpcResponse::WorkflowStatus {
                 session_id,
                 status: "Cancelled".into(),
@@ -1850,6 +2112,7 @@ fn handle_request(
         IpcRequest::GetSessionModel { session_id } => {
             match get_or_default_session_model(
                 &session_models,
+                session_model_store.as_ref(),
                 &store,
                 &policy,
                 &provider_registry,
@@ -1870,6 +2133,7 @@ fn handle_request(
             reasoning_effort,
         } => match store_session_model(
             &session_models,
+            session_model_store.as_ref(),
             &store,
             &policy,
             &provider_registry,
@@ -1935,6 +2199,341 @@ fn handle_request(
                     .into(),
             },
         },
+        IpcRequest::UpsertMcpServer { server } => handle_mcp_manage_mutate(
+            mcp_sot_root.as_deref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            McpManageMutate::Upsert(server),
+        ),
+        IpcRequest::RemoveMcpServer { id } => handle_mcp_manage_mutate(
+            mcp_sot_root.as_deref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            McpManageMutate::Remove(id),
+        ),
+        IpcRequest::EnableMcpServer { id } => handle_mcp_manage_mutate(
+            mcp_sot_root.as_deref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            McpManageMutate::Enable(id),
+        ),
+        IpcRequest::DisableMcpServer { id } => handle_mcp_manage_mutate(
+            mcp_sot_root.as_deref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            McpManageMutate::Disable(id),
+        ),
+        IpcRequest::ListMemory { session_id, scope } => {
+            handle_memory_list(&store, memory.as_ref(), session_id, scope)
+        }
+        IpcRequest::GetMemory { session_id, id } => {
+            handle_memory_get(&store, memory.as_ref(), session_id, &id)
+        }
+        IpcRequest::AppendMemory {
+            session_id,
+            id,
+            scope,
+            content,
+            provenance,
+        } => handle_memory_append(
+            &store,
+            memory.as_ref(),
+            session_id,
+            id,
+            scope,
+            content,
+            provenance,
+        ),
+        IpcRequest::ClearMemory { session_id, scope } => {
+            handle_memory_clear(&store, memory.as_ref(), session_id, scope)
+        }
+        IpcRequest::ExportMemory { session_id, format } => {
+            handle_memory_export(&store, memory.as_ref(), session_id, format)
+        }
+        IpcRequest::ListExtensions => handle_list_extensions(extension_runtime.as_ref()),
+        IpcRequest::GetExtensionStatus { installation_id } => {
+            handle_get_extension_status(extension_runtime.as_ref(), &installation_id)
+        }
+        IpcRequest::GetBrowserHealth => IpcResponse::BrowserHealth {
+            status: impetus_protocol::BrowserHealthStatus::absent(),
+        },
+        IpcRequest::NegotiateBrowser { protocol_version } => IpcResponse::BrowserNegotiate {
+            result: impetus_protocol::BrowserNegotiateInfo {
+                protocol_version,
+                compatible: false,
+                reason: impetus_protocol::BrowserHealthStatus::ABSENT_REASON.into(),
+            },
+        },
+    }
+}
+
+fn extension_status_info(state: &crate::ExtensionState) -> impetus_protocol::ExtensionStatusInfo {
+    use crate::extension_compat::ExtensionSource;
+    let source = match &state.resolution.source {
+        ExtensionSource::Native => "native",
+        ExtensionSource::AgentSkills => "agent_skills",
+        ExtensionSource::Mcp => "mcp",
+        ExtensionSource::AgentPlugins => "agent_plugins",
+        ExtensionSource::ClaudeCode => "claude_code",
+        ExtensionSource::Codex => "codex",
+        ExtensionSource::Cursor => "cursor",
+        ExtensionSource::DeepSeekHarness => "deepseek_harness",
+        ExtensionSource::Custom(name) => name.as_str(),
+    };
+    let status = match state.status {
+        crate::ExtensionLifecycleStatus::Enabled => "enabled",
+        crate::ExtensionLifecycleStatus::Disabled => "disabled",
+        crate::ExtensionLifecycleStatus::Unloaded => "unloaded",
+    };
+    impetus_protocol::ExtensionStatusInfo {
+        installation_id: state.installation_id.clone(),
+        module_id: state.resolution.module_id.clone(),
+        module_name: state.resolution.module_name.clone(),
+        version: state.resolution.version.clone(),
+        source: source.to_string(),
+        status: status.to_string(),
+    }
+}
+
+fn handle_list_extensions(
+    extension_runtime: Option<&Arc<Mutex<crate::ExtensionRuntime>>>,
+) -> IpcResponse {
+    let Some(slot) = extension_runtime else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionRuntime not wired on this harness".into(),
+        };
+    };
+    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut extensions: Vec<_> = guard
+        .loaded_states()
+        .into_iter()
+        .map(extension_status_info)
+        .collect();
+    extensions.sort_by(|a, b| a.installation_id.cmp(&b.installation_id));
+    IpcResponse::Extensions { extensions }
+}
+
+fn handle_get_extension_status(
+    extension_runtime: Option<&Arc<Mutex<crate::ExtensionRuntime>>>,
+    installation_id: &str,
+) -> IpcResponse {
+    let Some(slot) = extension_runtime else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionRuntime not wired on this harness".into(),
+        };
+    };
+    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard
+        .loaded_states()
+        .into_iter()
+        .find(|state| state.installation_id == installation_id)
+    {
+        Some(state) => IpcResponse::ExtensionStatus {
+            extension: extension_status_info(state),
+        },
+        None => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: format!("extension not loaded: {installation_id}"),
+        },
+    }
+}
+
+enum McpManageMutate {
+    Upsert(impetus_protocol::McpServerUpsert),
+    Remove(String),
+    Enable(String),
+    Disable(String),
+}
+
+fn handle_mcp_manage_mutate(
+    mcp_sot_root: Option<&Path>,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    mcp_reload: Option<McpReloadHook>,
+    op: McpManageMutate,
+) -> IpcResponse {
+    let Some(root) = mcp_sot_root else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "MCP manage requires daemon SoT root ($IMPETUS_DATA_DIR)".into(),
+        };
+    };
+    let write = match op {
+        McpManageMutate::Upsert(server) => crate::upsert_daemon_mcp_server(root, &server),
+        McpManageMutate::Remove(id) => crate::remove_daemon_mcp_server(root, &id),
+        McpManageMutate::Enable(id) => crate::set_daemon_mcp_enabled(root, &id, true),
+        McpManageMutate::Disable(id) => crate::set_daemon_mcp_enabled(root, &id, false),
+    };
+    if let Err(err) = write {
+        return IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: err.to_string(),
+        };
+    }
+    match (tool_providers, mcp_reload) {
+        (Some(slot), Some(hook)) => match hook() {
+            Ok(fresh) => {
+                let servers = crate::block_on_coding_tools(async move {
+                    let mut guard = slot.lock().await;
+                    guard.replace_all(fresh);
+                    guard.list_status()
+                });
+                IpcResponse::McpServers { servers }
+            }
+            Err(message) => IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message,
+            },
+        },
+        _ => IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "MCP manage wrote SoT but reload slot/hook missing".into(),
+        },
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn require_session(store: &Arc<dyn EventStore>, session_id: uuid::Uuid) -> Result<(), IpcResponse> {
+    match store.list_sessions() {
+        Ok(sessions) if sessions.iter().any(|s| s.id == session_id) => Ok(()),
+        Ok(_) => Err(IpcResponse::Error {
+            code: IpcErrorCode::MissingSession,
+            message: format!("session {session_id} not found"),
+        }),
+        Err(err) => Err(IpcResponse::Error {
+            code: IpcErrorCode::Internal,
+            message: err.to_string(),
+        }),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn require_memory(
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+) -> Result<&Arc<crate::SessionMemoryRuntime>, IpcResponse> {
+    memory.ok_or_else(|| IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: "MemoryStore control-plane not wired on this harness".into(),
+    })
+}
+
+fn memory_store_error(err: crate::MemoryStoreError) -> IpcResponse {
+    IpcResponse::Error {
+        code: IpcErrorCode::InvalidRequest,
+        message: err.to_string(),
+    }
+}
+
+fn handle_memory_list(
+    store: &Arc<dyn EventStore>,
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+    session_id: uuid::Uuid,
+    scope: Option<impetus_protocol::MemoryEntryScope>,
+) -> IpcResponse {
+    if let Err(resp) = require_session(store, session_id) {
+        return resp;
+    }
+    let runtime = match require_memory(memory) {
+        Ok(runtime) => runtime,
+        Err(resp) => return resp,
+    };
+    match runtime.list(session_id, scope) {
+        Ok(entries) => IpcResponse::MemoryEntries {
+            session_id,
+            entries,
+        },
+        Err(err) => memory_store_error(err),
+    }
+}
+
+fn handle_memory_get(
+    store: &Arc<dyn EventStore>,
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+    session_id: uuid::Uuid,
+    id: &str,
+) -> IpcResponse {
+    if let Err(resp) = require_session(store, session_id) {
+        return resp;
+    }
+    let runtime = match require_memory(memory) {
+        Ok(runtime) => runtime,
+        Err(resp) => return resp,
+    };
+    match runtime.get(session_id, id) {
+        Ok(Some(entry)) => IpcResponse::MemoryEntry { session_id, entry },
+        Ok(None) => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: format!("memory entry `{id}` not found"),
+        },
+        Err(err) => memory_store_error(err),
+    }
+}
+
+fn handle_memory_append(
+    store: &Arc<dyn EventStore>,
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+    session_id: uuid::Uuid,
+    id: String,
+    scope: impetus_protocol::MemoryEntryScope,
+    content: String,
+    provenance: impetus_protocol::MemoryProvenanceInfo,
+) -> IpcResponse {
+    if let Err(resp) = require_session(store, session_id) {
+        return resp;
+    }
+    let runtime = match require_memory(memory) {
+        Ok(runtime) => runtime,
+        Err(resp) => return resp,
+    };
+    match runtime.append(session_id, id, scope, content, provenance) {
+        Ok(entry) => IpcResponse::MemoryEntry { session_id, entry },
+        Err(err) => memory_store_error(err),
+    }
+}
+
+fn handle_memory_clear(
+    store: &Arc<dyn EventStore>,
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+    session_id: uuid::Uuid,
+    scope: Option<impetus_protocol::MemoryEntryScope>,
+) -> IpcResponse {
+    if let Err(resp) = require_session(store, session_id) {
+        return resp;
+    }
+    let runtime = match require_memory(memory) {
+        Ok(runtime) => runtime,
+        Err(resp) => return resp,
+    };
+    match runtime.clear(session_id, scope) {
+        Ok(removed) => IpcResponse::MemoryCleared {
+            session_id,
+            removed,
+        },
+        Err(err) => memory_store_error(err),
+    }
+}
+
+fn handle_memory_export(
+    store: &Arc<dyn EventStore>,
+    memory: Option<&Arc<crate::SessionMemoryRuntime>>,
+    session_id: uuid::Uuid,
+    format: impetus_protocol::MemoryExportFormat,
+) -> IpcResponse {
+    if let Err(resp) = require_session(store, session_id) {
+        return resp;
+    }
+    let runtime = match require_memory(memory) {
+        Ok(runtime) => runtime,
+        Err(resp) => return resp,
+    };
+    match runtime.export(session_id, format) {
+        Ok(body) => IpcResponse::MemoryExport {
+            session_id,
+            format,
+            body,
+        },
+        Err(err) => memory_store_error(err),
     }
 }
 
@@ -2123,6 +2722,7 @@ fn pty_notice(store: &Arc<dyn EventStore>, session_id: uuid::Uuid, message: Stri
 #[allow(clippy::result_large_err)]
 fn get_or_default_session_model(
     session_models: &Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    durable: Option<&Arc<crate::SessionModelStore>>,
     store: &Arc<dyn EventStore>,
     policy: &Arc<Mutex<PolicyEngine>>,
     provider_registry: &ProviderRegistry,
@@ -2131,13 +2731,43 @@ fn get_or_default_session_model(
 ) -> Result<crate::SessionModelSelection, IpcResponse> {
     let _ = AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id)
         .map_err(runtime_error)?;
-    if let Some(existing) = session_models
+    let existing = session_models
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get(&session_id)
-        .cloned()
-    {
+        .cloned();
+    // Guard must drop before re-lock on invalid (no if-let temporary hold).
+    if let Some(existing) = existing {
+        // Fail-closed: revalidate RAM hits (stale effort after catalog change).
+        if let Err(err) = validate_session_model_selection(provider_registry, &existing) {
+            session_models
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&session_id);
+            return Err(err);
+        }
         return Ok(existing);
+    }
+    if let Some(durable) = durable {
+        match durable.load(session_id) {
+            Ok(Some(saved)) => {
+                validate_session_model_selection(provider_registry, &saved)?;
+                session_models
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(session_id, saved.clone());
+                return Ok(saved);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                return Err(IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: format!(
+                        "durable session model for {session_id} unreadable (fail-closed): {err}"
+                    ),
+                });
+            }
+        }
     }
     let provider = provider_registry
         .get(default_provider_id)
@@ -2148,13 +2778,69 @@ fn get_or_default_session_model(
     Ok(crate::SessionModelSelection {
         provider_id: default_provider_id.to_owned(),
         model_id: provider.model_id().to_owned(),
-        reasoning_effort: Some("medium".into()),
+        // Honest: do not invent a global default effort (e.g. "medium").
+        reasoning_effort: None,
     })
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_session_model_selection(
+    provider_registry: &ProviderRegistry,
+    selection: &crate::SessionModelSelection,
+) -> Result<(), IpcResponse> {
+    let _provider =
+        provider_registry
+            .get(&selection.provider_id)
+            .map_err(|e| IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: format!(
+                    "saved session model provider `{}` unavailable: {e}",
+                    selection.provider_id
+                ),
+            })?;
+    let (advertised, _) = {
+        let registry = provider_registry.clone();
+        let pid = selection.provider_id.clone();
+        let mid = selection.model_id.clone();
+        crate::block_on_coding_tools(async move {
+            registry.advertised_reasoning_efforts(&pid, &mid).await
+        })
+    }
+    .map_err(|e| IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: format!(
+            "saved session model `{}/{}` unavailable: {e}",
+            selection.provider_id, selection.model_id
+        ),
+    })?;
+    if let Some(effort) = selection.reasoning_effort.as_deref() {
+        if advertised.is_empty() {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "saved reasoning_effort `{effort}` rejected: model `{}` no longer advertises reasoning efforts",
+                    selection.model_id
+                ),
+            });
+        }
+        if !advertised.iter().any(|a| a == effort) {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "saved reasoning_effort `{effort}` no longer advertised for `{}` (advertised: {})",
+                    selection.model_id,
+                    advertised.join(", ")
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
 fn store_session_model(
     session_models: &Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    durable: Option<&Arc<crate::SessionModelStore>>,
     store: &Arc<dyn EventStore>,
     policy: &Arc<Mutex<PolicyEngine>>,
     provider_registry: &ProviderRegistry,
@@ -2177,15 +2863,35 @@ fn store_session_model(
             code: IpcErrorCode::Unavailable,
             message: e.to_string(),
         })?;
+    let (advertised, _default_effort) = {
+        let registry = provider_registry.clone();
+        let pid = provider_id.clone();
+        let mid = model_id.clone();
+        crate::block_on_coding_tools(async move {
+            registry.advertised_reasoning_efforts(&pid, &mid).await
+        })
+    }
+    .map_err(|e| IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: e.to_string(),
+    })?;
     if let Some(effort) = reasoning_effort.as_deref() {
-        match effort {
-            "low" | "medium" | "high" => {}
-            other => {
-                return Err(IpcResponse::Error {
-                    code: IpcErrorCode::InvalidRequest,
-                    message: format!("unsupported reasoning_effort `{other}`"),
-                });
-            }
+        if advertised.is_empty() {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "reasoning_effort `{effort}` rejected: model `{model_id}` does not advertise reasoning efforts"
+                ),
+            });
+        }
+        if !advertised.iter().any(|a| a == effort) {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "unsupported reasoning_effort `{effort}` (advertised: {})",
+                    advertised.join(", ")
+                ),
+            });
         }
     }
     let selection = crate::SessionModelSelection {
@@ -2193,6 +2899,14 @@ fn store_session_model(
         model_id,
         reasoning_effort,
     };
+    if let Some(durable) = durable {
+        durable
+            .save(session_id, &selection)
+            .map_err(|e| IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("persist session model: {e}"),
+            })?;
+    }
     session_models
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -2262,7 +2976,10 @@ fn handle_list_worktrees(
             Ok(None) => Vec::new(),
             Err(e) => return worktree_switch_error(e),
         },
-        None => Vec::new(),
+        None => match mgr.list_catalog() {
+            Ok(bindings) => bindings.into_iter().map(|b| b.to_info()).collect(),
+            Err(e) => return worktree_switch_error(e),
+        },
     };
     IpcResponse::Worktrees { worktrees: list }
 }
@@ -2693,6 +3410,8 @@ fn launch_agent_run(
     hook_prefilter: crate::HookPrefilter,
     policy_store: Option<Arc<crate::PolicyStore>>,
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    session_model_store: Option<Arc<crate::SessionModelStore>>,
+    memory: Option<Arc<crate::SessionMemoryRuntime>>,
 ) -> Result<(), RuntimeError> {
     let runtime_session_id = runtime.session_id();
     let session_override = session_models
@@ -2778,7 +3497,9 @@ fn launch_agent_run(
     let task_hook_prefilter_drain = hook_prefilter;
     let task_policy_store = policy_store;
     let task_session_models = session_models;
+    let task_session_model_store = session_model_store;
     let task_stream_options = stream_options;
+    let task_memory = memory;
 
     tokio::spawn(async move {
         let completed = run_agent_loop(
@@ -2819,6 +3540,8 @@ fn launch_agent_run(
                 task_hook_prefilter_drain,
                 task_policy_store,
                 task_session_models,
+                task_session_model_store,
+                task_memory,
                 runtime_session_id,
                 run_id,
                 true,
@@ -2847,6 +3570,8 @@ fn start_drained_follow_up_if_any(
     hook_prefilter: crate::HookPrefilter,
     policy_store: Option<Arc<crate::PolicyStore>>,
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    session_model_store: Option<Arc<crate::SessionModelStore>>,
+    memory: Option<Arc<crate::SessionMemoryRuntime>>,
     session_id: uuid::Uuid,
     finished_run_id: uuid::Uuid,
     acquire_session_lock: bool,
@@ -2884,7 +3609,7 @@ fn start_drained_follow_up_if_any(
     let Ok(session_workspace) = runtime.workspace_root() else {
         return;
     };
-    let provider_messages = resolve_provider_messages(
+    let mut provider_messages = resolve_provider_messages(
         &session_workspace,
         &runtime,
         Some(&artifact_root),
@@ -2895,6 +3620,25 @@ fn start_drained_follow_up_if_any(
             runtime_intent(&runtime).unwrap_or_default(),
         )]
     });
+    let memory_block = memory
+        .as_ref()
+        .and_then(|rt| rt.prompt_context_block(session_id));
+    crate::inject_memory_context(&mut provider_messages, memory_block.as_deref());
+    // Same fail-closed gate as Prompt before launching drained FollowUp.
+    let policy_arc = Arc::new(Mutex::new(policy.clone()));
+    if get_or_default_session_model(
+        &session_models,
+        session_model_store.as_ref(),
+        &store,
+        &policy_arc,
+        &provider_registry,
+        &default_provider_id,
+        session_id,
+    )
+    .is_err()
+    {
+        return;
+    }
     let _ = launch_agent_run(
         runtime,
         run_id,
@@ -2914,6 +3658,8 @@ fn start_drained_follow_up_if_any(
         hook_prefilter,
         policy_store,
         session_models,
+        session_model_store,
+        memory,
     );
 }
 
@@ -3995,6 +4741,216 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_approval_bound_to_owner_connection() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let harness = Harness::new(store.clone(), policy.clone());
+        let conn_a = harness.mint_connection_id();
+        let conn_b = harness.mint_connection_id();
+        assert_ne!(conn_a, conn_b);
+
+        let IpcResponse::Session { session_id, .. } = harness.handle_with_connection(
+            Some(conn_a),
+            IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir()
+                    .expect("workspace")
+                    .canonicalize()
+                    .expect("canonical workspace"),
+            },
+        ) else {
+            panic!("session creation response");
+        };
+
+        let runtime = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("attach to created session");
+        runtime
+            .submit_intent("write a test file")
+            .expect("submit intent");
+        runtime
+            .request_action(crate::Action {
+                origin: crate::ActionOrigin::Agent,
+                kind: crate::ActionKind::WriteFile,
+                summary: "write file".into(),
+                target: Some("test.txt".into()),
+            })
+            .expect("request action that needs approval");
+
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response");
+        };
+        let approval_id = events
+            .iter()
+            .find_map(|e| {
+                if let crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) =
+                    &e.payload
+                {
+                    Some(request.id)
+                } else {
+                    None
+                }
+            })
+            .expect("approval request in events");
+
+        let foreign = harness.handle_with_connection(
+            Some(conn_b),
+            IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        );
+        assert!(
+            matches!(
+                foreign,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    ..
+                }
+            ),
+            "foreign connection must not resolve: {foreign:?}"
+        );
+        assert!(
+            runtime
+                .pending_approval(approval_id)
+                .expect("check pending")
+                .is_some(),
+            "approval must still be pending after foreign resolve"
+        );
+
+        let IpcResponse::ApprovalResolved {
+            approval_id: resolved_id,
+            ..
+        } = harness.handle_with_connection(
+            Some(conn_a),
+            IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        )
+        else {
+            panic!("owner connection must resolve approval");
+        };
+        assert_eq!(resolved_id, approval_id);
+        assert!(
+            runtime
+                .pending_approval(approval_id)
+                .expect("check pending")
+                .is_none(),
+            "owner resolve must clear pending approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_does_not_steal_approval_owner() {
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let harness = Harness::new(store.clone(), policy.clone());
+        let conn_a = harness.mint_connection_id();
+        let conn_b = harness.mint_connection_id();
+        assert_ne!(conn_a, conn_b);
+
+        let IpcResponse::Session { session_id, .. } = harness.handle_with_connection(
+            Some(conn_a),
+            IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir()
+                    .expect("workspace")
+                    .canonicalize()
+                    .expect("canonical workspace"),
+            },
+        ) else {
+            panic!("session creation response");
+        };
+
+        let runtime = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("attach to created session");
+        runtime
+            .submit_intent("write a test file")
+            .expect("submit intent");
+        runtime
+            .request_action(crate::Action {
+                origin: crate::ActionOrigin::Agent,
+                kind: crate::ActionKind::WriteFile,
+                summary: "write file".into(),
+                target: Some("test.txt".into()),
+            })
+            .expect("request action that needs approval");
+
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("stream response");
+        };
+        let approval_id = events
+            .iter()
+            .find_map(|e| {
+                if let crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) =
+                    &e.payload
+                {
+                    Some(request.id)
+                } else {
+                    None
+                }
+            })
+            .expect("approval request in events");
+
+        // Foreign Attach succeeds for session visibility but must not rebind owner.
+        assert!(
+            matches!(
+                harness.handle_with_connection(Some(conn_b), IpcRequest::Attach { session_id },),
+                IpcResponse::Session { .. }
+            ),
+            "foreign Attach must still succeed"
+        );
+
+        let foreign = harness.handle_with_connection(
+            Some(conn_b),
+            IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        );
+        assert!(
+            matches!(
+                foreign,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    ..
+                }
+            ),
+            "Attach must not steal ResolveApproval: {foreign:?}"
+        );
+        assert!(
+            runtime
+                .pending_approval(approval_id)
+                .expect("check pending")
+                .is_some(),
+            "approval must still be pending after foreign Attach+Resolve"
+        );
+
+        let IpcResponse::ApprovalResolved {
+            approval_id: resolved_id,
+            ..
+        } = harness.handle_with_connection(
+            Some(conn_a),
+            IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        )
+        else {
+            panic!("original owner must still resolve after foreign Attach");
+        };
+        assert_eq!(resolved_id, approval_id);
+    }
+
+    #[tokio::test]
     async fn ipc_get_approval_detail_returns_extended_payload() {
         let store = Arc::new(MemoryEventStore::default());
         let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
@@ -4438,7 +5394,7 @@ mod tests {
         assert_eq!(tools["provider_http_tools"], true);
 
         let modules = health.optional_modules.details.expect("modules details");
-        assert_eq!(modules["extension_runtime"]["level"], "IMPLEMENTED");
+        assert_eq!(modules["extension_runtime"]["level"], "PARTIAL");
         assert_eq!(
             modules["extension_runtime"]["details"]["mcp_live_tools_in_loop"],
             true
@@ -4446,6 +5402,14 @@ mod tests {
         assert_eq!(
             modules["extension_runtime"]["details"]["impetusd_autoload"],
             true
+        );
+        assert_eq!(
+            modules["extension_runtime"]["details"]["harness_inject"],
+            true
+        );
+        assert_eq!(
+            modules["extension_runtime"]["details"]["agent_loop_skill_inject"],
+            false
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
         let caps = modules["capability_matrix"]["capabilities"]
@@ -5395,6 +6359,7 @@ mod tests {
             version,
         } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec![
                 "execution_mode".into(),
                 "approval_scope_file_edits".into(),
@@ -5418,6 +6383,52 @@ mod tests {
     }
 
     #[test]
+    fn hello_negotiates_overlap_not_always_latest() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        // Client max=12, min=12 → select 12 even though server also speaks 13.
+        let IpcResponse::Hello { version, .. } = harness.handle(IpcRequest::Hello {
+            version: 12,
+            min_version: Some(12),
+            capabilities: vec!["session_create".into()],
+        }) else {
+            panic!("expected Hello for overlapping v12");
+        };
+        assert_eq!(version, 12);
+
+        // Client only speaks 11 → incompatible.
+        let resp = harness.handle(IpcRequest::Hello {
+            version: 11,
+            min_version: Some(11),
+            capabilities: vec![],
+        });
+        assert!(
+            matches!(
+                resp,
+                IpcResponse::Incompatible {
+                    client_version: 11,
+                    ..
+                }
+            ),
+            "{resp:?}"
+        );
+
+        // Legacy exact-version client on 13 (no min_version) → 13.
+        let IpcResponse::Hello { version, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            min_version: None,
+            capabilities: vec![],
+        }) else {
+            panic!("legacy hello");
+        };
+        assert_eq!(version, IPC_VERSION);
+    }
+
+    #[test]
     fn list_mcp_servers_empty_without_runtime() {
         let harness = Harness::new(
             Arc::new(MemoryEventStore::default()),
@@ -5430,6 +6441,121 @@ mod tests {
             IpcResponse::McpServers { servers } => assert!(servers.is_empty()),
             other => panic!("expected empty McpServers, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_extensions_unavailable_without_runtime() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let response = harness.handle(IpcRequest::ListExtensions);
+        match response {
+            IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message,
+            } => assert!(message.contains("ExtensionRuntime")),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_extensions_returns_enabled_excludes_disabled() {
+        use crate::extension_compat::ExtensionSource;
+        use crate::{
+            ExtensionLifecycleStatus, ExtensionRuntime, ExtensionState, ExtensionStateStore,
+            ResolutionPlan, daemon_extension_state_db, load_daemon_extension_runtime,
+        };
+
+        let data = tempfile::tempdir().expect("data");
+        let db = daemon_extension_state_db(data.path());
+        std::fs::create_dir_all(db.parent().unwrap()).expect("mkdir");
+        let store = ExtensionStateStore::open(&db).expect("open");
+
+        let enabled = ExtensionState {
+            installation_id: "inst-enabled".into(),
+            resolution: ResolutionPlan {
+                source: ExtensionSource::AgentSkills,
+                module_id: "ok-skill".into(),
+                module_name: "ok".into(),
+                version: "0.1.0".into(),
+                source_path: data.path().join("src/SKILL.md"),
+            },
+            created_paths: vec![],
+            modified_paths: vec![],
+            ownership: vec![],
+            status: ExtensionLifecycleStatus::Enabled,
+        };
+        let disabled = ExtensionState {
+            installation_id: "inst-disabled".into(),
+            resolution: ResolutionPlan {
+                source: ExtensionSource::AgentSkills,
+                module_id: "off-skill".into(),
+                module_name: "off".into(),
+                version: "0.1.0".into(),
+                source_path: data.path().join("src2/SKILL.md"),
+            },
+            created_paths: vec![],
+            modified_paths: vec![],
+            ownership: vec![],
+            status: ExtensionLifecycleStatus::Disabled,
+        };
+        store.put(&enabled).expect("put enabled");
+        store.put(&disabled).expect("put disabled");
+
+        let runtime = load_daemon_extension_runtime(data.path()).expect("reload");
+        assert!(runtime.is_loaded("inst-enabled"));
+        assert!(!runtime.is_loaded("inst-disabled"));
+
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(data.path())),
+        )
+        .with_extension_runtime(Arc::new(Mutex::new(runtime)));
+
+        let IpcResponse::Extensions { extensions } = harness.handle(IpcRequest::ListExtensions)
+        else {
+            panic!("expected Extensions");
+        };
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(extensions[0].installation_id, "inst-enabled");
+        assert_eq!(extensions[0].module_id, "ok-skill");
+        assert_eq!(extensions[0].status, "enabled");
+        assert_eq!(extensions[0].source, "agent_skills");
+
+        let IpcResponse::ExtensionStatus { extension } =
+            harness.handle(IpcRequest::GetExtensionStatus {
+                installation_id: "inst-enabled".into(),
+            })
+        else {
+            panic!("expected ExtensionStatus");
+        };
+        assert_eq!(extension.installation_id, "inst-enabled");
+
+        let missing = harness.handle(IpcRequest::GetExtensionStatus {
+            installation_id: "inst-disabled".into(),
+        });
+        match missing {
+            IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                ..
+            } => {}
+            other => panic!("disabled must not be loaded, got {other:?}"),
+        }
+
+        // Empty runtime still wired → empty list (not Unavailable).
+        let empty = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(data.path())),
+        )
+        .with_extension_runtime(Arc::new(Mutex::new(ExtensionRuntime::empty())));
+        let IpcResponse::Extensions { extensions } = empty.handle(IpcRequest::ListExtensions)
+        else {
+            panic!("expected empty Extensions");
+        };
+        assert!(extensions.is_empty());
     }
 
     #[test]
@@ -5522,6 +6648,557 @@ mod tests {
             !servers[0].connected,
             "list/reload must stay connected=false until first tool use"
         );
+    }
+
+    #[test]
+    fn mcp_manage_upsert_disable_enable_remove_round_trip() {
+        use impetus_protocol::{McpCapabilities, McpServerUpsert, McpTransport};
+
+        let data = tempfile::tempdir().expect("data");
+        let slot = Arc::new(tokio::sync::Mutex::new(crate::ToolProviderRuntime::new()));
+        let data_path = data.path().to_path_buf();
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        )
+        .with_tool_providers(slot)
+        .with_mcp_sot_root(data.path())
+        .with_mcp_reload(Arc::new(move || {
+            crate::load_daemon_mcp_runtime(&data_path).map_err(|e| e.to_string())
+        }));
+
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::UpsertMcpServer {
+            server: McpServerUpsert {
+                id: "echo".into(),
+                name: "echo".into(),
+                command: "true".into(),
+                args: vec![],
+                transport: McpTransport::Stdio,
+                capabilities: McpCapabilities {
+                    tools: true,
+                    ..McpCapabilities::default()
+                },
+                env_keys: vec!["LABEL_ONLY".into()],
+            },
+        }) else {
+            panic!("upsert");
+        };
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "echo");
+        let encoded = serde_json::to_string(&servers[0]).expect("encode");
+        assert!(!encoded.contains("secret"));
+        assert!(data.path().join("mcp/echo.json").is_file());
+
+        let IpcResponse::McpServers { servers } =
+            harness.handle(IpcRequest::DisableMcpServer { id: "echo".into() })
+        else {
+            panic!("disable");
+        };
+        assert!(servers.is_empty());
+        assert!(data.path().join("mcp/echo.json.disabled").is_file());
+        assert!(!data.path().join("mcp/echo.json").is_file());
+
+        let IpcResponse::McpServers { servers } =
+            harness.handle(IpcRequest::EnableMcpServer { id: "echo".into() })
+        else {
+            panic!("enable");
+        };
+        assert_eq!(servers.len(), 1);
+
+        let IpcResponse::McpServers { servers } =
+            harness.handle(IpcRequest::RemoveMcpServer { id: "echo".into() })
+        else {
+            panic!("remove");
+        };
+        assert!(servers.is_empty());
+        assert!(!data.path().join("mcp/echo.json").exists());
+        assert!(!data.path().join("mcp/echo.json.disabled").exists());
+    }
+
+    #[test]
+    fn memory_control_plane_append_list_export_clear() {
+        use impetus_protocol::{MemoryEntryScope, MemoryExportFormat, MemoryProvenanceInfo};
+
+        let data = tempfile::tempdir().expect("data");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        )
+        .with_memory(crate::open_daemon_memory_runtime(data.path()));
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: tempfile::tempdir().expect("ws").path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+
+        let IpcResponse::MemoryEntry { entry, .. } = harness.handle(IpcRequest::AppendMemory {
+            session_id,
+            id: "n1".into(),
+            scope: MemoryEntryScope::Project,
+            content: "API_TOKEN=fake-test-token-abc\nnote=safe".into(),
+            provenance: MemoryProvenanceInfo {
+                source: "user".into(),
+                kind: "note".into(),
+            },
+        }) else {
+            panic!("append");
+        };
+        assert_eq!(entry.id, "n1");
+        assert!(
+            !entry.content.contains("fake-test-token-abc"),
+            "content must be redacted: {}",
+            entry.content
+        );
+        assert!(entry.content.contains("[REDACTED]"));
+        assert!(entry.content.contains("note=safe"));
+
+        let IpcResponse::MemoryEntries { entries, .. } = harness.handle(IpcRequest::ListMemory {
+            session_id,
+            scope: Some(MemoryEntryScope::Project),
+        }) else {
+            panic!("list");
+        };
+        assert_eq!(entries.len(), 1);
+
+        let IpcResponse::MemoryExport { body, .. } = harness.handle(IpcRequest::ExportMemory {
+            session_id,
+            format: MemoryExportFormat::Jsonl,
+        }) else {
+            panic!("export");
+        };
+        assert!(body.contains("\"id\":\"n1\""));
+        assert!(!body.contains("fake-test-token-abc"));
+
+        let IpcResponse::MemoryCleared { removed, .. } = harness.handle(IpcRequest::ClearMemory {
+            session_id,
+            scope: None,
+        }) else {
+            panic!("clear");
+        };
+        assert_eq!(removed, 1);
+        let IpcResponse::MemoryEntries { entries, .. } = harness.handle(IpcRequest::ListMemory {
+            session_id,
+            scope: None,
+        }) else {
+            panic!("list empty");
+        };
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn append_memory_then_prompt_injects_into_provider_messages() {
+        use impetus_protocol::{MemoryEntryScope, MemoryProvenanceInfo};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let provider = Arc::new(MockProvider::default_mock());
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider.clone(),
+        )
+        .with_memory(crate::open_daemon_memory_runtime(data.path()));
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+
+        let IpcResponse::MemoryEntry { .. } = harness.handle(IpcRequest::AppendMemory {
+            session_id,
+            id: "proj-ctx".into(),
+            scope: MemoryEntryScope::Project,
+            content: "widget API uses /v2/widgets".into(),
+            provenance: MemoryProvenanceInfo {
+                source: "user".into(),
+                kind: "note".into(),
+            },
+        }) else {
+            panic!("append");
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "what endpoint?".into(),
+                artifact: None,
+                intent: Default::default(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let received = provider.received_messages();
+        assert!(
+            !received.is_empty(),
+            "provider must receive at least one turn"
+        );
+        let first = serde_json::to_string(&received[0]).expect("serialize");
+        assert!(
+            first.contains("widget API uses /v2/widgets"),
+            "memory content missing from provider messages: {first}"
+        );
+        assert!(
+            first.contains(crate::MEMORY_PROMPT_CONTEXT_HEADER),
+            "memory header missing: {first}"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_memory_then_approval_resume_injects_into_provider_messages() {
+        use impetus_protocol::{MemoryEntryScope, MemoryProvenanceInfo};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        std::fs::write(workspace.path().join("evidence.txt"), "confirmed evidence")
+            .expect("fixture");
+        let provider = Arc::new(MockProvider::scripted(
+            "scripted-memory-resume",
+            "test-model",
+            [
+                vec![MockStreamItem::ToolCall {
+                    id: "write-result".into(),
+                    tool: "write_file".into(),
+                    arguments: r#"{"path":"result.txt","content":"approved result"}"#.into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "completed after approval".into(),
+                }],
+            ],
+        ));
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider.clone(),
+        )
+        .with_memory(crate::open_daemon_memory_runtime(data.path()));
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+
+        let IpcResponse::MemoryEntry { .. } = harness.handle(IpcRequest::AppendMemory {
+            session_id,
+            id: "proj-ctx".into(),
+            scope: MemoryEntryScope::Project,
+            content: "widget API uses /v2/widgets".into(),
+            provenance: MemoryProvenanceInfo {
+                source: "user".into(),
+                kind: "note".into(),
+            },
+        }) else {
+            panic!("append");
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "write after approval".into(),
+                artifact: None,
+                intent: Default::default(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::AwaitingApproval,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+            session_id,
+            after_sequence: 0,
+        }) else {
+            panic!("event stream");
+        };
+        let approval_id = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.id)
+                }
+                _ => None,
+            })
+            .expect("write approval");
+        assert!(matches!(
+            harness.handle(IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            }),
+            IpcResponse::ApprovalResolved { .. }
+        ));
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let received = provider.received_messages();
+        assert!(
+            received.len() >= 2,
+            "expected prompt + resume turns, got {}",
+            received.len()
+        );
+        let resume = serde_json::to_string(&received[received.len() - 1]).expect("serialize");
+        assert!(
+            resume.contains("widget API uses /v2/widgets"),
+            "memory missing from approval-resume provider messages: {resume}"
+        );
+        assert!(
+            resume.contains(crate::MEMORY_PROMPT_CONTEXT_HEADER),
+            "memory header missing on resume: {resume}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_memory_prompt_does_not_invent_context() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let provider = Arc::new(MockProvider::default_mock());
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            provider.clone(),
+        )
+        .with_memory(crate::open_daemon_memory_runtime(data.path()));
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+
+        assert!(matches!(
+            harness.handle(IpcRequest::Prompt {
+                session_id,
+                text: "hello".into(),
+                artifact: None,
+                intent: Default::default(),
+            }),
+            IpcResponse::Status {
+                status: RuntimeStatus::Running,
+                ..
+            }
+        ));
+
+        for _ in 0..100 {
+            if matches!(
+                harness.handle(IpcRequest::Attach { session_id }),
+                IpcResponse::Session {
+                    status: RuntimeStatus::Completed,
+                    ..
+                }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let received = provider.received_messages();
+        assert!(!received.is_empty());
+        let first = serde_json::to_string(&received[0]).expect("serialize");
+        assert!(
+            !first.contains(crate::MEMORY_PROMPT_CONTEXT_HEADER),
+            "empty memory must not inject header: {first}"
+        );
+    }
+
+    #[test]
+    fn browser_health_and_negotiate_report_absent() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        );
+        let IpcResponse::BrowserHealth { status } = harness.handle(IpcRequest::GetBrowserHealth)
+        else {
+            panic!("health");
+        };
+        assert_eq!(status, impetus_protocol::BrowserHealthStatus::absent());
+        let IpcResponse::BrowserNegotiate { result } =
+            harness.handle(IpcRequest::NegotiateBrowser {
+                protocol_version: "0.1".into(),
+            })
+        else {
+            panic!("negotiate");
+        };
+        assert!(!result.compatible);
+        assert_eq!(result.protocol_version, "0.1");
+    }
+
+    #[test]
+    fn corrupt_durable_session_model_fails_closed() {
+        let data = tempfile::tempdir().expect("data");
+        let root = data.path().join("session_models");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let store = Arc::new(crate::SessionModelStore::open(&root).expect("open"));
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            Arc::clone(&events),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        )
+        .with_session_model_store(Arc::clone(&store));
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: PathBuf::from("."),
+        }) else {
+            panic!("create");
+        };
+        std::fs::write(root.join(format!("{session_id}.json")), b"{not-valid-json")
+            .expect("corrupt");
+        let resp = harness.handle(IpcRequest::GetSessionModel { session_id });
+        assert!(
+            matches!(
+                resp,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    ..
+                }
+            ),
+            "corrupt durable must fail-closed, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_ram_session_model_effort_fails_closed_on_get_and_prompt() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+        let bad = crate::SessionModelSelection {
+            provider_id: "mock".into(),
+            model_id: "mock-model".into(),
+            reasoning_effort: Some("not-advertised".into()),
+        };
+        // Seed stale effort that mock catalog no longer advertises.
+        harness.seed_session_model_ram_for_test(session_id, bad.clone());
+        let get = harness.handle(IpcRequest::GetSessionModel { session_id });
+        assert!(
+            matches!(
+                get,
+                IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    ..
+                }
+            ),
+            "Get must fail-closed on invalid RAM effort, got {get:?}"
+        );
+        // Bad RAM entry removed; subsequent Get falls through to honest default.
+        let IpcResponse::SessionModel { selection, .. } =
+            harness.handle(IpcRequest::GetSessionModel { session_id })
+        else {
+            panic!("get after clear must return default");
+        };
+        assert_eq!(selection.provider_id, "mock");
+        assert_eq!(selection.reasoning_effort, None);
+
+        // Re-seed and prove Prompt also fails closed before launch.
+        harness.seed_session_model_ram_for_test(session_id, bad);
+        let prompt = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "should not launch".into(),
+            artifact: None,
+            intent: Default::default(),
+        });
+        assert!(
+            matches!(prompt, IpcResponse::Error { .. }),
+            "Prompt must fail-closed on invalid RAM effort, got {prompt:?}"
+        );
+    }
+
+    #[test]
+    fn session_model_survives_harness_restart_via_durable_store() {
+        let data = tempfile::tempdir().expect("data");
+        let store = Arc::new(
+            crate::SessionModelStore::open(data.path().join("session_models")).expect("open"),
+        );
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            Arc::clone(&events),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        )
+        .with_session_model_store(Arc::clone(&store));
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: PathBuf::from("."),
+        }) else {
+            panic!("create");
+        };
+        let IpcResponse::SessionModel {
+            selection: before, ..
+        } = harness.handle(IpcRequest::GetSessionModel { session_id })
+        else {
+            panic!("get default");
+        };
+        let set = harness.handle(IpcRequest::SetSessionModel {
+            session_id,
+            provider_id: before.provider_id.clone(),
+            model_id: before.model_id.clone(),
+            reasoning_effort: None,
+        });
+        assert!(
+            matches!(set, IpcResponse::SessionModel { .. }),
+            "set: {set:?}"
+        );
+
+        // Simulate daemon restart: fresh Harness + empty RAM map, same durable root.
+        let harness2 = Harness::new(
+            Arc::clone(&events),
+            PolicyEngine::new(SandboxScope::local_workspace(".")),
+        )
+        .with_session_model_store(store);
+        let IpcResponse::SessionModel { selection, .. } =
+            harness2.handle(IpcRequest::GetSessionModel { session_id })
+        else {
+            panic!("get after restart");
+        };
+        assert_eq!(selection.provider_id, before.provider_id);
+        assert_eq!(selection.model_id, before.model_id);
+        assert_eq!(selection.reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -5632,12 +7309,22 @@ mod tests {
             serde_json::json!("static_fallback")
         );
         assert!(providers[0].agent_capabilities.is_none());
+        assert_eq!(
+            providers[0].reasoning_efforts,
+            vec!["low", "medium", "high"]
+        );
+        assert!(providers[0].capabilities.reasoning);
+        assert!(!providers[0].capabilities.tools);
     }
 
     #[tokio::test]
     async fn set_session_model_is_used_on_prompt_stream() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let mock = Arc::new(crate::MockProvider::default_mock());
+        let mock = Arc::new(
+            crate::MockProvider::default_mock()
+                .with_reasoning_efforts(["low", "medium", "high"])
+                .with_catalog_models(["mock-model", "session-model-x"]),
+        );
         let harness = Harness::with_test_provider(
             Arc::new(MemoryEventStore::default()),
             PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
@@ -5693,6 +7380,7 @@ mod tests {
         );
         let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec!["list_mcp".into(), "list_models".into()],
         }) else {
             panic!("hello");
@@ -5795,6 +7483,7 @@ mod tests {
         );
         let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec!["reload_policy_config".into()],
         }) else {
             panic!("hello");
@@ -5850,6 +7539,7 @@ mod tests {
 
         let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec!["git".into()],
         }) else {
             panic!("hello");
@@ -5929,6 +7619,7 @@ mod tests {
 
         let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec!["git".into(), "structured_diff".into()],
         }) else {
             panic!("hello");

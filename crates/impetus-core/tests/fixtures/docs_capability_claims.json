@@ -61,10 +61,11 @@
     },
     {
       "id": "extension_runtime",
-      "level": "IMPLEMENTED",
+      "level": "PARTIAL",
       "details": {
         "mcp_live_tools_in_loop": true,
         "harness_inject": true,
+        "agent_loop_skill_inject": false,
         "impetusd_autoload": true,
         "mcp_live_library": true,
         "mcp_live_orchestrator_hook": true,
