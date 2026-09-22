@@ -20,12 +20,11 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 
 ## Now
 
-Nothing open for #322 production-harden follow-up (shipped on this branch).
-Pick Next slice + feature branch.
+Production-harden / Next items. Extension package host (#324) core path is on
+branch `feature/issue-324-extension-sdk-abi` — merge via PR when ready.
 
-Shipped: [#322](https://github.com/1tuz/impetus/issues/322) — see git history / PR.
-E2E workflow coverage landed: `daemon_unix_workflow` (Start/Advance/Cancel).
-Keep open work only under ## Next.
+- [ ] crates.io publish of `impetus-extension-sdk` (git `rev` pin recipe shipped)
+- [ ] Richer `host_process` operate surface beyond initialize/shutdown (tools)
 
 ---
 
@@ -33,12 +32,16 @@ Keep open work only under ## Next.
 
 Actionable after Now. Not priority theatre.
 
+### Extension split follow-through
+
+- [ ] Stand up `impetus-extensions` repo against contract + demo packs
+- [ ] Unify legacy CLI Skill/MCP SoT vs package host (allowlist `#296`)
+
 ### Daemon / protocol
 
 - [ ] Schema: broader validate-on-wire coverage
 - [ ] AttachmentStore: bind `GetAttachment` to session; TUI fetch path
 - [ ] Child mid-run action stream (progress / tool detail on parent log)
-- [ ] ExtensionRuntime → AgentLoop skill-path inject (inventory already on Harness)
 - [ ] Same-uid peer isolation beyond connection-bind (enforce `IMPETUS_ACP_CHILD` /
       peer-cred; umask before socket bind) — residual trust model, not #322 blocker
 

@@ -253,14 +253,22 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         .context("open durable session model store under data root")?;
     let harness = harness.with_session_model_store(Arc::new(store));
 
-    // Extension lifecycle: CLI is control plane. Load Enabled inventory at start
-    // (fail-closed if DB corrupt) and keep it on the harness for ListExtensions.
-    // AgentLoop skill-path inject remains Next; MCP SoT stays `$IMPETUS_DATA_DIR/mcp/*.json`.
+    // Extension lifecycle: CLI is control plane for legacy Skill/MCP installs.
+    // Package host (#324): discover SDK packages under data_dir + workspace.
     let extension_runtime = Arc::new(std::sync::Mutex::new(
         impetus_core::load_daemon_extension_runtime(data_root)
             .context("reload extension runtime from durable store")?,
     ));
-    let harness = harness.with_extension_runtime(extension_runtime);
+    let mut extension_host = impetus_core::ExtensionHost::with_persist_root(data_root);
+    extension_host.set_scope(harness.policy().scope().clone());
+    let discovery = impetus_core::ExtensionDiscoveryRoots::from_data_and_workspace(
+        data_root, None, // workspace filled on ReloadExtensionPackages with session workspace
+    );
+    let _ = extension_host.reload(&discovery);
+    let extension_host = Arc::new(std::sync::Mutex::new(extension_host));
+    let harness = harness
+        .with_extension_runtime(extension_runtime)
+        .with_extension_host(extension_host);
 
     // Durable PTY metadata when SQLite open succeeds (restart/resume of metadata only;
     // live PTY handles do not survive daemon restart — client must re-Start).
@@ -676,6 +684,11 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::ExportMemory { .. } => "memory_manage",
         IpcRequest::GetBrowserHealth | IpcRequest::NegotiateBrowser { .. } => "browser",
         IpcRequest::ListExtensions | IpcRequest::GetExtensionStatus { .. } => "extension_runtime",
+        IpcRequest::ReloadExtensionPackages
+        | IpcRequest::ListExtensionPackages
+        | IpcRequest::GetExtensionPackage { .. }
+        | IpcRequest::EnableExtensionPackage { .. }
+        | IpcRequest::DisableExtensionPackage { .. } => "extension_manage",
     }
 }
 

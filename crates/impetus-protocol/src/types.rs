@@ -1272,6 +1272,25 @@ pub struct ExtensionStatusInfo {
     pub status: String,
 }
 
+/// ExtensionHost package row (labels only; no secrets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionPackageInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub extension_api_version: u32,
+    /// `global` | `workspace` | `dev`
+    pub source: String,
+    /// Host phase: loaded | active | disabled | failed | …
+    pub phase: String,
+    pub capabilities: Vec<String>,
+    pub permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// False when package failed compat/validation (still listed after partial reload).
+    pub compatible: bool,
+}
+
 /// Export format for session memory control-plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

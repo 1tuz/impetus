@@ -172,7 +172,7 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** MCP / skills in agent loop | Implemented | **Library:** Skills via `InstructionResolver`; `ToolProviderRuntime` → `McpLiveBridge` → AgentLoop. **Production daemon:** SoT `$IMPETUS_DATA_DIR/mcp/*.json`; IPC `ListMcpServers` / `ReloadMcpServers` / `UpsertMcpServer` / `RemoveMcpServer` / `EnableMcpServer` / `DisableMcpServer` (`mcp_manage`). Lazy `connected` until first tool use. Workspace `{repo}/.impetus/mcp/` is not daemon SoT. |
+| Extension **runtime** MCP / skills in agent loop | Partial | **MCP live:** `$IMPETUS_DATA_DIR/mcp/*.json` → AgentLoop (`mcp_manage`). **Skills:** workspace `.impetus/skills` + Active `ExtensionHost` via `ExtensionCapabilityRegistry` skill roots → Context/Prompt/FollowUp. **Package host (#324):** SDK + host + IPC `extension_manage` (v14) + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT + `host_process` spawn/handshake + `daemon_unix_extensions`. **Remaining:** crates.io SDK publish; richer host_process tools beyond handshake. Legacy CLI Skill/MCP inventory stays. |
 | Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
 | Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` wires one AgentLoop Explore executor for both `explore_spawn` and Workflow Explore steps (#320). Parent-log `Child*` Started/Finished (#315/#318). TUI `/children` + Activity fold + IPC `ListChildRuns` (#311). |
 | `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn). **Production daemon:** autoload from `$IMPETUS_DATA_DIR/hooks.json` / `hooks/*.json` via `wire_daemon_runtime` → Harness → ToolOrchestrator. Not RiskGate. |
@@ -184,7 +184,7 @@ impetusd  — authoritative daemon
 | Browser provider | Partial | Daemon IPC `GetBrowserHealth` / `NegotiateBrowser` honest Absent (compatible=false). Library Mock/Absent + Firefox/Chrome modules. CDP/WebDriver **Parked**. |
 | Coding tools (definition/refs/diagnostics/symbols/hover) | Partial | Seam + IPC `coding_definition` + `coding_hover`; **`impetusd` wires `ProcessLspBackend`** when `IMPETUS_LSP_BINARY` or `rust-analyzer` on PATH (#320). Absent binary → Unavailable (honest). Crash respawn + Drop cleanup shipped; **Remaining:** request cancellation, diagnostics/symbols (not wired), full LSP protocol Parked. |
 | Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn; Research/Build/Review via `AgentLoopRoleExecutor` (same AgentLoop bridge as Explore — **no** `git status --short` stubs) (#322); Failed child → `fail_step` (not fake Completed); Cancelled → `cancel_with_scheduler`; `cancel_session` best-effort worktree stop/close; fair per-parent caps; Cancel/CancelWorkflow. **WorktreeManager** in `impetusd`; `ListWorktrees` without `session_id` → global non-closed catalog (#322). |
-| Extension lifecycle (plan/apply/ownership/enable/disable/unload/doctor/repair) | Partial | CLI control plane: `extension plan|install|remove|enable|disable|unload|list|doctor|repair` + durable status (`{path}.disabled`). Daemon loads Enabled inventory from `$IMPETUS_DATA_DIR/extensions/install_state.db` at start (fail-closed if corrupt) into Harness; IPC `ListExtensions` / `GetExtensionStatus` (`extension_runtime`). **Remaining:** AgentLoop skill-path inject from ExtensionRuntime — MCP SoT stays `mcp/*.json`. Allowlist `#296`. Not marketplace (Won't). |
+| Extension lifecycle (plan/apply/ownership/enable/disable/unload/doctor/repair) | Partial | CLI control plane: `extension plan|install|remove|enable|disable|unload|list|doctor|repair` + durable status (`{path}.disabled`). Daemon loads Enabled inventory from `$IMPETUS_DATA_DIR/extensions/install_state.db` at start into Harness; IPC `ListExtensions` / `GetExtensionStatus` (`extension_runtime`). **Package SDK (#324):** `impetus-extension-sdk` + host_process protocol + `ExtensionCapabilityRegistry` + IPC `extension_manage` + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT. **Remaining:** unify CLI vs daemon SoT for legacy installs; crates.io SDK. Allowlist `#296`. Not marketplace (Won't). |
 | MemoryStore (contextual knowledge) | Implemented | Daemon control-plane IPC List/Get/Append/Clear/Export + JSONL under `$IMPETUS_DATA_DIR/memory/` (`memory` / `memory_manage`). AgentLoop Prompt/FollowUp/approval-resume injects project-scoped session entries as a bounded system context block (`SessionMemoryRuntime::prompt_context_block` → `inject_memory_context`); empty store = no-op. |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`; remaining gaps = broader validate-on-wire coverage |
@@ -195,7 +195,7 @@ impetusd  — authoritative daemon
 
 ## IPC compatibility (PROTO)
 
-- `IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12. **Hello negotiation:** client
+- `IPC_VERSION` = 14, `IPC_MIN_SUPPORTED` = 12. **Hello negotiation:** client
   sends preferred `version` (max) and optional `min_version` (legacy omit →
   exact). Server selects highest overlap with `[IPC_MIN_SUPPORTED, IPC_VERSION]`
   and returns that version; empty overlap → `Incompatible` with
@@ -554,7 +554,10 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
   (`id` / `kind` / `version` / `digest` / `capabilities`) validated on
   `plan_install` for Skill + MCP config; not a marketplace. Install path IDs
   are allowlisted via [`extension_id`](crates/impetus-core/src/extension_id.rs)
-  (#296).
+  (#296). Package author contract: [`impetus-extension-sdk`](crates/impetus-extension-sdk)
+  (`impetus.extension_package.v1` + `extension_api_version`) — see
+  [docs/extensions/](docs/extensions/) and
+  [EXTENSION_REPOSITORY_CONTRACT.md](EXTENSION_REPOSITORY_CONTRACT.md).
 - MCP config contract: [`McpManifest`](crates/impetus-core/src/mcp_manifest.rs)
   (`id` / `transport` / `command` / `args` / `capabilities` / `env_keys`);
   env keys/labels only — never secret values; validated on `plan_mcp_config`
@@ -569,7 +572,8 @@ Session nest-shape is a slice only; full MCP JSON-RPC catalog remains out of sco
 
 ## Documentation
 
-- Docs map: [docs/README.md](docs/README.md)
+- Documentation: [docs/README.md](docs/README.md); extensions author docs:
+  [docs/extensions/](docs/extensions/)
 - Executable backlog: [TODO.md](TODO.md) (Now / Next / Later)
 - Short narrative: [docs/architecture/roadmap.md](docs/architecture/roadmap.md)
 - Kernel invariants: [docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md)

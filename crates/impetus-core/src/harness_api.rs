@@ -107,6 +107,8 @@ pub struct Harness {
     memory: Option<Arc<crate::SessionMemoryRuntime>>,
     /// Optional daemon ExtensionRuntime inventory (Enabled installs; CLI SoT).
     extension_runtime: Option<Arc<Mutex<crate::ExtensionRuntime>>>,
+    /// Optional ExtensionHost package registry (SDK packages → AgentLoop roots).
+    extension_host: Option<Arc<Mutex<crate::ExtensionHost>>>,
     /// Optional durable session model/reasoning selection (`session_models/`).
     session_model_store: Option<Arc<crate::SessionModelStore>>,
     /// Daemon-owned hook prefilter catalog for process spawn paths.
@@ -169,6 +171,7 @@ impl Harness {
             mcp_sot_root: None,
             memory: None,
             extension_runtime: None,
+            extension_host: None,
             session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
@@ -254,6 +257,12 @@ impl Harness {
     /// AgentLoop skill-path inject is separate and not implied by this wire.
     pub fn with_extension_runtime(mut self, runtime: Arc<Mutex<crate::ExtensionRuntime>>) -> Self {
         self.extension_runtime = Some(runtime);
+        self
+    }
+
+    /// Attach ExtensionHost package registry (discovery / enable / AgentLoop roots).
+    pub fn with_extension_host(mut self, host: Arc<Mutex<crate::ExtensionHost>>) -> Self {
+        self.extension_host = Some(host);
         self
     }
 
@@ -409,6 +418,7 @@ impl Harness {
             mcp_sot_root: None,
             memory: None,
             extension_runtime: None,
+            extension_host: None,
             session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
@@ -493,6 +503,7 @@ impl Harness {
             mcp_sot_root: None,
             memory: None,
             extension_runtime: None,
+            extension_host: None,
             session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
@@ -567,6 +578,7 @@ impl Harness {
             mcp_sot_root: None,
             memory: None,
             extension_runtime: None,
+            extension_host: None,
             session_model_store: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
@@ -628,6 +640,10 @@ impl Harness {
 
     pub fn has_extension_runtime(&self) -> bool {
         self.extension_runtime.is_some()
+    }
+
+    pub fn has_extension_host(&self) -> bool {
+        self.extension_host.is_some()
     }
 
     /// Mint a connection-scoped id for one Unix-socket peer (`serve_client`).
@@ -698,6 +714,7 @@ impl Harness {
             self.mcp_sot_root.clone(),
             self.memory.clone(),
             self.extension_runtime.clone(),
+            self.extension_host.clone(),
             self.session_model_store.clone(),
             self.hook_prefilter.clone(),
             self.policy_store.clone(),
@@ -821,6 +838,7 @@ fn handle_request(
     mcp_sot_root: Option<PathBuf>,
     memory: Option<Arc<crate::SessionMemoryRuntime>>,
     extension_runtime: Option<Arc<Mutex<crate::ExtensionRuntime>>>,
+    extension_host: Option<Arc<Mutex<crate::ExtensionHost>>>,
     session_model_store: Option<Arc<crate::SessionModelStore>>,
     hook_prefilter: crate::HookPrefilter,
     policy_store_slot: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
@@ -1067,11 +1085,13 @@ fn handle_request(
                         let _ = router.set_active_run(session_id, Some(run_id));
                     }
                     let session_workspace = runtime.workspace_root()?;
+                    let skill_roots = extension_skill_roots(&extension_host);
                     let mut provider_messages = resolve_provider_messages(
                         &session_workspace,
                         &runtime,
                         Some(&artifact_root),
                         policy_store.as_deref(),
+                        &skill_roots,
                     )
                     .unwrap_or_else(|_| {
                         vec![ProviderMessage::user(
@@ -1125,6 +1145,7 @@ fn handle_request(
                         session_models.clone(),
                         session_model_store.clone(),
                         memory.clone(),
+                        extension_host.clone(),
                     )?;
                     runtime.status()
                 }) {
@@ -1135,7 +1156,11 @@ fn handle_request(
         IpcRequest::Context { session_id } => {
             match AgentRuntime::attach(store, policy_snapshot(&policy), session_id) {
                 Ok(runtime) => match runtime.workspace_root().and_then(|workspace_root| {
-                    resolve_context(&workspace_root, policy_store.as_deref())
+                    resolve_context(
+                        &workspace_root,
+                        policy_store.as_deref(),
+                        &extension_skill_roots(&extension_host),
+                    )
                         .map_err(|error| RuntimeError::Denied(error.to_string()))
                 }) {
                     Ok(context) => IpcResponse::Context {
@@ -1190,6 +1215,7 @@ fn handle_request(
                             session_models.clone(),
                             session_model_store.clone(),
                             memory.clone(),
+                            extension_host.clone(),
                             session_id,
                             run_id,
                             false,
@@ -1315,6 +1341,7 @@ fn handle_request(
                         &runtime,
                         Some(uploads.artifact_root()),
                         policy_store.as_deref(),
+                        &extension_skill_roots(&extension_host),
                     )
                     .map_err(|error| RuntimeError::Denied(error.to_string()))?;
                     let memory_block = memory
@@ -1358,6 +1385,7 @@ fn handle_request(
                         session_models.clone(),
                         session_model_store.clone(),
                         memory.clone(),
+                        extension_host.clone(),
                     )?;
                 }
                 Ok(session_id)
@@ -2254,6 +2282,33 @@ fn handle_request(
         IpcRequest::GetExtensionStatus { installation_id } => {
             handle_get_extension_status(extension_runtime.as_ref(), &installation_id)
         }
+        IpcRequest::ReloadExtensionPackages => {
+            let resp = handle_reload_extension_packages(
+                extension_host.as_ref(),
+                mcp_sot_root.as_deref(),
+                &workspace_root,
+            );
+            if matches!(resp, IpcResponse::ExtensionPackagesReloaded { .. }) {
+                refresh_mcp_runtime_best_effort(tool_providers.clone(), mcp_reload.clone());
+            }
+            resp
+        }
+        IpcRequest::ListExtensionPackages => handle_list_extension_packages(extension_host.as_ref()),
+        IpcRequest::GetExtensionPackage { id } => {
+            handle_get_extension_package(extension_host.as_ref(), &id)
+        }
+        IpcRequest::EnableExtensionPackage { id } => handle_enable_extension_package(
+            extension_host.as_ref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            &id,
+        ),
+        IpcRequest::DisableExtensionPackage { id } => handle_disable_extension_package(
+            extension_host.as_ref(),
+            tool_providers.clone(),
+            mcp_reload.clone(),
+            &id,
+        ),
         IpcRequest::GetBrowserHealth => IpcResponse::BrowserHealth {
             status: impetus_protocol::BrowserHealthStatus::absent(),
         },
@@ -2338,6 +2393,203 @@ fn handle_get_extension_status(
             message: format!("extension not loaded: {installation_id}"),
         },
     }
+}
+
+fn package_info_from_loaded(
+    ext: &crate::LoadedExtension,
+) -> impetus_protocol::ExtensionPackageInfo {
+    use crate::ExtensionHostPhase;
+    let phase = match ext.phase {
+        ExtensionHostPhase::Discovered => "discovered",
+        ExtensionHostPhase::Validated => "validated",
+        ExtensionHostPhase::Compatible => "compatible",
+        ExtensionHostPhase::Loaded => "loaded",
+        ExtensionHostPhase::Active => "active",
+        ExtensionHostPhase::Failed => "failed",
+        ExtensionHostPhase::Disabled => "disabled",
+    };
+    let source = match ext.source {
+        crate::ExtensionPackageSource::Global => "global",
+        crate::ExtensionPackageSource::Workspace => "workspace",
+        crate::ExtensionPackageSource::Dev => "dev",
+    };
+    impetus_protocol::ExtensionPackageInfo {
+        id: ext.id.as_str().to_string(),
+        name: ext.manifest.name.clone(),
+        version: ext.manifest.version.clone(),
+        extension_api_version: ext.manifest.extension_api_version,
+        source: source.to_string(),
+        phase: phase.to_string(),
+        capabilities: ext
+            .manifest
+            .capabilities
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect(),
+        permissions: ext
+            .manifest
+            .permissions
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect(),
+        last_error: ext.last_error.clone(),
+        compatible: !matches!(ext.phase, ExtensionHostPhase::Failed),
+    }
+}
+
+fn handle_reload_extension_packages(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    data_root: Option<&Path>,
+    workspace_root: &Path,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let Some(data_root) = data_root else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "Extension package reload requires daemon data root ($IMPETUS_DATA_DIR)"
+                .into(),
+        };
+    };
+    let roots =
+        crate::ExtensionDiscoveryRoots::from_data_and_workspace(data_root, Some(workspace_root));
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let results = guard.reload(&roots);
+    let loaded = results.iter().filter(|(_, r)| r.is_ok()).count() as u32;
+    let failed = results.iter().filter(|(_, r)| r.is_err()).count() as u32;
+    IpcResponse::ExtensionPackagesReloaded { loaded, failed }
+}
+
+fn handle_list_extension_packages(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut packages: Vec<_> = guard
+        .list()
+        .into_iter()
+        .map(package_info_from_loaded)
+        .collect();
+    packages.sort_by(|a, b| a.id.cmp(&b.id));
+    IpcResponse::ExtensionPackages { packages }
+}
+
+fn handle_get_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    id: &str,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.get(id) {
+        Some(ext) => IpcResponse::ExtensionPackage {
+            package: package_info_from_loaded(ext),
+        },
+        None => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: format!("extension package not found: {id}"),
+        },
+    }
+}
+
+fn handle_enable_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    mcp_reload: Option<McpReloadHook>,
+    id: &str,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.enable(id) {
+        Ok(()) => {
+            let package = match guard.get(id) {
+                Some(ext) => package_info_from_loaded(ext),
+                None => {
+                    return IpcResponse::Error {
+                        code: IpcErrorCode::InvalidRequest,
+                        message: format!("extension package not found after enable: {id}"),
+                    };
+                }
+            };
+            drop(guard);
+            refresh_mcp_runtime_best_effort(tool_providers, mcp_reload);
+            IpcResponse::ExtensionPackage { package }
+        }
+        Err(err) => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: err.to_string(),
+        },
+    }
+}
+
+fn handle_disable_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    mcp_reload: Option<McpReloadHook>,
+    id: &str,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.disable(id) {
+        Ok(()) => {
+            let package = match guard.get(id) {
+                Some(ext) => package_info_from_loaded(ext),
+                None => {
+                    return IpcResponse::Error {
+                        code: IpcErrorCode::InvalidRequest,
+                        message: format!("extension package not found after disable: {id}"),
+                    };
+                }
+            };
+            drop(guard);
+            refresh_mcp_runtime_best_effort(tool_providers, mcp_reload);
+            IpcResponse::ExtensionPackage { package }
+        }
+        Err(err) => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: err.to_string(),
+        },
+    }
+}
+
+/// After mcp_bridge enable/disable, refresh ToolProviderRuntime when wired.
+fn refresh_mcp_runtime_best_effort(
+    tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    mcp_reload: Option<McpReloadHook>,
+) {
+    let (Some(slot), Some(hook)) = (tool_providers, mcp_reload) else {
+        return;
+    };
+    let Ok(fresh) = hook() else {
+        return;
+    };
+    crate::block_on_coding_tools(async move {
+        let mut guard = slot.lock().await;
+        guard.replace_all(fresh);
+    });
 }
 
 enum McpManageMutate {
@@ -3412,6 +3664,7 @@ fn launch_agent_run(
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
     session_model_store: Option<Arc<crate::SessionModelStore>>,
     memory: Option<Arc<crate::SessionMemoryRuntime>>,
+    extension_host: Option<Arc<Mutex<crate::ExtensionHost>>>,
 ) -> Result<(), RuntimeError> {
     let runtime_session_id = runtime.session_id();
     let session_override = session_models
@@ -3500,6 +3753,7 @@ fn launch_agent_run(
     let task_session_model_store = session_model_store;
     let task_stream_options = stream_options;
     let task_memory = memory;
+    let task_extension_host = extension_host;
 
     tokio::spawn(async move {
         let completed = run_agent_loop(
@@ -3542,6 +3796,7 @@ fn launch_agent_run(
                 task_session_models,
                 task_session_model_store,
                 task_memory,
+                task_extension_host,
                 runtime_session_id,
                 run_id,
                 true,
@@ -3572,6 +3827,7 @@ fn start_drained_follow_up_if_any(
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
     session_model_store: Option<Arc<crate::SessionModelStore>>,
     memory: Option<Arc<crate::SessionMemoryRuntime>>,
+    extension_host: Option<Arc<Mutex<crate::ExtensionHost>>>,
     session_id: uuid::Uuid,
     finished_run_id: uuid::Uuid,
     acquire_session_lock: bool,
@@ -3614,6 +3870,7 @@ fn start_drained_follow_up_if_any(
         &runtime,
         Some(&artifact_root),
         policy_store.as_deref(),
+        &extension_skill_roots(&extension_host),
     )
     .unwrap_or_else(|_| {
         vec![ProviderMessage::user(
@@ -3660,14 +3917,28 @@ fn start_drained_follow_up_if_any(
         session_models,
         session_model_store,
         memory,
+        extension_host,
     );
+}
+
+fn extension_skill_roots(
+    extension_host: &Option<Arc<Mutex<crate::ExtensionHost>>>,
+) -> Vec<PathBuf> {
+    let Some(slot) = extension_host else {
+        return Vec::new();
+    };
+    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.capability_registry().skill_roots
 }
 
 fn resolve_context(
     workspace_root: &std::path::Path,
     policy_store: Option<&crate::PolicyStore>,
+    extra_skill_roots: &[PathBuf],
 ) -> anyhow::Result<crate::ResolvedInstructions> {
-    let resolved = InstructionResolver::new(workspace_root).resolve(&ResolveRequest::default())?;
+    let mut resolver = InstructionResolver::new(workspace_root);
+    resolver.set_extra_skill_roots(extra_skill_roots.iter().cloned());
+    let resolved = resolver.resolve(&ResolveRequest::default())?;
     if let Some(store) = policy_store {
         let _governed = store.governed_ids_in(&resolved);
     }
@@ -3679,6 +3950,7 @@ fn resolve_provider_messages(
     runtime: &AgentRuntime,
     artifact_root: Option<&std::path::Path>,
     policy_store: Option<&crate::PolicyStore>,
+    extra_skill_roots: &[PathBuf],
 ) -> anyhow::Result<Vec<ProviderMessage>> {
     resolve_provider_messages_with_binding(
         workspace_root,
@@ -3687,6 +3959,7 @@ fn resolve_provider_messages(
         DEFAULT_CONTEXT_BUDGET_TOKENS,
         artifact_root,
         policy_store,
+        extra_skill_roots,
     )
 }
 
@@ -3697,8 +3970,9 @@ fn resolve_provider_messages_with_binding(
     budget_tokens: usize,
     artifact_root: Option<&std::path::Path>,
     policy_store: Option<&crate::PolicyStore>,
+    extra_skill_roots: &[PathBuf],
 ) -> anyhow::Result<Vec<ProviderMessage>> {
-    let instructions = resolve_context(workspace_root, policy_store)?;
+    let instructions = resolve_context(workspace_root, policy_store, extra_skill_roots)?;
     let tools = default_tool_stubs();
     let mut messages =
         system_messages_for_binding(context_binding, &instructions, &tools, budget_tokens);
@@ -4524,7 +4798,7 @@ mod tests {
         };
         // Budget fits HOT (~9) + cold tool refs; not the large WARM convention.
         let messages =
-            resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None)
+            resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None, &[])
                 .expect("resolve");
 
         let system: Vec<_> = messages
@@ -4557,7 +4831,8 @@ mod tests {
             target: None,
         };
         let before = policy.evaluate(&denied);
-        let _ = resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None);
+        let _ =
+            resolve_provider_messages_with_binding(workspace, &runtime, &lazy, 20, None, None, &[]);
         assert_eq!(policy.evaluate(&denied), before);
     }
 
@@ -5409,7 +5684,7 @@ mod tests {
         );
         assert_eq!(
             modules["extension_runtime"]["details"]["agent_loop_skill_inject"],
-            false
+            true
         );
         assert_eq!(modules["capability_matrix"]["schema_version"], 1);
         let caps = modules["capability_matrix"]["capabilities"]

@@ -113,6 +113,8 @@ struct CatalogInstruction {
 #[derive(Debug)]
 pub struct InstructionResolver {
     workspace: PathBuf,
+    /// Absolute skill roots from ExtensionHost (Active instruction packs).
+    extra_skill_roots: Vec<PathBuf>,
     cache: BTreeMap<PathBuf, CachedInstruction>,
     catalog: BTreeMap<PathBuf, CatalogInstruction>,
 }
@@ -121,9 +123,23 @@ impl InstructionResolver {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
+            extra_skill_roots: Vec::new(),
             cache: BTreeMap::new(),
             catalog: BTreeMap::new(),
         }
+    }
+
+    /// Attach absolute skill roots from the extension host registry.
+    ///
+    /// Roots come from [`crate::ExtensionHost::instruction_pack_roots`] — not
+    /// ad-hoc install_state path scans.
+    pub fn with_extra_skill_roots(mut self, roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.extra_skill_roots = roots.into_iter().collect();
+        self
+    }
+
+    pub fn set_extra_skill_roots(&mut self, roots: impl IntoIterator<Item = PathBuf>) {
+        self.extra_skill_roots = roots.into_iter().collect();
     }
 
     pub fn resolve(
@@ -248,6 +264,9 @@ impl InstructionResolver {
                 .into_iter()
                 .filter(|(path, _)| path.file_name().is_some_and(|name| name == "SKILL.md")),
         );
+        for root in &self.extra_skill_roots {
+            candidates.extend(self.files_in_absolute_skill_root(root)?);
+        }
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
 
         let paths: BTreeSet<_> = candidates.iter().map(|(path, _)| path.clone()).collect();
@@ -281,12 +300,39 @@ impl InstructionResolver {
         Ok(files.into_iter().map(|path| (path, kind)).collect())
     }
 
+    /// Discover `SKILL.md` under an absolute extension pack root.
+    ///
+    /// Catalog keys are absolute paths so [`Self::absolute_for`] can load them
+    /// without requiring the pack to live inside the workspace tree.
+    fn files_in_absolute_skill_root(
+        &self,
+        root: &Path,
+    ) -> Result<Vec<(PathBuf, InstructionKind)>, InstructionResolveError> {
+        if !root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut files = Vec::new();
+        collect_absolute_skill_files(root, &mut files)?;
+        Ok(files
+            .into_iter()
+            .map(|path| (path, InstructionKind::Skill))
+            .collect())
+    }
+
+    fn absolute_for(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.workspace.join(path)
+        }
+    }
+
     fn catalog_entry(
         &mut self,
         relative: PathBuf,
         kind: InstructionKind,
     ) -> Result<CatalogInstruction, InstructionResolveError> {
-        let absolute = self.workspace.join(&relative);
+        let absolute = self.absolute_for(&relative);
         let fingerprint = fingerprint(&absolute)?;
         if let Some(cached) = self.catalog.get(&relative)
             && cached.fingerprint == fingerprint
@@ -315,7 +361,7 @@ impl InstructionResolver {
         {
             return Ok(cached.reference.clone());
         }
-        let absolute = self.workspace.join(&catalog.relative_path);
+        let absolute = self.absolute_for(&catalog.relative_path);
         let text = fs::read_to_string(&absolute).map_err(|source| InstructionResolveError::Io {
             path: absolute,
             source,
@@ -417,6 +463,35 @@ fn collect_markdown_files(
             .is_some_and(|extension| extension == "md")
         {
             files.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn collect_absolute_skill_files(
+    root: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), InstructionResolveError> {
+    for entry in fs::read_dir(root).map_err(|source| InstructionResolveError::Io {
+        path: root.to_owned(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| InstructionResolveError::Io {
+            path: root.to_owned(),
+            source,
+        })?;
+        let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|source| InstructionResolveError::Io {
+                path: path.clone(),
+                source,
+            })?
+            .is_dir()
+        {
+            collect_absolute_skill_files(&path, files)?;
+        } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
+            files.push(path);
         }
     }
     Ok(())
@@ -777,5 +852,34 @@ mod tests {
                 ..
             } if id == "missing"
         ));
+    }
+
+    #[test]
+    fn extra_skill_roots_from_extension_host_are_resolved() {
+        let workspace = tempdir().expect("workspace");
+        let pack = tempdir().expect("pack");
+        write(
+            pack.path(),
+            "skills/SKILL.md",
+            "---\nid: ext-demo\nscope: global\n---\nextension skill body",
+        );
+        let skill_root = pack.path().join("skills");
+        let mut resolver =
+            InstructionResolver::new(workspace.path()).with_extra_skill_roots([skill_root]);
+        let resolved = resolver
+            .resolve(&ResolveRequest::default())
+            .expect("resolve with extension root");
+        assert!(
+            resolved
+                .references
+                .iter()
+                .any(|r| r.kind == InstructionKind::Skill && r.id == "ext-demo"),
+            "expected ext-demo skill from extra root, got {:?}",
+            resolved
+                .references
+                .iter()
+                .map(|r| (&r.id, r.kind))
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -192,14 +192,16 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Partial,
-                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads Enabled inventory into Harness (ListExtensions/GetExtensionStatus); AgentLoop ExtensionRuntime skill inject Remaining; MCP SoT $IMPETUS_DATA_DIR/mcp/*.json; ListMcpServers connected=false until first use",
+                    "Skills via ExtensionCapabilityRegistry (Active instruction_pack roots); MCP live via ToolProviderRuntime → AgentLoop; package SDK + host_process JSON-RPC handshake + mcp_bridge↔MCP SoT + durable disable + permission→Policy; IPC extension_manage; daemon_unix_extensions Context skill on/off + durable disable; Remaining: crates.io SDK publish + richer host_process tools",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
+                        "extension_package_sdk": true,
+                        "extension_host": true,
                         "mcp_live_library": true,
                         "mcp_live_orchestrator_hook": true,
                         "mcp_live_tools_in_loop": true,
                         "harness_inject": true,
-                        "agent_loop_skill_inject": false,
+                        "agent_loop_skill_inject": true,
                         "impetusd_autoload": true,
                         "lifecycle_dry_run_plan": true,
                         "lifecycle_plan_apply_ownership": true,
@@ -208,6 +210,7 @@ impl CapabilityTruthReport {
                         "lifecycle_cli_doctor": true,
                         "lifecycle_cli_repair": true,
                         "extension_manifest_v1": true,
+                        "extension_package_v1": true,
                     })),
                 ),
             ],
@@ -289,7 +292,7 @@ mod tests {
         assert_eq!(ext_rt.details.as_ref().unwrap()["harness_inject"], true);
         assert_eq!(
             ext_rt.details.as_ref().unwrap()["agent_loop_skill_inject"],
-            false
+            true
         );
         assert_eq!(ext_rt.details.as_ref().unwrap()["impetusd_autoload"], true);
         assert_eq!(ext_rt.details.as_ref().unwrap()["mcp_live_library"], true);

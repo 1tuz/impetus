@@ -39,10 +39,14 @@ pub mod execution_mode;
 pub mod explore_agent_loop;
 pub mod explore_child;
 pub mod extension_adapter;
+pub mod extension_capability_registry;
 pub mod extension_compat;
+pub mod extension_host;
+pub mod extension_host_process;
 pub mod extension_id;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
+pub mod extension_policy;
 pub mod git_ops;
 pub mod harness_api;
 pub mod hook_prefilter;
@@ -232,12 +236,18 @@ pub use explore_child::{
     resume_parent_after_explore, validate_explore_allowed_tools,
 };
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
+pub use extension_capability_registry::ExtensionCapabilityRegistry;
 pub use extension_compat::{
     AgentProfile, CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, Command,
     CommandArgument, CommandHandler, CompatibilityMatrix, ExtensionSource, ImportCapability,
     ImportResult, Instruction, InstructionContext, InstructionPriority, McpCapabilities, McpModule,
     McpTransport, ToolHandler, ToolProvider as ExtensionToolProvider,
 };
+pub use extension_host::{
+    DiscoveredPackage, ExtensionDiscoveryRoots, ExtensionHost, ExtensionHostError,
+    ExtensionHostPhase, ExtensionPackageSource, LoadedExtension,
+};
+pub use extension_host_process::{HostProcessError, HostProcessSession, spawn_and_initialize};
 pub use extension_id::{
     ExtensionIdError, ExtensionTypeDir, ensure_owned_extension_path, extension_type_root,
     is_valid_extension_id, join_under_extension_root, mcp_install_path, normalize_extension_id,
@@ -254,6 +264,9 @@ pub use extension_manifest::{
     EXTENSION_SCHEMA_ID, EXTENSION_SCHEMA_VERSION, ExtensionManifest, ExtensionManifestError,
     ExtensionManifestKind, validate_capabilities as validate_extension_capabilities,
     validate_digest as validate_extension_digest,
+};
+pub use extension_policy::{
+    action_kinds_for_permission, evaluate_permission_against_scope, permission_eval,
 };
 pub use git_ops::{
     GIT_DIFF_MAX_BYTES, GitBranchInfo, GitChangeKind, GitChangedFile, GitCurrentBranch,
