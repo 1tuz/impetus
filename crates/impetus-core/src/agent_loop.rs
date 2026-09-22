@@ -288,7 +288,11 @@ impl AgentLoop {
                 })
                 .unwrap_or(1),
         ));
+        let coalesce_buf = Arc::new(std::sync::Mutex::new(String::new()));
         let accumulator_clone = accumulator.clone();
+        let coalesce_for_cb = coalesce_buf.clone();
+        let chunk_id_for_cb = chunk_id.clone();
+        let runtime_for_cb = runtime.clone();
 
         provider
             .stream_messages(
@@ -299,15 +303,17 @@ impl AgentLoop {
                 Box::new(move |event| {
                     match event {
                         StreamEvent::TextDelta { delta } => {
-                            let id = {
-                                let mut counter = chunk_id.lock().unwrap();
-                                let id = *counter;
-                                *counter += 1;
-                                id
-                            };
-                            runtime
-                                .record_agent_chunk(run_id, id, delta.clone())
-                                .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+                            {
+                                let mut buf = coalesce_for_cb.lock().unwrap();
+                                buf.push_str(&delta);
+                            }
+                            flush_coalesced_chunk(
+                                &coalesce_for_cb,
+                                &chunk_id_for_cb,
+                                &runtime_for_cb,
+                                run_id,
+                                false,
+                            )?;
                             // Lock only for mutation
                             accumulator_clone.lock().unwrap().text.push_str(&delta);
                         }
@@ -316,6 +322,13 @@ impl AgentLoop {
                             name,
                             arguments,
                         } => {
+                            flush_coalesced_chunk(
+                                &coalesce_for_cb,
+                                &chunk_id_for_cb,
+                                &runtime_for_cb,
+                                run_id,
+                                true,
+                            )?;
                             accumulator_clone.lock().unwrap().tool_calls.push(ToolCall {
                                 id,
                                 name,
@@ -331,16 +344,37 @@ impl AgentLoop {
                                 Some((prompt_tokens, completion_tokens, measured));
                         }
                         StreamEvent::Finish { reason } => {
+                            flush_coalesced_chunk(
+                                &coalesce_for_cb,
+                                &chunk_id_for_cb,
+                                &runtime_for_cb,
+                                run_id,
+                                true,
+                            )?;
                             accumulator_clone.lock().unwrap().finish_reason = Some(reason);
                         }
-                        StreamEvent::Reasoning { .. } => {
-                            // Future: record reasoning traces
+                        StreamEvent::Reasoning { content } => {
+                            flush_coalesced_chunk(
+                                &coalesce_for_cb,
+                                &chunk_id_for_cb,
+                                &runtime_for_cb,
+                                run_id,
+                                true,
+                            )?;
+                            // Summary only — runtime bounds + skips empty; never CoT dump.
+                            runtime_for_cb
+                                .record_agent_reasoning_summary(run_id, content)
+                                .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
                         }
                     }
                     Ok(())
                 }),
             )
             .await?;
+
+        // Flush any trailing coalesced deltas that never hit the size threshold.
+        flush_coalesced_chunk(&coalesce_buf, &chunk_id, &runtime, run_id, true)
+            .map_err(AgentLoopError::Provider)?;
 
         let acc = accumulator.lock().unwrap();
         let text = acc.text.clone();
@@ -476,6 +510,37 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// Flush coalesced stream deltas into one durable chunk when forced or when the
+/// buffer reaches [`crate::AGENT_CHUNK_COALESCE_BYTES`].
+fn flush_coalesced_chunk(
+    buf: &std::sync::Mutex<String>,
+    chunk_id: &std::sync::Mutex<u64>,
+    runtime: &AgentRuntime,
+    run_id: Uuid,
+    force: bool,
+) -> Result<(), ProviderError> {
+    let text = {
+        let mut buf = buf.lock().unwrap();
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if !force && buf.len() < crate::AGENT_CHUNK_COALESCE_BYTES {
+            return Ok(());
+        }
+        std::mem::take(&mut *buf)
+    };
+    let id = {
+        let mut counter = chunk_id.lock().unwrap();
+        let id = *counter;
+        *counter += 1;
+        id
+    };
+    runtime
+        .record_agent_chunk(run_id, id, text)
+        .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+    Ok(())
+}
+
 /// Accumulates typed stream events into a complete model turn.
 #[derive(Debug, Default)]
 struct TurnAccumulator {
@@ -505,6 +570,38 @@ mod tests {
         // MAX_ITERATIONS is set to 50, which is reasonable for agent loops
         const { assert!(MAX_ITERATIONS >= 10) };
         const { assert!(MAX_ITERATIONS <= 100) };
+    }
+
+    #[test]
+    fn mid_run_policy_clone_ignores_later_reload() {
+        // AgentLoop::new clones PolicyEngine into ToolOrchestrator at construction.
+        // Harness ReloadPolicyConfig mutates only the live harness Mutex policy;
+        // an in-flight loop keeps the pre-reload clone until the next Prompt.
+        use crate::{Action, ActionKind, ActionOrigin, PolicyConfig, PolicyDecision};
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut live = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let loop_snapshot = live.clone();
+
+        live.reload_config(
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                .expect("config"),
+        );
+
+        let write = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "create file".into(),
+            target: Some("new.txt".into()),
+        };
+        assert!(
+            matches!(
+                loop_snapshot.evaluate(&write),
+                PolicyDecision::NeedsApproval { .. }
+            ),
+            "in-flight AgentLoop clone must keep pre-reload decision"
+        );
+        assert_eq!(live.evaluate(&write), PolicyDecision::Allow);
     }
 
     // extract_tool_calls tests removed: tool calls now come from StreamEvent::ToolCall
@@ -564,5 +661,190 @@ mod tests {
             &event.payload,
             crate::EventPayload::Agent(crate::AgentEvent::Final { text, .. }) if text == "final answer"
         )));
+    }
+
+    #[tokio::test]
+    async fn reasoning_summary_is_recorded_from_stream() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let runtime = Arc::new(
+            AgentRuntime::create_with_workspace(
+                Arc::new(MemoryEventStore::default()),
+                PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("runtime"),
+        );
+        let run_id = runtime
+            .submit_intent_and_start_run("think then answer")
+            .expect("start run");
+        let provider = Arc::new(MockProvider::new(
+            "scripted",
+            "test",
+            [
+                MockStreamItem::Reasoning {
+                    content: "  check workspace first  ".into(),
+                },
+                MockStreamItem::Reasoning {
+                    content: String::new(), // skipped
+                },
+                MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "done".into(),
+                },
+            ],
+        ));
+        AgentLoop::new(runtime.clone())
+            .execute(
+                run_id,
+                provider,
+                vec![ProviderMessage::user("think then answer")],
+                CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("agent loop");
+        let events = runtime.events().unwrap();
+        let summaries: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                crate::EventPayload::Agent(crate::AgentEvent::ReasoningSummary {
+                    text, ..
+                }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries, ["check workspace first"]);
+        // Reasoning must not pollute agent_output projection.
+        assert!(
+            !runtime
+                .projection()
+                .unwrap()
+                .agent_output
+                .contains("check workspace first")
+        );
+    }
+
+    #[tokio::test]
+    async fn tiny_deltas_coalesce_into_fewer_chunk_events() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let runtime = Arc::new(
+            AgentRuntime::create_with_workspace(
+                Arc::new(MemoryEventStore::default()),
+                PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("runtime"),
+        );
+        let run_id = runtime
+            .submit_intent_and_start_run("coalesce")
+            .expect("start run");
+        // 20 one-byte deltas → under force-flush at end should be 1 durable chunk
+        // (total 20 < COALESCE) or few flushes if we grew past threshold.
+        let items: Vec<_> = (0..20)
+            .map(|i| MockStreamItem::Chunk {
+                chunk_id: i + 1,
+                text: "a".into(),
+            })
+            .collect();
+        let provider = Arc::new(MockProvider::new("scripted", "test", items));
+        AgentLoop::new(runtime.clone())
+            .execute(
+                run_id,
+                provider,
+                vec![ProviderMessage::user("coalesce")],
+                CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("agent loop");
+        let chunk_count = runtime
+            .events()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::Agent(crate::AgentEvent::Chunk { .. })
+                )
+            })
+            .count();
+        assert!(
+            chunk_count < 20,
+            "expected coalesce to reduce 20 deltas; got {chunk_count} chunks"
+        );
+        assert_eq!(chunk_count, 1);
+    }
+
+    #[tokio::test]
+    async fn large_stream_chunk_events_do_not_store_megabyte_strings() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let data_dir = tempfile::tempdir().expect("data dir");
+        // Isolate DurableArtifactStore root for this process (spill path).
+        // SAFETY: test-only env; serial within this test body.
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", data_dir.path());
+        }
+
+        let runtime = Arc::new(
+            AgentRuntime::create_with_workspace(
+                Arc::new(MemoryEventStore::default()),
+                PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("runtime"),
+        );
+        let run_id = runtime
+            .submit_intent_and_start_run("large")
+            .expect("start run");
+        let megabyte = "z".repeat(crate::MAX_AGENT_CHUNK_EVENT_BYTES + 128 * 1024);
+        let provider = Arc::new(MockProvider::new(
+            "scripted",
+            "test",
+            [MockStreamItem::Chunk {
+                chunk_id: 1,
+                text: megabyte.clone(),
+            }],
+        ));
+        AgentLoop::new(runtime.clone())
+            .execute(
+                run_id,
+                provider,
+                vec![ProviderMessage::user("large")],
+                CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("agent loop");
+
+        let events = runtime.events().unwrap();
+        let chunks: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                crate::EventPayload::Agent(crate::AgentEvent::Chunk {
+                    text,
+                    artifact,
+                    chunk_id,
+                    ..
+                }) => Some((text.len(), artifact.is_some(), *chunk_id)),
+                _ => None,
+            })
+            .collect();
+        assert!(!chunks.is_empty());
+        for (text_len, spilled, chunk_id) in &chunks {
+            assert!(
+                *text_len <= crate::MAX_AGENT_CHUNK_EVENT_BYTES,
+                "chunk {chunk_id} inline text {text_len} exceeds bound"
+            );
+            assert!(
+                *text_len < megabyte.len(),
+                "chunk {chunk_id} must not embed the megabyte body"
+            );
+            assert!(
+                *spilled,
+                "chunk {chunk_id} should spill large body to artifact"
+            );
+        }
+        let ids: Vec<_> = chunks.iter().map(|c| c.2).collect();
+        assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
     }
 }

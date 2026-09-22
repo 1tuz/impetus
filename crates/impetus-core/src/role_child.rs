@@ -13,10 +13,11 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use crate::ChildEvent;
 use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
-use crate::child_result_store::{
-    ChildResult, ChildResultError, ChildResultStatus, ChildResultStore,
-};
+use crate::child_result_store::{ChildResultError, ChildResultStatus, ChildResultStore};
+use crate::runtime::AgentRuntime;
+use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
 
 /// Research may claim read-only + web-label tools.
@@ -145,6 +146,7 @@ pub struct HarnessRoleSpawn {
     pub gate: Arc<Mutex<ChildConcurrencyGate>>,
     pub store: Arc<ChildResultStore>,
     pub executor: Arc<dyn RoleChildExecutor>,
+    pub parent_events: Option<Arc<dyn EventStore>>,
 }
 
 impl RoleSpawnBridge for HarnessRoleSpawn {
@@ -155,6 +157,9 @@ impl RoleSpawnBridge for HarnessRoleSpawn {
     ) -> Result<RoleChildOutcome, RoleChildError> {
         let mut gate = self.gate.lock().expect("role child gate");
         let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
+        if let Some(events) = self.parent_events.as_ref() {
+            runner = runner.with_parent_events(events.as_ref());
+        }
         runner.run(request, cancel, self.executor.as_ref())
     }
 
@@ -166,11 +171,21 @@ impl RoleSpawnBridge for HarnessRoleSpawn {
 pub struct RoleChildRunner<'a> {
     pub gate: &'a mut ChildConcurrencyGate,
     pub store: &'a ChildResultStore,
+    parent_events: Option<&'a dyn EventStore>,
 }
 
 impl<'a> RoleChildRunner<'a> {
     pub fn new(gate: &'a mut ChildConcurrencyGate, store: &'a ChildResultStore) -> Self {
-        Self { gate, store }
+        Self {
+            gate,
+            store,
+            parent_events: None,
+        }
+    }
+
+    pub fn with_parent_events(mut self, parent_events: &'a dyn EventStore) -> Self {
+        self.parent_events = Some(parent_events);
+        self
     }
 
     pub fn run(
@@ -182,6 +197,23 @@ impl<'a> RoleChildRunner<'a> {
         let metadata = request.to_metadata()?;
         self.gate
             .admit_child(&request.child_id, &request.parent_session_id)?;
+
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::Started {
+                child_id: request.child_id.clone(),
+                parent_id: request.parent_session_id.clone(),
+                role: metadata.role.as_str().to_string(),
+            },
+        );
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::StatusChanged {
+                child_id: request.child_id.clone(),
+                status: "running".into(),
+                current_action: Some(request.context_label.clone()),
+            },
+        );
 
         let env = RoleChildEnv {
             child_id: request.child_id.clone(),
@@ -217,7 +249,7 @@ impl<'a> RoleChildRunner<'a> {
             }
         };
 
-        let mut result = ChildResult::from_metadata(
+        let mut result = crate::child_result_store::child_result_from_metadata(
             request.child_id.clone(),
             &metadata,
             status,
@@ -233,6 +265,21 @@ impl<'a> RoleChildRunner<'a> {
         self.store
             .gate_parent_resume(&request.parent_session_id, &[&request.child_id])?;
 
+        let (summary, error) = match status {
+            ChildResultStatus::Completed => (Some(summary_label.clone()), None),
+            ChildResultStatus::Failed => (None, Some(summary_label.clone())),
+            ChildResultStatus::Cancelled => (Some(summary_label.clone()), None),
+        };
+        self.emit_parent_child(
+            &request.parent_session_id,
+            ChildEvent::Finished {
+                child_id: request.child_id.clone(),
+                status: status.as_str().to_string(),
+                summary,
+                error,
+            },
+        );
+
         Ok(RoleChildOutcome {
             child_id: request.child_id,
             parent_session_id: request.parent_session_id,
@@ -240,6 +287,12 @@ impl<'a> RoleChildRunner<'a> {
             summary_label,
             metadata,
         })
+    }
+
+    fn emit_parent_child(&self, parent_session_id: &str, event: ChildEvent) {
+        if let Some(store) = self.parent_events {
+            let _ = AgentRuntime::emit_parent_child_event(store, parent_session_id, event);
+        }
     }
 }
 

@@ -1,7 +1,12 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use impetus_client::protocol::{
+    CheckpointInfo, DurableArtifactMeta, DurableArtifactRef, GitBranchInfo, GitChangeKind,
+    GitChangedFile, GitCurrentBranch, GitDiffPayload, GitStatusSnapshot, WorkspaceDirEntry,
+    WorkspaceDirListing, WorkspaceFileContent,
+};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, mpsc};
@@ -30,10 +35,14 @@ impl Default for MockBackend {
 
 struct MockInner {
     sessions: Mutex<Vec<SessionSummary>>,
+    checkpoints: Mutex<Vec<CheckpointInfo>>,
     execution_modes: Mutex<HashMap<Uuid, ExecutionMode>>,
+    branches: Mutex<Vec<GitBranchInfo>>,
     subscribers: Mutex<HashMap<Uuid, Vec<mpsc::Sender<Vec<UiEvent>>>>>,
     approval_details: Mutex<HashMap<Uuid, ApprovalDetailView>>,
     sequence: AtomicU64,
+    pty_next_id: AtomicU64,
+    pty_pending: Mutex<HashMap<u64, Vec<u8>>>,
 }
 
 impl MockBackend {
@@ -56,10 +65,25 @@ impl MockBackend {
                         workspace: Some("~/dev/impetus".to_owned()),
                     },
                 ]),
+                checkpoints: Mutex::new(Vec::new()),
                 execution_modes: Mutex::new(HashMap::new()),
+                branches: Mutex::new(vec![
+                    GitBranchInfo {
+                        name: "main".to_owned(),
+                        current: true,
+                        upstream: Some("origin/main".to_owned()),
+                    },
+                    GitBranchInfo {
+                        name: "feature/demo".to_owned(),
+                        current: false,
+                        upstream: None,
+                    },
+                ]),
                 subscribers: Mutex::new(HashMap::new()),
                 approval_details: Mutex::new(HashMap::new()),
                 sequence: AtomicU64::new(1),
+                pty_next_id: AtomicU64::new(1),
+                pty_pending: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -103,6 +127,7 @@ impl MockBackend {
             }),
             self.next_event(UiEventKind::UserInput {
                 text: "Create a production-ready standalone TUI without moving runtime authority into the client.".to_owned(),
+                artifact: None,
             }),
             self.next_event(UiEventKind::Plan {
                 summary: "1. Keep `impetusd` authoritative.\n2. Add a transport-neutral presentation backend.\n3. Render typed event cards, approvals, sessions, modes and diagnostics.\n4. Verify narrow and wide terminal layouts.".to_owned(),
@@ -157,7 +182,12 @@ impl MockBackend {
         ]
     }
 
-    async fn publish_prompt(&self, session_id: Uuid, text: String) -> Result<String> {
+    async fn publish_prompt(
+        &self,
+        session_id: Uuid,
+        text: String,
+        artifact: Option<DurableArtifactRef>,
+    ) -> Result<String> {
         let backend = self.clone();
         spawn_detached(async move {
             let run_id = Uuid::new_v4();
@@ -165,7 +195,10 @@ impl MockBackend {
                 .publish(
                     session_id,
                     vec![
-                        backend.next_event(UiEventKind::UserInput { text: text.clone() }),
+                        backend.next_event(UiEventKind::UserInput {
+                            text: text.clone(),
+                            artifact,
+                        }),
                         backend.next_event(UiEventKind::RunStarted { run_id }),
                     ],
                 )
@@ -205,6 +238,7 @@ impl MockBackend {
                             "--- a/crates/impetus/src/tui.rs\n+++ b/crates/impetus/src/tui.rs\n@@\n-pub async fn run(...) { old_loop() }\n+pub async fn run(...) { impetus_tui::run(...).await }"
                                 .to_owned(),
                         ),
+                        diff_observation: None,
                         affected_files: vec!["crates/impetus/src/tui.rs".to_owned()],
                         estimated_scope: Some("Lines(2)".to_owned()),
                         attachment_refs: vec![],
@@ -254,6 +288,8 @@ impl UiBackend for MockBackend {
                 "session_create",
                 "session_attach",
                 "session_list",
+                "session_fork",
+                "session_checkpoint",
                 "prompt",
                 "cancel",
                 "subscribe",
@@ -261,6 +297,9 @@ impl UiBackend for MockBackend {
                 "get_approval_detail",
                 "diagnostics",
                 "artifact_upload",
+                "artifact_read",
+                "git",
+                "pty",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -284,6 +323,76 @@ impl UiBackend for MockBackend {
         Ok(id)
     }
 
+    async fn fork_session(&self, session_id: Uuid, up_to_sequence: u64) -> Result<Uuid> {
+        let mut sessions = self.inner.sessions.lock().await;
+        if !sessions.iter().any(|session| session.id == session_id) {
+            return Err(anyhow!("demo session not found: {session_id}"));
+        }
+        let workspace = sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.workspace.clone());
+        let id = Uuid::new_v4();
+        sessions.push(SessionSummary::from_session_info(
+            id,
+            Some(session_id),
+            Some(up_to_sequence),
+            None,
+            None,
+            workspace,
+        ));
+        Ok(id)
+    }
+
+    async fn create_checkpoint(
+        &self,
+        session_id: Uuid,
+        name: String,
+        sequence: Option<u64>,
+    ) -> Result<CheckpointInfo> {
+        let sessions = self.inner.sessions.lock().await;
+        if !sessions.iter().any(|session| session.id == session_id) {
+            return Err(anyhow!("demo session not found: {session_id}"));
+        }
+        drop(sessions);
+        let sequence = sequence.unwrap_or_else(|| self.inner.sequence.load(Ordering::Relaxed));
+        let checkpoint = CheckpointInfo {
+            id: Uuid::new_v4(),
+            session_id,
+            name,
+            sequence,
+            created_at_unix_ms: now_ms(),
+        };
+        self.inner.checkpoints.lock().await.push(checkpoint.clone());
+        Ok(checkpoint)
+    }
+
+    async fn list_checkpoints(&self, session_id: Uuid) -> Result<Vec<CheckpointInfo>> {
+        Ok(self
+            .inner
+            .checkpoints
+            .lock()
+            .await
+            .iter()
+            .filter(|checkpoint| checkpoint.session_id == session_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn restore_checkpoint(&self, checkpoint_id: Uuid) -> Result<Uuid> {
+        let checkpoint = self
+            .inner
+            .checkpoints
+            .lock()
+            .await
+            .iter()
+            .find(|checkpoint| checkpoint.id == checkpoint_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("demo checkpoint not found: {checkpoint_id}"))?;
+        self.fork_session(checkpoint.session_id, checkpoint.sequence)
+            .await
+    }
+
     async fn resume_session(&self, session_id: Uuid) -> Result<String> {
         if self
             .inner
@@ -304,9 +413,10 @@ impl UiBackend for MockBackend {
         session_id: Uuid,
         text: String,
         intent: impetus_client::protocol::UserPromptIntent,
+        artifact: Option<DurableArtifactRef>,
     ) -> Result<String> {
         let _ = intent;
-        self.publish_prompt(session_id, text).await
+        self.publish_prompt(session_id, text, artifact).await
     }
 
     async fn send_large_paste(
@@ -318,7 +428,30 @@ impl UiBackend for MockBackend {
     ) -> Result<String> {
         // Demo backend never stores bytes; only the compact label enters the timeline.
         let _ = (body, intent);
-        self.publish_prompt(session_id, label).await
+        self.publish_prompt(session_id, label, None).await
+    }
+
+    async fn upload_artifact(
+        &self,
+        _session_id: Uuid,
+        bytes: Vec<u8>,
+        content_type: Option<String>,
+    ) -> Result<DurableArtifactRef> {
+        let _ = content_type;
+        Ok(DurableArtifactRef {
+            id: format!("demo-{}", Uuid::new_v4()),
+            byte_count: bytes.len(),
+        })
+    }
+
+    async fn get_artifact_metadata(&self, artifact_id: String) -> Result<DurableArtifactMeta> {
+        Ok(DurableArtifactMeta {
+            id: artifact_id,
+            byte_count: 0,
+            created_unix_ms: 0,
+            sha256: "demo".into(),
+            content_type: Some("application/octet-stream".into()),
+        })
     }
 
     async fn cancel(&self, session_id: Uuid) -> Result<String> {
@@ -413,6 +546,239 @@ impl UiBackend for MockBackend {
         Ok(mode)
     }
 
+    async fn list_workspace_dir(
+        &self,
+        _session_id: Uuid,
+        path: PathBuf,
+    ) -> Result<WorkspaceDirListing> {
+        Ok(demo_list_workspace_dir(&path))
+    }
+
+    async fn read_workspace_file(
+        &self,
+        _session_id: Uuid,
+        path: PathBuf,
+        _max_bytes: Option<usize>,
+    ) -> Result<WorkspaceFileContent> {
+        demo_read_workspace_file(&path)
+    }
+
+    async fn search_workspace_files(
+        &self,
+        _session_id: Uuid,
+        _path: PathBuf,
+        pattern: String,
+    ) -> Result<impetus_client::protocol::WorkspaceSearchResult> {
+        let needle = pattern.to_ascii_lowercase();
+        let hits = [
+            ("src/main.rs", 12u32, "fn main() { /* needle demo */ }"),
+            ("README.md", 3u32, "Search hits come from harness IPC."),
+        ]
+        .into_iter()
+        .filter(|(_, _, text)| text.to_ascii_lowercase().contains(&needle) || needle.is_empty())
+        .map(
+            |(path, line, text)| impetus_client::protocol::WorkspaceSearchHit {
+                path: path.to_owned(),
+                line,
+                text: text.to_owned(),
+            },
+        )
+        .collect::<Vec<_>>();
+        Ok(impetus_client::protocol::WorkspaceSearchResult {
+            path: ".".to_owned(),
+            pattern,
+            hits,
+            truncated: false,
+        })
+    }
+
+    async fn list_branches(&self, _session_id: Uuid) -> Result<Vec<GitBranchInfo>> {
+        Ok(self.inner.branches.lock().await.clone())
+    }
+
+    async fn get_current_branch(&self, _session_id: Uuid) -> Result<GitCurrentBranch> {
+        let branches = self.inner.branches.lock().await;
+        let current = branches.iter().find(|branch| branch.current);
+        Ok(GitCurrentBranch {
+            name: current.map(|branch| branch.name.clone()),
+            detached: false,
+            head_sha: Some("demo".to_owned()),
+        })
+    }
+
+    async fn create_branch(
+        &self,
+        _session_id: Uuid,
+        name: String,
+        checkout: bool,
+    ) -> Result<GitCurrentBranch> {
+        let mut branches = self.inner.branches.lock().await;
+        if branches.iter().any(|branch| branch.name == name) {
+            return Err(anyhow!("branch already exists: {name}"));
+        }
+        if checkout {
+            for branch in branches.iter_mut() {
+                branch.current = false;
+            }
+        }
+        branches.push(GitBranchInfo {
+            name: name.clone(),
+            current: checkout,
+            upstream: None,
+        });
+        Ok(GitCurrentBranch {
+            name: Some(name),
+            detached: false,
+            head_sha: Some("demo".to_owned()),
+        })
+    }
+
+    async fn switch_branch(&self, _session_id: Uuid, name: String) -> Result<GitCurrentBranch> {
+        let mut branches = self.inner.branches.lock().await;
+        if !branches.iter().any(|branch| branch.name == name) {
+            return Err(anyhow!("unknown branch: {name}"));
+        }
+        for branch in branches.iter_mut() {
+            branch.current = branch.name == name;
+        }
+        Ok(GitCurrentBranch {
+            name: Some(name),
+            detached: false,
+            head_sha: Some("demo".to_owned()),
+        })
+    }
+
+    async fn git_status(&self, _session_id: Uuid) -> Result<GitStatusSnapshot> {
+        let branch = self.get_current_branch(_session_id).await?;
+        let files = self.list_changed_files(_session_id).await?;
+        Ok(GitStatusSnapshot {
+            branch,
+            dirty: !files.is_empty(),
+            conflict_in_progress: false,
+            files,
+        })
+    }
+
+    async fn list_changed_files(&self, _session_id: Uuid) -> Result<Vec<GitChangedFile>> {
+        Ok(vec![
+            GitChangedFile {
+                path: PathBuf::from("crates/impetus-tui/src/review.rs"),
+                kind: GitChangeKind::Added,
+                status_code: Some("A ".into()),
+            },
+            GitChangedFile {
+                path: PathBuf::from("crates/impetus/src/tui.rs"),
+                kind: GitChangeKind::Modified,
+                status_code: Some(" M".into()),
+            },
+        ])
+    }
+
+    async fn get_diff(
+        &self,
+        _session_id: Uuid,
+        base_ref: Option<String>,
+    ) -> Result<GitDiffPayload> {
+        Ok(GitDiffPayload {
+            base_ref,
+            path: None,
+            patch: DEMO_REVIEW_PATCH.to_owned(),
+            truncated: false,
+            files_changed: 2,
+            observation: None,
+        })
+    }
+
+    async fn get_file_diff(
+        &self,
+        _session_id: Uuid,
+        path: PathBuf,
+        base_ref: Option<String>,
+    ) -> Result<GitDiffPayload> {
+        let patch = if path.ends_with("review.rs") {
+            DEMO_REVIEW_FILE_A
+        } else {
+            DEMO_REVIEW_FILE_B
+        };
+        Ok(GitDiffPayload {
+            base_ref,
+            path: Some(path),
+            patch: patch.to_owned(),
+            truncated: false,
+            files_changed: 1,
+            observation: None,
+        })
+    }
+
+    async fn pty_start(
+        &self,
+        _session_id: Uuid,
+        command: String,
+        _args: Vec<String>,
+        _working_dir: Option<PathBuf>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<impetus_client::PtySessionView> {
+        let pty_id = self.inner.pty_next_id.fetch_add(1, Ordering::Relaxed);
+        let banner =
+            format!("demo PTY #{pty_id} ({command})\r\nCtrl+] detaches back to Impetus TUI.\r\n");
+        self.inner
+            .pty_pending
+            .lock()
+            .await
+            .insert(pty_id, banner.into_bytes());
+        Ok(impetus_client::PtySessionView {
+            pty_id,
+            state: impetus_client::protocol::PtySessionState::Running { pid: 0 },
+            command,
+            cols: cols.unwrap_or(80),
+            rows: rows.unwrap_or(24),
+        })
+    }
+
+    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()> {
+        let mut pending = self.inner.pty_pending.lock().await;
+        let Some(buf) = pending.get_mut(&pty_id) else {
+            return Err(anyhow!("unknown demo pty {pty_id}"));
+        };
+        // Echo typed bytes so demo passthrough feels alive.
+        buf.extend_from_slice(data);
+        Ok(())
+    }
+
+    async fn pty_output(
+        &self,
+        pty_id: u64,
+        max_bytes: Option<usize>,
+    ) -> Result<impetus_client::PtyOutputView> {
+        let mut pending = self.inner.pty_pending.lock().await;
+        let Some(buf) = pending.get_mut(&pty_id) else {
+            return Err(anyhow!("unknown demo pty {pty_id}"));
+        };
+        let take = max_bytes.unwrap_or(16 * 1024).min(buf.len());
+        let data = buf.drain(..take).collect::<Vec<_>>();
+        Ok(impetus_client::PtyOutputView {
+            pty_id,
+            data,
+            dropped_total: 0,
+            eof: false,
+            spill_artifact: None,
+        })
+    }
+
+    async fn pty_resize(&self, pty_id: u64, _cols: u16, _rows: u16) -> Result<()> {
+        let pending = self.inner.pty_pending.lock().await;
+        if !pending.contains_key(&pty_id) {
+            return Err(anyhow!("unknown demo pty {pty_id}"));
+        }
+        Ok(())
+    }
+
+    async fn pty_detach(&self, pty_id: u64) -> Result<()> {
+        self.inner.pty_pending.lock().await.remove(&pty_id);
+        Ok(())
+    }
+
     async fn subscribe(
         &self,
         session_id: Uuid,
@@ -453,3 +819,86 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+fn demo_entry(name: &str, path: &str, is_dir: bool) -> WorkspaceDirEntry {
+    WorkspaceDirEntry {
+        name: name.to_owned(),
+        path: path.to_owned(),
+        is_dir,
+        is_symlink: false,
+        is_file: !is_dir,
+    }
+}
+
+fn demo_list_workspace_dir(path: &Path) -> WorkspaceDirListing {
+    let key = path.to_str().unwrap_or(".").trim().trim_end_matches('/');
+    let key = if key.is_empty() { "." } else { key };
+    let entries = match key {
+        "." => vec![
+            demo_entry("README.md", "README.md", false),
+            demo_entry("src", "src", true),
+            demo_entry("docs", "docs", true),
+        ],
+        "src" => vec![
+            demo_entry("main.rs", "src/main.rs", false),
+            demo_entry("lib.rs", "src/lib.rs", false),
+        ],
+        "docs" => vec![demo_entry("overview.md", "docs/overview.md", false)],
+        _ => Vec::new(),
+    };
+    WorkspaceDirListing {
+        path: key.to_owned(),
+        entries,
+    }
+}
+
+fn demo_read_workspace_file(path: &Path) -> Result<WorkspaceFileContent> {
+    let key = path.to_str().unwrap_or("").replace('\\', "/");
+    let content = match key.as_str() {
+        "README.md" => "# Demo workspace\n\nFiles overlay talks to harness IPC only.\n",
+        "src/main.rs" => "fn main() {\n    println!(\"demo\");\n}\n",
+        "src/lib.rs" => "pub fn hello() -> &'static str {\n    \"demo\"\n}\n",
+        "docs/overview.md" => "# Overview\n\nMock backend file preview.\n",
+        other => {
+            return Err(anyhow!("demo file not found: {other}"));
+        }
+    };
+    Ok(WorkspaceFileContent {
+        path: key,
+        byte_count: content.len(),
+        content: content.to_owned(),
+    })
+}
+
+const DEMO_REVIEW_PATCH: &str = "\
+diff --git a/crates/impetus-tui/src/review.rs b/crates/impetus-tui/src/review.rs
+--- /dev/null
++++ b/crates/impetus-tui/src/review.rs
+@@ -0,0 +1,3 @@
++//! Review helpers
++pub fn ok() {}
++
+diff --git a/crates/impetus/src/tui.rs b/crates/impetus/src/tui.rs
+--- a/crates/impetus/src/tui.rs
++++ b/crates/impetus/src/tui.rs
+@@ -1,2 +1,2 @@
+-pub async fn run() { old() }
++pub async fn run() { new() }
+";
+
+const DEMO_REVIEW_FILE_A: &str = "\
+--- /dev/null
++++ b/crates/impetus-tui/src/review.rs
+@@ -0,0 +1,3 @@
++//! Review helpers
++pub fn ok() {}
++
+";
+
+const DEMO_REVIEW_FILE_B: &str = "\
+--- a/crates/impetus/src/tui.rs
++++ b/crates/impetus/src/tui.rs
+@@ -1,2 +1,2 @@
+-pub async fn run() { old() }
++pub async fn run() { new() }
+";

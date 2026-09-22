@@ -94,6 +94,10 @@ pub struct Harness {
     policy_store: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
     /// Optional live WorkflowEngine runtime (schedule → child spawn).
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
+    /// Optional managed worktrees for session-aware Git cwd resolution.
+    worktree_manager: Option<Arc<crate::WorktreeManager>>,
+    /// Daemon-owned PTY sessions (`portable-pty`).
+    pty: Arc<crate::PtySessionManager>,
 }
 
 impl Harness {
@@ -107,6 +111,14 @@ impl Harness {
             .expect("failed to register mock provider");
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
+        // ponytail: PTY seam snapshots policy at harness build; ReloadPolicyConfig
+        // does not rebuild it. Upgrade — shared Arc policy inside EffectSeam.
+        let pty_seam = crate::EffectSeam::with_sandbox(
+            policy.clone(),
+            crate::Sandbox::workspace(workspace_root.clone()),
+        );
+        let artifact_root = crate::default_artifact_root();
+        let pty = pty_manager_with_default_artifacts(pty_seam);
         Self {
             store,
             policy: Arc::new(Mutex::new(policy)),
@@ -118,7 +130,7 @@ impl Harness {
             workspace_root,
             session_coordinator: SessionCoordinator::default(),
             attachments: crate::AttachmentStore::new(),
-            uploads: crate::ArtifactUploadStore::new(crate::default_artifact_root()),
+            uploads: crate::ArtifactUploadStore::new(artifact_root),
             intent_router: Arc::new(Mutex::new(UserIntentRouter::new())),
             coding_tools: Arc::new(crate::OptionalCodingToolsService::absent()),
             steer_rewrite: default_steer_rewrite(),
@@ -128,12 +140,18 @@ impl Harness {
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
+            worktree_manager: None,
+            pty,
         }
     }
 
     /// Override durable artifact root (tests / portable installs).
     pub fn with_artifact_root(mut self, root: impl Into<PathBuf>) -> Self {
-        self.uploads = crate::ArtifactUploadStore::new(root);
+        let root = root.into();
+        self.uploads = crate::ArtifactUploadStore::new(root.clone());
+        if let Ok(store) = DurableArtifactStore::open(&root) {
+            self.pty.set_artifacts(Arc::new(store));
+        }
         self
     }
 
@@ -194,6 +212,22 @@ impl Harness {
     pub fn with_workflow_runtime(mut self, runtime: Arc<crate::WorkflowRuntime>) -> Self {
         self.workflow_runtime = Some(runtime);
         self
+    }
+
+    /// Attach WorktreeManager for session-aware Git IPC cwd resolution.
+    pub fn with_worktree_manager(mut self, manager: Arc<crate::WorktreeManager>) -> Self {
+        self.worktree_manager = Some(manager);
+        self
+    }
+
+    /// Replace PTY manager (tests / durable SqlitePtySessionStore wire).
+    pub fn with_pty_manager(mut self, pty: Arc<crate::PtySessionManager>) -> Self {
+        self.pty = pty;
+        self
+    }
+
+    pub fn pty_manager(&self) -> Arc<crate::PtySessionManager> {
+        self.pty.clone()
     }
 
     pub fn hook_prefilter(&self) -> &crate::HookPrefilter {
@@ -266,6 +300,10 @@ impl Harness {
             .expect("failed to register test provider");
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
+        let pty_seam = crate::EffectSeam::with_sandbox(
+            policy.clone(),
+            crate::Sandbox::workspace(workspace_root.clone()),
+        );
         Self {
             store,
             policy: Arc::new(Mutex::new(policy)),
@@ -287,6 +325,8 @@ impl Harness {
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
+            worktree_manager: None,
+            pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
 
@@ -335,6 +375,10 @@ impl Harness {
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
         let steer_rewrite = provider_steer_rewrite(adapter);
+        let pty_seam = crate::EffectSeam::with_sandbox(
+            policy.clone(),
+            crate::Sandbox::workspace(workspace_root.clone()),
+        );
 
         Self {
             store,
@@ -357,6 +401,8 @@ impl Harness {
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
+            worktree_manager: None,
+            pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
 
@@ -395,6 +441,10 @@ impl Harness {
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
         let steer_rewrite = provider_steer_rewrite(adapter);
+        let pty_seam = crate::EffectSeam::with_sandbox(
+            policy.clone(),
+            crate::Sandbox::workspace(workspace_root.clone()),
+        );
 
         Self {
             store,
@@ -417,6 +467,8 @@ impl Harness {
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
+            worktree_manager: None,
+            pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
 
@@ -459,6 +511,10 @@ impl Harness {
         self.workflow_runtime.is_some()
     }
 
+    pub fn has_worktree_manager(&self) -> bool {
+        self.worktree_manager.is_some()
+    }
+
     /// Resolve a single client request into a response.
     ///
     /// No global lock: EventStore and AgentRuntime use internal coordination.
@@ -485,6 +541,8 @@ impl Harness {
             self.policy_store.clone(),
             self.workflow_runtime.clone(),
             self.explore_spawn.clone(),
+            self.worktree_manager.clone(),
+            self.pty.clone(),
             request,
         )
     }
@@ -559,6 +617,8 @@ fn handle_request(
     policy_store_slot: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
     explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
+    worktree_manager: Option<Arc<crate::WorktreeManager>>,
+    pty: Arc<crate::PtySessionManager>,
     request: IpcRequest,
 ) -> IpcResponse {
     let policy_store = policy_store_slot
@@ -684,18 +744,22 @@ fn handle_request(
         IpcRequest::Stream {
             session_id,
             after_sequence,
-        } => match AgentRuntime::attach(store, policy_snapshot(&policy), session_id).and_then(
-            |runtime| {
-                Ok(runtime
-                    .events()?
-                    .into_iter()
-                    .filter(|event| event.sequence > after_sequence)
-                    .collect())
-            },
-        ) {
-            Ok(events) => IpcResponse::Events { session_id, events },
-            Err(error) => runtime_error(error),
-        },
+        } => {
+            let exists = match store.list_after(session_id, 0, 1) {
+                Ok(probe) => !probe.is_empty(),
+                Err(error) => return store_error(error),
+            };
+            if !exists {
+                return runtime_error(RuntimeError::MissingSession(session_id));
+            }
+            match store.list_after(session_id, after_sequence, usize::MAX) {
+                Ok(events) => {
+                    let events = crate::trim_events_to_ipc_frame(session_id, events);
+                    IpcResponse::Events { session_id, events }
+                }
+                Err(error) => store_error(error),
+            }
+        }
         IpcRequest::Prompt {
             session_id,
             text,
@@ -1038,7 +1102,13 @@ fn handle_request(
                     .pending_approval(approval_id)?
                     .ok_or(RuntimeError::MissingApproval(approval_id))?;
                 let session_workspace = runtime.workspace_root()?;
-                let detail = compute_approval_detail(request, &session_workspace, &attachments)?;
+                let deferred = runtime.deferred_tool(approval_id)?;
+                let detail = compute_approval_detail(
+                    request,
+                    &session_workspace,
+                    &attachments,
+                    deferred.as_ref(),
+                )?;
                 Ok((session_id, detail))
             }) {
             Ok((session_id, detail)) => IpcResponse::ApprovalDetail {
@@ -1050,11 +1120,11 @@ fn handle_request(
         IpcRequest::BeginArtifactUpload {
             session_id,
             declared_bytes,
-            content_type: _,
+            content_type,
         } => {
             match AgentRuntime::attach(store, policy_snapshot(&policy), session_id).and_then(|_| {
                 uploads
-                    .begin(session_id, declared_bytes)
+                    .begin(session_id, declared_bytes, content_type)
                     .map_err(|error| RuntimeError::Denied(crate::upload_error_message(&error)))
             }) {
                 Ok(upload_id) => IpcResponse::ArtifactUploadBegun {
@@ -1111,6 +1181,18 @@ fn handle_request(
                 message: crate::upload_error_message(&error),
             },
         },
+        IpcRequest::ReadArtifact {
+            artifact_id,
+            max_bytes,
+        } => read_durable_artifact(uploads.artifact_root(), &artifact_id, max_bytes),
+        IpcRequest::GetArtifactMetadata { artifact_id } => {
+            get_durable_artifact_metadata(uploads.artifact_root(), &artifact_id)
+        }
+        IpcRequest::ReadArtifactRange {
+            artifact_id,
+            start,
+            len,
+        } => read_durable_artifact_range(uploads.artifact_root(), &artifact_id, start, len),
         IpcRequest::Diagnostics => {
             let policy_engine = policy_snapshot(&policy);
             let subsystems = gather_subsystem_health(
@@ -1361,6 +1443,663 @@ fn handle_request(
                 },
             }
         }
+        IpcRequest::ListWorkspaceDir { session_id, path } => handle_workspace_files(
+            store,
+            policy,
+            session_id,
+            &path,
+            "list workspace directory",
+            |root, rel| {
+                crate::workspace_files::list_directory(root, rel).map(|listing| {
+                    IpcResponse::WorkspaceDirListing {
+                        session_id,
+                        listing,
+                    }
+                })
+            },
+        ),
+        IpcRequest::StatWorkspaceFile { session_id, path } => handle_workspace_files(
+            store,
+            policy,
+            session_id,
+            &path,
+            "stat workspace file",
+            |root, rel| {
+                crate::workspace_files::stat_path(root, rel).map(|metadata| {
+                    IpcResponse::WorkspaceFileStat {
+                        session_id,
+                        metadata,
+                    }
+                })
+            },
+        ),
+        IpcRequest::ReadWorkspaceFile {
+            session_id,
+            path,
+            max_bytes,
+        } => handle_workspace_files(
+            store,
+            policy,
+            session_id,
+            &path,
+            "read workspace file",
+            |root, rel| {
+                let content = match max_bytes {
+                    Some(cap) => crate::workspace_files::read_text_file_limited(root, rel, cap),
+                    None => crate::workspace_files::read_text_file(root, rel),
+                }?;
+                Ok(IpcResponse::WorkspaceFileContent {
+                    session_id,
+                    content,
+                })
+            },
+        ),
+        IpcRequest::SearchWorkspaceFiles {
+            session_id,
+            path,
+            pattern,
+        } => handle_workspace_files(
+            store,
+            policy,
+            session_id,
+            &path,
+            "search workspace files",
+            |root, rel| {
+                crate::workspace_files::search_text(root, rel, &pattern)
+                    .map(|result| IpcResponse::WorkspaceSearchResult { session_id, result })
+            },
+        ),
+        // Daemon-owned Git IPC (WorktreeManager cwd + system git CLI).
+        IpcRequest::GetRepositoryState { session_id } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::get_repository_state(&cwd) {
+                    Ok(state) => IpcResponse::RepositoryState { session_id, state },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::ListBranches { session_id } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::list_branches(&cwd.path) {
+                    Ok(branches) => IpcResponse::Branches {
+                        session_id,
+                        branches,
+                    },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::GetCurrentBranch { session_id } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::get_current_branch(&cwd.path) {
+                    Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::CreateBranch {
+            session_id,
+            name,
+            checkout,
+        } => match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+            Ok(cwd) => match crate::create_branch(&cwd.path, &name, checkout) {
+                Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                Err(error) => git_ops_error(error),
+            },
+            Err(response) => response,
+        },
+        IpcRequest::SwitchBranch { session_id, name } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::switch_branch(&cwd.path, &name) {
+                    Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::GitStatus { session_id } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::git_status(&cwd.path) {
+                    Ok(status) => IpcResponse::GitStatus { session_id, status },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::ListChangedFiles { session_id } => {
+            match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+                Ok(cwd) => match crate::list_changed_files(&cwd.path) {
+                    Ok(files) => IpcResponse::ChangedFiles { session_id, files },
+                    Err(error) => git_ops_error(error),
+                },
+                Err(response) => response,
+            }
+        }
+        IpcRequest::GetDiff {
+            session_id,
+            base_ref,
+        } => match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+            Ok(cwd) => match crate::get_diff(&cwd.path, base_ref.as_deref()) {
+                Ok(mut diff) => {
+                    maybe_enrich_diff_counts(
+                        worktree_manager.as_deref(),
+                        session_id,
+                        base_ref.as_deref(),
+                        &mut diff,
+                    );
+                    IpcResponse::Diff { session_id, diff }
+                }
+                Err(error) => git_ops_error(error),
+            },
+            Err(response) => response,
+        },
+        IpcRequest::GetFileDiff {
+            session_id,
+            path,
+            base_ref,
+        } => match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
+            Ok(cwd) => match crate::get_file_diff(&cwd.path, &path, base_ref.as_deref()) {
+                Ok(mut diff) => {
+                    maybe_enrich_diff_counts(
+                        worktree_manager.as_deref(),
+                        session_id,
+                        base_ref.as_deref(),
+                        &mut diff,
+                    );
+                    IpcResponse::Diff { session_id, diff }
+                }
+                Err(error) => git_ops_error(error),
+            },
+            Err(response) => response,
+        },
+        // Daemon-owned PTY IPC (portable-pty). Additive — do not touch Git/Files arms.
+        IpcRequest::PtyStart {
+            session_id,
+            command,
+            args,
+            working_dir,
+            cols,
+            rows,
+        } => handle_pty_start(
+            &store,
+            &policy,
+            &pty,
+            session_id,
+            command,
+            args,
+            working_dir,
+            cols.unwrap_or(80),
+            rows.unwrap_or(24),
+        ),
+        IpcRequest::PtyAttach { pty_id } => match pty.attach(crate::PtySessionId(pty_id)) {
+            Ok(session) => {
+                pty_notice(&store, None, format!("pty {pty_id} attached"));
+                pty_session_response(session)
+            }
+            Err(error) => pty_error(error),
+        },
+        IpcRequest::PtyInput { pty_id, data_b64 } => match decode_pty_b64(&data_b64) {
+            Ok(data) => match pty.write_input(crate::PtySessionId(pty_id), &data) {
+                Ok(()) => IpcResponse::PtyOk { pty_id },
+                Err(error) => pty_error(error),
+            },
+            Err(message) => IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message,
+            },
+        },
+        IpcRequest::PtyOutput { pty_id, max_bytes } => {
+            let max = max_bytes.unwrap_or(crate::DEFAULT_PTY_READ_BYTES);
+            match pty.read_output(crate::PtySessionId(pty_id), max) {
+                Ok(chunk) => {
+                    if let Some(artifact) = chunk.spill_artifact.clone() {
+                        let dropped_bytes = artifact.byte_count as u64;
+                        pty_emit(
+                            &store,
+                            None,
+                            crate::PtyEvent::Spill {
+                                pty_id,
+                                artifact,
+                                dropped_bytes,
+                            },
+                        );
+                    }
+                    // Durable sample only on eof flush (avoid flooding poll reads).
+                    if chunk.eof {
+                        let preview =
+                            crate::bound_activity_preview(&String::from_utf8_lossy(&chunk.data));
+                        pty_emit(
+                            &store,
+                            None,
+                            crate::PtyEvent::Output {
+                                pty_id,
+                                preview,
+                                dropped_total: chunk.dropped_total,
+                                eof: true,
+                            },
+                        );
+                    }
+                    IpcResponse::PtyOutput {
+                        pty_id,
+                        data_b64: encode_pty_b64(&chunk.data),
+                        dropped_total: chunk.dropped_total,
+                        eof: chunk.eof,
+                        spill_artifact: chunk.spill_artifact,
+                    }
+                }
+                Err(error) => pty_error(error),
+            }
+        }
+        IpcRequest::PtyResize { pty_id, cols, rows } => {
+            match pty.resize(crate::PtySessionId(pty_id), cols, rows) {
+                Ok(()) => IpcResponse::PtyOk { pty_id },
+                Err(error) => pty_error(error),
+            }
+        }
+        IpcRequest::PtyDetach { pty_id } => match pty.detach(crate::PtySessionId(pty_id)) {
+            Ok(()) => {
+                pty_notice(&store, None, format!("pty {pty_id} detached"));
+                IpcResponse::PtyOk { pty_id }
+            }
+            Err(error) => pty_error(error),
+        },
+        IpcRequest::PtyTerminate { pty_id } => match pty.terminate(crate::PtySessionId(pty_id)) {
+            Ok(()) => {
+                let exit_code = pty
+                    .get_session(crate::PtySessionId(pty_id))
+                    .and_then(|session| match session.state {
+                        crate::PtySessionState::Exited { exit_code } => exit_code,
+                        _ => None,
+                    });
+                pty_emit(&store, None, crate::PtyEvent::Exited { pty_id, exit_code });
+                IpcResponse::PtyOk { pty_id }
+            }
+            Err(error) => pty_error(error),
+        },
+        IpcRequest::PtyStatus { pty_id } => match pty.get_session(crate::PtySessionId(pty_id)) {
+            Some(session) => pty_session_response(session),
+            None => IpcResponse::Error {
+                code: IpcErrorCode::MissingSession,
+                message: format!("unknown pty session: {pty_id}"),
+            },
+        },
+        // Daemon SoT catalog reads (labels/status only; never env/credentials).
+        IpcRequest::ListMcpServers => {
+            let servers = match tool_providers {
+                Some(runtime) => {
+                    crate::block_on_coding_tools(async move { runtime.lock().await.list_status() })
+                }
+                None => Vec::new(),
+            };
+            IpcResponse::McpServers { servers }
+        }
+        IpcRequest::ListModels => IpcResponse::Models {
+            providers: provider_registry.list_status(&default_provider_id),
+        },
+    }
+}
+
+/// Prefer WorktreeManager numstat counts when base_ref + managed worktree exist.
+fn maybe_enrich_diff_counts(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+    base_ref: Option<&str>,
+    diff: &mut crate::GitDiffPayload,
+) {
+    let (Some(mgr), Some(base)) = (worktrees, base_ref) else {
+        return;
+    };
+    if let Ok(summary) = mgr.diff_summary(session_id, base) {
+        crate::apply_worktree_diff_counts(diff, &summary);
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn session_git_cwd(
+    store: &Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+) -> Result<crate::GitSessionCwd, IpcResponse> {
+    let runtime = AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id)
+        .map_err(runtime_error)?;
+    let workspace_root = runtime.workspace_root().map_err(runtime_error)?;
+    crate::resolve_session_git_cwd(
+        worktrees,
+        session_id,
+        runtime.worktree_id(),
+        &workspace_root,
+    )
+    .map_err(git_ops_error)
+}
+
+fn git_ops_error(error: crate::GitOpsError) -> IpcResponse {
+    use crate::GitOpsError;
+    let code = match &error {
+        GitOpsError::NotARepo(_)
+        | GitOpsError::InvalidBranchName(_)
+        | GitOpsError::BranchExists(_)
+        | GitOpsError::UnknownBranch(_) => IpcErrorCode::InvalidRequest,
+        GitOpsError::Dirty
+        | GitOpsError::ConflictInProgress
+        | GitOpsError::StaleWorktree
+        | GitOpsError::PathMissing(_) => IpcErrorCode::Conflict,
+        GitOpsError::Git(_) | GitOpsError::Io(_) => IpcErrorCode::Internal,
+    };
+    IpcResponse::Error {
+        code,
+        message: error.to_string(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_pty_start(
+    store: &Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    pty: &Arc<crate::PtySessionManager>,
+    session_id: uuid::Uuid,
+    command: String,
+    args: Vec<String>,
+    working_dir: Option<PathBuf>,
+    cols: u16,
+    rows: u16,
+) -> IpcResponse {
+    let runtime = match AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id) {
+        Ok(runtime) => runtime,
+        Err(error) => return runtime_error(error),
+    };
+    let cwd = match working_dir {
+        Some(path) => path,
+        None => match runtime.workspace_root() {
+            Ok(root) => root,
+            Err(error) => return runtime_error(error),
+        },
+    };
+    match pty.start(
+        command,
+        args,
+        cwd,
+        crate::policy::ActionOrigin::User,
+        cols,
+        rows,
+        1,
+    ) {
+        Ok(session) => {
+            let working_dir = Some(session.working_dir.display().to_string());
+            let _ = store.append_next(
+                session_id,
+                EventPayload::Pty(crate::PtyEvent::Started {
+                    pty_id: session.id.0,
+                    command: session.command.clone(),
+                    working_dir,
+                }),
+            );
+            pty_session_response(session)
+        }
+        Err(error) => pty_error(error),
+    }
+}
+
+fn pty_session_response(session: crate::PtySession) -> IpcResponse {
+    IpcResponse::PtySession {
+        pty_id: session.id.0,
+        state: session.state,
+        command: session.command,
+        cols: session.cols,
+        rows: session.rows,
+    }
+}
+
+fn pty_error(error: crate::PtySessionError) -> IpcResponse {
+    use crate::PtySessionError;
+    let code = match &error {
+        PtySessionError::SessionNotFound(_) | PtySessionError::NotLive(_) => {
+            IpcErrorCode::MissingSession
+        }
+        PtySessionError::AlreadyRunning(_) | PtySessionError::ApprovalRequired => {
+            IpcErrorCode::Conflict
+        }
+        PtySessionError::PolicyDenied(_) => IpcErrorCode::Unavailable,
+        PtySessionError::SpawnFailed(_) | PtySessionError::Io(_) | PtySessionError::Storage(_) => {
+            IpcErrorCode::Internal
+        }
+    };
+    IpcResponse::Error {
+        code,
+        message: error.to_string(),
+    }
+}
+
+fn pty_manager_with_default_artifacts(seam: crate::EffectSeam) -> Arc<crate::PtySessionManager> {
+    let manager = crate::PtySessionManager::new(seam);
+    match DurableArtifactStore::open(crate::default_artifact_root()) {
+        Ok(store) => Arc::new(manager.with_artifacts(Arc::new(store))),
+        Err(_) => Arc::new(manager),
+    }
+}
+
+fn pty_notice(store: &Arc<dyn EventStore>, session_id: Option<uuid::Uuid>, message: String) {
+    let Some(session_id) = session_id.or_else(|| {
+        store
+            .list_sessions()
+            .ok()
+            .and_then(|sessions| sessions.into_iter().next().map(|s| s.id))
+    }) else {
+        return;
+    };
+    let _ = store.append_next(
+        session_id,
+        EventPayload::Notice(NoticeEvent::Runtime { message }),
+    );
+}
+
+fn pty_emit(store: &Arc<dyn EventStore>, session_id: Option<uuid::Uuid>, event: crate::PtyEvent) {
+    let Some(session_id) = session_id.or_else(|| {
+        store
+            .list_sessions()
+            .ok()
+            .and_then(|sessions| sessions.into_iter().next().map(|s| s.id))
+    }) else {
+        return;
+    };
+    let _ = store.append_next(session_id, EventPayload::Pty(event));
+}
+
+fn decode_pty_b64(data_b64: &str) -> Result<Vec<u8>, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    BASE64
+        .decode(data_b64.as_bytes())
+        .map_err(|_| "invalid base64 pty input".into())
+}
+
+fn encode_pty_b64(data: &[u8]) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    BASE64.encode(data)
+}
+
+#[allow(clippy::result_large_err)]
+fn open_artifact_store(root: &Path) -> Result<DurableArtifactStore, IpcResponse> {
+    DurableArtifactStore::open(root).map_err(|error| IpcResponse::Error {
+        code: IpcErrorCode::Internal,
+        message: format!("artifact store unavailable: {error}"),
+    })
+}
+
+fn read_durable_artifact(root: &Path, artifact_id: &str, max_bytes: Option<usize>) -> IpcResponse {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+    let store = match open_artifact_store(root) {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let Some(meta) = (match store.metadata(artifact_id) {
+        Ok(meta) => meta,
+        Err(error) => {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("artifact metadata failed: {error}"),
+            };
+        }
+    }) else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: format!("artifact {artifact_id} not found"),
+        };
+    };
+
+    let cap = max_bytes
+        .unwrap_or(crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES)
+        .min(crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES);
+    let bytes = match store.read_range(artifact_id, 0, cap) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("artifact read failed: {error}"),
+            };
+        }
+    };
+    let truncated = bytes.len() < meta.byte_count;
+    IpcResponse::ArtifactContent {
+        artifact_id: artifact_id.to_owned(),
+        content_type: meta.content_type,
+        byte_count: meta.byte_count,
+        returned_bytes: bytes.len(),
+        data_b64: BASE64.encode(&bytes),
+        truncated,
+    }
+}
+
+fn get_durable_artifact_metadata(root: &Path, artifact_id: &str) -> IpcResponse {
+    let store = match open_artifact_store(root) {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    match store.metadata(artifact_id) {
+        Ok(Some(meta)) => IpcResponse::ArtifactMetadata { meta },
+        Ok(None) => IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: format!("artifact {artifact_id} not found"),
+        },
+        Err(error) => IpcResponse::Error {
+            code: IpcErrorCode::Internal,
+            message: format!("artifact metadata failed: {error}"),
+        },
+    }
+}
+
+fn read_durable_artifact_range(
+    root: &Path,
+    artifact_id: &str,
+    start: usize,
+    len: usize,
+) -> IpcResponse {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+    let store = match open_artifact_store(root) {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let Some(meta) = (match store.metadata(artifact_id) {
+        Ok(meta) => meta,
+        Err(error) => {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("artifact metadata failed: {error}"),
+            };
+        }
+    }) else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: format!("artifact {artifact_id} not found"),
+        };
+    };
+
+    let want = len.min(crate::MAX_ARTIFACT_UPLOAD_CHUNK_BYTES);
+    let bytes = match store.read_range(artifact_id, start, want) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("artifact range read failed: {error}"),
+            };
+        }
+    };
+    let end = start.saturating_add(bytes.len());
+    let truncated = end < meta.byte_count;
+    IpcResponse::ArtifactRange {
+        artifact_id: artifact_id.to_owned(),
+        start,
+        returned_bytes: bytes.len(),
+        data_b64: BASE64.encode(&bytes),
+        truncated,
+    }
+}
+
+fn handle_workspace_files<F>(
+    store: Arc<dyn EventStore>,
+    policy: Arc<Mutex<PolicyEngine>>,
+    session_id: uuid::Uuid,
+    path: &Path,
+    summary: &str,
+    op: F,
+) -> IpcResponse
+where
+    F: FnOnce(&Path, &Path) -> Result<IpcResponse, crate::workspace_files::WorkspaceFilesError>,
+{
+    let relative = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    let target = relative.display().to_string();
+    match AgentRuntime::attach(store, policy_snapshot(&policy), session_id) {
+        Ok(runtime) => {
+            let workspace_root = match runtime.workspace_root() {
+                Ok(root) => root,
+                Err(error) => return runtime_error(error),
+            };
+            let seam = match runtime.effect_seam() {
+                Ok(seam) => seam,
+                Err(error) => return runtime_error(error),
+            };
+            let effect =
+                crate::NormalizedEffect::workspace_read(ActionOrigin::User, summary, target);
+            match seam.execute(&effect, || op(&workspace_root, relative)) {
+                Ok(crate::EffectExecution::Executed(response)) => response,
+                Ok(crate::EffectExecution::Denied { reason }) => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: reason,
+                },
+                Ok(crate::EffectExecution::NeedsApproval { .. }) => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: "workspace files read needs an approval that is not granted in read-only scope"
+                        .into(),
+                },
+                Err(error) => workspace_files_error(error),
+            }
+        }
+        Err(error) => runtime_error(error),
+    }
+}
+
+fn workspace_files_error(error: crate::workspace_files::WorkspaceFilesError) -> IpcResponse {
+    use crate::workspace_files::WorkspaceFilesError;
+    let code = match &error {
+        WorkspaceFilesError::UnsafePath(_)
+        | WorkspaceFilesError::NotFound(_)
+        | WorkspaceFilesError::NotDirectory(_)
+        | WorkspaceFilesError::NotFile(_)
+        | WorkspaceFilesError::TooLarge { .. }
+        | WorkspaceFilesError::Binary(_) => IpcErrorCode::InvalidRequest,
+        WorkspaceFilesError::Io(_) => IpcErrorCode::Internal,
+    };
+    IpcResponse::Error {
+        code,
+        message: error.to_string(),
     }
 }
 
@@ -1738,8 +2477,13 @@ fn resolve_provider_messages_with_binding(
                 messages.push(ProviderMessage::user(user_text));
                 has_user_intent = true;
             }
-            crate::EventPayload::Agent(crate::AgentEvent::Chunk { text, .. }) => {
-                pending_assistant.push_str(&text);
+            crate::EventPayload::Agent(crate::AgentEvent::Chunk { text, artifact, .. }) => {
+                pending_assistant.push_str(&materialize_agent_chunk_text(
+                    artifact_store.as_ref(),
+                    &text,
+                    artifact.as_ref(),
+                    artifact_budget,
+                ));
             }
             crate::EventPayload::Tool(crate::ToolEvent::Observed {
                 tool_call_id,
@@ -1827,6 +2571,26 @@ fn materialize_intent_text(
                 format!("{label}\n\n[artifact body unavailable: {error}]")
             }
         }
+    }
+}
+
+/// When a chunk carries an artifact, expand the bounded preview to budgeted
+/// body text (same path as tool/intent materialization).
+fn materialize_agent_chunk_text(
+    store: Option<&DurableArtifactStore>,
+    preview: &str,
+    artifact: Option<&crate::DurableArtifactRef>,
+    budget: TokenBudget,
+) -> String {
+    let Some(artifact) = artifact else {
+        return preview.to_string();
+    };
+    let Some(store) = store else {
+        return preview.to_string();
+    };
+    match ContextBuilder::new(store, budget).materialize(artifact) {
+        Ok(materialized) => materialized.content,
+        Err(_) => preview.to_string(),
     }
 }
 
@@ -2108,15 +2872,25 @@ pub fn policy() -> PolicyEngine {
 }
 
 /// Compute detailed approval information with diff preview and scope estimates.
+///
+/// When a deferred write tool carries proposed `content`, builds a real
+/// [`crate::DiffObservation`] (before = on-disk, after = proposed). Without
+/// proposed content, does not invent a delete-only fake preview; may fall back
+/// to `git diff HEAD -- <path>` when the workspace has uncommitted changes.
 fn compute_approval_detail(
     request: crate::ApprovalRequest,
     workspace_root: &Path,
     attachments: &crate::AttachmentStore,
+    deferred: Option<&(String, String, serde_json::Value)>,
 ) -> Result<crate::ApprovalDetail, RuntimeError> {
-    use crate::{ActionKind, ScopeEstimate};
+    use crate::{
+        ActionKind, MAX_UNIFIED_PREVIEW_LINES, ScopeEstimate, from_git_diff, from_texts,
+        unified_preview,
+    };
 
     let mut affected_files = vec![];
     let mut diff_preview = None;
+    let mut diff_observation = None;
     let mut estimated_scope = None;
     let mut attachment_refs = vec![];
 
@@ -2125,50 +2899,51 @@ fn compute_approval_detail(
             if let Some(target) = &request.action.target {
                 affected_files.push(target.clone());
 
-                // Attempt to compute diff if target exists
                 let target_path = if Path::new(target).is_absolute() {
                     PathBuf::from(target)
                 } else {
                     workspace_root.join(target)
                 };
 
-                if target_path.exists() {
-                    if let Ok(existing_content) = std::fs::read_to_string(&target_path) {
-                        // For now, store a simple line-count scope estimate
-                        let line_count = existing_content.lines().count() as u32;
-                        estimated_scope = Some(ScopeEstimate::Lines(line_count));
-
-                        // Generate unified diff preview (truncated to 50 lines)
-                        // This is a simplified preview; full diff would use a proper diff library
-                        let preview_lines: Vec<_> = existing_content
-                            .lines()
-                            .take(50)
-                            .map(|line| format!("- {}", line))
-                            .collect();
-                        if !preview_lines.is_empty() {
-                            let mut preview = format!("--- {}", target);
-                            preview.push_str(&format!("\n+++ {} (modified)", target));
-                            preview.push_str(&format!("\n@@ -{},50 (preview) @@\n", 1));
-                            preview.push_str(&preview_lines.join("\n"));
-                            if existing_content.lines().count() > 50 {
-                                preview.push_str("\n... (truncated)");
-                            }
-                            diff_preview = Some(preview);
-
-                            // Store full diff as attachment if content is reasonable
-                            if existing_content.len() < 1_000_000
-                                && let Ok(attachment_id) = attachments.store(
-                                    "text/x-diff".to_string(),
-                                    existing_content.as_bytes().to_vec(),
-                                )
-                            {
-                                attachment_refs.push(attachment_id);
-                            }
-                        }
-                    }
+                let before = if target_path.exists() {
+                    std::fs::read_to_string(&target_path).unwrap_or_default()
                 } else {
-                    // New file creation
-                    diff_preview = Some(format!("--- /dev/null\n+++ {} (new file)", target));
+                    String::new()
+                };
+                if !before.is_empty() {
+                    estimated_scope = Some(ScopeEstimate::Lines(before.lines().count() as u32));
+                }
+
+                let proposed = deferred.and_then(|(_, tool_name, args)| {
+                    if matches!(tool_name.as_str(), "write_file" | "edit_file") {
+                        args.get("content")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(after) = proposed {
+                    let obs = from_texts(target.as_str(), &before, &after);
+                    estimated_scope = Some(ScopeEstimate::Lines(
+                        (obs.insertions + obs.deletions).max(1) as u32,
+                    ));
+                    let preview = unified_preview(&obs, MAX_UNIFIED_PREVIEW_LINES);
+                    if preview.len() < 1_000_000
+                        && let Ok(attachment_id) = attachments
+                            .store("text/x-diff".to_string(), preview.as_bytes().to_vec())
+                    {
+                        attachment_refs.push(attachment_id);
+                    }
+                    diff_preview = Some(preview);
+                    diff_observation = Some(obs);
+                } else if let Some(obs) =
+                    from_git_diff(workspace_root, &["HEAD", "--", target.as_str()])
+                {
+                    let preview = unified_preview(&obs, MAX_UNIFIED_PREVIEW_LINES);
+                    diff_preview = Some(preview);
+                    diff_observation = Some(obs);
                 }
             }
         }
@@ -2178,10 +2953,8 @@ fn compute_approval_detail(
             }
         }
         ActionKind::SpawnProcess => {
-            // Process spawning: estimate based on command summary
             if let Some(cmd) = &request.action.target {
                 estimated_scope = Some(ScopeEstimate::Operations(1));
-                // Store command as attachment for review
                 if let Ok(attachment_id) =
                     attachments.store("text/plain".to_string(), cmd.as_bytes().to_vec())
                 {
@@ -2190,7 +2963,6 @@ fn compute_approval_detail(
             }
         }
         ActionKind::NetworkConnect | ActionKind::SshConnect | ActionKind::SftpTransfer => {
-            // Network operations: note target host
             if let Some(target) = &request.action.target {
                 affected_files.push(target.clone());
                 estimated_scope = Some(ScopeEstimate::Operations(1));
@@ -2205,7 +2977,6 @@ fn compute_approval_detail(
         | ActionKind::WebBrowser
         | ActionKind::WebSubmit
         | ActionKind::WebUpload => {
-            // Web operations: note target URL
             if let Some(target) = &request.action.target {
                 affected_files.push(target.clone());
                 estimated_scope = Some(ScopeEstimate::Operations(1));
@@ -2217,6 +2988,7 @@ fn compute_approval_detail(
         schema_version: crate::APPROVAL_DETAIL_SCHEMA_VERSION,
         request,
         diff_preview,
+        diff_observation,
         affected_files,
         estimated_scope,
         attachment_refs,
@@ -2781,11 +3553,10 @@ mod tests {
         assert_eq!(detail.request.id, approval_id);
         assert_eq!(detail.request.action.kind, crate::ActionKind::WriteFile);
         assert_eq!(detail.schema_version, crate::APPROVAL_DETAIL_SCHEMA_VERSION);
-        // Diff/scope computation now implemented
         assert_eq!(detail.affected_files, vec!["test.txt"]);
-        assert!(detail.diff_preview.is_some());
-        // New file creation case
-        assert!(detail.diff_preview.unwrap().contains("new file"));
+        // No deferred write content → no fake delete-only preview.
+        assert!(detail.diff_preview.is_none());
+        assert!(detail.diff_observation.is_none());
     }
 
     #[test]
@@ -2795,7 +3566,7 @@ mod tests {
         let session_workspace = root.path().join("session");
         std::fs::create_dir(&daemon_workspace).expect("daemon workspace");
         std::fs::create_dir(&session_workspace).expect("session workspace");
-        std::fs::write(session_workspace.join("existing.txt"), "session content")
+        std::fs::write(session_workspace.join("existing.txt"), "session content\n")
             .expect("session fixture");
         let policy = PolicyEngine::new(SandboxScope::local_workspace(&daemon_workspace));
         let harness = Harness::new(Arc::new(MemoryEventStore::default()), policy.clone());
@@ -2825,6 +3596,17 @@ mod tests {
                 _ => None,
             })
             .expect("approval id");
+        runtime
+            .record_deferred_tool(
+                approval_id,
+                "write-1".into(),
+                "write_file".into(),
+                serde_json::json!({
+                    "path": "existing.txt",
+                    "content": "session content\nproposed line\n"
+                }),
+            )
+            .expect("deferred write");
 
         let IpcResponse::ApprovalDetail { detail, .. } =
             harness.handle(IpcRequest::GetApprovalDetail {
@@ -2834,12 +3616,13 @@ mod tests {
         else {
             panic!("approval detail")
         };
-        assert!(
-            detail
-                .diff_preview
-                .expect("existing file diff")
-                .contains("session content")
-        );
+        let preview = detail.diff_preview.expect("real proposed diff");
+        assert!(preview.contains("session content") || preview.contains("+proposed"));
+        assert!(preview.contains('+'), "expected addition in {preview}");
+        let obs = detail.diff_observation.expect("structured observation");
+        assert_eq!(obs.files_changed, 1);
+        assert!(obs.insertions >= 1);
+        assert!(!obs.hunks.is_empty());
     }
 
     #[tokio::test]
@@ -3318,6 +4101,53 @@ mod tests {
 
         let durable = DurableArtifactStore::open(artifact_root.path()).expect("reopen");
         assert_eq!(durable.read(&artifact.id).unwrap(), body);
+        let meta = durable.metadata(&artifact.id).unwrap().unwrap();
+        assert_eq!(meta.content_type.as_deref(), Some("text/plain"));
+
+        let IpcResponse::ArtifactMetadata { meta: ipc_meta } =
+            harness.handle(IpcRequest::GetArtifactMetadata {
+                artifact_id: artifact.id.clone(),
+            })
+        else {
+            panic!("get artifact metadata");
+        };
+        assert_eq!(ipc_meta.content_type.as_deref(), Some("text/plain"));
+        assert_eq!(ipc_meta.byte_count, body.len());
+
+        let IpcResponse::ArtifactContent {
+            data_b64,
+            content_type,
+            truncated,
+            returned_bytes,
+            ..
+        } = harness.handle(IpcRequest::ReadArtifact {
+            artifact_id: artifact.id.clone(),
+            max_bytes: None,
+        })
+        else {
+            panic!("read artifact");
+        };
+        assert_eq!(content_type.as_deref(), Some("text/plain"));
+        assert!(!truncated);
+        assert_eq!(returned_bytes, body.len());
+        assert_eq!(BASE64.decode(data_b64.as_bytes()).unwrap(), body);
+
+        let IpcResponse::ArtifactRange {
+            data_b64: range_b64,
+            returned_bytes: range_len,
+            truncated: range_trunc,
+            ..
+        } = harness.handle(IpcRequest::ReadArtifactRange {
+            artifact_id: artifact.id.clone(),
+            start: mid,
+            len: body.len(),
+        })
+        else {
+            panic!("read artifact range");
+        };
+        assert_eq!(range_len, body.len() - mid);
+        assert!(!range_trunc);
+        assert_eq!(BASE64.decode(range_b64.as_bytes()).unwrap(), &body[mid..]);
 
         // #122 Context Builder hook: uploaded ref materializes without full dump path.
         let materialized = crate::ContextBuilder::new(
@@ -3661,6 +4491,74 @@ mod tests {
                     && intent.text == "queued next"
             )
         }));
+    }
+
+    #[test]
+    fn stream_paginates_large_chunk_batches_under_ipc_line_cap() {
+        use crate::{
+            AgentEvent, EventPayload, IPC_EVENTS_FRAME_BUDGET, MAX_AGENT_CHUNK_EVENT_BYTES,
+            MAX_IPC_LINE_BYTES, MemoryEventStore,
+        };
+
+        let store = Arc::new(MemoryEventStore::default());
+        let session_id = store.create_session().expect("session");
+        let run_id = uuid::Uuid::nil();
+        let body = "z".repeat(MAX_AGENT_CHUNK_EVENT_BYTES);
+        for chunk_id in 1..=8u64 {
+            store
+                .append_next(
+                    session_id,
+                    EventPayload::Agent(AgentEvent::Chunk {
+                        run_id,
+                        chunk_id,
+                        text: body.clone(),
+                        artifact: None,
+                    }),
+                )
+                .expect("append chunk");
+        }
+
+        let harness = Harness::new(store, PolicyEngine::new(SandboxScope::local_workspace(".")));
+        let mut after_sequence = 0u64;
+        let mut seen = 0usize;
+        let mut pages = 0usize;
+        loop {
+            let IpcResponse::Events { events, .. } = harness.handle(IpcRequest::Stream {
+                session_id,
+                after_sequence,
+            }) else {
+                panic!("expected Events");
+            };
+            if events.is_empty() {
+                break;
+            }
+            pages += 1;
+            seen += events.len();
+            let frame = serde_json::to_vec(&IpcResponse::Events {
+                session_id,
+                events: events.clone(),
+            })
+            .expect("encode");
+            assert!(
+                frame.len() <= IPC_EVENTS_FRAME_BUDGET,
+                "page {pages} frame {} exceeds soft budget",
+                frame.len()
+            );
+            assert!(frame.len() <= MAX_IPC_LINE_BYTES);
+            after_sequence = events.last().expect("non-empty").sequence;
+        }
+        assert!(
+            pages > 1,
+            "expected pagination across multiple Stream pages"
+        );
+        // Created + 8 chunks
+        assert_eq!(seen, 9);
+        // Cursor resume: list_after still returns full unbounded tail for store API.
+        let remaining = harness
+            .store()
+            .list_after(session_id, after_sequence, usize::MAX)
+            .expect("list_after");
+        assert!(remaining.is_empty());
     }
 
     #[tokio::test]
@@ -4015,6 +4913,101 @@ mod tests {
     }
 
     #[test]
+    fn list_mcp_servers_empty_without_runtime() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let response = harness.handle(IpcRequest::ListMcpServers);
+        match response {
+            IpcResponse::McpServers { servers } => assert!(servers.is_empty()),
+            other => panic!("expected empty McpServers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_mcp_servers_returns_registered_labels_only() {
+        use crate::extension_compat::{McpCapabilities, McpModule, McpTransport};
+        use std::collections::HashMap;
+
+        let mut runtime = crate::ToolProviderRuntime::new();
+        runtime.register(crate::McpServerSpec {
+            id: "files".into(),
+            module: McpModule {
+                name: "Files MCP".into(),
+                command: "npx".into(),
+                args: vec!["-y".into(), "secret-token-should-not-leak".into()],
+                env: HashMap::from([("API_KEY".into(), "super-secret".into())]),
+                transport: McpTransport::Stdio,
+                capabilities: McpCapabilities {
+                    tools: true,
+                    ..McpCapabilities::default()
+                },
+            },
+        });
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        )
+        .with_tool_providers(Arc::new(tokio::sync::Mutex::new(runtime)));
+
+        let response = harness.handle(IpcRequest::ListMcpServers);
+        let IpcResponse::McpServers { servers } = response else {
+            panic!("expected McpServers, got {response:?}");
+        };
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "files");
+        assert_eq!(servers[0].name, "Files MCP");
+        assert!(!servers[0].connected);
+        assert_eq!(servers[0].transport, Some(McpTransport::Stdio));
+        let encoded = serde_json::to_string(&servers[0]).expect("encode");
+        assert!(!encoded.contains("super-secret"));
+        assert!(!encoded.contains("secret-token"));
+        assert!(!encoded.contains("API_KEY"));
+        assert!(!encoded.contains("npx"));
+    }
+
+    #[test]
+    fn list_models_returns_mock_catalog() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let response = harness.handle(IpcRequest::ListModels);
+        let IpcResponse::Models { providers } = response else {
+            panic!("expected Models, got {response:?}");
+        };
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].provider_id, "mock");
+        assert!(providers[0].is_default);
+        assert!(!providers[0].model_id.is_empty());
+    }
+
+    #[test]
+    fn hello_advertises_list_mcp_and_list_models() {
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        );
+        let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec!["list_mcp".into(), "list_models".into()],
+        }) else {
+            panic!("hello");
+        };
+        assert!(capabilities.iter().any(|c| c == "list_mcp"));
+        assert!(capabilities.iter().any(|c| c == "list_models"));
+    }
+
+    #[test]
     fn reload_policy_config_via_ipc_applies_without_restart() {
         let workspace = tempfile::tempdir().expect("workspace");
         let harness = Harness::new(
@@ -4116,6 +5109,164 @@ mod tests {
             capabilities
                 .iter()
                 .any(|capability| capability == "reload_policy_config")
+        );
+    }
+
+    #[test]
+    fn git_status_and_list_branches_ipc_on_temp_repo() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = workspace.path();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .status()
+            .expect("email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .status()
+            .expect("name");
+        std::fs::write(root.join("README"), b"seed").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "README"])
+            .current_dir(root)
+            .status()
+            .expect("add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "seed"])
+            .current_dir(root)
+            .status()
+            .expect("commit");
+
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(root)),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: root.to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec!["git".into()],
+        }) else {
+            panic!("hello");
+        };
+        assert!(capabilities.iter().any(|c| c == "git"));
+
+        let IpcResponse::Branches { branches, .. } =
+            harness.handle(IpcRequest::ListBranches { session_id })
+        else {
+            panic!("list branches");
+        };
+        assert!(
+            branches.iter().any(|b| b.name == "main" && b.current),
+            "{branches:?}"
+        );
+
+        let IpcResponse::GitStatus { status, .. } =
+            harness.handle(IpcRequest::GitStatus { session_id })
+        else {
+            panic!("git status");
+        };
+        assert!(!status.dirty);
+        assert_eq!(status.branch.name.as_deref(), Some("main"));
+
+        std::fs::write(root.join("wip.txt"), b"x").expect("dirty");
+        let IpcResponse::GitStatus { status, .. } =
+            harness.handle(IpcRequest::GitStatus { session_id })
+        else {
+            panic!("dirty status");
+        };
+        assert!(status.dirty);
+        assert!(status.files.iter().any(|f| f.path.ends_with("wip.txt")));
+    }
+
+    #[test]
+    fn get_diff_returns_structured_observation_on_temp_repo() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = workspace.path();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .status()
+            .expect("email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .status()
+            .expect("name");
+        std::fs::write(root.join("README"), b"seed\n").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "README"])
+            .current_dir(root)
+            .status()
+            .expect("add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "seed"])
+            .current_dir(root)
+            .status()
+            .expect("commit");
+        std::fs::write(root.join("README"), b"seed\nedited\n").expect("edit");
+
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = Harness::new(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(root)),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: root.to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            capabilities: vec!["git".into(), "structured_diff".into()],
+        }) else {
+            panic!("hello");
+        };
+        assert!(capabilities.iter().any(|c| c == "structured_diff"));
+
+        let IpcResponse::Diff { diff, .. } = harness.handle(IpcRequest::GetDiff {
+            session_id,
+            base_ref: None,
+        }) else {
+            panic!("get diff");
+        };
+        assert!(!diff.patch.is_empty());
+        let obs = diff.observation.expect("structured DiffObservation");
+        assert!(obs.files_changed >= 1);
+        assert!(!obs.hunks.is_empty());
+        assert!(obs.insertions >= 1 || obs.deletions >= 1);
+
+        let IpcResponse::Diff { diff, .. } = harness.handle(IpcRequest::GetFileDiff {
+            session_id,
+            path: std::path::PathBuf::from("README"),
+            base_ref: None,
+        }) else {
+            panic!("get file diff");
+        };
+        let file_obs = diff.observation.expect("file DiffObservation");
+        assert!(!file_obs.hunks.is_empty());
+        assert!(
+            file_obs
+                .hunks
+                .iter()
+                .any(|h| h.file.ends_with("README") || h.file.as_os_str() == "README")
         );
     }
 }

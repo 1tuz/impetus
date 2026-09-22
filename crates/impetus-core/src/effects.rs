@@ -934,4 +934,61 @@ mod tests {
             NormalizedEffect::workspace_write(ActionOrigin::Agent, "create file", "new.txt");
         assert_eq!(seam.decide(&effect), EffectDecision::Allow);
     }
+
+    #[test]
+    fn policy_config_allow_cannot_escape_workspace_path() {
+        use crate::PolicyConfig;
+        let root = workspace();
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#).unwrap();
+        let seam = EffectSeam::with_admission(
+            crate::PolicyEngine::with_config(crate::SandboxScope::local_workspace(&root), config),
+            crate::Sandbox::workspace(&root),
+            ExecutionMode::Ask,
+            Arc::new(crate::DeterministicRiskGate),
+        );
+        let effect = NormalizedEffect::workspace_write(
+            ActionOrigin::Agent,
+            "write outside",
+            "/etc/forbidden",
+        );
+        assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_config_allow_cannot_enable_disabled_network() {
+        use crate::PolicyConfig;
+        let root = workspace();
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow"}}"#,
+        )
+        .unwrap();
+        // local_workspace defaults allow_network=false — soft Allow must not open net.
+        let seam = EffectSeam::with_admission(
+            crate::PolicyEngine::with_config(crate::SandboxScope::local_workspace(&root), config),
+            crate::Sandbox::workspace(&root),
+            ExecutionMode::Ask,
+            Arc::new(crate::DeterministicRiskGate),
+        );
+        let effect =
+            NormalizedEffect::network_connect(ActionOrigin::Agent, "connect", "example.com:443");
+        assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_config_allow_does_not_override_risk_hard_deny() {
+        use crate::PolicyConfig;
+        let root = workspace();
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"spawn_process":"allow"}}"#).unwrap();
+        let seam = EffectSeam::with_admission(
+            crate::PolicyEngine::with_config(crate::SandboxScope::local_workspace(&root), config),
+            crate::Sandbox::workspace(&root),
+            ExecutionMode::Ask,
+            Arc::new(crate::DeterministicRiskGate),
+        );
+        let effect =
+            NormalizedEffect::process_spawn(ActionOrigin::Agent, "sudo apt", "sudo apt update");
+        assert!(matches!(seam.decide(&effect), EffectDecision::Deny { .. }));
+    }
 }

@@ -5,9 +5,11 @@
 //! response per line. On connect it performs a `Hello` handshake and treats an
 //! `Incompatible` response as a hard failure.
 
-use crate::{EventSubscription, HarnessClient, IPC_VERSION, IpcRequest, IpcResponse};
+use crate::protocol::{
+    IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES,
+};
+use crate::{EventSubscription, HarnessClient};
 use anyhow::{Context, Result, anyhow, bail};
-use impetus_core::{IPC_CAPABILITIES, IpcErrorCode};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -15,8 +17,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
-
-const MAX_IPC_LINE_BYTES: usize = 64 * 1024;
 
 /// Client transport over a Unix domain socket.
 ///
@@ -84,7 +84,7 @@ struct UnixEventSubscription {
 impl EventSubscription for UnixEventSubscription {
     fn next_events(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<impetus_core::Event>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<crate::protocol::Event>>> + Send + '_>> {
         Box::pin(async move {
             loop {
                 let line = read_bounded_line(&mut self.reader, "harness event").await?;

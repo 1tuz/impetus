@@ -1,9 +1,11 @@
 //! Bounded unified-diff viewport for harness-visible diffs.
 //!
-//! Renders approval `diff_preview` strings and DiffObservation-shaped JSON that
-//! already reach the client via durable events / attachment DTOs. No
-//! `impetus-core` import — wire shapes are mirrored locally for presentation.
+//! Renders approval `diff_preview` strings, typed [`DiffObservation`] from
+//! `impetus-client::protocol`, and DiffObservation-shaped JSON that already
+//! reach the client via durable events / attachment DTOs. No `impetus-core`
+//! import — wire shapes come through the client façade (or local DTO mirror).
 
+use impetus_client::protocol::DiffObservation;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde::Deserialize;
@@ -96,6 +98,42 @@ fn parse_observation(input: &str) -> Option<DiffObservationDto> {
     Some(obs)
 }
 
+/// Prefer typed structured hunks when present; else fall back to unified text.
+pub fn render_approval_diff(
+    observation: Option<&DiffObservation>,
+    unified_preview: Option<&str>,
+    width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    if let Some(obs) = observation
+        && (!obs.hunks.is_empty() || !obs.summary.is_empty())
+    {
+        return render_diff_observation(obs, width, theme);
+    }
+    match unified_preview {
+        Some(preview) if !preview.is_empty() => render_diff_view(preview, width, theme),
+        _ => Vec::new(),
+    }
+}
+
+/// Paint a typed [`DiffObservation`] (summary, stats, per-hunk previews).
+pub fn render_diff_observation(
+    obs: &DiffObservation,
+    width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let width = width.max(8);
+    let dto = DiffObservationDto::from(obs);
+    let mut lines = render_observation(&dto, width, theme);
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(empty diff)",
+            Style::default().fg(theme.muted),
+        )));
+    }
+    truncate_lines(lines, MAX_DIFF_LINES, theme)
+}
+
 /// Paint a bounded colored unified-diff view (file headers + hunks).
 pub fn render_diff_view(input: &str, width: usize, theme: Theme) -> Vec<Line<'static>> {
     let width = width.max(8);
@@ -112,6 +150,30 @@ pub fn render_diff_view(input: &str, width: usize, theme: Theme) -> Vec<Line<'st
         )));
     }
     truncate_lines(lines, MAX_DIFF_LINES, theme)
+}
+
+impl From<&DiffObservation> for DiffObservationDto {
+    fn from(obs: &DiffObservation) -> Self {
+        Self {
+            summary: Some(obs.summary.clone()),
+            files_changed: Some(obs.files_changed),
+            insertions: Some(obs.insertions),
+            deletions: Some(obs.deletions),
+            hunks: obs
+                .hunks
+                .iter()
+                .map(|hunk| DiffHunkDto {
+                    file: hunk.file.display().to_string(),
+                    preview: hunk.preview.clone(),
+                    old_start: Some(hunk.old_start),
+                    old_lines: Some(hunk.old_lines),
+                    new_start: Some(hunk.new_start),
+                    new_lines: Some(hunk.new_lines),
+                })
+                .collect(),
+            artifact_ref: obs.artifact_ref.clone(),
+        }
+    }
 }
 
 fn bound_input(input: &str) -> &str {
@@ -346,6 +408,72 @@ mod tests {
         assert!(joined.contains("crates/impetus-tui/src/diff.rs"));
         assert!(joined.contains("artifact: artifact-label"));
         assert!(joined.contains("@@ -1,2 +1,3 @@"));
+    }
+
+    #[test]
+    fn typed_observation_preferred_over_unified_preview() {
+        use impetus_client::protocol::{DiffHunk, DiffObservation, DiffSource};
+        use std::path::PathBuf;
+
+        let obs = DiffObservation {
+            source: DiffSource::Files {
+                before: PathBuf::from("a"),
+                after: PathBuf::from("b"),
+            },
+            files_changed: 1,
+            insertions: 1,
+            deletions: 0,
+            summary: "1 file changed, 1 insertion(+)".to_owned(),
+            hunks: vec![DiffHunk {
+                file: PathBuf::from("src/typed.rs"),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 2,
+                preview: " keep\n+typed".to_owned(),
+            }],
+            artifact_ref: None,
+        };
+        let lines = render_approval_diff(
+            Some(&obs),
+            Some("--- a/ignored.rs\n+++ b/ignored.rs\n@@\n-old\n+new"),
+            48,
+            Theme::default(),
+        );
+        let joined: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("src/typed.rs"));
+        assert!(joined.contains("+typed"));
+        assert!(!joined.contains("ignored.rs"));
+    }
+
+    #[test]
+    fn empty_observation_falls_back_to_unified() {
+        use impetus_client::protocol::{DiffObservation, DiffSource};
+        use std::path::PathBuf;
+
+        let obs = DiffObservation {
+            source: DiffSource::Files {
+                before: PathBuf::from("a"),
+                after: PathBuf::from("b"),
+            },
+            files_changed: 0,
+            insertions: 0,
+            deletions: 0,
+            summary: String::new(),
+            hunks: vec![],
+            artifact_ref: None,
+        };
+        let lines = render_approval_diff(Some(&obs), Some(sample_unified()), 48, Theme::default());
+        let joined: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("src/main.rs"));
     }
 
     #[test]

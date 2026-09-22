@@ -1,6 +1,8 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+use impetus_client::protocol::WorkspaceDirEntry;
 
 use crate::composer::Composer;
 use crate::hit::{HitTarget, PointerClick};
@@ -39,6 +41,62 @@ pub fn format_paste_placeholder(bytes: usize, lines: usize) -> String {
 pub fn is_paste_placeholder(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.starts_with("[Pasted text · ") && trimmed.ends_with(']')
+}
+
+/// Compact composer placeholder for filesystem attach (no raw bytes).
+pub fn format_attach_placeholder(
+    file_name: &str,
+    bytes: usize,
+    content_type: Option<&str>,
+) -> String {
+    let kb = bytes.saturating_add(1023) / 1024;
+    let mime = content_type.unwrap_or("application/octet-stream");
+    format!("[Attached · {file_name} · {kb} KB · {mime}]")
+}
+
+pub fn is_attach_placeholder(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("[Attached · ") && trimmed.ends_with(']')
+}
+
+/// Timeline / inspector label for a durable artifact ref (id + size; optional MIME).
+pub fn format_artifact_ref_label(id: &str, bytes: usize, content_type: Option<&str>) -> String {
+    let kb = bytes.saturating_add(1023) / 1024;
+    match content_type {
+        Some(mime) if !mime.is_empty() => format!("artifact {id} · {kb} KB · {mime}"),
+        _ => format!("artifact {id} · {kb} KB"),
+    }
+}
+
+/// Best-effort MIME from file extension (upload label only; store may refine).
+pub fn guess_content_type(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "txt" | "md" | "rst" | "log" => "text/plain",
+        "rs" | "toml" | "json" | "jsonl" | "yaml" | "yml" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "ts" | "tsx" | "jsx" => "text/javascript",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        _ => return None,
+    };
+    Some(mime.to_owned())
+}
+
+/// Pending durable artifact after filesystem attach (composer holds label only).
+#[derive(Clone, Debug)]
+pub struct PendingArtifact {
+    pub artifact: impetus_client::protocol::DurableArtifactRef,
+    pub path: String,
+    pub file_name: String,
+    pub content_type: Option<String>,
+    pub label: String,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +249,8 @@ pub enum ItemKind {
     Assistant,
     Plan,
     Tool,
+    /// Compact expandable tree for child runs / tool groups.
+    Activity,
     Approval,
     Notice,
     Error,
@@ -253,6 +313,8 @@ pub struct ApprovalCard {
 #[derive(Clone, Debug, Default)]
 pub struct ApprovalDetailView {
     pub diff_preview: Option<String>,
+    /// Structured hunks from harness when available; prefer over [`Self::diff_preview`].
+    pub diff_observation: Option<impetus_client::protocol::DiffObservation>,
     pub affected_files: Vec<String>,
     pub estimated_scope: Option<String>,
     pub attachment_refs: Vec<Uuid>,
@@ -280,6 +342,8 @@ pub enum UiEventKind {
     },
     UserInput {
         text: String,
+        /// Durable ArtifactRef from Intent (large paste / filesystem attach).
+        artifact: Option<impetus_client::protocol::DurableArtifactRef>,
     },
     Plan {
         summary: String,
@@ -309,6 +373,26 @@ pub enum UiEventKind {
         run_id: Uuid,
         text: String,
     },
+    ReasoningSummary {
+        run_id: Uuid,
+        text: String,
+    },
+    ChildStarted {
+        child_id: String,
+        role: String,
+        parent_id: String,
+    },
+    ChildStatus {
+        child_id: String,
+        status: String,
+        current_action: Option<String>,
+    },
+    ChildFinished {
+        child_id: String,
+        status: String,
+        summary: Option<String>,
+        error: Option<String>,
+    },
     ToolStarted {
         name: String,
     },
@@ -330,6 +414,12 @@ pub enum UiEventKind {
         call_id: String,
         name: String,
         arguments: String,
+    },
+    /// Typed activity rows folded into the tools Activity tree.
+    ActivityStep {
+        label: String,
+        detail: Option<String>,
+        is_error: bool,
     },
     ApprovalRequested {
         approval: ApprovalCard,
@@ -443,6 +533,349 @@ pub struct UiEvent {
     pub kind: UiEventKind,
 }
 
+/// One row in the Review changed-files list (daemon-backed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewFileRow {
+    pub path: String,
+    pub kind_label: String,
+    pub status_code: String,
+    pub insertions: Option<usize>,
+    pub deletions: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FilesFocus {
+    #[default]
+    Tree,
+    Preview,
+    Search,
+}
+
+/// Soft cap for visible directory entries per listing (pagination polish).
+pub const FILES_DIR_PAGE_LIMIT: usize = 500;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilesTreeRow {
+    pub path: String,
+    pub name: String,
+    pub depth: usize,
+    pub is_dir: bool,
+    pub expanded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilesSearchHitRow {
+    pub path: String,
+    pub line: u32,
+    pub text: String,
+}
+
+/// Workspace Files overlay state (all entries come from harness IPC).
+#[derive(Clone, Debug)]
+pub struct FilesOverlayState {
+    pub focus: FilesFocus,
+    pub selected: usize,
+    pub expanded: BTreeSet<String>,
+    pub children: BTreeMap<String, Vec<WorkspaceDirEntry>>,
+    pub loading_dirs: BTreeSet<String>,
+    pub error: Option<String>,
+    pub preview_path: Option<String>,
+    pub preview_text: Option<String>,
+    pub preview_error: Option<String>,
+    pub preview_loading: bool,
+    pub preview_scroll: usize,
+    /// Daemon search query (typed when focus == Search).
+    pub search_query: String,
+    pub search_hits: Vec<FilesSearchHitRow>,
+    pub search_truncated: bool,
+    pub search_loading: bool,
+    /// When set, tree shows search hits instead of directory walk.
+    pub search_active: bool,
+    /// Client-side name filter over current tree rows (type-to-filter).
+    pub filter: String,
+}
+
+impl Default for FilesOverlayState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FilesOverlayState {
+    pub fn new() -> Self {
+        Self {
+            focus: FilesFocus::Tree,
+            selected: 0,
+            expanded: BTreeSet::new(),
+            children: BTreeMap::new(),
+            loading_dirs: BTreeSet::new(),
+            error: None,
+            preview_path: None,
+            preview_text: None,
+            preview_error: None,
+            preview_loading: false,
+            preview_scroll: 0,
+            search_query: String::new(),
+            search_hits: Vec::new(),
+            search_truncated: false,
+            search_loading: false,
+            search_active: false,
+            filter: String::new(),
+        }
+    }
+
+    /// Normalize directory cache key (`.` = workspace root).
+    pub fn dir_key(path: &str) -> String {
+        let trimmed = path.trim().trim_end_matches('/');
+        if trimmed.is_empty() || trimmed == "." {
+            ".".to_owned()
+        } else {
+            trimmed.to_owned()
+        }
+    }
+
+    pub fn visible_rows(&self) -> Vec<FilesTreeRow> {
+        if self.search_active {
+            return self
+                .search_hits
+                .iter()
+                .map(|hit| FilesTreeRow {
+                    path: hit.path.clone(),
+                    name: format!("{}:{} {}", hit.path, hit.line, truncate_hit(&hit.text, 48)),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                })
+                .collect();
+        }
+        let mut rows = Vec::new();
+        self.append_children(".", 0, &mut rows);
+        if self.filter.trim().is_empty() {
+            return rows;
+        }
+        let needle = self.filter.to_ascii_lowercase();
+        rows.into_iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn append_children(&self, dir: &str, depth: usize, out: &mut Vec<FilesTreeRow>) {
+        let key = Self::dir_key(dir);
+        let Some(entries) = self.children.get(&key) else {
+            return;
+        };
+        for entry in entries {
+            let expanded = entry.is_dir && self.expanded.contains(&entry.path);
+            out.push(FilesTreeRow {
+                path: entry.path.clone(),
+                name: entry.name.clone(),
+                depth,
+                is_dir: entry.is_dir,
+                expanded,
+            });
+            if expanded {
+                self.append_children(&entry.path, depth + 1, out);
+            }
+        }
+    }
+
+    pub fn selected_row(&self) -> Option<FilesTreeRow> {
+        let rows = self.visible_rows();
+        rows.get(self.selected).cloned()
+    }
+
+    pub fn clamp_selected(&mut self) {
+        let len = self.visible_rows().len();
+        if len == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(len - 1);
+        }
+    }
+
+    pub fn apply_listing(&mut self, path: &str, mut entries: Vec<WorkspaceDirEntry>) {
+        let key = Self::dir_key(path);
+        self.loading_dirs.remove(&key);
+        if entries.len() > FILES_DIR_PAGE_LIMIT {
+            entries.truncate(FILES_DIR_PAGE_LIMIT);
+            self.error = Some(format!(
+                "directory truncated to {FILES_DIR_PAGE_LIMIT} entries (pagination cap)"
+            ));
+        } else {
+            self.error = None;
+        }
+        self.children.insert(key, entries);
+        self.clamp_selected();
+    }
+
+    pub fn apply_search(&mut self, hits: Vec<FilesSearchHitRow>, truncated: bool) {
+        self.search_loading = false;
+        self.search_hits = hits;
+        self.search_truncated = truncated;
+        self.search_active = true;
+        self.selected = 0;
+        self.focus = FilesFocus::Tree;
+        self.error = if truncated {
+            Some("search truncated (daemon hit cap)".to_owned())
+        } else {
+            None
+        };
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_hits.clear();
+        self.search_truncated = false;
+        self.search_loading = false;
+        self.search_active = false;
+        self.filter.clear();
+        self.focus = FilesFocus::Tree;
+        self.clamp_selected();
+    }
+
+    pub fn begin_refresh(&mut self) {
+        self.children.clear();
+        self.expanded.clear();
+        self.loading_dirs.clear();
+        self.error = None;
+        self.preview_path = None;
+        self.preview_text = None;
+        self.preview_error = None;
+        self.preview_loading = false;
+        self.preview_scroll = 0;
+        self.selected = 0;
+        self.search_query.clear();
+        self.search_hits.clear();
+        self.search_truncated = false;
+        self.search_loading = false;
+        self.search_active = false;
+        self.filter.clear();
+        self.focus = FilesFocus::Tree;
+        self.loading_dirs.insert(".".to_owned());
+    }
+}
+
+fn truncate_hit(text: &str, max_chars: usize) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    if flat.chars().count() <= max_chars {
+        flat
+    } else {
+        let end = flat
+            .char_indices()
+            .nth(max_chars.saturating_sub(1))
+            .map(|(i, _)| i)
+            .unwrap_or(flat.len());
+        format!("{}…", &flat[..end])
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReviewFocus {
+    #[default]
+    Files,
+    Diff,
+}
+
+/// Daemon-backed Review overlay (GitStatus / ListChangedFiles / GetFileDiff).
+#[derive(Clone, Debug)]
+pub struct ReviewOverlayState {
+    pub focus: ReviewFocus,
+    pub selected: usize,
+    pub files: Vec<ReviewFileRow>,
+    pub branch_label: String,
+    pub dirty: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub diff_path: Option<String>,
+    pub diff_patch: Option<String>,
+    pub diff_observation: Option<impetus_client::protocol::DiffObservation>,
+    pub diff_loading: bool,
+    pub diff_error: Option<String>,
+    pub diff_scroll: usize,
+    pub hunk_line_idxs: Vec<usize>,
+    pub selected_hunk: usize,
+}
+
+impl Default for ReviewOverlayState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReviewOverlayState {
+    pub fn new() -> Self {
+        Self {
+            focus: ReviewFocus::Files,
+            selected: 0,
+            files: Vec::new(),
+            branch_label: String::new(),
+            dirty: false,
+            loading: true,
+            error: None,
+            diff_path: None,
+            diff_patch: None,
+            diff_observation: None,
+            diff_loading: false,
+            diff_error: None,
+            diff_scroll: 0,
+            hunk_line_idxs: Vec::new(),
+            selected_hunk: 0,
+        }
+    }
+
+    pub fn clamp_selected(&mut self) {
+        if self.files.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.files.len() - 1);
+        }
+    }
+
+    pub fn selected_path(&self) -> Option<&str> {
+        self.files.get(self.selected).map(|row| row.path.as_str())
+    }
+
+    pub fn apply_snapshot(&mut self, branch_label: String, dirty: bool, files: Vec<ReviewFileRow>) {
+        self.branch_label = branch_label;
+        self.dirty = dirty;
+        self.files = files;
+        self.loading = false;
+        self.error = None;
+        self.clamp_selected();
+    }
+
+    pub fn set_diff(
+        &mut self,
+        path: String,
+        patch: String,
+        hunk_idxs: Vec<usize>,
+        observation: Option<impetus_client::protocol::DiffObservation>,
+    ) {
+        self.diff_path = Some(path);
+        self.diff_patch = Some(patch);
+        self.diff_observation = observation;
+        self.hunk_line_idxs = hunk_idxs;
+        self.selected_hunk = 0;
+        self.diff_scroll = 0;
+        self.diff_loading = false;
+        self.diff_error = None;
+    }
+
+    pub fn jump_hunk(&mut self, delta: isize) {
+        if self.hunk_line_idxs.is_empty() {
+            return;
+        }
+        let len = self.hunk_line_idxs.len() as isize;
+        let next = (self.selected_hunk as isize + delta).rem_euclid(len) as usize;
+        self.selected_hunk = next;
+        self.diff_scroll = self.hunk_line_idxs[next];
+        self.focus = ReviewFocus::Diff;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum Overlay {
     #[default]
@@ -467,6 +900,10 @@ pub enum Overlay {
     },
     ApprovalDetail,
     LargePaste,
+    /// Path prompt for filesystem → durable artifact attach.
+    AttachPath {
+        path: String,
+    },
     Diagnostics {
         text: String,
     },
@@ -475,6 +912,36 @@ pub enum Overlay {
         body: String,
         error: bool,
     },
+    Files {
+        state: FilesOverlayState,
+    },
+    /// Git branch picker (list/filter/switch/create via harness IPC).
+    Branches {
+        selected: usize,
+        query: String,
+        branches: Vec<impetus_client::protocol::GitBranchInfo>,
+    },
+    /// Changed-files + file diff via harness Git IPC.
+    Review {
+        state: ReviewOverlayState,
+    },
+    /// Minimal path/name prompt (workspace root or checkpoint name).
+    TextPrompt {
+        kind: TextPromptKind,
+        title: String,
+        value: String,
+    },
+    /// Durable session checkpoints (list + Enter restore).
+    Checkpoints {
+        selected: usize,
+        checkpoints: Vec<impetus_client::protocol::CheckpointInfo>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextPromptKind {
+    WorkspaceRoot,
+    CheckpointName,
 }
 
 #[derive(Clone, Debug)]
@@ -510,6 +977,8 @@ pub struct AppState {
     pub dirty: bool,
     pub last_sequence: u64,
     pub pending_large_paste: Option<String>,
+    /// Uploaded filesystem artifact waiting for prompt submit (label in composer).
+    pub pending_artifact: Option<PendingArtifact>,
     pub toast: Option<Toast>,
     pub status_message: String,
     pub subscription_generation: u64,
@@ -524,6 +993,8 @@ pub struct AppState {
     pub hit_targets: Vec<HitTarget>,
     /// Previous mouse press for double-click detection.
     pub last_pointer: Option<PointerClick>,
+    /// Current git branch from daemon (header / post-switch refresh).
+    pub current_branch: Option<String>,
 }
 
 impl AppState {
@@ -551,6 +1022,7 @@ impl AppState {
             dirty: true,
             last_sequence: 0,
             pending_large_paste: None,
+            pending_artifact: None,
             toast: None,
             status_message: "ready".to_owned(),
             subscription_generation: 0,
@@ -560,6 +1032,7 @@ impl AppState {
             timeline_line_count: 0,
             hit_targets: Vec::new(),
             last_pointer: None,
+            current_branch: None,
         }
     }
 
@@ -587,7 +1060,13 @@ impl AppState {
 
     pub fn active_session_label(&self) -> String {
         self.active_session
-            .map(short_id)
+            .and_then(|id| {
+                self.sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .map(|session| session.label.clone())
+            })
+            .or_else(|| self.active_session.map(short_id))
             .unwrap_or_else(|| "no-session".to_owned())
     }
 
@@ -782,6 +1261,27 @@ mod tests {
     }
 
     #[test]
+    fn attach_placeholder_shows_name_size_mime_not_bytes() {
+        let label = format_attach_placeholder("notes.txt", 2048, Some("text/plain"));
+        assert_eq!(label, "[Attached · notes.txt · 2 KB · text/plain]");
+        assert!(is_attach_placeholder(&label));
+        assert!(!is_attach_placeholder("[Pasted text · 1 KB · 1 lines]"));
+        assert_eq!(
+            guess_content_type(std::path::Path::new("/tmp/x.rs")).as_deref(),
+            Some("text/plain")
+        );
+        assert!(guess_content_type(std::path::Path::new("/tmp/x.bin")).is_none());
+        assert_eq!(
+            format_artifact_ref_label("abc", 1500, Some("text/plain")),
+            "artifact abc · 2 KB · text/plain"
+        );
+        assert_eq!(
+            format_artifact_ref_label("abc", 100, None),
+            "artifact abc · 1 KB"
+        );
+    }
+
+    #[test]
     fn normalize_paste_collapses_crlf() {
         assert_eq!(normalize_paste("a\r\nb\rc"), "a\nb\nc");
     }
@@ -877,5 +1377,51 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_millis(33)
         ));
+    }
+
+    #[test]
+    fn files_overlay_expand_collapse_visible_rows() {
+        use impetus_client::protocol::WorkspaceDirEntry;
+
+        let mut state = FilesOverlayState::new();
+        state.apply_listing(
+            ".",
+            vec![
+                WorkspaceDirEntry {
+                    name: "README.md".into(),
+                    path: "README.md".into(),
+                    is_dir: false,
+                    is_symlink: false,
+                    is_file: true,
+                },
+                WorkspaceDirEntry {
+                    name: "src".into(),
+                    path: "src".into(),
+                    is_dir: true,
+                    is_symlink: false,
+                    is_file: false,
+                },
+            ],
+        );
+        assert_eq!(state.visible_rows().len(), 2);
+
+        state.expanded.insert("src".into());
+        state.apply_listing(
+            "src",
+            vec![WorkspaceDirEntry {
+                name: "main.rs".into(),
+                path: "src/main.rs".into(),
+                is_dir: false,
+                is_symlink: false,
+                is_file: true,
+            }],
+        );
+        let rows = state.visible_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2].path, "src/main.rs");
+        assert_eq!(rows[2].depth, 1);
+
+        state.expanded.remove("src");
+        assert_eq!(state.visible_rows().len(), 2);
     }
 }

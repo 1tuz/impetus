@@ -29,35 +29,7 @@ pub struct TestFailure {
     pub location: Option<String>,
 }
 
-/// Diff observation from git or file comparison
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiffObservation {
-    pub source: DiffSource,
-    pub files_changed: usize,
-    pub insertions: usize,
-    pub deletions: usize,
-    pub summary: String,
-    pub hunks: Vec<DiffHunk>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifact_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffSource {
-    Git { commit_range: Option<String> },
-    Files { before: PathBuf, after: PathBuf },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiffHunk {
-    pub file: PathBuf,
-    pub old_start: usize,
-    pub old_lines: usize,
-    pub new_start: usize,
-    pub new_lines: usize,
-    pub preview: String,
-}
+pub use impetus_protocol::{DiffHunk, DiffObservation, DiffSource};
 
 /// Search observation from repository search
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

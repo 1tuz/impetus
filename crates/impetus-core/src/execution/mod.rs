@@ -16,7 +16,10 @@ pub use process::{
     MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES, ProcessExecution, ProcessExecutionError,
     ProcessExecutionRequest, ProcessOutput,
 };
-pub use pty::{PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionState};
+pub use pty::{
+    DEFAULT_PTY_READ_BYTES, MAX_PTY_RING_BYTES, PtyOutputChunk, PtySession, PtySessionError,
+    PtySessionId, PtySessionManager, PtySessionState,
+};
 pub use sandbox::{
     MacosSeatbeltSandbox, PreparedSandboxCommand, SandboxCommandRequest, SandboxDecision,
     SandboxDecisionState, SandboxError, SandboxProvider, UnavailableSandboxProvider,

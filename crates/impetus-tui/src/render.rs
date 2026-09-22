@@ -9,11 +9,11 @@ use ratatui::{
 use crate::{
     command,
     composer::ComposerLayoutMode,
-    diff::{looks_like_diff, render_diff_view},
+    diff::{looks_like_diff, render_approval_diff, render_diff_observation, render_diff_view},
     hit::{HitKind, HitTarget, RectHit},
     markdown::{render_markdown, render_plain_wrapped},
     model::{
-        AppState, EXECUTION_MODE_ALL, Focus, ItemKind, Overlay, RunState,
+        AppState, EXECUTION_MODE_ALL, FilesFocus, Focus, ItemKind, Overlay, ReviewFocus, RunState,
         execution_mode_description, execution_mode_is_available, format_status_strip, short_id,
     },
     theme::Theme,
@@ -90,6 +90,14 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
                 .fg(theme.cyan)
                 .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ·  ", Style::default().fg(theme.border).bg(theme.surface)),
+        Span::styled(
+            app.current_branch
+                .as_deref()
+                .map(|name| format!("⎇ {name}"))
+                .unwrap_or_else(|| "⎇ —".to_owned()),
+            Style::default().fg(theme.green).bg(theme.surface),
         ),
         Span::styled("  ·  ", Style::default().fg(theme.border).bg(theme.surface)),
         Span::styled(
@@ -293,7 +301,11 @@ fn build_timeline_lines(
                 if item.streaming_key.is_some() {
                     "  …"
                 } else if item.collapsed {
-                    "  [collapsed]"
+                    if item.kind == ItemKind::Activity {
+                        "  ▸"
+                    } else {
+                        "  [collapsed]"
+                    }
                 } else {
                     ""
                 },
@@ -471,7 +483,8 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &mut AppState, theme: The
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
-    let left = " ? help  Ctrl+P cmds  F5 theme  Ctrl+Shift+T cycle  Ctrl+Q quit";
+    let left =
+        " ? help  Ctrl+Shift+A attach  Ctrl+B branch  Ctrl+F files  Ctrl+\\ pty  Ctrl+Q quit";
     let right = format!(" {} ", format_status_strip(app));
     let available = area.width as usize;
     let right_width = right.chars().count();
@@ -547,6 +560,47 @@ fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
         Overlay::Approval { selected } => render_approval(frame, app, selected, theme),
         Overlay::ApprovalDetail => render_approval_detail(frame, app, theme),
         Overlay::LargePaste => render_large_paste(frame, app, theme),
+        Overlay::AttachPath { path } => render_text_modal(
+            frame,
+            " attach path ",
+            &format!(
+                "path: {path}_\n\nType absolute or relative filesystem path.\nEnter uploads via chunked artifact_upload (DurableArtifactRef in composer).\nEsc cancel · max {}.",
+                human_bytes(crate::model::MAX_PASTE_UPLOAD_BYTES)
+            ),
+            72,
+            48,
+            false,
+            theme,
+        ),
+        Overlay::TextPrompt { title, value, .. } => render_text_modal(
+            frame,
+            &title,
+            &format!("{value}\n\nType value · Enter confirm · Esc cancel"),
+            70,
+            40,
+            false,
+            theme,
+        ),
+        Overlay::Checkpoints {
+            selected,
+            checkpoints,
+        } => {
+            let mut body = String::from("Enter restore · N create · Esc close\n\n");
+            if checkpoints.is_empty() {
+                body.push_str("(no checkpoints yet — press N to name one)");
+            } else {
+                for (idx, cp) in checkpoints.iter().enumerate() {
+                    let mark = if idx == selected { "▸" } else { " " };
+                    let id = crate::model::short_id(cp.id);
+                    body.push_str(&format!(
+                        "{mark} {id}  @{seq}  {name}\n",
+                        seq = cp.sequence,
+                        name = cp.name
+                    ));
+                }
+            }
+            render_text_modal(frame, " checkpoints ", &body, 84, 70, false, theme);
+        }
         Overlay::Diagnostics { text } => render_text_modal(
             frame,
             " diagnostics · redacted ",
@@ -559,6 +613,13 @@ fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
         Overlay::Message { title, body, error } => {
             render_text_modal(frame, &title, &body, 70, 55, error, theme)
         }
+        Overlay::Files { state } => render_files(frame, &state, theme),
+        Overlay::Branches {
+            selected,
+            query,
+            branches,
+        } => render_branches(frame, selected, &query, &branches, theme),
+        Overlay::Review { state } => render_review(frame, &state, theme),
     }
 }
 
@@ -591,13 +652,29 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "HARNESS",
         "  ? / F1            keymap help ( ? only when composer empty )",
         "  F2 / Ctrl+O       session picker",
+        "  Ctrl+F            workspace Files (tree + preview via IPC)",
+        "  Ctrl+Shift+A      attach local file (artifact_upload → ArtifactRef)",
+        "  Ctrl+B            git branch picker (list/filter/switch/create)",
+        "  Ctrl+\\            PTY pass-through ($SHELL; Ctrl+] detaches)",
+        "  F6 / Ctrl+R       Review pane (changed files + GetFileDiff)",
+        "  F7                session checkpoints (list · Enter restore · N name)",
+        "  Ctrl+Shift+K      fork active session at tip (shared-prefix)",
         "  F3                toggle inspector",
         "  Shift+Tab         cycle ASK → ACCEPT EDITS → PLAN → AUTO (daemon IPC)",
         "  F4                execution mode picker (includes BYPASS when unlocked)",
         "  /mode /plan /ask /auto   set mode via daemon IPC",
         "  /theme            theme picker (Impetus neon + geek pack)",
+        "  /attach [path]    attach local file via durable artifact_upload",
+        "  /files            workspace Files overlay",
+        "  /fork [seq]       fork session at tip or sequence",
+        "  /checkpoint [name]  create named checkpoint (prompt if no name)",
+        "  /checkpoints      list checkpoints; Enter restores new branch",
+        "  /pty [cmd…]       PTY pass-through (no ANSI emulator)",
+        "  /review           Review pane (daemon Git IPC)",
         "  Ctrl+Shift+T      cycle theme",
         "  F5                theme picker",
+        "  F6                Review pane",
+        "  F7                checkpoints overlay",
         "  Ctrl+C            cancel run or dismiss current input",
         "  Ctrl+L            clear local viewport",
         "  Ctrl+D            open selected diff/details",
@@ -606,9 +683,38 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  click session     activate (picker or side panel)",
         "  click Y / N       resolve approval when overlay open",
         "",
+        "FILES OVERLAY",
+        "  Up/Down           move tree selection (loads preview via ReadWorkspaceFile)",
+        "  Left/Right/Enter  collapse / expand directory or open file preview",
+        "  Tab               focus tree ↔ preview",
+        "  r                 refresh listing from harness",
+        "  Esc               close",
+        "",
+        "REVIEW PANE",
+        "  Up/Down           select changed file (loads GetFileDiff)",
+        "  Enter/Right       open selected file diff",
+        "  Tab               focus files ↔ diff",
+        "  n / ]             next hunk · [ / p (in diff) previous hunk",
+        "  r                 refresh via GitStatus / GetDiff",
+        "  Esc               close (approvals stay independent)",
+        "",
+        "FORK / CHECKPOINT",
+        "  /fork [seq]       ForkSession at tip or sequence (needs events)",
+        "  Ctrl+Shift+K      same as /fork tip",
+        "  /checkpoint name  CreateCheckpoint at tip",
+        "  F7 /checkpoints   list · Enter RestoreCheckpoint (new branch)",
+        "  N in list         name prompt for CreateCheckpoint",
+        "  header label      shows fork@seq ← parent when SessionInfo has it",
+        "",
+        "BRANCH PICKER",
+        "  Enter             switch to selected branch (daemon SwitchBranch)",
+        "  Ctrl+N            create+checkout from filter text",
+        "  type              filter; Enter with no matches creates+checkouts name",
+        "  Esc               cancel",
+        "",
         "SESSION PICKER",
         "  Enter             attach selected session",
-        "  N / Ctrl+N        create new durable session",
+        "  N / Ctrl+N        workspace path prompt → CreateSession",
         "  type              filter by label / id / workspace",
         "",
         "SAFETY",
@@ -620,6 +726,303 @@ fn render_help(frame: &mut Frame, theme: Theme) {
     ]
     .join("\n");
     render_text_modal(frame, " help · keymap ", &body, 86, 90, false, theme);
+}
+
+fn render_files(frame: &mut Frame, state: &crate::model::FilesOverlayState, theme: Theme) {
+    let area = centered_rect(90, 84, frame.area());
+    frame.render_widget(Clear, area);
+    let title = match state.focus {
+        FilesFocus::Search => format!(
+            " files · search: {}█ · Enter run · Esc cancel ",
+            state.search_query
+        ),
+        _ if state.search_active => format!(
+            " files · {} hits{} · Esc clear · Enter preview ",
+            state.search_hits.len(),
+            if state.search_truncated {
+                " (truncated)"
+            } else {
+                ""
+            }
+        ),
+        _ => match state.selected_row() {
+            Some(row) => format!(
+                " files · {} · / search · type filter · Tab · r · Esc ",
+                row.path
+            ),
+            None => " files · / search · type filter · Tab · r refresh · Esc ".to_owned(),
+        },
+    };
+    let block = panel_block(title, true, theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(inner);
+
+    let tree_focused = state.focus == FilesFocus::Tree;
+    let preview_focused = state.focus == FilesFocus::Preview;
+    let tree_block = panel_block(" tree ", tree_focused, theme);
+    let preview_block = panel_block(" preview ", preview_focused, theme);
+    let tree_inner = tree_block.inner(cols[0]);
+    let preview_inner = preview_block.inner(cols[1]);
+    frame.render_widget(tree_block, cols[0]);
+    frame.render_widget(preview_block, cols[1]);
+
+    let rows = state.visible_rows();
+    let items = rows
+        .iter()
+        .enumerate()
+        .map(|(idx, row)| {
+            let marker = if row.is_dir {
+                if row.expanded { "▾ " } else { "▸ " }
+            } else {
+                "  "
+            };
+            let indent = "  ".repeat(row.depth);
+            let label = format!("{indent}{marker}{}", row.name);
+            let mut style = Style::default().fg(if row.is_dir { theme.accent } else { theme.text });
+            if idx == state.selected {
+                style = style.bg(theme.surface_alt).add_modifier(Modifier::BOLD);
+            }
+            ListItem::new(Line::from(Span::styled(label, style)))
+        })
+        .collect::<Vec<_>>();
+
+    let mut list_state = ListState::default();
+    if !rows.is_empty() {
+        list_state.select(Some(state.selected.min(rows.len() - 1)));
+    }
+    if state.loading_dirs.contains(".") && rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("loading…", Style::default().fg(theme.muted))),
+            tree_inner,
+        );
+    } else if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Span::styled(error.clone(), Style::default().fg(theme.red)))
+                .wrap(Wrap { trim: true }),
+            tree_inner,
+        );
+    } else {
+        frame.render_stateful_widget(List::new(items), tree_inner, &mut list_state);
+    }
+
+    let preview_body = if state.preview_loading {
+        "loading preview…".to_owned()
+    } else if let Some(error) = &state.preview_error {
+        error.clone()
+    } else if let Some(text) = &state.preview_text {
+        text.clone()
+    } else {
+        match state.selected_row() {
+            Some(row) if row.is_dir => "(directory — Enter/Right to expand)".to_owned(),
+            Some(_) => "(select a file for preview)".to_owned(),
+            None => "(empty)".to_owned(),
+        }
+    };
+    let preview_style = if state.preview_error.is_some() {
+        Style::default().fg(theme.red)
+    } else {
+        Style::default().fg(theme.text)
+    };
+    frame.render_widget(
+        Paragraph::new(preview_body)
+            .style(preview_style)
+            .wrap(Wrap { trim: false })
+            .scroll((state.preview_scroll as u16, 0)),
+        preview_inner,
+    );
+}
+
+fn render_review(frame: &mut Frame, state: &crate::model::ReviewOverlayState, theme: Theme) {
+    let area = centered_rect(92, 86, frame.area());
+    frame.render_widget(Clear, area);
+    let dirty = if state.dirty { "dirty" } else { "clean" };
+    let title = format!(
+        " review · {} · {dirty} · F6/Ctrl+R · Tab focus · n/] hunks · Esc close ",
+        if state.branch_label.is_empty() {
+            "?"
+        } else {
+            state.branch_label.as_str()
+        }
+    );
+    let block = panel_block(title, true, theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(inner);
+
+    let files_focused = state.focus == ReviewFocus::Files;
+    let diff_focused = state.focus == ReviewFocus::Diff;
+    let files_block = panel_block(" changed files ", files_focused, theme);
+    let diff_block = panel_block(
+        match state.diff_path.as_deref() {
+            Some(path) => format!(" diff · {path} "),
+            None => " diff ".to_owned(),
+        },
+        diff_focused,
+        theme,
+    );
+    let files_inner = files_block.inner(cols[0]);
+    let diff_inner = diff_block.inner(cols[1]);
+    frame.render_widget(files_block, cols[0]);
+    frame.render_widget(diff_block, cols[1]);
+
+    let mut file_lines = Vec::new();
+    if state.loading {
+        file_lines.push(Line::from(Span::styled(
+            "Loading GitStatus…",
+            Style::default().fg(theme.muted),
+        )));
+    } else if let Some(error) = &state.error {
+        file_lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(theme.red),
+        )));
+    } else if state.files.is_empty() {
+        file_lines.push(Line::from(Span::styled(
+            "(no changed files)",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        for (idx, row) in state.files.iter().enumerate() {
+            let stats = match (row.insertions, row.deletions) {
+                (Some(i), Some(d)) => format!(" +{i}/-{d}"),
+                (Some(i), None) => format!(" +{i}"),
+                (None, Some(d)) => format!(" -{d}"),
+                (None, None) => String::new(),
+            };
+            let code = if row.status_code.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", row.status_code.trim())
+            };
+            let label = format!("{}{} {}{}", row.kind_label, code, row.path, stats);
+            let mut style = Style::default().fg(theme.text);
+            if idx == state.selected {
+                style = style.bg(theme.surface_alt).add_modifier(Modifier::BOLD);
+            }
+            file_lines.push(Line::from(Span::styled(label, style)));
+        }
+    }
+    frame.render_widget(Paragraph::new(file_lines), files_inner);
+
+    let mut diff_lines = Vec::new();
+    if state.diff_loading {
+        diff_lines.push(Line::from(Span::styled(
+            "Loading GetFileDiff…",
+            Style::default().fg(theme.muted),
+        )));
+    } else if let Some(error) = &state.diff_error {
+        diff_lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(theme.red),
+        )));
+    } else if let Some(obs) = state
+        .diff_observation
+        .as_ref()
+        .filter(|o| !o.hunks.is_empty())
+    {
+        if !obs.hunks.is_empty() {
+            diff_lines.push(Line::from(Span::styled(
+                format!(
+                    "structured · {} hunks · +{}/-{} · n/] next · [ /p prev",
+                    obs.hunks.len(),
+                    obs.insertions,
+                    obs.deletions
+                ),
+                Style::default().fg(theme.muted),
+            )));
+            diff_lines.push(Line::from(""));
+        }
+        diff_lines.extend(render_diff_observation(
+            obs,
+            diff_inner.width as usize,
+            theme,
+        ));
+    } else if let Some(patch) = &state.diff_patch {
+        if !state.hunk_line_idxs.is_empty() {
+            diff_lines.push(Line::from(Span::styled(
+                format!(
+                    "hunk {}/{} · n/] next · [ /p prev",
+                    state.selected_hunk.saturating_add(1),
+                    state.hunk_line_idxs.len()
+                ),
+                Style::default().fg(theme.muted),
+            )));
+            diff_lines.push(Line::from(""));
+        }
+        diff_lines.extend(render_diff_view(patch, diff_inner.width as usize, theme));
+    } else {
+        diff_lines.push(Line::from(Span::styled(
+            "Select a file and press Enter.",
+            Style::default().fg(theme.muted),
+        )));
+    }
+    let scroll = state.diff_scroll.min(diff_lines.len().saturating_sub(1)) as u16;
+    frame.render_widget(
+        Paragraph::new(diff_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        diff_inner,
+    );
+}
+
+fn render_branches(
+    frame: &mut Frame,
+    selected: usize,
+    query: &str,
+    branches: &[impetus_client::protocol::GitBranchInfo],
+    theme: Theme,
+) {
+    let area = centered_rect(72, 70, frame.area());
+    frame.render_widget(Clear, area);
+    let block = panel_block(
+        " branches · Enter switch · Ctrl+N create · Esc close ",
+        true,
+        theme,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter: ", Style::default().fg(theme.muted)),
+            Span::styled(query.to_owned(), Style::default().fg(theme.text)),
+            Span::styled("█", Style::default().fg(theme.accent)),
+        ])),
+        rows[0],
+    );
+    let filtered = filtered_branches(branches, query);
+    let items = filtered
+        .iter()
+        .enumerate()
+        .map(|(idx, branch)| {
+            let marker = if branch.current { "* " } else { "  " };
+            let mut style = Style::default().fg(theme.text);
+            if idx == selected {
+                style = style.bg(theme.surface_alt).add_modifier(Modifier::BOLD);
+            }
+            ListItem::new(Line::from(Span::styled(
+                format!("{marker}{}", branch.name),
+                style,
+            )))
+        })
+        .collect::<Vec<_>>();
+    let mut list_state = ListState::default();
+    if !filtered.is_empty() {
+        list_state.select(Some(selected.min(filtered.len() - 1)));
+    }
+    frame.render_stateful_widget(List::new(items), rows[1], &mut list_state);
 }
 
 fn render_session_picker(
@@ -1030,13 +1433,19 @@ fn render_approval_detail(frame: &mut Frame, app: &AppState, theme: Theme) {
             }
             lines.push(Line::from(""));
         }
-        if let Some(diff) = &detail.diff_preview {
+        let diff_lines = render_approval_diff(
+            detail.diff_observation.as_ref(),
+            detail.diff_preview.as_deref(),
+            inner.width as usize,
+            theme,
+        );
+        if !diff_lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Diff preview",
                 Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
-            lines.extend(render_diff_view(diff, inner.width as usize, theme));
+            lines.extend(diff_lines);
         }
     } else {
         lines.push(Line::from(Span::styled(
@@ -1183,6 +1592,17 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - width_percent) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+pub fn filtered_branches<'a>(
+    branches: &'a [impetus_client::protocol::GitBranchInfo],
+    query: &str,
+) -> Vec<&'a impetus_client::protocol::GitBranchInfo> {
+    let needle = query.trim().to_ascii_lowercase();
+    branches
+        .iter()
+        .filter(|branch| needle.is_empty() || branch.name.to_ascii_lowercase().contains(&needle))
+        .collect()
 }
 
 pub fn filtered_sessions<'a>(

@@ -61,6 +61,8 @@ impl From<PtySessionRecord> for PtySession {
             state: record.state,
             origin: record.origin,
             created_at_unix_ms: record.created_at_unix_ms,
+            cols: 80,
+            rows: 24,
         }
     }
 }
@@ -754,6 +756,8 @@ mod tests {
             state: PtySessionState::Running { pid: 789 },
             origin: ActionOrigin::User,
             created_at_unix_ms: 1234567890,
+            cols: 80,
+            rows: 24,
         };
 
         let record: PtySessionRecord = session.clone().into();

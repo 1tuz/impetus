@@ -128,17 +128,53 @@ impetus CLI ──HarnessClient──► impetusd ──► impetus-core
 Zap adapter ──HarnessClient──┘
 ```
 
-Реализовано: durable events, policy/approval, versioned Unix-socket protocol,
-`HarnessClient`, provider registry foundation, shared-prefix session forks +
-named checkpoints, command/JSON
+Реализовано: durable events, policy/approval, versioned Unix-socket protocol
+(`IPC_VERSION` = 11, Hello exact-match), `HarnessClient`, provider registry
+foundation, shared-prefix session forks + named checkpoints, command/JSON
 client, `impetus doctor`, `impetus ui` (Ratatui), Module Runtime foundations,
-attachment/diff/detail DTOs with **bounded ephemeral/in-memory** backing.
-Zap adapter — experimental baseline, не target integration architecture.
-`impetus components` — static built-in tool catalog (не live registry через IPC).
+**`DurableArtifactStore`** (SHA-256, restart-safe; tools/web/paste upload +
+process large bodies → `ArtifactRef`; Read/Meta/Range IPC + MIME; prod age GC
+7d), и **ephemeral `AttachmentStore`**
+(approvals/diffs в RAM — намеренно не durable). Zap adapter — experimental
+baseline, не target integration architecture. `impetus components` — static
+built-in tool catalog (не live registry через IPC).
 
-**Не реализовано / thin:** durable `ArtifactStore`, полный Session DAG, model
-router, remote agent flow end-to-end, полный extension compatibility layer,
-live module/registry browser.
+**Partial / open (см. [ARCHITECTURE.md](ARCHITECTURE.md) matrix + [TODO.md](TODO.md)):**
+workspace Files / Git IPC (v8 caps; TUI `Ctrl+F` / `Ctrl+B` / Review done;
+Desktop local-git / Files wire still open), daemon-owned PTY
+(`portable-pty`, cap `pty`; TUI `/attach` ArtifactRef UI done),
+полный Session DAG, model router, remote agent flow end-to-end, полный
+extension compatibility layer, live module/registry browser.
+
+Не путать: `AttachmentStore` ≠ `ArtifactStore`. Doctor описывает оба честно.
+
+## Storage
+
+| Store | Durability | Use |
+| --- | --- | --- |
+| EventStore (SQLite WAL) | Durable | Ordered session history, approvals, budgets |
+| DurableArtifactStore | Durable | Large tool/web/paste bodies (SHA-256) |
+| AttachmentStore | Ephemeral (RAM) | Approval diff previews / detail DTOs |
+
+## IPC compatibility (PROTO)
+
+- `IPC_VERSION` = 11. **Hello — exact-match**: version skew → `Incompatible`
+  (нет `min_supported` range до отдельного RFC).
+- Presentation crates берут wire/event DTO из `impetus-client::protocol`
+  (façade над `impetus-protocol`). TUI/Desktop не зависят от `impetus-core` для
+  **типов**.
+- Optional Cargo feature `impetus-client/in-memory` → `InMemoryTransport`;
+  production default — Unix socket.
+- Wire DTO живут в runtime-free `impetus-protocol` (без rusqlite/reqwest/Harness).
+  Client всё ещё path-deps `impetus-core` для Unix / `Harness` / `in-memory` —
+  см. TODO.md PROTO.
+- Bump `IPC_VERSION` при добавлении Git / Files / PTY / MCP-model catalog /
+  rich activity caps в Hello. Текущие caps включают workspace Files, Git,
+  `structured_diff` (DiffObservation на GetDiff/GetFileDiff), daemon-owned
+  `pty` (`portable-pty`), read-only `list_mcp` / `list_models`
+  (`ListMcpServers` / `ListModels` — labels/status only; no secrets), и
+  additive `artifact_read` (Read/GetMetadata/Range; MIME on upload).
+
 ## Harness Kernel — неподвижные инварианты
 
 Даже при высокой модульности нельзя позволять заменить или обойти:
@@ -204,7 +240,8 @@ tracing, or event payloads on any OS.
 - sandbox implementations;
 - SSH/tmux/SFTP implementations;
 - storage backend;
-- artifact storage (durable `ArtifactStore`; current attachment backing is ephemeral/in-memory);
+- artifact storage (`DurableArtifactStore` Implemented; `AttachmentStore` —
+  ephemeral RAM for approvals/diffs — not an ArtifactStore);
 - `AgentLoopStrategy` / `AgentScheduler` (orchestration policy only — not safety pipeline);
 - `SearchBackend` / `BrowserProvider` (web research; see Web / Internet Research);
 - TUI/client surfaces;
@@ -496,10 +533,11 @@ CRLF/LF нормализуются. Большая вставка компакт
 
 ```text
 paste → composer → large-paste detection → bounded/chunked upload
-  → impetusd → ArtifactStore → ArtifactRef → Context Builder / Agent
+  → impetusd → DurableArtifactStore → ArtifactRef → Context Builder / Agent
 ```
 
 Context Builder читает большой paste частями, сокращает с учётом token budget.
+Evidence: `durable_artifacts.rs`; TUI large-paste upload path.
 
 ## Web / Internet Research
 
@@ -552,7 +590,7 @@ Native Rust HTTP client. API providers — сменные optional `SearchBacken
 
 ```text
 URL → HTTP fetch → bounded response → HTML extraction → clean text/markdown
-  → ArtifactStore → compact WebObservation (+ ArtifactRef if large)
+  → DurableArtifactStore → compact WebObservation (+ ArtifactRef if large)
 ```
 
 Planned: redirects, timeout, max size, MIME, HTML→markdown, links, title,
@@ -684,11 +722,13 @@ update, disable. Optional component update без полного релиза Im
 | Daemon/client split | crates exist; docs/tooling gaps | clean `impetus`/`impetusd` everywhere |
 | Safety pipeline | policy, approval, sandbox, admission | unchanged invariants |
 | Provider | `ModelProvider`, registry foundation | router + escalation |
-| Context | shared-prefix forks, checkpoints, compaction | TUI branch picker; lazy modules |
-| Attachments | bounded ephemeral/in-memory DTO backing | durable `ArtifactStore` |
+| Context | shared-prefix forks, checkpoints, compaction; TUI `Ctrl+B` | lazy modules |
+| DurableArtifactStore | Implemented (SHA-256; upload/read/MIME; prod age GC 7d; TUI `/attach`) | — |
+| AttachmentStore | ephemeral RAM (approvals/diffs) | intentional; not ArtifactStore |
+| IPC | v10 exact-match Hello; Files/Git/pty/`list_mcp`/`list_models` caps | thin protocol crate; Desktop SoT |
 | Agent loop | present; keep hardening | full orchestrator + research loop |
 | Web research | foundations + doctor probes | native search/fetch; optional browser |
-| TUI | `impetus ui` (Ratatui MVP) | richer UX / polish |
+| TUI | `impetus ui` + Files/Git/Review/Activity/PTY | richer UX / polish |
 | Doctor | `impetus doctor` / `--json` | unchanged role |
 | Module Runtime | foundations present | richer registry UX / probing |
 | Extensions | partial compatibility | adapters + canonical model |

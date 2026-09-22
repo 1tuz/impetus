@@ -142,22 +142,7 @@ pub struct McpModule {
 }
 
 /// MCP transport type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpTransport {
-    Stdio,
-    Http,
-    Sse,
-}
-
-/// MCP capabilities
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpCapabilities {
-    pub tools: bool,
-    pub resources: bool,
-    pub prompts: bool,
-    pub sampling: bool,
-}
+pub use impetus_protocol::{McpCapabilities, McpTransport};
 
 /// Canonical tool provider
 #[derive(Debug, Clone, Serialize, Deserialize)]

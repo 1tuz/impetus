@@ -10,8 +10,8 @@
 //!   impetusd must be running with at least one active session.
 
 use anyhow::Result;
+use impetus_client::protocol::{IpcRequest, IpcResponse};
 use impetus_client::{HarnessClient, UnixSocketTransport};
-use impetus_core::{IpcRequest, IpcResponse};
 
 #[tokio::main]
 async fn main() -> Result<()> {

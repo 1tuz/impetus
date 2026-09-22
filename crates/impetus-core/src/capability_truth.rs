@@ -105,10 +105,12 @@ impl CapabilityTruthReport {
                 entry(
                     "durable_artifact_store",
                     CapabilityLevel::Implemented,
-                    "DurableArtifactStore SHA-256 restart-safe bodies for tools/web/shell/upload",
+                    "DurableArtifactStore SHA-256 restart-safe bodies for tools/web/shell/upload; age GC 7d",
                     Some(serde_json::json!({
                         "durable": true,
                         "module": "durable_artifacts",
+                        "gc_retention_days": 7,
+                        "gc_age_only": true,
                     })),
                 ),
                 entry(

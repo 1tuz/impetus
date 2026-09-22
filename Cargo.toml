@@ -1,12 +1,14 @@
 [workspace]
 members = [
+  "crates/impetus-protocol",
   "crates/impetus-core",
   "crates/impetus",
   "crates/impetusd",
   "crates/impetus-cli",
   "crates/impetus-client",
   "crates/impetus-tui",
-  "crates/impetus-zap-adapter", "crates/impetus-acp-gateway",
+  "crates/impetus-zap-adapter",
+  "crates/impetus-acp-gateway",
   "crates/test-module",
 ]
 resolver = "2"

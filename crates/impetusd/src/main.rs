@@ -2,10 +2,10 @@ use anyhow::{Context, Result, bail};
 use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
-    NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig, PolicyEngine,
-    ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
+    MAX_IPC_LINE_BYTES, NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig,
+    PolicyEngine, ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
     build_explore_spawn_bridge_for_harness, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
-    load_daemon_policy_store,
+    load_daemon_policy_store, open_daemon_worktree_manager,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -16,8 +16,6 @@ use tokio::net::{UnixListener, UnixStream};
 
 #[cfg(test)]
 use impetus_core::RunEvent;
-
-const MAX_IPC_LINE_BYTES: usize = 64 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,6 +38,7 @@ async fn main() -> Result<()> {
         &data_root,
         std::env::args_os().skip(1),
     )?);
+    spawn_artifact_gc_loop(impetus_core::default_artifact_root());
     let listener = UnixListener::bind(&socket_path).context("bind harness Unix socket")?;
     set_socket_permissions(&socket_path)?;
     loop {
@@ -49,6 +48,27 @@ async fn main() -> Result<()> {
             let _ = serve_client(stream, harness).await;
         });
     }
+}
+
+/// Startup + interval age-based GC for DurableArtifactStore. Errors log only.
+fn spawn_artifact_gc_loop(artifact_root: PathBuf) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(impetus_core::ARTIFACT_GC_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match impetus_core::run_artifact_gc(&artifact_root, impetus_core::ARTIFACT_GC_RETENTION)
+            {
+                Ok(removed) if removed > 0 => {
+                    eprintln!("impetusd: artifact GC removed {removed} entries");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("impetusd: artifact GC failed (continuing): {error}");
+                }
+            }
+        }
+    });
 }
 
 /// Direct providers and ACP agents are enabled only by an explicit daemon-start profile file.
@@ -148,16 +168,25 @@ fn configured_harness(
     wire_daemon_runtime(harness, data_root)
 }
 
-/// Attach production Explore spawn + optional MCP/hook/policy/workflow autoload.
+/// Attach production Explore spawn + WorktreeManager + optional MCP/hook/policy/workflow.
+///
+/// WorktreeManager: `{data_root}/worktrees.sqlite3` + `{data_root}/worktrees/`.
+/// Open failure is fail-closed (daemon start aborts) so Git IPC does not silently
+/// resolve cwd to the workspace root without managed-worktree preference.
 fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     let explore = build_explore_spawn_bridge_for_harness(
         data_root,
         harness.provider_registry(),
         harness.default_provider_id(),
         harness.policy(),
+        harness.store(),
     )
     .context("wire Explore spawn bridge")?;
     let harness = harness.with_explore_spawn(explore);
+
+    let worktrees =
+        open_daemon_worktree_manager(data_root).context("open WorktreeManager under data root")?;
+    let harness = harness.with_worktree_manager(worktrees);
 
     let hook_prefilter =
         load_daemon_hook_prefilter(data_root).context("load hook prefilter catalog")?;
@@ -177,12 +206,13 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
             .context("open child result store for workflow")?,
     );
     let workflow = Arc::new(
-        impetus_core::WorkflowRuntime::new(
+        impetus_core::WorkflowRuntime::with_parent_events(
             child_store,
             Arc::new(impetus_core::ProcessRoleChildExecutor::new()),
             Arc::new(impetus_core::ReadOnlyExploreExecutor::new(
                 impetus_core::default_artifact_root(),
             )),
+            Some(harness.store()),
         )
         .context("build workflow runtime")?,
     );
@@ -310,21 +340,36 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                 let Some((notified_session_id, _notified_sequence)) = result else {
                     continue;
                 };
-                let (session_id, after_sequence) = subscription.expect("checked above");
+                let (session_id, mut after_sequence) = subscription.expect("checked above");
                 if notified_session_id != session_id {
                     continue;
                 }
-                match harness.handle(IpcRequest::Stream { session_id, after_sequence }) {
-                    IpcResponse::Events { events, .. } if !events.is_empty() => {
-                        subscription = events.last().map(|last| (session_id, last.sequence));
-                        write_response(&mut writer, &IpcResponse::Events { session_id, events }).await?;
+                // Drain until empty: Stream may return a size-capped batch; remaining
+                // events must still be pushed without waiting for another append.
+                loop {
+                    match harness.handle(IpcRequest::Stream {
+                        session_id,
+                        after_sequence,
+                    }) {
+                        IpcResponse::Events { events, .. } if !events.is_empty() => {
+                            after_sequence = events
+                                .last()
+                                .map(|last| last.sequence)
+                                .expect("non-empty events");
+                            subscription = Some((session_id, after_sequence));
+                            write_response(
+                                &mut writer,
+                                &IpcResponse::Events { session_id, events },
+                            )
+                            .await?;
+                        }
+                        IpcResponse::Events { .. } => break,
+                        error @ IpcResponse::Error { .. } => {
+                            write_response(&mut writer, &error).await?;
+                            return Ok(());
+                        }
+                        _ => unreachable!("stream request returns events or error"),
                     }
-                    IpcResponse::Events { .. } => {}
-                    error @ IpcResponse::Error { .. } => {
-                        write_response(&mut writer, &error).await?;
-                        return Ok(());
-                    }
-                    _ => unreachable!("stream request returns events or error"),
                 }
             }
             read = read_bounded_line(&mut reader) => {
@@ -432,6 +477,9 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::AppendArtifactChunk { .. }
         | IpcRequest::FinishArtifactUpload { .. }
         | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
+        IpcRequest::ReadArtifact { .. }
+        | IpcRequest::GetArtifactMetadata { .. }
+        | IpcRequest::ReadArtifactRange { .. } => "artifact_read",
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
         IpcRequest::Hover { .. } => "coding_hover",
@@ -444,6 +492,29 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::StartWorkflow { .. }
         | IpcRequest::CancelWorkflow { .. }
         | IpcRequest::AdvanceWorkflow { .. } => "workflow_control",
+        IpcRequest::ListWorkspaceDir { .. } => "workspace_list_dir",
+        IpcRequest::StatWorkspaceFile { .. } => "workspace_stat_file",
+        IpcRequest::ReadWorkspaceFile { .. } => "workspace_read_file",
+        IpcRequest::SearchWorkspaceFiles { .. } => "workspace_search_files",
+        IpcRequest::GetRepositoryState { .. }
+        | IpcRequest::ListBranches { .. }
+        | IpcRequest::GetCurrentBranch { .. }
+        | IpcRequest::CreateBranch { .. }
+        | IpcRequest::SwitchBranch { .. }
+        | IpcRequest::GitStatus { .. }
+        | IpcRequest::ListChangedFiles { .. }
+        | IpcRequest::GetDiff { .. }
+        | IpcRequest::GetFileDiff { .. } => "git",
+        IpcRequest::PtyStart { .. }
+        | IpcRequest::PtyAttach { .. }
+        | IpcRequest::PtyInput { .. }
+        | IpcRequest::PtyOutput { .. }
+        | IpcRequest::PtyResize { .. }
+        | IpcRequest::PtyDetach { .. }
+        | IpcRequest::PtyTerminate { .. }
+        | IpcRequest::PtyStatus { .. } => "pty",
+        IpcRequest::ListMcpServers => "list_mcp",
+        IpcRequest::ListModels => "list_models",
     }
 }
 
@@ -561,12 +632,46 @@ mod tests {
     }
 
     #[test]
+    fn artifact_gc_retention_is_seven_days() {
+        assert_eq!(
+            impetus_core::ARTIFACT_GC_RETENTION,
+            std::time::Duration::from_secs(7 * 24 * 60 * 60)
+        );
+        assert!(impetus_core::ARTIFACT_GC_INTERVAL.as_secs() >= 3600);
+    }
+
+    #[tokio::test]
+    async fn artifact_gc_loop_fail_safe_on_bad_root() {
+        let dir = test_temp_dir("artifact-gc-bad");
+        let bad_root = dir.join("not-a-directory");
+        std::fs::write(&bad_root, b"x").expect("file as root");
+        // First interval tick fires immediately; Err must not abort the task.
+        spawn_artifact_gc_loop(bad_root);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn startup_policy_optional_default_is_empty_overrides() {
         let dir = test_temp_dir("policy-optional");
         let path = dir.join("policy.json");
         let config = PolicyConfig::load_optional(&path).expect("missing ok");
         let engine = PolicyEngine::with_config(SandboxScope::local_workspace("."), config);
         assert!(engine.config().overrides.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_harness_wires_worktree_manager_under_data_root() {
+        let dir = test_temp_dir("wt-wire");
+        unsafe {
+            std::env::set_var("IMPETUS_DATA_DIR", dir.to_str().expect("utf8 path"));
+        }
+        let store = Arc::new(MemoryEventStore::default());
+        let harness = configured_harness(store, &dir, []).expect("configured harness");
+        assert!(harness.has_worktree_manager());
+        assert!(dir.join("worktrees.sqlite3").is_file());
+        assert!(dir.join("worktrees").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -580,6 +685,7 @@ mod tests {
         let harness =
             configured_harness(store, &dir, []).expect("configured harness with explore spawn");
         assert!(harness.has_explore_spawn());
+        assert!(harness.has_worktree_manager());
 
         let workspace = std::env::current_dir().expect("cwd");
         let outcome = harness
@@ -832,7 +938,8 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(chunks, 2);
+        // Mock emits two small deltas; AgentLoop coalesces under AGENT_CHUNK_COALESCE_BYTES.
+        assert_eq!(chunks, 1);
         assert!(events.iter().any(|event| matches!(
             event.payload,
             impetus_core::EventPayload::Run(RunEvent::Completed { .. })

@@ -186,12 +186,24 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
             impetus_core::AgentEvent::Final { text, .. } => {
                 render_block("Agent [Final]", text);
             }
+            impetus_core::AgentEvent::ReasoningSummary { text, .. } => {
+                render_block("Reasoning", text);
+            }
         },
         EventPayload::Approval(approval) => {
             render_block("Approval", &format!("{:?}", approval));
             if let impetus_core::ApprovalEvent::Requested { request } = approval {
                 osc::send_approval_request(&request.id.to_string(), &request.action.summary, &[]);
             }
+        }
+        EventPayload::Child(child) => {
+            render_block("Child", &format!("{:?}", child));
+        }
+        EventPayload::Pty(pty) => {
+            render_block("Pty", &format!("{:?}", pty));
+        }
+        EventPayload::Command(command) => {
+            render_block("Command", &format!("{:?}", command));
         }
         EventPayload::Backend(backend) => {
             render_block("Backend", &format!("{:?}", backend));
@@ -292,6 +304,9 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
                     osc::send_error(&format!("Retry failed: {}", last_error));
                 }
             }
+        }
+        EventPayload::Sandbox(sandbox) => {
+            render_block("Sandbox", &format!("{:?}", sandbox));
         }
     }
 }

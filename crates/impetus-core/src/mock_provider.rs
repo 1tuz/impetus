@@ -28,6 +28,10 @@ pub enum MockStreamItem {
     Finish {
         reason: FinishReason,
     },
+    /// Reasoning summary (maps to [`StreamEvent::Reasoning`]).
+    Reasoning {
+        content: String,
+    },
     Error {
         message: String,
     },
@@ -166,6 +170,11 @@ impl ModelProvider for MockProvider {
                 }
                 MockStreamItem::Finish { reason } => {
                     on_event(StreamEvent::Finish { reason: *reason })?;
+                }
+                MockStreamItem::Reasoning { content } => {
+                    on_event(StreamEvent::Reasoning {
+                        content: content.clone(),
+                    })?;
                 }
                 MockStreamItem::Error { message } => {
                     return Err(ProviderError::RequestFailed(message.clone()));
