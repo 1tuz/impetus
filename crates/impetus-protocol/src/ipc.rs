@@ -1,14 +1,14 @@
 use crate::Event;
 use crate::types::{
     ApprovalDetail, BrowserHealthStatus, BrowserNegotiateInfo, CheckpointInfo, ChildResult,
-    DurableArtifactMeta, DurableArtifactRef, ExecutionMode, ExtensionStatusInfo, GitBranchInfo,
-    GitChangedFile, GitCurrentBranch, GitDiffPayload, GitRepositoryState, GitStatusSnapshot,
-    HoverInfo, McpServerStatus, McpServerUpsert, MemoryEntryInfo, MemoryEntryScope,
-    MemoryExportFormat, MemoryProvenanceInfo, MergeReadyReport, ModelProviderStatus, PolicyConfig,
-    PolicyStore, PtySessionState, ReadOnlyToolKind, ResolvedInstructions, RuntimeStatus,
-    SessionInfo, SessionModelSelection, SourceLocation, SubsystemHealth, ToolOutcome,
-    UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent, WorkspaceFileMetadata,
-    WorkspaceSearchResult, WorktreeInfo,
+    DurableArtifactMeta, DurableArtifactRef, ExecutionMode, ExtensionPackageInfo,
+    ExtensionStatusInfo, GitBranchInfo, GitChangedFile, GitCurrentBranch, GitDiffPayload,
+    GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus, McpServerUpsert,
+    MemoryEntryInfo, MemoryEntryScope, MemoryExportFormat, MemoryProvenanceInfo, MergeReadyReport,
+    ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState, ReadOnlyToolKind,
+    ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection, SourceLocation,
+    SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent,
+    WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,8 +54,8 @@ fn events_frame_len(session_id: Uuid, events: &[Event]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-pub const IPC_VERSION: u16 = 13;
-/// Inclusive lower bound for Hello negotiation (clients on 12..13 accepted).
+pub const IPC_VERSION: u16 = 14;
+/// Inclusive lower bound for Hello negotiation (clients on 12..14 accepted).
 pub const IPC_MIN_SUPPORTED: u16 = 12;
 
 pub const IPC_CAPABILITIES: &[&str] = &[
@@ -119,6 +119,8 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "browser",
     // ExtensionRuntime inventory (List/Get; CLI remains control plane).
     "extension_runtime",
+    // ExtensionHost package manage (reload/enable/disable/list; IPC v14).
+    "extension_manage",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,6 +520,22 @@ pub enum IpcRequest {
     GetExtensionStatus {
         installation_id: String,
     },
+    /// Rediscover/validate packages under daemon extension roots.
+    ReloadExtensionPackages,
+    /// List packages known to ExtensionHost (all phases).
+    ListExtensionPackages,
+    /// Detail for one package id.
+    GetExtensionPackage {
+        id: String,
+    },
+    /// Activate package capabilities (instruction_pack roots, …).
+    EnableExtensionPackage {
+        id: String,
+    },
+    /// Deactivate package; capabilities leave AgentLoop registry.
+    DisableExtensionPackage {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -764,6 +782,17 @@ pub enum IpcResponse {
     },
     ExtensionStatus {
         extension: ExtensionStatusInfo,
+    },
+    /// ExtensionHost package inventory.
+    ExtensionPackages {
+        packages: Vec<ExtensionPackageInfo>,
+    },
+    ExtensionPackage {
+        package: ExtensionPackageInfo,
+    },
+    ExtensionPackagesReloaded {
+        loaded: u32,
+        failed: u32,
     },
     Incompatible {
         supported_version: u16,
@@ -1166,9 +1195,39 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"mcp_manage"));
         assert!(IPC_CAPABILITIES.contains(&"browser"));
         assert!(IPC_CAPABILITIES.contains(&"extension_runtime"));
+        assert!(IPC_CAPABILITIES.contains(&"extension_manage"));
         assert!(IPC_CAPABILITIES.contains(&"resolve_approval_bound"));
-        assert_eq!(IPC_VERSION, 13);
+        assert_eq!(IPC_VERSION, 14);
         assert_eq!(IPC_MIN_SUPPORTED, 12);
+    }
+
+    #[test]
+    fn extension_manage_messages_round_trip() {
+        let reload = IpcRequest::ReloadExtensionPackages;
+        let reload_json = serde_json::to_string(&reload).unwrap();
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&reload_json).unwrap(),
+            reload
+        );
+        let packages = IpcResponse::ExtensionPackages {
+            packages: vec![ExtensionPackageInfo {
+                id: "demo-pack".into(),
+                name: "Demo".into(),
+                version: "0.1.0".into(),
+                extension_api_version: 1,
+                source: "global".into(),
+                phase: "active".into(),
+                capabilities: vec!["skill_provider".into()],
+                permissions: vec!["filesystem_read".into()],
+                last_error: None,
+                compatible: true,
+            }],
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&packages).unwrap())
+                .unwrap(),
+            packages
+        );
     }
 
     #[test]

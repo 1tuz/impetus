@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 impetus-protocol = { path = "../impetus-protocol" }
+impetus-extension-sdk = { path = "../impetus-extension-sdk" }
 anyhow.workspace = true
 futures-util.workspace = true
 humantime-serde.workspace = true

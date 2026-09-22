@@ -1,0 +1,17 @@
+[package]
+name = "impetus-extension-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stable public SDK types for external impetus-extensions authors"
+# Not on crates.io yet — external authors pin via git (see docs/extensions/depending-on-sdk.md).
+publish = false
+
+[dependencies]
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true

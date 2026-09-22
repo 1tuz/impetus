@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(ext["status"], "WARN");
         assert_eq!(ext["details"]["mcp_live_tools_in_loop"], true);
         assert_eq!(ext["details"]["impetusd_autoload"], true);
-        assert_eq!(ext["details"]["agent_loop_skill_inject"], false);
+        assert_eq!(ext["details"]["agent_loop_skill_inject"], true);
 
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));

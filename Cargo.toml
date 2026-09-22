@@ -9,6 +9,7 @@ members = [
   "crates/impetus-tui",
   "crates/impetus-zap-adapter",
   "crates/impetus-acp-gateway",
+  "crates/impetus-extension-sdk",
   "crates/test-module",
 ]
 resolver = "2"
@@ -38,3 +39,4 @@ tokio-util = { version = "0.7.16", features = ["rt"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+toml = "0.8.23"

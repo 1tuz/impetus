@@ -184,6 +184,17 @@ impl PolicyEngine {
         }
     }
 
+    /// Evaluate an extension manifest permission against this engine's sandbox scope.
+    ///
+    /// Used at package activate (`permission_eval`). Does not grant `origin=user`
+    /// and does not skip NeedsApproval for mutating ActionKinds at action time.
+    pub fn evaluate_extension_permission(
+        &self,
+        permission: impetus_extension_sdk::ExtensionPermission,
+    ) -> PolicyDecision {
+        crate::extension_policy::evaluate_permission_against_scope(permission, &self.scope)
+    }
+
     pub fn evaluate(&self, action: &Action) -> PolicyDecision {
         match action.kind {
             ActionKind::ReadFile if !self.target_is_in_scope(action, false) => {

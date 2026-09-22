@@ -1,0 +1,13 @@
+schema_version = 1
+id = "demo-pack"
+name = "Demo Pack"
+version = "0.1.0"
+description = "Reference fixture for ExtensionHost / AgentLoop inject"
+author = "impetus"
+extension_api_version = 1
+capabilities = ["skill_provider"]
+permissions = ["filesystem_read"]
+
+[entrypoint]
+kind = "instruction_pack"
+root = "skills"
