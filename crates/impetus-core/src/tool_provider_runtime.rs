@@ -50,6 +50,13 @@ impl ToolProviderRuntime {
         );
     }
 
+    /// Replace the full registry (daemon `ReloadMcpServers`).
+    ///
+    /// Drops cached bridges — `connected=false` until next `ensure_connected`.
+    pub fn replace_all(&mut self, other: ToolProviderRuntime) {
+        *self = other;
+    }
+
     /// Test/inject hook: attach a prebuilt live bridge (no process spawn).
     #[cfg(test)]
     pub fn register_live_bridge(

@@ -182,6 +182,7 @@ impl ProviderSteerRewrite {
                     None,
                     None,
                     cancel,
+                    crate::StreamOptions::default(),
                     Box::new(move |event| {
                         if let StreamEvent::TextDelta { delta } = event
                             && let Ok(mut out) = capture.lock()

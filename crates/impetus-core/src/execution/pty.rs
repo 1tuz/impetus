@@ -287,7 +287,7 @@ pub struct PtySessionManager {
     sessions: Mutex<std::collections::HashMap<PtySessionId, PtySession>>,
     live: Mutex<std::collections::HashMap<PtySessionId, LivePty>>,
     next_id: Mutex<u64>,
-    store: Option<Arc<dyn PtySessionStore>>,
+    store: Mutex<Option<Arc<dyn PtySessionStore>>>,
     /// Optional durable store for ring-overflow spill. Absent → drop-only.
     artifacts: Mutex<Option<Arc<DurableArtifactStore>>>,
     /// Ring capacity for new sessions (tests may shrink; capped at MAX).
@@ -301,15 +301,34 @@ impl PtySessionManager {
             sessions: Mutex::new(std::collections::HashMap::new()),
             live: Mutex::new(std::collections::HashMap::new()),
             next_id: Mutex::new(1),
-            store: None,
+            store: Mutex::new(None),
             artifacts: Mutex::new(None),
             ring_capacity: MAX_PTY_RING_BYTES,
         }
     }
 
-    pub fn with_store(mut self, store: Arc<dyn PtySessionStore>) -> Self {
-        self.store = Some(store);
+    pub fn with_store(self, store: Arc<dyn PtySessionStore>) -> Self {
+        self.set_store(store);
         self
+    }
+
+    /// Attach durable metadata store after construction (daemon data-root wire).
+    ///
+    /// Restart/resume: rows survive process restart; live PTY handles do not —
+    /// client must re-`PtyStart` / attach after daemon restart.
+    pub fn set_store(&self, store: Arc<dyn PtySessionStore>) {
+        *self
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
+    }
+
+    /// True when a durable [`PtySessionStore`] is attached.
+    pub fn has_store(&self) -> bool {
+        self.store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
     }
 
     /// Wire overflow spill into a durable artifact store (keeps ring bounded).
@@ -747,10 +766,16 @@ impl PtySessionManager {
         {
             live.shutdown();
         }
-        if let Some(store) = &self.store {
-            let store = store.clone();
+        if let Some(store) = self.store_snapshot() {
             let _ = block_on_pty_store(async move { store.delete_session(session_id).await });
         }
+    }
+
+    fn store_snapshot(&self) -> Option<Arc<dyn PtySessionStore>> {
+        self.store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn set_state(&self, session_id: PtySessionId, state: PtySessionState) {
@@ -763,8 +788,7 @@ impl PtySessionManager {
             let out = session.clone();
             drop(sessions);
             self.persist(&out);
-            if let Some(store) = &self.store {
-                let store = store.clone();
+            if let Some(store) = self.store_snapshot() {
                 let _ =
                     block_on_pty_store(async move { store.update_state(session_id, &state).await });
             }
@@ -772,10 +796,9 @@ impl PtySessionManager {
     }
 
     fn persist(&self, session: &PtySession) {
-        let Some(store) = &self.store else {
+        let Some(store) = self.store_snapshot() else {
             return;
         };
-        let store = store.clone();
         let record = PtySessionRecord::from(session.clone());
         let _ = block_on_pty_store(async move { store.save_session(&record).await });
     }

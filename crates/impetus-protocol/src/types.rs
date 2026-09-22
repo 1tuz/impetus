@@ -866,12 +866,120 @@ pub enum ModelProviderHealthLabel {
     Unavailable { last_error_redacted: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelAvailability {
+    Available,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ModelCapabilityFlags {
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default)]
+    pub context_window: u64,
+}
+
+/// Vendor-neutral ACP (or similar agent-backend) capability snapshot for clients.
+///
+/// No vendor-prefixed fields (`codex_*`, etc.): UI protocol stays agent-agnostic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentCapabilitySnapshot {
+    #[serde(default)]
+    pub load_session: bool,
+    #[serde(default)]
+    pub prompt_image: bool,
+    #[serde(default)]
+    pub prompt_audio: bool,
+    #[serde(default)]
+    pub prompt_embedded_context: bool,
+    /// Auth method ids advertised by the agent (never secrets).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth_method_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelProviderStatus {
     pub provider_id: String,
     pub model_id: String,
     pub health: ModelProviderHealthLabel,
     pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_display_name: Option<String>,
+    #[serde(default)]
+    pub availability: ModelAvailability,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub capabilities: ModelCapabilityFlags,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<String>,
+    /// Provider-specific non-secret options (never credentials).
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub provider_options: serde_json::Value,
+    /// Present for ACP (or similar) backends after initialize/probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_capabilities: Option<AgentCapabilitySnapshot>,
+}
+
+impl ModelProviderStatus {
+    /// Minimal catalog row (ids + health); richer fields default empty/unknown.
+    pub fn basic(
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        health: ModelProviderHealthLabel,
+        is_default: bool,
+    ) -> Self {
+        let provider_id = provider_id.into();
+        let model_id = model_id.into();
+        Self {
+            provider_display_name: Some(provider_id.clone()),
+            model_display_name: Some(model_id.clone()),
+            availability: match &health {
+                ModelProviderHealthLabel::Healthy => ModelAvailability::Available,
+                ModelProviderHealthLabel::Unavailable { .. } => ModelAvailability::Unavailable,
+                ModelProviderHealthLabel::Unknown => ModelAvailability::Unknown,
+            },
+            reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_reasoning_effort: Some("medium".into()),
+            capabilities: ModelCapabilityFlags {
+                tools: true,
+                reasoning: true,
+                vision: false,
+                context_window: 0,
+            },
+            service_tiers: Vec::new(),
+            provider_options: serde_json::Value::Null,
+            agent_capabilities: None,
+            provider_id,
+            model_id,
+            health,
+            is_default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionModelSelection {
+    pub provider_id: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1030,4 +1138,52 @@ pub struct SandboxDecision {
     pub network_allowed: bool,
     pub writable_root_count: u32,
     pub reason_code: Option<String>,
+}
+
+/// Managed worktree binding snapshot for IPC (paths/labels only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    pub worktree_id: String,
+    pub session_id: Uuid,
+    pub path: PathBuf,
+    pub branch: String,
+    pub repo_root: PathBuf,
+    pub state: WorktreeLifecycleState,
+    /// Present when created via Build role (`create_for_role`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+/// Diff summary of a managed worktree branch versus a base ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeDiffSummary {
+    pub base_ref: String,
+    pub branch: String,
+    pub files_changed: u64,
+    pub insertions: u64,
+    pub deletions: u64,
+}
+
+/// Pre-merge check of a managed worktree against a base ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeReadyReport {
+    pub merge_ready: bool,
+    pub has_conflicts: bool,
+    pub dirty: bool,
+    pub diff: WorktreeDiffSummary,
+}
+
+/// Upsert MCP server config (labels / Keychain env names only — never secret values).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerUpsert {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub transport: McpTransport,
+    pub capabilities: McpCapabilities,
+    /// Env var names or Keychain labels only.
+    #[serde(default)]
+    pub env_keys: Vec<String>,
 }

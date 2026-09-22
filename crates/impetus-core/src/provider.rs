@@ -186,6 +186,15 @@ impl ProviderProfile {
         endpoint.set_path(&format!("{base}/v1/chat/completions"));
         Ok(endpoint)
     }
+
+    fn models_url(&self) -> Result<reqwest::Url, ProviderError> {
+        self.validate()?;
+        let mut endpoint = reqwest::Url::parse(&self.endpoint)
+            .map_err(|_| ProviderError::InvalidProfile("endpoint must be an absolute URL"))?;
+        let base = endpoint.path().trim_end_matches('/');
+        endpoint.set_path(&format!("{base}/v1/models"));
+        Ok(endpoint)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +294,34 @@ impl OpenAiCompatibleProvider {
         &self.profile
     }
 
+    /// `GET {base}/v1/models` — Keychain credential by reference only; never logged.
+    pub async fn list_remote_models(
+        &self,
+        credential: Option<&str>,
+    ) -> Result<Vec<String>, ProviderError> {
+        if matches!(
+            self.profile.credential_strategy,
+            CredentialStrategy::KeychainReference { .. }
+        ) && credential.filter(|value| !value.is_empty()).is_none()
+        {
+            return Err(ProviderError::MissingCredential);
+        }
+        let url = self.profile.models_url()?;
+        let mut request = self.client.get(url);
+        if let Some(credential) = credential {
+            request = request.bearer_auth(credential);
+        }
+        let response = request.send().await.map_err(redact_request_error)?;
+        if !response.status().is_success() {
+            return Err(ProviderError::RequestFailed(format!(
+                "HTTP {}",
+                response.status()
+            )));
+        }
+        let body = response.bytes().await.map_err(redact_request_error)?;
+        parse_openai_models_list(&body)
+    }
+
     /// Streams a single user message through the OpenAI-compatible endpoint.
     /// `credential` is supplied transiently by the Keychain-owning harness;
     /// it is never retained by this type or included in errors.
@@ -301,6 +338,7 @@ impl OpenAiCompatibleProvider {
         self.stream_messages(
             &[ProviderMessage::user(message)],
             credential,
+            &crate::StreamOptions::default(),
             cancel,
             on_chunk,
         )
@@ -312,6 +350,7 @@ impl OpenAiCompatibleProvider {
         &self,
         messages: &[ProviderMessage],
         credential: Option<&str>,
+        options: &crate::StreamOptions,
         cancel: CancellationToken,
         mut on_chunk: F,
     ) -> Result<(), ProviderError>
@@ -325,7 +364,7 @@ impl OpenAiCompatibleProvider {
                 return Err(ProviderError::Cancelled);
             }
             match self
-                .stream_once(messages, credential, cancel.clone(), &mut on_chunk)
+                .stream_once(messages, credential, options, cancel.clone(), &mut on_chunk)
                 .await
             {
                 Ok(()) => {
@@ -365,6 +404,7 @@ impl OpenAiCompatibleProvider {
         &self,
         messages: &[ProviderMessage],
         credential: Option<&str>,
+        options: &crate::StreamOptions,
         cancel: CancellationToken,
         on_chunk: &mut F,
     ) -> Result<(), StreamAttemptError>
@@ -380,11 +420,23 @@ impl OpenAiCompatibleProvider {
                 ProviderError::MissingCredential,
             ));
         }
-        let body = serde_json::json!({
-            "model": self.profile.model,
+        let model = options
+            .model_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(self.profile.model.as_str());
+        let mut body = serde_json::json!({
+            "model": model,
             "stream": true,
             "messages": messages,
         });
+        if let Some(effort) = options
+            .reasoning_effort
+            .as_deref()
+            .filter(|e| !e.is_empty())
+        {
+            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
+        }
         let mut request = self
             .client
             .post(
@@ -464,6 +516,31 @@ impl OpenAiCompatibleProvider {
             *health = value;
         }
     }
+}
+
+fn parse_openai_models_list(body: &[u8]) -> Result<Vec<String>, ProviderError> {
+    #[derive(Deserialize)]
+    struct ModelsResponse {
+        data: Vec<ModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct ModelEntry {
+        id: String,
+    }
+    let parsed: ModelsResponse =
+        serde_json::from_slice(body).map_err(|_| ProviderError::MalformedStream)?;
+    let mut ids: Vec<String> = parsed
+        .data
+        .into_iter()
+        .map(|entry| entry.id)
+        .filter(|id| !id.trim().is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err(ProviderError::RequestFailed("empty models list".into()));
+    }
+    Ok(ids)
 }
 
 enum StreamAttemptError {
@@ -701,12 +778,124 @@ mod tests {
                     ProviderMessage::user("question"),
                 ],
                 None,
+                &crate::StreamOptions::default(),
                 CancellationToken::new(),
                 |_| Ok(()),
             )
             .await
             .unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_remote_models_discovers_ids_without_secrets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = std::str::from_utf8(&request[..read]).unwrap();
+            assert!(request.starts_with("GET /v1/models HTTP/1.1"));
+            assert!(!request.to_lowercase().contains("authorization"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"gpt-test-a\"},{\"id\":\"gpt-test-b\"}]}",
+                )
+                .await
+                .unwrap();
+        });
+        let provider = OpenAiCompatibleProvider::new(
+            ProviderProfile {
+                endpoint: format!("http://{address}"),
+                ..local_profile()
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let ids = provider.list_remote_models(None).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(
+            ids,
+            vec!["gpt-test-a".to_string(), "gpt-test-b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_remote_models_absent_stays_unknown_not_healthy() {
+        let provider = OpenAiCompatibleProvider::new(
+            ProviderProfile {
+                endpoint: "http://127.0.0.1:1".into(),
+                ..local_profile()
+            },
+            RetryBudget {
+                max_attempts: 1,
+                retry_delay: Duration::from_millis(1),
+                request_timeout: Duration::from_millis(50),
+            },
+        )
+        .unwrap();
+        let err = provider.list_remote_models(None).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed(_)));
+        assert_eq!(provider.health(), ProviderHealth::Unknown);
+    }
+
+    #[tokio::test]
+    async fn stream_uses_session_model_override_in_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = std::str::from_utf8(&request[..read]).unwrap();
+            let body = request.split("\r\n\r\n").nth(1).expect("JSON body");
+            let json: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(json["model"], "session-override-model");
+            assert_eq!(json["reasoning_effort"], "high");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: [DONE]\n\n",
+                )
+                .await
+                .unwrap();
+        });
+        let provider = OpenAiCompatibleProvider::new(
+            ProviderProfile {
+                endpoint: format!("http://{address}"),
+                ..local_profile()
+            },
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let options = crate::StreamOptions {
+            model_id: Some("session-override-model".into()),
+            reasoning_effort: Some("high".into()),
+        };
+        provider
+            .stream_messages(
+                &[ProviderMessage::user("hi")],
+                None,
+                &options,
+                CancellationToken::new(),
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn parse_models_list_filters_empty_ids() {
+        let body = br#"{"data":[{"id":"a"},{"id":""},{"id":"b"}]}"#;
+        let ids = parse_openai_models_list(body).unwrap();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

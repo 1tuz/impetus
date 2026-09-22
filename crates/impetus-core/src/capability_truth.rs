@@ -190,7 +190,7 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Implemented,
-                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads MCP from $IMPETUS_DATA_DIR/mcp/*.json",
+                    "Skills via InstructionResolver; MCP live via ToolProviderRuntime → AgentLoop; impetusd autoloads+reloads only $IMPETUS_DATA_DIR/mcp/*.json; ListMcpServers connected=false until first use",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "mcp_live_library": true,

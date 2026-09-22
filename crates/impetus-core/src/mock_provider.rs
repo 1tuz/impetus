@@ -50,6 +50,7 @@ pub struct MockProvider {
     items: Vec<MockStreamItem>,
     scripts: Arc<Mutex<VecDeque<Vec<MockStreamItem>>>>,
     received_messages: Arc<Mutex<Vec<Vec<ProviderMessage>>>>,
+    last_stream_options: Arc<Mutex<Option<crate::StreamOptions>>>,
 }
 
 impl MockProvider {
@@ -64,6 +65,7 @@ impl MockProvider {
             items: items.into_iter().collect(),
             scripts: Arc::new(Mutex::new(VecDeque::new())),
             received_messages: Arc::new(Mutex::new(Vec::new())),
+            last_stream_options: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -82,6 +84,13 @@ impl MockProvider {
             .lock()
             .map(|messages| messages.clone())
             .unwrap_or_default()
+    }
+
+    pub fn last_stream_options(&self) -> Option<crate::StreamOptions> {
+        self.last_stream_options
+            .lock()
+            .ok()
+            .and_then(|opts| opts.clone())
     }
 
     pub fn default_mock() -> Self {
@@ -122,10 +131,14 @@ impl ModelProvider for MockProvider {
         _credential: Option<&str>,
         _runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         if let Ok(mut received) = self.received_messages.lock() {
             received.push(messages.to_vec());
+        }
+        if let Ok(mut opts) = self.last_stream_options.lock() {
+            *opts = Some(options);
         }
         let items = self
             .scripts

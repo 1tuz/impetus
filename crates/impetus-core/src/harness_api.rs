@@ -9,12 +9,13 @@
 
 use crate::{
     AgentLoop, AgentRuntime, ContextBuilder, CredentialResolver, DurableArtifactStore,
-    EventPayload, EventStore, IPC_CAPABILITIES, IPC_VERSION, InstructionResolver, IpcErrorCode,
-    IpcRequest, IpcResponse, MockProvider, NoCredentialResolver, NoticeEvent, OpenAiNativeAdapter,
-    OpenAiProvider, PolicyConfig, PolicyEngine, Profile, ProviderMessage, ProviderRegistry,
-    QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ResolveRequest, RuntimeError,
-    RuntimeStatus, SandboxScope, SessionEvent, SteerActiveContext, SteerPendingQueue, SteerRewrite,
-    TokenBudget, ToolOutcome, UserIntentRouter, UserIntentSubmission, UserPromptIntent,
+    EventPayload, EventStore, IPC_CAPABILITIES, IPC_MIN_SUPPORTED, IPC_VERSION,
+    InstructionResolver, IpcErrorCode, IpcRequest, IpcResponse, MockProvider, NoCredentialResolver,
+    NoticeEvent, OpenAiNativeAdapter, OpenAiProvider, PolicyConfig, PolicyEngine, Profile,
+    ProviderMessage, ProviderRegistry, QueuedFollowUp, ReadOnlyTool, ReadOnlyToolKind,
+    ReadOnlyTools, ResolveRequest, RuntimeError, RuntimeStatus, SandboxScope, SessionEvent,
+    SteerActiveContext, SteerPendingQueue, SteerRewrite, TokenBudget, ToolOutcome,
+    UserIntentRouter, UserIntentSubmission, UserPromptIntent,
     context_optimizer::{
         DEFAULT_CONTEXT_BUDGET_TOKENS, default_tool_stubs, system_messages_for_binding,
     },
@@ -37,6 +38,12 @@ struct ActiveCancellation {
     run_id: uuid::Uuid,
     token: CancellationToken,
 }
+
+/// Reload hook for daemon MCP SoT (`$IMPETUS_DATA_DIR/mcp/*.json`).
+///
+/// Returns a fresh [`ToolProviderRuntime`] (bridges disconnected). Harness
+/// swaps it into the live slot on `ReloadMcpServers`.
+pub type McpReloadHook = Arc<dyn Fn() -> Result<crate::ToolProviderRuntime, String> + Send + Sync>;
 
 #[derive(Clone, Default)]
 struct SessionCoordinator {
@@ -88,6 +95,10 @@ pub struct Harness {
     explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
     /// Optional session MCP tool providers (lazy connect; not used by Explore).
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    /// Optional live reload of MCP SoT (`$IMPETUS_DATA_DIR/mcp/*.json`).
+    ///
+    /// When set, `ReloadMcpServers` re-reads the catalog into `tool_providers`.
+    mcp_reload: Option<McpReloadHook>,
     /// Daemon-owned hook prefilter catalog for process spawn paths.
     hook_prefilter: crate::HookPrefilter,
     /// Optional governed-instruction catalog (labels/refs only; not PolicyConfig).
@@ -98,6 +109,8 @@ pub struct Harness {
     worktree_manager: Option<Arc<crate::WorktreeManager>>,
     /// Daemon-owned PTY sessions (`portable-pty`).
     pty: Arc<crate::PtySessionManager>,
+    /// Per-session model override (Provider → Model); daemon SoT for picker.
+    session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
 }
 
 impl Harness {
@@ -137,10 +150,12 @@ impl Harness {
             steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            mcp_reload: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            session_models: Arc::new(Mutex::new(HashMap::new())),
             pty,
         }
     }
@@ -190,6 +205,12 @@ impl Harness {
         runtime: Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>,
     ) -> Self {
         self.tool_providers = Some(runtime);
+        self
+    }
+
+    /// Attach MCP SoT reload hook (`ReloadMcpServers` → re-read `mcp/*.json`).
+    pub fn with_mcp_reload(mut self, hook: McpReloadHook) -> Self {
+        self.mcp_reload = Some(hook);
         self
     }
 
@@ -322,10 +343,12 @@ impl Harness {
             steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            mcp_reload: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            session_models: Arc::new(Mutex::new(HashMap::new())),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -398,10 +421,12 @@ impl Harness {
             steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            mcp_reload: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            session_models: Arc::new(Mutex::new(HashMap::new())),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -464,10 +489,12 @@ impl Harness {
             steer_pending: SteerPendingQueue::new(),
             explore_spawn: None,
             tool_providers: None,
+            mcp_reload: None,
             hook_prefilter: crate::HookPrefilter::default(),
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            session_models: Arc::new(Mutex::new(HashMap::new())),
             pty: pty_manager_with_default_artifacts(pty_seam),
         }
     }
@@ -494,6 +521,10 @@ impl Harness {
 
     pub fn has_tool_providers(&self) -> bool {
         self.tool_providers.is_some()
+    }
+
+    pub fn has_mcp_reload(&self) -> bool {
+        self.mcp_reload.is_some()
     }
 
     pub fn has_hook_prefilter(&self) -> bool {
@@ -537,12 +568,14 @@ impl Harness {
             self.steer_rewrite.clone(),
             self.steer_pending.clone(),
             self.tool_providers.clone(),
+            self.mcp_reload.clone(),
             self.hook_prefilter.clone(),
             self.policy_store.clone(),
             self.workflow_runtime.clone(),
             self.explore_spawn.clone(),
             self.worktree_manager.clone(),
             self.pty.clone(),
+            self.session_models.clone(),
             request,
         )
     }
@@ -613,12 +646,14 @@ fn handle_request(
     steer_rewrite: Arc<dyn SteerRewrite>,
     steer_pending: SteerPendingQueue,
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
+    mcp_reload: Option<McpReloadHook>,
     hook_prefilter: crate::HookPrefilter,
     policy_store_slot: Arc<Mutex<Option<Arc<crate::PolicyStore>>>>,
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
     explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
     worktree_manager: Option<Arc<crate::WorktreeManager>>,
     pty: Arc<crate::PtySessionManager>,
+    session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
     request: IpcRequest,
 ) -> IpcResponse {
     let policy_store = policy_store_slot
@@ -626,20 +661,21 @@ fn handle_request(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     match request {
-        IpcRequest::Hello { version, .. } if version != IPC_VERSION => {
-            let upgrade_recommendation = if version < IPC_VERSION {
+        IpcRequest::Hello { version, .. }
+            if !(IPC_MIN_SUPPORTED..=IPC_VERSION).contains(&version) =>
+        {
+            let upgrade_recommendation = if version < IPC_MIN_SUPPORTED {
                 Some(format!(
-                    "Client version {} is older than harness {}. Upgrade client.",
-                    version, IPC_VERSION
+                    "Client version {version} is older than min supported {IPC_MIN_SUPPORTED}. Upgrade client."
                 ))
             } else {
                 Some(format!(
-                    "Client version {} is newer than harness {}. Upgrade harness.",
-                    version, IPC_VERSION
+                    "Client version {version} is newer than harness {IPC_VERSION}. Upgrade harness."
                 ))
             };
             IpcResponse::Incompatible {
                 supported_version: IPC_VERSION,
+                min_supported: IPC_MIN_SUPPORTED,
                 client_version: version,
                 upgrade_recommendation,
             }
@@ -864,6 +900,7 @@ fn handle_request(
                         steer_pending.clone(),
                         hook_prefilter.clone(),
                         policy_store.clone(),
+                        session_models.clone(),
                     )?;
                     runtime.status()
                 }) {
@@ -926,6 +963,7 @@ fn handle_request(
                             steer_pending.clone(),
                             hook_prefilter.clone(),
                             policy_store.clone(),
+                            session_models.clone(),
                             session_id,
                             run_id,
                             false,
@@ -1064,6 +1102,7 @@ fn handle_request(
                         steer_pending.clone(),
                         hook_prefilter.clone(),
                         policy_store.clone(),
+                        session_models.clone(),
                     )?;
                 }
                 Ok(session_id)
@@ -1800,8 +1839,101 @@ fn handle_request(
             };
             IpcResponse::McpServers { servers }
         }
-        IpcRequest::ListModels => IpcResponse::Models {
-            providers: provider_registry.list_status(&default_provider_id),
+        IpcRequest::ListModels | IpcRequest::ListProviders => {
+            let registry = provider_registry.clone();
+            let default_id = default_provider_id.clone();
+            let providers = crate::block_on_coding_tools(async move {
+                registry.list_status_with_discovery(&default_id).await
+            });
+            IpcResponse::Models { providers }
+        }
+        IpcRequest::GetSessionModel { session_id } => {
+            match get_or_default_session_model(
+                &session_models,
+                &store,
+                &policy,
+                &provider_registry,
+                &default_provider_id,
+                session_id,
+            ) {
+                Ok(selection) => IpcResponse::SessionModel {
+                    session_id,
+                    selection,
+                },
+                Err(resp) => resp,
+            }
+        }
+        IpcRequest::SetSessionModel {
+            session_id,
+            provider_id,
+            model_id,
+            reasoning_effort,
+        } => match store_session_model(
+            &session_models,
+            &store,
+            &policy,
+            &provider_registry,
+            session_id,
+            provider_id,
+            model_id,
+            reasoning_effort,
+        ) {
+            Ok(selection) => IpcResponse::SessionModel {
+                session_id,
+                selection,
+            },
+            Err(resp) => resp,
+        },
+        IpcRequest::CreateWorktree {
+            session_id,
+            for_build,
+        } => handle_create_worktree(worktree_manager.as_deref(), &store, &policy, session_id, for_build),
+        IpcRequest::ListWorktrees { session_id } => {
+            handle_list_worktrees(worktree_manager.as_deref(), session_id)
+        }
+        IpcRequest::GetWorktree { worktree_id } => {
+            handle_get_worktree(worktree_manager.as_deref(), &worktree_id)
+        }
+        IpcRequest::CloseWorktree { worktree_id } => {
+            handle_close_worktree(worktree_manager.as_deref(), &worktree_id)
+        }
+        IpcRequest::ResumeWorktree { session_id } => {
+            handle_resume_worktree(worktree_manager.as_deref(), session_id)
+        }
+        IpcRequest::StopWorktree { session_id } => {
+            handle_stop_worktree(worktree_manager.as_deref(), session_id)
+        }
+        IpcRequest::CheckWorktreeMergeReady {
+            session_id,
+            base_ref,
+        } => handle_check_merge_ready(worktree_manager.as_deref(), session_id, &base_ref),
+        IpcRequest::MergeWorktree {
+            session_id,
+            base_ref,
+        } => handle_merge_worktree(worktree_manager.as_deref(), session_id, &base_ref),
+        IpcRequest::ReloadMcpServers => match (tool_providers.clone(), mcp_reload.clone()) {
+            (Some(slot), Some(hook)) => match hook() {
+                Ok(fresh) => {
+                    let servers = crate::block_on_coding_tools(async move {
+                        let mut guard = slot.lock().await;
+                        guard.replace_all(fresh);
+                        guard.list_status()
+                    });
+                    IpcResponse::McpServers { servers }
+                }
+                Err(message) => IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    message,
+                },
+            },
+            (None, None) => IpcResponse::McpServers {
+                servers: Vec::new(),
+            },
+            _ => IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: "ReloadMcpServers requires both tool_providers slot and mcp_reload hook (daemon SoT)"
+                    .into(),
+            },
         },
     }
 }
@@ -1903,6 +2035,15 @@ fn handle_pty_start(
         Ok(path) => path,
         Err(error) => return pty_error(error),
     };
+    // Login shells re-source profile scripts and can surprise-trigger password
+    // prompts; refuse at harness admit (userspace policy — no elevation).
+    if !crate::pty_argv_is_non_login(&args) {
+        return IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: "PTY login-shell argv (-l/--login) is not allowed; use a non-login shell"
+                .into(),
+        };
+    }
     match pty.start(
         session_id,
         command,
@@ -1977,6 +2118,254 @@ fn pty_notice(store: &Arc<dyn EventStore>, session_id: uuid::Uuid, message: Stri
         session_id,
         EventPayload::Notice(NoticeEvent::Runtime { message }),
     );
+}
+
+#[allow(clippy::result_large_err)]
+fn get_or_default_session_model(
+    session_models: &Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    store: &Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    provider_registry: &ProviderRegistry,
+    default_provider_id: &str,
+    session_id: uuid::Uuid,
+) -> Result<crate::SessionModelSelection, IpcResponse> {
+    let _ = AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id)
+        .map_err(runtime_error)?;
+    if let Some(existing) = session_models
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&session_id)
+        .cloned()
+    {
+        return Ok(existing);
+    }
+    let provider = provider_registry
+        .get(default_provider_id)
+        .map_err(|e| IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: e.to_string(),
+        })?;
+    Ok(crate::SessionModelSelection {
+        provider_id: default_provider_id.to_owned(),
+        model_id: provider.model_id().to_owned(),
+        reasoning_effort: Some("medium".into()),
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+fn store_session_model(
+    session_models: &Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
+    store: &Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    provider_registry: &ProviderRegistry,
+    session_id: uuid::Uuid,
+    provider_id: String,
+    model_id: String,
+    reasoning_effort: Option<String>,
+) -> Result<crate::SessionModelSelection, IpcResponse> {
+    let _ = AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id)
+        .map_err(runtime_error)?;
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: "provider_id and model_id are required".into(),
+        });
+    }
+    let _provider = provider_registry
+        .get(&provider_id)
+        .map_err(|e| IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: e.to_string(),
+        })?;
+    if let Some(effort) = reasoning_effort.as_deref() {
+        match effort {
+            "low" | "medium" | "high" => {}
+            other => {
+                return Err(IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    message: format!("unsupported reasoning_effort `{other}`"),
+                });
+            }
+        }
+    }
+    let selection = crate::SessionModelSelection {
+        provider_id,
+        model_id,
+        reasoning_effort,
+    };
+    session_models
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(session_id, selection.clone());
+    let _ = store.append_next(
+        session_id,
+        EventPayload::Notice(NoticeEvent::Runtime {
+            message: format!(
+                "session model set to {}/{} (effort={})",
+                selection.provider_id,
+                selection.model_id,
+                selection.reasoning_effort.as_deref().unwrap_or("default")
+            ),
+        }),
+    );
+    Ok(selection)
+}
+
+fn worktree_unavailable() -> IpcResponse {
+    IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: "WorktreeManager not wired on this harness".into(),
+    }
+}
+
+fn handle_create_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    store: &Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    session_id: uuid::Uuid,
+    for_build: bool,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    let runtime = match AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id) {
+        Ok(r) => r,
+        Err(e) => return runtime_error(e),
+    };
+    let repo_root = match runtime.workspace_root() {
+        Ok(r) => r,
+        Err(e) => return runtime_error(e),
+    };
+    let result = if for_build {
+        mgr.create_for_role(session_id, &repo_root, crate::AgentWorkRole::Build)
+    } else {
+        mgr.create(session_id, &repo_root)
+    };
+    match result {
+        Ok(binding) => IpcResponse::Worktree {
+            worktree: binding.to_info(),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_list_worktrees(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: Option<uuid::Uuid>,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    let list = match session_id {
+        Some(id) => match mgr.get_by_session(id) {
+            Ok(Some(b)) => vec![b.to_info()],
+            Ok(None) => Vec::new(),
+            Err(e) => return worktree_switch_error(e),
+        },
+        None => Vec::new(),
+    };
+    IpcResponse::Worktrees { worktrees: list }
+}
+
+fn handle_get_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    worktree_id: &str,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.get_by_worktree_id(worktree_id) {
+        Ok(Some(b)) => IpcResponse::Worktree {
+            worktree: b.to_info(),
+        },
+        Ok(None) => IpcResponse::Error {
+            code: IpcErrorCode::MissingSession,
+            message: format!("worktree not found: {worktree_id}"),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_close_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    worktree_id: &str,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.get_by_worktree_id(worktree_id) {
+        Ok(Some(binding)) => match mgr.close(binding.session_id) {
+            Ok(b) => IpcResponse::Worktree {
+                worktree: b.to_info(),
+            },
+            Err(e) => worktree_switch_error(e),
+        },
+        Ok(None) => IpcResponse::Error {
+            code: IpcErrorCode::MissingSession,
+            message: format!("worktree not found: {worktree_id}"),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_resume_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.resume(session_id) {
+        Ok(b) => IpcResponse::Worktree {
+            worktree: b.to_info(),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_stop_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.stop(session_id) {
+        Ok(b) => IpcResponse::Worktree {
+            worktree: b.to_info(),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_check_merge_ready(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+    base_ref: &str,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.check_merge_ready(session_id, base_ref) {
+        Ok(report) => IpcResponse::WorktreeMergeReady { report },
+        Err(e) => worktree_switch_error(e),
+    }
+}
+
+fn handle_merge_worktree(
+    worktrees: Option<&crate::WorktreeManager>,
+    session_id: uuid::Uuid,
+    base_ref: &str,
+) -> IpcResponse {
+    let Some(mgr) = worktrees else {
+        return worktree_unavailable();
+    };
+    match mgr.attempt_merge(session_id, base_ref) {
+        Ok(b) => IpcResponse::WorktreeMerged {
+            worktree: b.to_info(),
+        },
+        Err(e) => worktree_switch_error(e),
+    }
 }
 
 fn pty_emit(store: &Arc<dyn EventStore>, session_id: uuid::Uuid, event: crate::PtyEvent) {
@@ -2190,6 +2579,7 @@ async fn run_agent_loop(
     tool_providers: Option<Arc<tokio::sync::Mutex<crate::ToolProviderRuntime>>>,
     steer_pending: SteerPendingQueue,
     hook_prefilter: crate::HookPrefilter,
+    stream_options: crate::StreamOptions,
 ) -> bool {
     let provider = match provider_registry.get(&provider_id) {
         Ok(p) => p,
@@ -2222,6 +2612,7 @@ async fn run_agent_loop(
             messages,
             cancellation.clone(),
             Some(&steer_pending),
+            stream_options,
         )
         .await;
 
@@ -2301,27 +2692,60 @@ fn launch_agent_run(
     steer_pending: SteerPendingQueue,
     hook_prefilter: crate::HookPrefilter,
     policy_store: Option<Arc<crate::PolicyStore>>,
+    session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
 ) -> Result<(), RuntimeError> {
     let runtime_session_id = runtime.session_id();
+    let session_override = session_models
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&runtime_session_id)
+        .cloned();
+
     let requirements = crate::model_router::CapabilityRequirements {
         tools: true,
         ..Default::default()
     };
     let budget = runtime.budget_config().unwrap_or_default();
     let selected = model_router.select_model(&requirements, &budget);
-    let selected_provider_id = selected
-        .as_ref()
-        .map(|s| s.provider_id.clone())
-        .unwrap_or_else(|| default_provider_id.to_owned());
 
-    let selection_message = if let Some(ref selection) = selected {
-        format!(
-            "ModelRouter selected {}/{}: {}",
-            selection.provider_id, selection.model_id, selection.reasoning
-        )
-    } else {
-        format!("ModelRouter fallback to default provider: {selected_provider_id}")
-    };
+    let (selected_provider_id, stream_options, selection_message) =
+        if let Some(ref override_sel) = session_override {
+            let opts = crate::StreamOptions {
+                model_id: Some(override_sel.model_id.clone()),
+                reasoning_effort: override_sel.reasoning_effort.clone(),
+            };
+            (
+                override_sel.provider_id.clone(),
+                opts,
+                format!(
+                    "session model override {}/{} (effort={})",
+                    override_sel.provider_id,
+                    override_sel.model_id,
+                    override_sel
+                        .reasoning_effort
+                        .as_deref()
+                        .unwrap_or("default")
+                ),
+            )
+        } else {
+            let selected_provider_id = selected
+                .as_ref()
+                .map(|s| s.provider_id.clone())
+                .unwrap_or_else(|| default_provider_id.to_owned());
+            let message = if let Some(ref selection) = selected {
+                format!(
+                    "ModelRouter selected {}/{}: {}",
+                    selection.provider_id, selection.model_id, selection.reasoning
+                )
+            } else {
+                format!("ModelRouter fallback to default provider: {selected_provider_id}")
+            };
+            let opts = crate::StreamOptions {
+                model_id: selected.as_ref().map(|s| s.model_id.clone()),
+                reasoning_effort: None,
+            };
+            (selected_provider_id, opts, message)
+        };
     let _ = runtime.append_event(crate::EventPayload::Notice(crate::NoticeEvent::Runtime {
         message: selection_message,
     }));
@@ -2353,6 +2777,8 @@ fn launch_agent_run(
     let task_hook_prefilter = hook_prefilter.clone();
     let task_hook_prefilter_drain = hook_prefilter;
     let task_policy_store = policy_store;
+    let task_session_models = session_models;
+    let task_stream_options = stream_options;
 
     tokio::spawn(async move {
         let completed = run_agent_loop(
@@ -2366,6 +2792,7 @@ fn launch_agent_run(
             task_tool_providers.clone(),
             task_steer_pending.clone(),
             task_hook_prefilter,
+            task_stream_options,
         )
         .await;
         if let Ok(mut active) = task_cancellations.lock()
@@ -2391,6 +2818,7 @@ fn launch_agent_run(
                 task_steer_pending,
                 task_hook_prefilter_drain,
                 task_policy_store,
+                task_session_models,
                 runtime_session_id,
                 run_id,
                 true,
@@ -2418,6 +2846,7 @@ fn start_drained_follow_up_if_any(
     steer_pending: SteerPendingQueue,
     hook_prefilter: crate::HookPrefilter,
     policy_store: Option<Arc<crate::PolicyStore>>,
+    session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
     session_id: uuid::Uuid,
     finished_run_id: uuid::Uuid,
     acquire_session_lock: bool,
@@ -2484,6 +2913,7 @@ fn start_drained_follow_up_if_any(
         steer_pending,
         hook_prefilter,
         policy_store,
+        session_models,
     );
 }
 
@@ -5047,6 +5477,132 @@ mod tests {
     }
 
     #[test]
+    fn reload_mcp_servers_swaps_catalog_and_keeps_connected_false() {
+        let data = tempfile::tempdir().expect("data");
+        let mcp_dir = data.path().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("mkdir");
+        let slot = Arc::new(tokio::sync::Mutex::new(crate::ToolProviderRuntime::new()));
+        let data_path = data.path().to_path_buf();
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(
+                tempfile::tempdir().expect("workspace").path(),
+            )),
+        )
+        .with_tool_providers(slot)
+        .with_mcp_reload(Arc::new(move || {
+            crate::load_daemon_mcp_runtime(&data_path).map_err(|e| e.to_string())
+        }));
+
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ReloadMcpServers)
+        else {
+            panic!("reload empty");
+        };
+        assert!(servers.is_empty());
+
+        std::fs::write(
+            mcp_dir.join("tools.json"),
+            br#"{
+                "name": "tools",
+                "command": "true",
+                "args": [],
+                "env": {},
+                "transport": "stdio",
+                "capabilities": { "tools": true, "resources": false, "prompts": false, "sampling": false }
+            }"#,
+        )
+        .expect("write");
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ReloadMcpServers)
+        else {
+            panic!("reload with file");
+        };
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "tools");
+        assert!(
+            !servers[0].connected,
+            "list/reload must stay connected=false until first tool use"
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_path_smoke_session_model_prompt_mcp_worktree() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let mcp_dir = data.path().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).expect("mcp");
+        std::fs::write(
+            mcp_dir.join("echo.json"),
+            br#"{
+                "name": "echo",
+                "command": "true",
+                "args": [],
+                "env": {},
+                "transport": "stdio",
+                "capabilities": { "tools": true, "resources": false, "prompts": false, "sampling": false }
+            }"#,
+        )
+        .expect("mcp json");
+        let worktrees = Arc::new(
+            crate::WorktreeManager::open(data.path().join("wt.db"), data.path().join("worktrees"))
+                .expect("wt"),
+        );
+        let mcp = crate::load_daemon_mcp_runtime(data.path()).expect("mcp load");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_tool_providers(Arc::new(tokio::sync::Mutex::new(mcp)))
+        .with_worktree_manager(worktrees);
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let IpcResponse::SessionModel { selection, .. } =
+            harness.handle(IpcRequest::GetSessionModel { session_id })
+        else {
+            panic!("get model");
+        };
+        assert_eq!(selection.provider_id, "mock");
+
+        let accepted = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "smoke".into(),
+            artifact: None,
+            intent: Default::default(),
+        });
+        assert!(
+            matches!(
+                accepted,
+                IpcResponse::Status {
+                    status: RuntimeStatus::Running,
+                    ..
+                }
+            ),
+            "prompt path: {accepted:?}"
+        );
+
+        let IpcResponse::McpServers { servers } = harness.handle(IpcRequest::ListMcpServers) else {
+            panic!("mcp list");
+        };
+        assert_eq!(servers.len(), 1);
+        assert!(!servers[0].connected);
+
+        let IpcResponse::Worktrees { worktrees } = harness.handle(IpcRequest::ListWorktrees {
+            session_id: Some(session_id),
+        }) else {
+            panic!("worktrees");
+        };
+        assert!(worktrees.is_empty());
+
+        let IpcResponse::Models { providers } = harness.handle(IpcRequest::ListModels) else {
+            panic!("models");
+        };
+        assert!(!providers.is_empty());
+    }
+
+    #[test]
     fn list_models_returns_mock_catalog() {
         let harness = Harness::new(
             Arc::new(MemoryEventStore::default()),
@@ -5062,6 +5618,69 @@ mod tests {
         assert_eq!(providers[0].provider_id, "mock");
         assert!(providers[0].is_default);
         assert!(!providers[0].model_id.is_empty());
+        // Mock has no remote /v1/models — honest Unknown, not fake Healthy.
+        assert_eq!(
+            providers[0].health,
+            crate::ModelProviderHealthLabel::Unknown
+        );
+        assert_eq!(
+            providers[0].availability,
+            impetus_protocol::ModelAvailability::Unknown
+        );
+        assert_eq!(
+            providers[0].provider_options["discovery"],
+            serde_json::json!("static_fallback")
+        );
+        assert!(providers[0].agent_capabilities.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_session_model_is_used_on_prompt_stream() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mock = Arc::new(crate::MockProvider::default_mock());
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            mock.clone(),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let set = harness.handle(IpcRequest::SetSessionModel {
+            session_id,
+            provider_id: "mock".into(),
+            model_id: "session-model-x".into(),
+            reasoning_effort: Some("high".into()),
+        });
+        assert!(
+            matches!(set, IpcResponse::SessionModel { .. }),
+            "set model: {set:?}"
+        );
+
+        let accepted = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "use override".into(),
+            artifact: None,
+            intent: Default::default(),
+        });
+        assert!(
+            matches!(
+                accepted,
+                IpcResponse::Status {
+                    status: RuntimeStatus::Running,
+                    ..
+                }
+            ),
+            "prompt: {accepted:?}"
+        );
+
+        // Allow agent loop task to call provider.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let opts = mock.last_stream_options().expect("stream options recorded");
+        assert_eq!(opts.model_id.as_deref(), Some("session-model-x"));
+        assert_eq!(opts.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

@@ -54,6 +54,7 @@ pub struct WorkflowRuntime {
     role_executor: Arc<dyn RoleChildExecutor>,
     explore_executor: Arc<dyn ExploreChildExecutor>,
     parent_events: Option<Arc<dyn EventStore>>,
+    worktrees: Option<Arc<crate::WorktreeManager>>,
     sessions: Mutex<HashMap<Uuid, SessionWorkflow>>,
 }
 
@@ -82,8 +83,15 @@ impl WorkflowRuntime {
             role_executor,
             explore_executor,
             parent_events,
+            worktrees: None,
             sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Attach daemon WorktreeManager so Build steps create real worktrees.
+    pub fn with_worktree_manager(mut self, manager: Arc<crate::WorktreeManager>) -> Self {
+        self.worktrees = Some(manager);
+        self
     }
 
     pub fn child_results(&self) -> &ChildResultStore {
@@ -259,10 +267,48 @@ impl WorkflowRuntime {
             .map(|s| (*s).to_string())
             .collect();
         let (write_roots, worktree) = if role == SubagentRole::Build {
-            (
-                vec![cwd.to_path_buf()],
-                Some(format!("wt-{session_id}-{step_id}")),
-            )
+            if let Some(mgr) = self.worktrees.as_ref() {
+                let binding = match mgr.get_by_session(session_id) {
+                    Ok(Some(existing)) => {
+                        // Resume stopped bindings; Active is reused as-is.
+                        match existing.state {
+                            crate::WorktreeLifecycleState::Active => existing,
+                            crate::WorktreeLifecycleState::Stopped
+                            | crate::WorktreeLifecycleState::Stale => {
+                                mgr.resume(session_id).map_err(|err| {
+                                    WorkflowRuntimeError::RoleChild(format!(
+                                        "worktree resume: {err}"
+                                    ))
+                                })?
+                            }
+                            crate::WorktreeLifecycleState::Closed => mgr
+                                .create_for_role(session_id, cwd, crate::AgentWorkRole::Build)
+                                .map_err(|err| {
+                                    WorkflowRuntimeError::RoleChild(format!(
+                                        "worktree create_for_role: {err}"
+                                    ))
+                                })?,
+                        }
+                    }
+                    Ok(None) => mgr
+                        .create_for_role(session_id, cwd, crate::AgentWorkRole::Build)
+                        .map_err(|err| {
+                            WorkflowRuntimeError::RoleChild(format!(
+                                "worktree create_for_role: {err}"
+                            ))
+                        })?,
+                    Err(err) => {
+                        return Err(WorkflowRuntimeError::RoleChild(format!(
+                            "worktree lookup: {err}"
+                        )));
+                    }
+                };
+                (vec![binding.path.clone()], Some(binding.worktree_id))
+            } else {
+                return Err(WorkflowRuntimeError::RoleChild(
+                    "Build role requires WorktreeManager; synthetic worktree ids removed".into(),
+                ));
+            }
         } else {
             (vec![], None)
         };
@@ -278,8 +324,15 @@ impl WorkflowRuntime {
             max_tokens: 1_000,
             max_time_ms: 30_000,
             max_depth: 2,
-            program: Some(PathBuf::from("/bin/echo")),
-            args: vec![format!("{role:?}:{step_id}")],
+            // Production: explicit program required — ProcessRoleChildExecutor
+            // no longer defaults to /bin/echo success.
+            program: Some(PathBuf::from("git")),
+            args: vec![
+                "-C".into(),
+                cwd.display().to_string(),
+                "status".into(),
+                "--short".into(),
+            ],
         };
         let mut gate = self.gate.lock().expect("workflow gate");
         let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
@@ -335,12 +388,41 @@ mod tests {
 
     fn runtime(dir: &std::path::Path) -> WorkflowRuntime {
         let store = Arc::new(ChildResultStore::open(dir.join("c.db")).unwrap());
+        // Minimal git repo so Build can create_for_role via WorktreeManager.
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo)
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(&repo)
+            .status();
+        std::fs::write(repo.join("README"), b"x").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .status();
+        let wt = Arc::new(
+            crate::WorktreeManager::open(dir.join("wt.db"), dir.join("worktrees")).unwrap(),
+        );
         WorkflowRuntime::new(
             store,
             Arc::new(MockRoleExecutor::completing("role-ok")),
             Arc::new(MockExploreExecutor::completing("explore-ok")),
         )
         .unwrap()
+        .with_worktree_manager(wt)
     }
 
     #[test]
@@ -348,12 +430,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let rt = runtime(dir.path());
         let sid = Uuid::new_v4();
-        rt.start(
-            sid,
-            WorkflowEngine::bug_skeleton_recipe(),
-            dir.path().to_path_buf(),
-        )
-        .unwrap();
+        let cwd = dir.path().join("repo");
+        rt.start(sid, WorkflowEngine::bug_skeleton_recipe(), cwd)
+            .unwrap();
         let status = rt.advance_until_blocked(sid).unwrap();
         assert_eq!(status, WorkflowStatus::Completed);
         let kids = rt.child_results().list_by_parent(&sid.to_string()).unwrap();
@@ -368,12 +447,93 @@ mod tests {
         rt.start(
             sid,
             WorkflowEngine::feature_skeleton_recipe(),
-            dir.path().to_path_buf(),
+            dir.path().join("repo"),
         )
         .unwrap();
         rt.run_next_ready_step(sid).unwrap();
         rt.cancel_session(sid);
         assert!(rt.status(sid).is_none());
+    }
+
+    #[test]
+    fn explore_failure_persists_child_and_releases_gate() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let rt = WorkflowRuntime::new(
+            store.clone(),
+            Arc::new(MockRoleExecutor::completing("role-ok")),
+            Arc::new(MockExploreExecutor::failing("explore-boom")),
+        )
+        .unwrap();
+        let sid = Uuid::new_v4();
+        rt.start(
+            sid,
+            WorkflowEngine::bug_skeleton_recipe(),
+            dir.path().join("repo"),
+        )
+        .unwrap();
+        let summary = rt.run_next_ready_step(sid).unwrap();
+        assert_eq!(summary, "explore-boom");
+        let kids = store.list_by_parent(&sid.to_string()).unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].status, crate::ChildResultStatus::Failed);
+        assert_eq!(kids[0].summary_label, "explore-boom");
+        // Gate slot released — another explore can admit.
+        assert!(!rt.gate().lock().unwrap().is_active(&kids[0].child_id));
+    }
+
+    #[test]
+    fn explore_cancel_persists_and_session_cleanup() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let rt = WorkflowRuntime::new(
+            store.clone(),
+            Arc::new(MockRoleExecutor::completing("role-ok")),
+            Arc::new(MockExploreExecutor::always_cancelled()),
+        )
+        .unwrap();
+        let sid = Uuid::new_v4();
+        rt.start(
+            sid,
+            WorkflowEngine::bug_skeleton_recipe(),
+            dir.path().join("repo"),
+        )
+        .unwrap();
+        let summary = rt.run_next_ready_step(sid).unwrap();
+        assert_eq!(summary, "cancelled");
+        let kids = store.list_by_parent(&sid.to_string()).unwrap();
+        assert_eq!(kids[0].status, crate::ChildResultStatus::Cancelled);
+        rt.cancel_session(sid);
+        assert!(rt.status(sid).is_none());
+        assert!(!rt.gate().lock().unwrap().is_active(&kids[0].child_id));
+    }
+
+    #[test]
+    fn explore_artifacts_recorded_on_child_result() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let rt = WorkflowRuntime::new(
+            store.clone(),
+            Arc::new(MockRoleExecutor::completing("role-ok")),
+            Arc::new(MockExploreExecutor::completing_with_artifacts(
+                "scan-ok",
+                ["art-1", "art-2"],
+            )),
+        )
+        .unwrap();
+        let sid = Uuid::new_v4();
+        rt.start(
+            sid,
+            WorkflowEngine::bug_skeleton_recipe(),
+            dir.path().join("repo"),
+        )
+        .unwrap();
+        assert_eq!(rt.run_next_ready_step(sid).unwrap(), "scan-ok");
+        let kids = store.list_by_parent(&sid.to_string()).unwrap();
+        assert_eq!(
+            kids[0].artifact_ref_labels,
+            vec!["art-1".to_string(), "art-2".to_string()]
+        );
     }
 
     #[test]
@@ -384,14 +544,14 @@ mod tests {
         rt.start(
             sid,
             WorkflowEngine::bug_skeleton_recipe(),
-            dir.path().to_path_buf(),
+            dir.path().join("repo"),
         )
         .unwrap();
         rt.run_next_ready_step(sid).unwrap();
         rt.replace(
             sid,
             WorkflowEngine::feature_skeleton_recipe(),
-            dir.path().to_path_buf(),
+            dir.path().join("repo"),
         )
         .unwrap();
         assert_eq!(rt.status(sid), Some(WorkflowStatus::Running));
@@ -417,7 +577,7 @@ mod tests {
         rt.start(
             sid,
             WorkflowEngine::bug_skeleton_recipe(),
-            dir.path().to_path_buf(),
+            dir.path().join("repo"),
         )
         .unwrap();
         let drained = rt

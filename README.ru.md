@@ -10,6 +10,11 @@ orchestration, safety decisions, credentials и execution authority собран
 requests и показывают durable events; они не владеют SQLite, policy, model/tool
 runtime, credentials или authoritative session state.
 
+**Без root / sudo / password в нормальном режиме.** `impetus` / `impetusd`
+— userspace под `$HOME` (или `IMPETUS_DATA_DIR`). Seatbelt = `sandbox-exec`.
+Keychain silent (`kSecUseAuthenticationUISkip`); escalation (`sudo` /
+login-shell `-l`) запрещён policy.
+
 ## Что это и зачем
 
 Engineering agent не должен делать terminal UI, provider или клиентское
@@ -58,15 +63,16 @@ surface (migration note, не deletion).
 - Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
   shared-prefix fork и checkpoints.
 - Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
-  Production MCP: `impetusd` autoload `$IMPETUS_DATA_DIR/mcp/*.json` в
-  `ToolProviderRuntime` (fail-closed на bad config; live connect на first tool
-  use). Read-only catalog IPC: `ListMcpServers` / `ListModels` (labels/status;
-  no secrets). Pickers UI ещё polish — см. [TODO.md](TODO.md).
+  Lifecycle CLI keep (`impetus extension plan|install|…`); marketplace нет.
+  Production MCP SoT: `impetusd` autoload **только** `$IMPETUS_DATA_DIR/mcp/*.json`
+  + live `ReloadMcpServers`; `ListMcpServers` / `ListModels` IPC
+  (`connected=false` до first tool use). Explore + Workflow Explore — один
+  AgentLoop bridge. MemoryStore / Browser daemon IPC — **Planned**.
 - Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
-  containment; Agent origin — Seatbelt на macOS; TUI passthrough
-  (`Ctrl+\` / `/pty`).
-- Production model path: Mock или native OpenAI Chat Completions SSE
-  (`--provider-profile`); Anthropic library есть, но не default daemon path.
+  containment; Agent Seatbelt на macOS; optional Sqlite metadata; live PTY не
+  restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).
+- Session model IPC (`ListProviders` / Get/SetSessionModel) + OpenAI Chat
+  Completions SSE default (`--provider-profile`); Anthropic не default path.
   JSON Schema tool-arg validation — до policy на builtins.
 
 ## Установка

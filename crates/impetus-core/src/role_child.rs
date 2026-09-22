@@ -311,17 +311,15 @@ impl RoleChildExecutor for ProcessRoleChildExecutor {
         if env.cancel.is_cancelled() {
             return Err(RoleExecutorError::Cancelled);
         }
-        let program = env
-            .program
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/bin/echo"));
-        let mut args = env.args.clone();
+        let program = env.program.clone().ok_or_else(|| {
+            RoleExecutorError::Failed(
+                "role child requires explicit program (no /bin/echo default in production)".into(),
+            )
+        })?;
+        let args = env.args.clone();
         if args.is_empty() {
-            args.push(format!(
-                "{}:{}:{}",
-                env.metadata.role.as_str(),
-                env.context_label,
-                env.child_id
+            return Err(RoleExecutorError::Failed(
+                "role child requires non-empty args when program is set".into(),
             ));
         }
 

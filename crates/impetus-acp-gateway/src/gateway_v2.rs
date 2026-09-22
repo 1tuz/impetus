@@ -112,6 +112,18 @@ struct CancelCommand {
     acknowledged: oneshot::Sender<std::result::Result<(), String>>,
 }
 
+/// Cached agent capability snapshot from ACP initialize (vendor-neutral labels).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachedAgentCapabilities {
+    pub load_session: bool,
+    pub prompt_image: bool,
+    pub prompt_audio: bool,
+    pub prompt_embedded_context: bool,
+    pub auth_method_ids: Vec<String>,
+    pub agent_name: Option<String>,
+    pub agent_version: Option<String>,
+}
+
 /// ACP Gateway using official SDK.
 #[derive(Debug)]
 pub struct AcpGatewayV2 {
@@ -126,6 +138,7 @@ pub struct AcpGatewayV2 {
     permission_rx: Arc<Mutex<mpsc::UnboundedReceiver<PermissionRequestWithSender>>>,
     active_cancel: Arc<Mutex<Option<mpsc::Sender<CancelCommand>>>>,
     active_session: Arc<Mutex<Option<SessionId>>>,
+    cached_capabilities: Arc<Mutex<Option<CachedAgentCapabilities>>>,
 }
 
 impl AcpGatewayV2 {
@@ -144,6 +157,7 @@ impl AcpGatewayV2 {
             permission_rx: Arc::new(Mutex::new(permission_rx)),
             active_cancel: Arc::new(Mutex::new(None)),
             active_session: Arc::new(Mutex::new(None)),
+            cached_capabilities: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -152,6 +166,18 @@ impl AcpGatewayV2 {
     pub fn with_auth_method(mut self, auth_method_id: Option<String>) -> Self {
         self.auth_method_id = auth_method_id;
         self
+    }
+
+    /// Last initialize capability snapshot (None until first successful initialize).
+    pub async fn cached_capabilities(&self) -> Option<CachedAgentCapabilities> {
+        self.cached_capabilities.lock().await.clone()
+    }
+
+    /// Non-async peek for sync catalog paths (ListModels). Returns None if lock busy.
+    pub fn cached_capabilities_blocking(
+        &self,
+    ) -> Result<Option<CachedAgentCapabilities>, tokio::sync::TryLockError> {
+        self.cached_capabilities.try_lock().map(|g| g.clone())
     }
 
     /// Get current state.
@@ -177,6 +203,7 @@ impl AcpGatewayV2 {
         let permission_tx = self.permission_tx.clone();
         let auth_method_id = self.auth_method_id.clone();
         let active_session = Arc::clone(&self.active_session);
+        let cached_capabilities = Arc::clone(&self.cached_capabilities);
 
         *state.lock().await = GatewayState::Initializing;
 
@@ -213,6 +240,29 @@ impl AcpGatewayV2 {
                     .await?;
 
                 debug!("Agent initialized: {:?}", init_response.agent_info);
+                let caps = CachedAgentCapabilities {
+                    load_session: init_response.agent_capabilities.load_session,
+                    prompt_image: init_response.agent_capabilities.prompt_capabilities.image,
+                    prompt_audio: init_response.agent_capabilities.prompt_capabilities.audio,
+                    prompt_embedded_context: init_response
+                        .agent_capabilities
+                        .prompt_capabilities
+                        .embedded_context,
+                    auth_method_ids: init_response
+                        .auth_methods
+                        .iter()
+                        .map(|m| m.id().0.to_string())
+                        .collect(),
+                    agent_name: init_response
+                        .agent_info
+                        .as_ref()
+                        .map(|info| info.name.clone()),
+                    agent_version: init_response
+                        .agent_info
+                        .as_ref()
+                        .map(|info| info.version.clone()),
+                };
+                *cached_capabilities.lock().await = Some(caps);
 
                 // Check auth requirements
                 if !init_response.auth_methods.is_empty() {

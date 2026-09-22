@@ -196,10 +196,16 @@ pub fn is_safe_readonly_command(command: &str) -> bool {
 }
 
 fn contains_privilege_escalation(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
-    lower
-        .split_whitespace()
-        .any(|token| token == "sudo" || token == "doas")
+    command.split_whitespace().any(|token| {
+        let base = std::path::Path::new(token)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(token);
+        matches!(
+            base.to_ascii_lowercase().as_str(),
+            "sudo" | "doas" | "su" | "pkexec"
+        )
+    })
 }
 
 fn contains_destructive_git(command: &str) -> bool {
@@ -295,6 +301,21 @@ mod tests {
         let sudo = spawn_effect("sudo apt", "sudo apt update");
         assert!(matches!(
             gate.classify(&ctx(ExecutionMode::Bypass, &sudo, None)),
+            RiskGateDecision::Deny { .. }
+        ));
+        let path_sudo = spawn_effect("/usr/bin/sudo", "/usr/bin/sudo -n true");
+        assert!(matches!(
+            gate.classify(&ctx(ExecutionMode::Bypass, &path_sudo, None)),
+            RiskGateDecision::Deny { .. }
+        ));
+        let su = spawn_effect("su", "su -");
+        assert!(matches!(
+            gate.classify(&ctx(ExecutionMode::Bypass, &su, None)),
+            RiskGateDecision::Deny { .. }
+        ));
+        let pkexec = spawn_effect("pkexec", "pkexec true");
+        assert!(matches!(
+            gate.classify(&ctx(ExecutionMode::Bypass, &pkexec, None)),
             RiskGateDecision::Deny { .. }
         ));
         let force = spawn_effect("force push", "git push --force origin main");

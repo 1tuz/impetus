@@ -61,27 +61,12 @@ pub struct StaleReport {
     pub recoverable: bool,
 }
 
-/// Diff summary of a managed worktree branch versus a base ref.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorktreeDiffSummary {
-    pub base_ref: String,
-    pub branch: String,
-    pub files_changed: u64,
-    pub insertions: u64,
-    pub deletions: u64,
-}
-
 /// Pre-merge check of a managed worktree against a base ref.
-///
-/// `merge_ready` is true only when the worktree is clean and merging into
-/// `base_ref` would not conflict.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeReadyReport {
-    pub merge_ready: bool,
-    pub has_conflicts: bool,
-    pub dirty: bool,
-    pub diff: WorktreeDiffSummary,
-}
+pub use impetus_protocol::MergeReadyReport;
+/// Diff summary of a managed worktree branch versus a base ref.
+pub use impetus_protocol::WorktreeDiffSummary;
+/// IPC snapshot of a managed binding.
+pub use impetus_protocol::WorktreeInfo;
 
 /// Agent role that may own a managed worktree binding.
 ///
@@ -173,6 +158,22 @@ pub struct WorktreeBinding {
     /// Present when created via [`WorktreeManager::create_for_role`] (Build).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<WorktreeAttachedPermissions>,
+}
+
+impl WorktreeBinding {
+    /// Wire DTO for IPC (paths/labels only).
+    pub fn to_info(&self) -> WorktreeInfo {
+        let role = self.permissions.as_ref().map(|_| "build".to_string());
+        WorktreeInfo {
+            worktree_id: self.worktree_id.clone(),
+            session_id: self.session_id,
+            path: self.path.clone(),
+            branch: self.branch.clone(),
+            repo_root: self.repo_root.clone(),
+            state: self.state,
+            role,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

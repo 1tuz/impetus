@@ -516,6 +516,19 @@ impl MockExploreExecutor {
         }
     }
 
+    pub fn completing_with_artifacts(
+        summary: impl Into<String>,
+        artifacts: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            mode: Mutex::new(MockExploreMode::Complete {
+                summary: summary.into(),
+                artifacts: artifacts.into_iter().map(Into::into).collect(),
+            }),
+            ..Self::default()
+        }
+    }
+
     pub fn failing(reason: impl Into<String>) -> Self {
         Self {
             mode: Mutex::new(MockExploreMode::Fail(reason.into())),

@@ -57,6 +57,7 @@ impl ModelProvider for OpenAiNativeAdapter {
         _credential: Option<&str>,
         runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
+        options: crate::StreamOptions,
         on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
     ) -> Result<(), ProviderError> {
         let credential = self
@@ -65,7 +66,14 @@ impl ModelProvider for OpenAiNativeAdapter {
             .map_err(|_| ProviderError::MissingCredential)?;
 
         self.provider
-            .stream_messages(messages, credential.as_deref(), runtime, cancel, on_event)
+            .stream_messages(
+                messages,
+                credential.as_deref(),
+                runtime,
+                cancel,
+                options,
+                on_event,
+            )
             .await
     }
 }

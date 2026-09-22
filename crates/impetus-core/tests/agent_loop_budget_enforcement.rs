@@ -66,6 +66,7 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
             messages.clone(),
             cancellation.clone(),
             None,
+            impetus_core::StreamOptions::default(),
         )
         .await;
 
@@ -108,6 +109,7 @@ async fn budget_enforcement_stops_agent_loop_on_token_limit() {
             messages.clone(),
             cancellation.clone(),
             None,
+            impetus_core::StreamOptions::default(),
         )
         .await;
 
@@ -169,6 +171,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             messages.clone(),
             cancellation.clone(),
             None,
+            impetus_core::StreamOptions::default(),
         )
         .await;
     assert!(result.is_ok());
@@ -186,6 +189,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             messages.clone(),
             cancellation.clone(),
             None,
+            impetus_core::StreamOptions::default(),
         )
         .await;
     assert!(result.is_ok());
@@ -203,6 +207,7 @@ async fn budget_enforcement_stops_on_turn_limit() {
             messages.clone(),
             cancellation.clone(),
             None,
+            impetus_core::StreamOptions::default(),
         )
         .await;
 
@@ -256,7 +261,14 @@ async fn budget_events_emitted_on_approaching_limit() {
     // Execute first turn
     let run_id = runtime_arc.start_run().unwrap();
     let _ = impetus_core::AgentLoop::new(runtime_arc.clone())
-        .execute(run_id, mock.clone(), messages, cancellation, None)
+        .execute(
+            run_id,
+            mock.clone(),
+            messages,
+            cancellation,
+            None,
+            impetus_core::StreamOptions::default(),
+        )
         .await;
     runtime_arc
         .finish_run(impetus_core::RunEvent::Completed { run_id })
