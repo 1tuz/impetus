@@ -4,13 +4,15 @@
 //! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
 use crate::{
-    Action, ActionKind, ActionOrigin, ModelProvider, PolicyDecision, PolicyEngine, ProviderError,
-    ProviderHealth, ProviderMessage, StreamEvent, StreamOptions,
+    Action, ActionKind, ActionOrigin, AgentRuntime, ApprovalResolution, ModelProvider,
+    PolicyDecision, PolicyEngine, ProviderError, ProviderHealth, ProviderMessage, StreamEvent,
+    StreamOptions,
 };
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
 use impetus_acp_gateway::{
-    AcpGatewayV2, GatewayState, PermissionDecision, PermissionKind, PermissionRequest, StreamUpdate,
+    AcpGatewayV2, GatewayState, PermissionDecision, PermissionKind, PermissionRequest,
+    SessionLaunchOptions, StreamUpdate,
 };
 use impetus_protocol::AgentCapabilitySnapshot;
 use std::path::{Path, PathBuf};
@@ -47,6 +49,14 @@ impl AcpAdapter {
             workspace_dir,
         }
     }
+
+    /// Test/probe: seed ACP cached config_options without a live agent session.
+    pub async fn seed_cached_capabilities_for_test(
+        &self,
+        caps: impetus_acp_gateway::CachedAgentCapabilities,
+    ) {
+        self.gateway.seed_cached_capabilities(caps).await;
+    }
 }
 
 fn action_for_permission(request: &PermissionRequest, workspace: &Path) -> Option<Action> {
@@ -75,6 +85,126 @@ fn action_for_permission(request: &PermissionRequest, workspace: &Path) -> Optio
         summary: request.description.clone(),
         target,
     })
+}
+
+fn select_allow_or_deny(request: &PermissionRequest) -> PermissionDecision {
+    let allow_option = request.options.iter().find(|opt| {
+        matches!(
+            opt.kind,
+            impetus_acp_gateway::PermissionChoiceKind::AllowOnce
+                | impetus_acp_gateway::PermissionChoiceKind::AllowAlways
+        )
+    });
+    if let Some(opt) = allow_option {
+        PermissionDecision::Select(opt.option_id.clone())
+    } else {
+        PermissionDecision::Deny
+    }
+}
+
+/// Map Policy → ACP PermissionDecision. `NeedsApproval` creates a durable
+/// ApprovalRequest and waits for user `ResolveApproval` (never self-approves).
+async fn decide_permission(
+    policy: &PolicyEngine,
+    request: &PermissionRequest,
+    workspace: &Path,
+    runtime: Option<&AgentRuntime>,
+    cancel: &CancellationToken,
+) -> PermissionDecision {
+    let Some(action) = action_for_permission(request, workspace) else {
+        // Think / SwitchMode / Other: fail-closed (no silent Allow).
+        debug!(
+            "Permission kind {:?} has no Policy Action mapping — Deny",
+            request.kind
+        );
+        return PermissionDecision::Deny;
+    };
+
+    match policy.evaluate(&action) {
+        PolicyDecision::Allow => {
+            let decision = select_allow_or_deny(request);
+            if matches!(decision, PermissionDecision::Select(_)) {
+                info!("Policy allowed: selecting allow option");
+            } else {
+                warn!("Policy allowed but no allow option available");
+            }
+            decision
+        }
+        PolicyDecision::Deny { reason } => {
+            info!("Policy denied: {}", reason);
+            PermissionDecision::Deny
+        }
+        PolicyDecision::NeedsApproval { reason } => {
+            info!("Policy requires approval: {}", reason);
+            broker_needs_approval(runtime, action, request, cancel).await
+        }
+    }
+}
+
+async fn broker_needs_approval(
+    runtime: Option<&AgentRuntime>,
+    action: Action,
+    request: &PermissionRequest,
+    cancel: &CancellationToken,
+) -> PermissionDecision {
+    let Some(runtime) = runtime else {
+        warn!("NeedsApproval without durable runtime; denying (no silent Allow)");
+        return PermissionDecision::Deny;
+    };
+
+    match runtime.request_action(action.clone()) {
+        Ok(crate::RuntimeStatus::AwaitingApproval) => {}
+        Ok(status) => {
+            warn!(
+                "NeedsApproval expected AwaitingApproval, got {:?}; denying",
+                status
+            );
+            return PermissionDecision::Deny;
+        }
+        Err(error) => {
+            warn!("Failed to create durable approval: {}; denying", error);
+            return PermissionDecision::Deny;
+        }
+    }
+
+    let Some(pending) = (match runtime.latest_pending_approval_for(&action) {
+        Ok(pending) => pending,
+        Err(error) => {
+            warn!("Failed to load pending approval: {}; denying", error);
+            return PermissionDecision::Deny;
+        }
+    }) else {
+        warn!("Durable approval missing after request_action; denying");
+        return PermissionDecision::Deny;
+    };
+
+    info!("ACP permission awaiting durable approval {}", pending.id);
+
+    match runtime
+        .wait_approval_resolution(pending.id, cancel.clone())
+        .await
+    {
+        Ok(true) => {
+            info!("User approved ACP permission {}", pending.id);
+            select_allow_or_deny(request)
+        }
+        Ok(false) => {
+            info!("User denied ACP permission {}", pending.id);
+            PermissionDecision::Deny
+        }
+        Err(error) => {
+            warn!(
+                "ACP approval wait ended without accept ({}): denying",
+                error
+            );
+            // Cancel/timeout honesty: clear durable pending so status is not
+            // stuck AwaitingApproval after the ACP oneshot already Denies.
+            if let Ok(Some(still_pending)) = runtime.pending_approval(pending.id) {
+                let _ = runtime.resolve_approval(ApprovalResolution::user(&still_pending, false));
+            }
+            PermissionDecision::Deny
+        }
+    }
 }
 
 #[async_trait]
@@ -106,14 +236,59 @@ impl ModelProvider for AcpAdapter {
             auth_method_ids: caps.auth_method_ids,
             agent_name: caps.agent_name,
             agent_version: caps.agent_version,
+            model_ids: caps.model_ids,
+            thought_levels: caps.thought_levels,
         })
+    }
+
+    async fn discover_models(&self) -> crate::ModelCatalogResult {
+        use crate::{ModelCatalogEntry, ModelCatalogResult};
+        use impetus_protocol::ModelCapabilityFlags;
+
+        let caps = self.gateway.cached_capabilities().await;
+        let Some(caps) = caps else {
+            // Honest: no session yet → profile model id only, empty efforts.
+            return ModelCatalogResult::StaticFallback {
+                models: vec![ModelCatalogEntry::id_only(self.model_id.clone())],
+                reason_redacted: "ACP config_options not probed until first session".into(),
+            };
+        };
+
+        let efforts = caps.thought_levels.clone();
+        // Honest: never invent tools=true; only signal reasoning when agent
+        // advertised non-empty thought_levels via initialize/config_options.
+        let mut capabilities = ModelCapabilityFlags::default();
+        if !efforts.is_empty() {
+            capabilities.reasoning = true;
+        }
+
+        let model_ids = if caps.model_ids.is_empty() {
+            vec![self.model_id.clone()]
+        } else {
+            caps.model_ids.clone()
+        };
+
+        let models = model_ids
+            .into_iter()
+            .map(|model_id| ModelCatalogEntry {
+                model_id,
+                model_display_name: None,
+                reasoning_efforts: efforts.clone(),
+                // Honest: do not invent a default effort when agent did not say.
+                default_reasoning_effort: None,
+                capabilities: capabilities.clone(),
+                provider_options: serde_json::json!({ "source": "acp_config_options" }),
+            })
+            .collect();
+
+        ModelCatalogResult::Discovered { models }
     }
 
     async fn stream_messages(
         &self,
         messages: &[ProviderMessage],
         _credential: Option<&str>,
-        _runtime: Option<Arc<crate::AgentRuntime>>,
+        runtime: Option<Arc<crate::AgentRuntime>>,
         cancel: CancellationToken,
         options: StreamOptions,
         mut on_event: Box<dyn FnMut(StreamEvent) -> Result<(), ProviderError> + Send>,
@@ -122,16 +297,22 @@ impl ModelProvider for AcpAdapter {
             .model_id
             .as_deref()
             .filter(|id| !id.is_empty())
-            .unwrap_or(self.model_id.as_str());
-        if effective_model != self.model_id {
-            info!(
-                "ACP session model override selected={} profile={}",
-                effective_model, self.model_id
-            );
-        }
-        if let Some(effort) = options.reasoning_effort.as_deref() {
-            info!("ACP reasoning_effort selection={}", effort);
-        }
+            .unwrap_or(self.model_id.as_str())
+            .to_owned();
+        let model_overridden = options
+            .model_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty() && id != self.model_id);
+        let reasoning_set = options
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        let launch = SessionLaunchOptions {
+            model_id: Some(effective_model),
+            reasoning_effort: options.reasoning_effort.clone(),
+            // Fail closed when the client explicitly changed model/reasoning.
+            strict: model_overridden || reasoning_set,
+        };
 
         // Check state
         let state = self.gateway.state().await;
@@ -142,8 +323,8 @@ impl ModelProvider for AcpAdapter {
             )));
         }
 
-        // Build prompt from messages (model/reasoning selection is session metadata;
-        // ACP v1 has no vendor-specific set-model RPC in the Impetus UI protocol).
+        // Build prompt from messages; model/reasoning applied via ACP
+        // session/set_config_option before session/prompt (not log-only).
         let prompt = messages
             .iter()
             .map(|msg| format!("{}: {}", msg.role(), msg.content()))
@@ -155,8 +336,11 @@ impl ModelProvider for AcpAdapter {
         let gateway = Arc::clone(&self.gateway);
         let workspace = self.workspace_dir.clone();
 
-        let mut session_handle =
-            tokio::spawn(async move { gateway.start_session(workspace, prompt).await });
+        let mut session_handle = tokio::spawn(async move {
+            gateway
+                .start_session_with_options(workspace, prompt, launch)
+                .await
+        });
 
         loop {
             tokio::select! {
@@ -206,49 +390,14 @@ impl ModelProvider for AcpAdapter {
                                 request.request_id, request.description
                             );
 
-                            let decision = if let Some(action) = action_for_permission(&request, &self.workspace_dir) {
-                                match self.policy.evaluate(&action) {
-                                    PolicyDecision::Allow => {
-                                        let allow_option = request.options.iter().find(|opt| {
-                                            matches!(
-                                                opt.kind,
-                                                impetus_acp_gateway::PermissionChoiceKind::AllowOnce
-                                                    | impetus_acp_gateway::PermissionChoiceKind::AllowAlways
-                                            )
-                                        });
-
-                                        if let Some(opt) = allow_option {
-                                            info!("Policy allowed: selecting option {}", opt.option_id);
-                                            PermissionDecision::Select(opt.option_id.clone())
-                                        } else {
-                                            warn!("Policy allowed but no allow option available");
-                                            PermissionDecision::Deny
-                                        }
-                                    }
-                                    PolicyDecision::Deny { reason } => {
-                                        info!("Policy denied: {}", reason);
-                                        PermissionDecision::Deny
-                                    }
-                                    PolicyDecision::NeedsApproval { reason } => {
-                                        info!("Policy requires approval: {}", reason);
-                                        PermissionDecision::Deny
-                                    }
-                                }
-                            } else {
-                                debug!("Permission kind {:?} does not require Policy evaluation", request.kind);
-                                let allow_option = request.options.iter().find(|opt| {
-                                    matches!(
-                                        opt.kind,
-                                        impetus_acp_gateway::PermissionChoiceKind::AllowOnce
-                                            | impetus_acp_gateway::PermissionChoiceKind::AllowAlways
-                                    )
-                                });
-                                if let Some(opt) = allow_option {
-                                    PermissionDecision::Select(opt.option_id.clone())
-                                } else {
-                                    PermissionDecision::Deny
-                                }
-                            };
+                            let decision = decide_permission(
+                                self.policy.as_ref(),
+                                &request,
+                                &self.workspace_dir,
+                                runtime.as_deref(),
+                                &cancel,
+                            )
+                            .await;
 
                             if response_tx.send(decision).is_err() {
                                 error!("Failed to send permission decision");
@@ -286,31 +435,36 @@ impl ModelProvider for AcpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use impetus_acp_gateway::{
-        PermissionChoiceKind, PermissionKind, PermissionOption, PermissionRequest,
-    };
+    use crate::{ApprovalResolution, EventPayload, EventStore, MemoryEventStore, SandboxScope};
+    use impetus_acp_gateway::{PermissionChoiceKind, PermissionKind, PermissionOption};
 
-    #[test]
-    fn edit_permission_is_normalized_as_agent_write_action() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let target = workspace.path().join("file.txt");
-        let request = PermissionRequest {
+    fn edit_permission(workspace: &Path) -> PermissionRequest {
+        let target = workspace.join("file.txt");
+        PermissionRequest {
             request_id: "permission-1".into(),
             description: "Edit file".into(),
             kind: PermissionKind::Edit,
-            target: Some(target.clone()),
+            target: Some(target),
             options: vec![PermissionOption {
                 option_id: "allow-once".into(),
                 description: "Allow once".into(),
                 kind: PermissionChoiceKind::AllowOnce,
             }],
-        };
+        }
+    }
 
+    #[test]
+    fn edit_permission_is_normalized_as_agent_write_action() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let request = edit_permission(workspace.path());
         let action = action_for_permission(&request, workspace.path()).expect("known action");
 
         assert_eq!(action.origin, crate::ActionOrigin::Agent);
         assert_eq!(action.kind, crate::ActionKind::WriteFile);
-        assert_eq!(action.target.as_deref(), target.to_str());
+        assert_eq!(
+            action.target.as_deref(),
+            request.target.as_ref().and_then(|p| p.to_str())
+        );
     }
 
     #[test]
@@ -323,10 +477,267 @@ mod tests {
             auth_method_ids: vec!["env".into()],
             agent_name: Some("mock-agent".into()),
             agent_version: Some("0.1.0".into()),
+            model_ids: vec!["gpt-test".into()],
+            thought_levels: vec!["low".into(), "xhigh".into()],
         };
         let encoded = serde_json::to_string(&snap).expect("encode");
         assert!(!encoded.contains("codex_"));
         assert!(encoded.contains("load_session"));
         assert!(encoded.contains("auth_method_ids"));
+        assert!(encoded.contains("thought_levels"));
+        assert!(encoded.contains("model_ids"));
+    }
+
+    #[tokio::test]
+    async fn discover_models_uses_cached_config_options_as_sot() {
+        use crate::{ModelCatalogResult, ModelProvider};
+        use agent_client_protocol::AcpAgentConfig;
+        use impetus_acp_gateway::CachedAgentCapabilities;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let adapter = AcpAdapter::new(
+            AcpAgentConfig::new("echo"),
+            None,
+            "acp".into(),
+            "profile-default".into(),
+            workspace.path().to_path_buf(),
+            Arc::new(policy),
+        );
+        adapter
+            .seed_cached_capabilities_for_test(CachedAgentCapabilities {
+                model_ids: vec!["codex-a".into(), "codex-b".into()],
+                thought_levels: vec!["minimal".into(), "high".into(), "xhigh".into()],
+                ..Default::default()
+            })
+            .await;
+
+        let catalog = adapter.discover_models().await;
+        let ModelCatalogResult::Discovered { models } = catalog else {
+            panic!("expected Discovered, got {catalog:?}");
+        };
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_id, "codex-a");
+        assert_eq!(
+            models[0].reasoning_efforts,
+            vec!["minimal", "high", "xhigh"]
+        );
+        assert!(models[0].default_reasoning_effort.is_none());
+        assert!(models[0].capabilities.reasoning);
+        assert!(
+            !models[0].capabilities.tools,
+            "discover_models must not invent tools=true"
+        );
+        let snap = adapter.agent_capabilities().expect("caps");
+        assert_eq!(snap.model_ids, vec!["codex-a", "codex-b"]);
+        assert_eq!(snap.thought_levels, vec!["minimal", "high", "xhigh"]);
+    }
+
+    #[tokio::test]
+    async fn needs_approval_without_runtime_denies() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let request = edit_permission(workspace.path());
+        let cancel = CancellationToken::new();
+
+        let decision = decide_permission(&policy, &request, workspace.path(), None, &cancel).await;
+        assert!(matches!(decision, PermissionDecision::Deny));
+    }
+
+    #[tokio::test]
+    async fn needs_approval_creates_pending_and_allow_selects_option() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = AgentRuntime::create_with_workspace(
+            store.clone(),
+            policy.clone(),
+            workspace.path().to_path_buf(),
+        )
+        .expect("runtime");
+        runtime
+            .submit_intent("edit via acp")
+            .expect("intent revision");
+
+        let request = edit_permission(workspace.path());
+        let cancel = CancellationToken::new();
+        let session_id = runtime.session_id();
+        let action = action_for_permission(&request, workspace.path()).expect("action");
+
+        let waiter = tokio::spawn({
+            let policy = policy.clone();
+            let workspace = workspace.path().to_path_buf();
+            let request = request.clone();
+            let cancel = cancel.clone();
+            async move {
+                decide_permission(&policy, &request, &workspace, Some(&runtime), &cancel).await
+            }
+        });
+
+        // Wait until durable pending approval appears.
+        let approval_id = {
+            let mut id = None;
+            for _ in 0..100 {
+                let attach = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+                    .expect("attach");
+                if let Some(pending) = attach
+                    .latest_pending_approval_for(&action)
+                    .expect("pending lookup")
+                {
+                    id = Some(pending.id);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            id.expect("pending approval created")
+        };
+
+        let resolver = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("resolver attach");
+        let pending = resolver
+            .pending_approval(approval_id)
+            .expect("load")
+            .expect("still pending");
+        resolver
+            .resolve_approval(ApprovalResolution::user(&pending, true))
+            .expect("user allow");
+
+        let decision = waiter.await.expect("join");
+        assert!(matches!(
+            decision,
+            PermissionDecision::Select(ref id) if id == "allow-once"
+        ));
+
+        let events = store.list(session_id).expect("events");
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request })
+                    if request.id == approval_id
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Approval(crate::ApprovalEvent::Resolved { request })
+                    if request.id == approval_id
+                        && matches!(request.state, crate::ApprovalState::Approved)
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn needs_approval_deny_resolution_maps_to_permission_deny() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = AgentRuntime::create_with_workspace(
+            store.clone(),
+            policy.clone(),
+            workspace.path().to_path_buf(),
+        )
+        .expect("runtime");
+        runtime.submit_intent("edit via acp").expect("intent");
+
+        let request = edit_permission(workspace.path());
+        let cancel = CancellationToken::new();
+        let session_id = runtime.session_id();
+        let action = action_for_permission(&request, workspace.path()).expect("action");
+
+        let waiter = tokio::spawn({
+            let policy = policy.clone();
+            let workspace = workspace.path().to_path_buf();
+            let request = request.clone();
+            let cancel = cancel.clone();
+            async move {
+                decide_permission(&policy, &request, &workspace, Some(&runtime), &cancel).await
+            }
+        });
+
+        let approval_id = {
+            let mut id = None;
+            for _ in 0..100 {
+                let attach = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+                    .expect("attach");
+                if let Some(pending) = attach
+                    .latest_pending_approval_for(&action)
+                    .expect("pending lookup")
+                {
+                    id = Some(pending.id);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            id.expect("pending approval created")
+        };
+
+        let resolver = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("resolver attach");
+        let pending = resolver
+            .pending_approval(approval_id)
+            .expect("load")
+            .expect("still pending");
+        resolver
+            .resolve_approval(ApprovalResolution::user(&pending, false))
+            .expect("user deny");
+
+        let decision = waiter.await.expect("join");
+        assert!(matches!(decision, PermissionDecision::Deny));
+    }
+
+    #[tokio::test]
+    async fn needs_approval_cancel_while_waiting_denies() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = AgentRuntime::create_with_workspace(
+            store.clone(),
+            policy.clone(),
+            workspace.path().to_path_buf(),
+        )
+        .expect("runtime");
+        runtime.submit_intent("edit via acp").expect("intent");
+
+        let request = edit_permission(workspace.path());
+        let cancel = CancellationToken::new();
+        let session_id = runtime.session_id();
+        let action = action_for_permission(&request, workspace.path()).expect("action");
+
+        let waiter = tokio::spawn({
+            let policy = policy.clone();
+            let workspace = workspace.path().to_path_buf();
+            let request = request.clone();
+            let cancel = cancel.clone();
+            async move {
+                decide_permission(&policy, &request, &workspace, Some(&runtime), &cancel).await
+            }
+        });
+
+        for _ in 0..100 {
+            let attach =
+                AgentRuntime::attach(store.clone(), policy.clone(), session_id).expect("attach");
+            if attach
+                .latest_pending_approval_for(&action)
+                .expect("pending")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        cancel.cancel();
+        let decision = waiter.await.expect("join");
+        assert!(matches!(decision, PermissionDecision::Deny));
+
+        let attach =
+            AgentRuntime::attach(store.clone(), policy.clone(), session_id).expect("attach");
+        assert!(
+            attach
+                .latest_pending_approval_for(&action)
+                .expect("lookup")
+                .is_none(),
+            "cancel must clear durable pending approval"
+        );
     }
 }

@@ -7,7 +7,6 @@ use impetus_core::{
     load_daemon_hook_prefilter, load_daemon_mcp_runtime, load_daemon_policy_store,
     open_daemon_worktree_manager,
 };
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -178,6 +177,7 @@ fn configured_harness(
 ///
 /// MCP SoT: only `{data_root}/mcp/*.json` (autoload + `ReloadMcpServers`).
 /// Workflow Explore uses the same AgentLoop Explore executor as `explore_spawn`.
+/// Workflow Research/Build/Review use AgentLoopRoleExecutor (not git status stubs).
 fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     let child_store = Arc::new(
         impetus_core::ChildResultStore::open(data_root.join("child_results.sqlite3"))
@@ -189,6 +189,12 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         harness.policy(),
     )
     .context("wire AgentLoop Explore executor")?;
+    let role_executor = impetus_core::build_agent_loop_role_executor_for_harness(
+        harness.provider_registry(),
+        harness.default_provider_id(),
+        harness.policy(),
+    )
+    .context("wire AgentLoop role executor")?;
     let explore: Arc<dyn impetus_core::ExploreSpawnBridge> =
         Arc::new(impetus_core::HarnessExploreSpawn {
             gate: Arc::new(std::sync::Mutex::new(
@@ -222,7 +228,7 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     let workflow = Arc::new(
         impetus_core::WorkflowRuntime::with_parent_events(
             child_store,
-            Arc::new(impetus_core::ProcessRoleChildExecutor::new()),
+            role_executor,
             explore_executor,
             Some(harness.store()),
         )
@@ -239,7 +245,22 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         .with_tool_providers(mcp_slot)
         .with_mcp_reload(Arc::new(move || {
             load_daemon_mcp_runtime(&data_root_owned).map_err(|error| error.to_string())
-        }));
+        }))
+        .with_mcp_sot_root(data_root)
+        .with_memory(impetus_core::open_daemon_memory_runtime(data_root));
+
+    let store = impetus_core::open_daemon_session_model_store(data_root)
+        .context("open durable session model store under data root")?;
+    let harness = harness.with_session_model_store(Arc::new(store));
+
+    // Extension lifecycle: CLI is control plane. Load Enabled inventory at start
+    // (fail-closed if DB corrupt) and keep it on the harness for ListExtensions.
+    // AgentLoop skill-path inject remains Next; MCP SoT stays `$IMPETUS_DATA_DIR/mcp/*.json`.
+    let extension_runtime = Arc::new(std::sync::Mutex::new(
+        impetus_core::load_daemon_extension_runtime(data_root)
+            .context("reload extension runtime from durable store")?,
+    ));
+    let harness = harness.with_extension_runtime(extension_runtime);
 
     // Durable PTY metadata when SQLite open succeeds (restart/resume of metadata only;
     // live PTY handles do not survive daemon restart — client must re-Start).
@@ -402,9 +423,11 @@ fn read_keychain_credential_with(
 }
 
 async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
+    let connection_id = harness.mint_connection_id();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut negotiated = None::<BTreeSet<String>>;
+    let mut negotiated = None::<Vec<String>>;
+    let mut negotiated_version = None::<u16>;
     let mut subscription = None;
     let mut notification_receiver: Option<tokio::sync::broadcast::Receiver<(uuid::Uuid, u64)>> =
         None;
@@ -426,10 +449,13 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                 // Drain until empty: Stream may return a size-capped batch; remaining
                 // events must still be pushed without waiting for another append.
                 loop {
-                    match harness.handle(IpcRequest::Stream {
-                        session_id,
-                        after_sequence,
-                    }) {
+                    match harness.handle_with_connection(
+                        Some(connection_id),
+                        IpcRequest::Stream {
+                            session_id,
+                            after_sequence,
+                        },
+                    ) {
                         IpcResponse::Events { events, .. } if !events.is_empty() => {
                             after_sequence = events
                                 .last()
@@ -465,18 +491,36 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                 };
                 let response = match serde_json::from_slice::<IpcRequest>(&line) {
                     Ok(request @ IpcRequest::Hello { .. }) => {
-                        let response = harness.handle(request);
-                        match &response {
-                            IpcResponse::Hello { capabilities, .. } => {
-                                negotiated = Some(capabilities.iter().cloned().collect());
+                        // First successful Hello freezes caps + version for this
+                        // connection. Re-Hello echoes the frozen set (reconnect-
+                        // friendly) and must not widen privileges.
+                        if let (Some(caps), Some(ver)) =
+                            (negotiated.as_ref(), negotiated_version)
+                        {
+                            IpcResponse::Hello {
+                                version: ver,
+                                capabilities: caps.clone(),
                             }
-                            IpcResponse::Incompatible { .. } => {
-                                write_response(&mut writer, &response).await?;
-                                return Ok(());
+                        } else {
+                            let response =
+                                harness.handle_with_connection(Some(connection_id), request);
+                            match &response {
+                                IpcResponse::Hello {
+                                    version,
+                                    capabilities,
+                                    ..
+                                } => {
+                                    negotiated = Some(capabilities.clone());
+                                    negotiated_version = Some(*version);
+                                }
+                                IpcResponse::Incompatible { .. } => {
+                                    write_response(&mut writer, &response).await?;
+                                    return Ok(());
+                                }
+                                _ => unreachable!("hello returns hello or incompatible"),
                             }
-                            _ => unreachable!("hello returns hello or incompatible"),
+                            response
                         }
-                        response
                     }
                     Ok(request) => {
                         let Some(capabilities) = negotiated.as_ref() else {
@@ -486,11 +530,25 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                             }).await?;
                             continue;
                         };
+                        // Caps/version frozen after first successful Hello;
+                        // mid-session requests use that set only.
+                        debug_assert!(negotiated_version.is_some());
                         let required = required_capability(&request);
-                        if !capabilities.contains(required) {
+                        if !capabilities.iter().any(|c| c == required) {
                             IpcResponse::Error {
                                 code: IpcErrorCode::Unavailable,
                                 message: format!("capability `{required}` was not negotiated"),
+                            }
+                        } else if let IpcRequest::SetExecutionMode { mode, .. } = &request
+                            && let Some(scope) = mode.required_ipc_capability()
+                            && !capabilities.iter().any(|c| c == scope)
+                        {
+                            IpcResponse::Error {
+                                code: IpcErrorCode::Unavailable,
+                                message: format!(
+                                    "execution mode {} requires capability `{scope}` (not negotiated)",
+                                    mode.label()
+                                ),
                             }
                         } else {
                             let requested_subscription = match &request {
@@ -499,7 +557,8 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                                 }
                                 _ => None,
                             };
-                            let response = harness.handle(request);
+                            let response =
+                                harness.handle_with_connection(Some(connection_id), request);
                             if matches!(response, IpcResponse::Subscribed { .. }) {
                                 subscription = requested_subscription;
                                 // Initialize notification receiver on first subscription
@@ -575,15 +634,17 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::StatWorkspaceFile { .. } => "workspace_stat_file",
         IpcRequest::ReadWorkspaceFile { .. } => "workspace_read_file",
         IpcRequest::SearchWorkspaceFiles { .. } => "workspace_search_files",
-        IpcRequest::GetRepositoryState { .. }
+        // GetDiff/GetFileDiff are git ops; `structured_diff` advertises
+        // DiffObservation enrichment on the same responses (not a separate method).
+        IpcRequest::GetDiff { .. }
+        | IpcRequest::GetFileDiff { .. }
+        | IpcRequest::GetRepositoryState { .. }
         | IpcRequest::ListBranches { .. }
         | IpcRequest::GetCurrentBranch { .. }
         | IpcRequest::CreateBranch { .. }
         | IpcRequest::SwitchBranch { .. }
         | IpcRequest::GitStatus { .. }
-        | IpcRequest::ListChangedFiles { .. }
-        | IpcRequest::GetDiff { .. }
-        | IpcRequest::GetFileDiff { .. } => "git",
+        | IpcRequest::ListChangedFiles { .. } => "git",
         IpcRequest::PtyStart { .. }
         | IpcRequest::PtyAttach { .. }
         | IpcRequest::PtyInput { .. }
@@ -593,7 +654,8 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::PtyTerminate { .. }
         | IpcRequest::PtyStatus { .. } => "pty",
         IpcRequest::ListMcpServers => "list_mcp",
-        IpcRequest::ListModels | IpcRequest::ListProviders => "list_models",
+        IpcRequest::ListModels => "list_models",
+        IpcRequest::ListProviders => "list_providers",
         IpcRequest::GetSessionModel { .. } | IpcRequest::SetSessionModel { .. } => "session_model",
         IpcRequest::CreateWorktree { .. }
         | IpcRequest::ListWorktrees { .. }
@@ -603,7 +665,17 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         | IpcRequest::StopWorktree { .. }
         | IpcRequest::CheckWorktreeMergeReady { .. }
         | IpcRequest::MergeWorktree { .. } => "worktrees",
-        IpcRequest::ReloadMcpServers => "mcp_manage",
+        IpcRequest::ReloadMcpServers
+        | IpcRequest::UpsertMcpServer { .. }
+        | IpcRequest::RemoveMcpServer { .. }
+        | IpcRequest::EnableMcpServer { .. }
+        | IpcRequest::DisableMcpServer { .. } => "mcp_manage",
+        IpcRequest::ListMemory { .. } | IpcRequest::GetMemory { .. } => "memory",
+        IpcRequest::AppendMemory { .. }
+        | IpcRequest::ClearMemory { .. }
+        | IpcRequest::ExportMemory { .. } => "memory_manage",
+        IpcRequest::GetBrowserHealth | IpcRequest::NegotiateBrowser { .. } => "browser",
+        IpcRequest::ListExtensions | IpcRequest::GetExtensionStatus { .. } => "extension_runtime",
     }
 }
 
@@ -688,8 +760,8 @@ fn restrict_dir_permissions(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use impetus_core::{
-        EventPayload, EventStore, IPC_VERSION, MemoryEventStore, NoticeEvent, ReadOnlyToolKind,
-        RuntimeStatus, ToolOutcome,
+        EventPayload, EventStore, IPC_MIN_SUPPORTED, IPC_VERSION, MemoryEventStore, NoticeEvent,
+        ReadOnlyToolKind, RuntimeStatus, ToolOutcome,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -787,12 +859,60 @@ mod tests {
             "Command::new(\"su\")",
             "osascript",
             "withAdministratorPrivileges",
+            "AuthorizationCreate",
+            "SFAuthorization",
+            "SMJobBless",
+            "PrivilegedHelperTools",
         ] {
             assert!(
                 !code.contains(needle),
                 "impetusd production path must not invoke `{needle}`"
             );
         }
+    }
+
+    /// Default runtime paths stay under `$HOME` / `$IMPETUS_DATA_DIR` (userspace).
+    #[test]
+    fn daemon_data_root_and_socket_are_userspace_paths() {
+        let src = include_str!("main.rs");
+        let data_root_fn = {
+            let start = src.find("fn data_root(").expect("data_root present");
+            let end = src[start..]
+                .find("\nfn ")
+                .map(|i| start + i)
+                .unwrap_or(src.len());
+            &src[start..end]
+        };
+        assert!(
+            data_root_fn.contains("IMPETUS_DATA_DIR"),
+            "data_root must honor IMPETUS_DATA_DIR override"
+        );
+        assert!(
+            data_root_fn.contains("Library/Application Support/Impetus"),
+            "default data_root must be under user Application Support"
+        );
+        for needle in [
+            "/var/lib",
+            "/Library/PrivilegedHelperTools",
+            "/usr/local/var",
+        ] {
+            assert!(
+                !data_root_fn.contains(needle),
+                "data_root must not assume root-owned path `{needle}`"
+            );
+        }
+        let socket_fn = {
+            let start = src.find("fn socket_path(").expect("socket_path present");
+            let end = src[start..]
+                .find("\nfn ")
+                .map(|i| start + i)
+                .unwrap_or(src.len());
+            &src[start..end]
+        };
+        assert!(
+            socket_fn.contains("IMPETUS_SOCKET") && socket_fn.contains("harness.sock"),
+            "socket must default under data_root (harness.sock)"
+        );
     }
 
     #[test]
@@ -1080,9 +1200,9 @@ mod tests {
         )
         .expect("start");
         let summary = wf.run_next_ready_step(sid).expect("explore step");
-        // Mock provider default chunk — proves AgentLoop Explore, not ReadOnly.
+        // Mock provider default chunk — proves AgentLoop Explore, not ReadOnly/git stub.
         assert!(
-            summary.contains("Mock response") || !summary.is_empty(),
+            summary.contains("Mock response"),
             "unexpected explore summary: {summary}"
         );
         let kids = wf.child_results().list_by_parent(&sid.to_string()).unwrap();
@@ -1141,15 +1261,16 @@ mod tests {
                 Arc::new(MemoryEventStore::default()),
                 IpcRequest::Hello {
                     version: IPC_VERSION + 1,
-                    capabilities: vec![]
-                }
+                    min_version: None,
+                    capabilities: vec![],
+                },
             ),
             IpcResponse::Incompatible {
                 supported_version: IPC_VERSION,
                 min_supported: impetus_core::IPC_MIN_SUPPORTED,
                 client_version: IPC_VERSION + 1,
                 upgrade_recommendation: Some(format!(
-                    "Client version {} is newer than harness {}. Upgrade harness.",
+                    "Client min version {} is newer than harness {}. Upgrade harness.",
                     IPC_VERSION + 1,
                     IPC_VERSION
                 )),
@@ -1396,6 +1517,7 @@ mod tests {
         for request in [
             IpcRequest::Hello {
                 version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
                 capabilities: vec!["session_create".into()],
             },
             IpcRequest::ListSessions,
@@ -1449,6 +1571,7 @@ mod tests {
                     "{}\n{}\n",
                     serde_json::to_string(&IpcRequest::Hello {
                         version: IPC_VERSION,
+                        min_version: Some(IPC_MIN_SUPPORTED),
                         capabilities: vec!["subscribe".into()],
                     })
                     .expect("encode hello"),
@@ -1496,6 +1619,302 @@ mod tests {
             IpcResponse::Events { session_id: actual, events }
                 if actual == session_id && events.len() == 1 && events[0].sequence == 2
         ));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn wire_resolve_approval_rejects_foreign_connection() {
+        use impetus_core::{
+            Action, ActionKind, ActionOrigin, AgentRuntime, ApprovalEvent, EventPayload,
+            MemoryEventStore, PolicyEngine, SandboxScope,
+        };
+
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace("."));
+        let harness = Arc::new(Harness::new(store.clone(), policy.clone()));
+
+        let (server_a, client_a) = UnixStream::pair().expect("pair A");
+        let (server_b, client_b) = UnixStream::pair().expect("pair B");
+        let harness_a = harness.clone();
+        let harness_b = harness.clone();
+        let task_a = tokio::spawn(async move { serve_client(server_a, harness_a).await });
+        let task_b = tokio::spawn(async move { serve_client(server_b, harness_b).await });
+
+        let (reader_a, mut writer_a) = client_a.into_split();
+        let (reader_b, mut writer_b) = client_b.into_split();
+        let mut lines_a = BufReader::new(reader_a).lines();
+        let mut lines_b = BufReader::new(reader_b).lines();
+
+        async fn send(
+            writer: &mut tokio::net::unix::OwnedWriteHalf,
+            request: &IpcRequest,
+        ) -> anyhow::Result<()> {
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(request)?).as_bytes())
+                .await?;
+            writer.flush().await?;
+            Ok(())
+        }
+
+        async fn read_response(
+            lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        ) -> IpcResponse {
+            serde_json::from_str(
+                &lines
+                    .next_line()
+                    .await
+                    .expect("read")
+                    .expect("response line"),
+            )
+            .expect("parse")
+        }
+
+        let caps = vec![
+            "session_create".into(),
+            "session_attach".into(),
+            "resolve_approval".into(),
+            "event_stream".into(),
+            "resolve_approval_bound".into(),
+        ];
+        send(
+            &mut writer_a,
+            &IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: caps.clone(),
+            },
+        )
+        .await
+        .expect("hello A");
+        send(
+            &mut writer_b,
+            &IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: caps,
+            },
+        )
+        .await
+        .expect("hello B");
+        let hello_a = read_response(&mut lines_a).await;
+        let hello_b = read_response(&mut lines_b).await;
+        let IpcResponse::Hello { capabilities, .. } = hello_a else {
+            panic!("expected Hello A, got {hello_a:?}");
+        };
+        assert!(
+            capabilities.iter().any(|c| c == "resolve_approval_bound"),
+            "daemon must advertise resolve_approval_bound: {capabilities:?}"
+        );
+        assert!(matches!(hello_b, IpcResponse::Hello { .. }));
+
+        send(
+            &mut writer_a,
+            &IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir()
+                    .expect("cwd")
+                    .canonicalize()
+                    .expect("canonical"),
+            },
+        )
+        .await
+        .expect("create");
+        let IpcResponse::Session { session_id, .. } = read_response(&mut lines_a).await else {
+            panic!("expected Session from A");
+        };
+
+        let runtime = AgentRuntime::attach(store.clone(), policy.clone(), session_id)
+            .expect("attach runtime");
+        runtime
+            .submit_intent("write a test file")
+            .expect("submit intent");
+        runtime
+            .request_action(Action {
+                origin: ActionOrigin::Agent,
+                kind: ActionKind::WriteFile,
+                summary: "write file".into(),
+                target: Some("test.txt".into()),
+            })
+            .expect("request approval");
+
+        let approval_id = store
+            .list(session_id)
+            .expect("list")
+            .into_iter()
+            .find_map(|event| match event.payload {
+                EventPayload::Approval(ApprovalEvent::Requested { request }) => Some(request.id),
+                _ => None,
+            })
+            .expect("pending approval");
+
+        send(
+            &mut writer_b,
+            &IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        )
+        .await
+        .expect("resolve from B");
+        let foreign = read_response(&mut lines_b).await;
+        assert!(
+            matches!(
+                foreign,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    ..
+                }
+            ),
+            "connection B must be rejected: {foreign:?}"
+        );
+
+        send(
+            &mut writer_a,
+            &IpcRequest::ResolveApproval {
+                session_id,
+                approval_id,
+                accepted: true,
+            },
+        )
+        .await
+        .expect("resolve from A");
+        let owned = read_response(&mut lines_a).await;
+        assert!(
+            matches!(
+                owned,
+                IpcResponse::ApprovalResolved {
+                    approval_id: id,
+                    ..
+                } if id == approval_id
+            ),
+            "connection A must resolve: {owned:?}"
+        );
+
+        task_a.abort();
+        task_b.abort();
+    }
+
+    #[tokio::test]
+    async fn wire_hello_freezes_negotiated_capabilities() {
+        use impetus_core::ExecutionMode;
+
+        let harness = Arc::new(Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            impetus_core::harness_api::policy(),
+        ));
+        let (server, client) = UnixStream::pair().expect("create Unix pair");
+        let server_task = tokio::spawn(async move { serve_client(server, harness).await });
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        async fn send(
+            writer: &mut tokio::net::unix::OwnedWriteHalf,
+            request: &IpcRequest,
+        ) -> anyhow::Result<()> {
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(request)?).as_bytes())
+                .await?;
+            writer.flush().await?;
+            Ok(())
+        }
+
+        async fn read_response(
+            lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        ) -> IpcResponse {
+            serde_json::from_str(
+                &lines
+                    .next_line()
+                    .await
+                    .expect("read")
+                    .expect("response line"),
+            )
+            .expect("parse")
+        }
+
+        // Limited first Hello: execution_mode without Bypass scope.
+        send(
+            &mut writer,
+            &IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: vec!["session_create".into(), "execution_mode".into()],
+            },
+        )
+        .await
+        .expect("first hello");
+        let IpcResponse::Hello {
+            version: frozen_version,
+            capabilities: frozen_caps,
+        } = read_response(&mut lines).await
+        else {
+            panic!("expected Hello");
+        };
+        assert!(
+            !frozen_caps.iter().any(|c| c == "approval_scope_full_auto"),
+            "first Hello must not include Bypass scope: {frozen_caps:?}"
+        );
+
+        // Widening re-Hello must echo frozen caps/version, not escalate.
+        send(
+            &mut writer,
+            &IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: vec![
+                    "session_create".into(),
+                    "execution_mode".into(),
+                    "approval_scope_full_auto".into(),
+                ],
+            },
+        )
+        .await
+        .expect("second hello");
+        let IpcResponse::Hello {
+            version: echoed_version,
+            capabilities: echoed_caps,
+        } = read_response(&mut lines).await
+        else {
+            panic!("expected frozen Hello");
+        };
+        assert_eq!(echoed_version, frozen_version);
+        assert_eq!(echoed_caps, frozen_caps);
+
+        send(
+            &mut writer,
+            &IpcRequest::CreateSession {
+                workspace_root: std::env::current_dir()
+                    .expect("cwd")
+                    .canonicalize()
+                    .expect("canonical"),
+            },
+        )
+        .await
+        .expect("create");
+        let IpcResponse::Session { session_id, .. } = read_response(&mut lines).await else {
+            panic!("expected Session");
+        };
+
+        send(
+            &mut writer,
+            &IpcRequest::SetExecutionMode {
+                session_id,
+                mode: ExecutionMode::Bypass,
+            },
+        )
+        .await
+        .expect("set bypass");
+        let bypass = read_response(&mut lines).await;
+        assert!(
+            matches!(
+                bypass,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    ..
+                }
+            ),
+            "re-Hello must not unlock Bypass: {bypass:?}"
+        );
 
         server_task.abort();
     }

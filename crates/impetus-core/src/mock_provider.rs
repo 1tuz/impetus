@@ -3,7 +3,8 @@
 //! Returns pre-configured streaming responses without network calls.
 
 use crate::{
-    FinishReason, ModelProvider, ProviderError, ProviderHealth, ProviderMessage, StreamEvent,
+    FinishReason, ModelCatalogEntry, ModelCatalogResult, ModelProvider, ProviderError,
+    ProviderHealth, ProviderMessage, StreamEvent,
 };
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -51,6 +52,11 @@ pub struct MockProvider {
     scripts: Arc<Mutex<VecDeque<Vec<MockStreamItem>>>>,
     received_messages: Arc<Mutex<Vec<Vec<ProviderMessage>>>>,
     last_stream_options: Arc<Mutex<Option<crate::StreamOptions>>>,
+    /// Advertised efforts for catalog/discovery tests (empty = reasoning not supported).
+    reasoning_efforts: Vec<String>,
+    default_reasoning_effort: Option<String>,
+    /// Extra catalog model ids sharing the same advertised efforts (tests).
+    catalog_model_ids: Vec<String>,
 }
 
 impl MockProvider {
@@ -66,7 +72,33 @@ impl MockProvider {
             scripts: Arc::new(Mutex::new(VecDeque::new())),
             received_messages: Arc::new(Mutex::new(Vec::new())),
             last_stream_options: Arc::new(Mutex::new(None)),
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            catalog_model_ids: Vec::new(),
         }
+    }
+
+    /// Advertise free-form reasoning efforts in catalog discovery (tests / fixtures).
+    pub fn with_reasoning_efforts(
+        mut self,
+        efforts: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.reasoning_efforts = efforts.into_iter().map(Into::into).collect();
+        if self.default_reasoning_effort.is_none()
+            && self.reasoning_efforts.iter().any(|e| e == "medium")
+        {
+            self.default_reasoning_effort = Some("medium".into());
+        }
+        self
+    }
+
+    /// Extra `/v1/models`-style ids in static catalog (share advertised efforts).
+    pub fn with_catalog_models(
+        mut self,
+        models: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.catalog_model_ids = models.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn scripted(
@@ -94,6 +126,8 @@ impl MockProvider {
     }
 
     pub fn default_mock() -> Self {
+        // Honest SoT for daemon/CI mock path: advertise free-form efforts the
+        // fixture understands (not a global invented enum for every provider).
         Self::new(
             "mock",
             "mock-model",
@@ -108,6 +142,7 @@ impl MockProvider {
                 },
             ],
         )
+        .with_reasoning_efforts(["low", "medium", "high"])
     }
 }
 
@@ -123,6 +158,31 @@ impl ModelProvider for MockProvider {
 
     fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn discover_models(&self) -> ModelCatalogResult {
+        let mut ids = self.catalog_model_ids.clone();
+        if ids.is_empty() {
+            ids.push(self.model_id.clone());
+        } else if !ids.iter().any(|id| id == &self.model_id) {
+            ids.insert(0, self.model_id.clone());
+        }
+        let models = ids
+            .into_iter()
+            .map(|model_id| {
+                let mut entry = ModelCatalogEntry::id_only(model_id);
+                entry.reasoning_efforts = self.reasoning_efforts.clone();
+                entry.default_reasoning_effort = self.default_reasoning_effort.clone();
+                if !entry.reasoning_efforts.is_empty() {
+                    entry.capabilities.reasoning = true;
+                }
+                entry
+            })
+            .collect();
+        ModelCatalogResult::StaticFallback {
+            models,
+            reason_redacted: "mock provider has no remote catalog".into(),
+        }
     }
 
     async fn stream_messages(

@@ -86,6 +86,48 @@ enum ExtensionAction {
         #[arg(long)]
         json: bool,
     },
+    /// Enable a disabled or unloaded install
+    Enable {
+        /// Installation ID from a prior `extension install`
+        installation_id: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disable install (sideline files; not loaded on restart)
+    Disable {
+        /// Installation ID from a prior `extension install`
+        installation_id: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unload install (sideline files; drop from runtime reload set)
+    Unload {
+        /// Installation ID from a prior `extension install`
+        installation_id: String,
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List install states and restart-load eligibility
+    List {
+        /// Target project root (default: cwd)
+        #[arg(long)]
+        root: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
     /// Report install-state + ownership health (read-only)
     Doctor {
         /// Optional installation ID; omit to check all under --root
@@ -134,7 +176,7 @@ enum Commands {
         #[command(subcommand)]
         action: SkillsAction,
     },
-    /// Extension lifecycle (plan / install / remove / doctor / repair)
+    /// Extension lifecycle (plan / install / remove / enable / disable / unload / list / doctor / repair)
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
@@ -300,6 +342,34 @@ async fn main() -> Result<()> {
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
                     extension::remove(installation_id, root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Enable {
+                    installation_id,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::enable(installation_id, root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Disable {
+                    installation_id,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::disable(installation_id, root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Unload {
+                    installation_id,
+                    root,
+                    json,
+                } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::unload(installation_id, root_path.as_deref(), *json)?;
+                }
+                ExtensionAction::List { root, json } => {
+                    let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    extension::list(root_path.as_deref(), *json)?;
                 }
                 ExtensionAction::Doctor {
                     installation_id,
@@ -582,6 +652,62 @@ mod tests {
             }
             _ => panic!("unexpected command variant"),
         }
+    }
+
+    #[test]
+    fn parses_extension_enable_disable_unload_list() {
+        let enable = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "enable",
+            "11111111-2222-3333-4444-555555555555",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            enable.command,
+            Commands::Extension {
+                action: ExtensionAction::Enable { json: true, .. }
+            }
+        ));
+
+        let disable = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "disable",
+            "11111111-2222-3333-4444-555555555555",
+            "--root",
+            "/tmp/project",
+        ])
+        .unwrap();
+        assert!(matches!(
+            disable.command,
+            Commands::Extension {
+                action: ExtensionAction::Disable { root: Some(_), .. }
+            }
+        ));
+
+        let unload = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "unload",
+            "11111111-2222-3333-4444-555555555555",
+        ])
+        .unwrap();
+        assert!(matches!(
+            unload.command,
+            Commands::Extension {
+                action: ExtensionAction::Unload { .. }
+            }
+        ));
+
+        let list = Cli::try_parse_from(["impetus", "extension", "list", "--json"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Commands::Extension {
+                action: ExtensionAction::List { json: true, .. }
+            }
+        ));
     }
 
     #[test]

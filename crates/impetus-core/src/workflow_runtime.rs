@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::agent_scheduler::InMemoryAgentScheduler;
 use crate::child_concurrency::{ChildConcurrencyConfig, ChildConcurrencyGate};
-use crate::child_result_store::ChildResultStore;
+use crate::child_result_store::{ChildResultStatus, ChildResultStore};
 use crate::explore_child::{
     EXPLORE_ALLOWED_TOOLS, ExploreChildExecutor, ExploreChildRequest, ExploreChildRunner,
 };
@@ -145,6 +145,7 @@ impl WorkflowRuntime {
     }
 
     /// Cancel workflow + child tokens; scheduler admissions drained.
+    /// Best-effort stop/close any WorktreeManager binding for the session.
     pub fn cancel_session(&self, session_id: Uuid) {
         let mut sessions = self.sessions.lock().expect("workflow sessions");
         if let Some(mut sw) = sessions.remove(&session_id) {
@@ -152,6 +153,19 @@ impl WorkflowRuntime {
                 token.cancel();
             }
             sw.engine.cancel_with_scheduler(&mut sw.scheduler);
+        }
+        if let Some(mgr) = self.worktrees.as_ref()
+            && let Ok(Some(binding)) = mgr.get_by_session(session_id)
+        {
+            match binding.state {
+                crate::WorktreeLifecycleState::Active => {
+                    let _ = mgr.stop(session_id);
+                }
+                crate::WorktreeLifecycleState::Stale => {
+                    let _ = mgr.close(session_id);
+                }
+                crate::WorktreeLifecycleState::Stopped | crate::WorktreeLifecycleState::Closed => {}
+            }
         }
     }
 
@@ -169,7 +183,11 @@ impl WorkflowRuntime {
             .map_err(|_| WorkflowRuntimeError::UnknownSession(session_id))
     }
 
-    /// Spawn the next ready step as a live child; complete scheduler slot.
+    /// Spawn the next ready step as a live child; finish scheduler slot honestly.
+    ///
+    /// Completed children call [`WorkflowEngine::complete_step_with_scheduler`].
+    /// Failed → [`WorkflowEngine::fail_step`] (no fake Completed advance).
+    /// Cancelled → [`WorkflowEngine::cancel_with_scheduler`].
     pub fn run_next_ready_step(&self, session_id: Uuid) -> Result<String, WorkflowRuntimeError> {
         let mut sessions = self.sessions.lock().expect("workflow sessions");
         let sw = sessions
@@ -205,14 +223,14 @@ impl WorkflowRuntime {
         let cwd = sw.cwd.clone();
         drop(sessions); // release lock during spawn
 
-        let summary = match role {
+        let (child_status, summary) = match role {
             Some(SubagentRole::Explore) => {
                 self.spawn_explore(session_id, &step_id, &cwd, cancel)?
             }
             Some(role) => self.spawn_role(session_id, &step_id, role, &cwd, cancel)?,
             None => {
                 // Approval / non-agent step: complete immediately with label.
-                "approval-skip".into()
+                (ChildResultStatus::Completed, "approval-skip".into())
             }
         };
 
@@ -221,13 +239,36 @@ impl WorkflowRuntime {
             .get_mut(&session_id)
             .ok_or(WorkflowRuntimeError::UnknownSession(session_id))?;
         sw.step_cancels.remove(&step_id);
-        sw.engine.complete_step_with_scheduler(
-            &step_id,
-            summary.clone(),
-            1,
-            1,
-            &mut sw.scheduler,
-        )?;
+
+        match child_status {
+            ChildResultStatus::Completed => {
+                sw.engine.complete_step_with_scheduler(
+                    &step_id,
+                    summary.clone(),
+                    1,
+                    1,
+                    &mut sw.scheduler,
+                )?;
+            }
+            ChildResultStatus::Failed => {
+                let schedule_id = sw
+                    .engine
+                    .checkpoint(&step_id)
+                    .and_then(|cp| cp.schedule_id.clone());
+                match sw.engine.fail_step(&step_id, summary.clone(), 1, 1) {
+                    Ok(()) => {}
+                    // Terminal failure is expected when retries are exhausted.
+                    Err(WorkflowError::RetriesExhausted(_)) => {}
+                    Err(err) => return Err(err.into()),
+                }
+                if let Some(sid) = schedule_id.as_deref() {
+                    let _ = sw.scheduler.cancel(sid);
+                }
+            }
+            ChildResultStatus::Cancelled => {
+                sw.engine.cancel_with_scheduler(&mut sw.scheduler);
+            }
+        }
         Ok(summary)
     }
 
@@ -261,12 +302,12 @@ impl WorkflowRuntime {
         role: SubagentRole,
         cwd: &Path,
         cancel: CancellationToken,
-    ) -> Result<String, WorkflowRuntimeError> {
+    ) -> Result<(ChildResultStatus, String), WorkflowRuntimeError> {
         let tools: Vec<String> = allowed_tools_for(role)
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let (write_roots, worktree) = if role == SubagentRole::Build {
+        let (write_roots, worktree, role_cwd) = if role == SubagentRole::Build {
             if let Some(mgr) = self.worktrees.as_ref() {
                 let binding = match mgr.get_by_session(session_id) {
                     Ok(Some(existing)) => {
@@ -303,20 +344,24 @@ impl WorkflowRuntime {
                         )));
                     }
                 };
-                (vec![binding.path.clone()], Some(binding.worktree_id))
+                (
+                    vec![binding.path.clone()],
+                    Some(binding.worktree_id),
+                    binding.path.clone(),
+                )
             } else {
                 return Err(WorkflowRuntimeError::RoleChild(
                     "Build role requires WorktreeManager; synthetic worktree ids removed".into(),
                 ));
             }
         } else {
-            (vec![], None)
+            (vec![], None, cwd.to_path_buf())
         };
         let request = RoleChildRequest {
             parent_session_id: session_id.to_string(),
             child_id: format!("{session_id}-{step_id}"),
             role,
-            cwd: cwd.to_path_buf(),
+            cwd: role_cwd,
             allowed_tools: tools,
             write_roots,
             worktree,
@@ -324,15 +369,10 @@ impl WorkflowRuntime {
             max_tokens: 1_000,
             max_time_ms: 30_000,
             max_depth: 2,
-            // Production: explicit program required — ProcessRoleChildExecutor
-            // no longer defaults to /bin/echo success.
-            program: Some(PathBuf::from("git")),
-            args: vec![
-                "-C".into(),
-                cwd.display().to_string(),
-                "status".into(),
-                "--short".into(),
-            ],
+            // AgentLoopRoleExecutor ignores program/args. ProcessRoleChildExecutor
+            // (unit tests) still requires an explicit program when used directly.
+            program: None,
+            args: vec![],
         };
         let mut gate = self.gate.lock().expect("workflow gate");
         let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
@@ -342,7 +382,7 @@ impl WorkflowRuntime {
         let out = runner
             .run(request, cancel, self.role_executor.as_ref())
             .map_err(|e| WorkflowRuntimeError::RoleChild(e.to_string()))?;
-        Ok(out.summary_label)
+        Ok((out.status, out.summary_label))
     }
 
     fn spawn_explore(
@@ -351,7 +391,7 @@ impl WorkflowRuntime {
         step_id: &str,
         cwd: &Path,
         cancel: CancellationToken,
-    ) -> Result<String, WorkflowRuntimeError> {
+    ) -> Result<(ChildResultStatus, String), WorkflowRuntimeError> {
         let request = ExploreChildRequest {
             parent_session_id: session_id.to_string(),
             child_id: format!("{session_id}-{step_id}"),
@@ -373,7 +413,7 @@ impl WorkflowRuntime {
         let out = runner
             .run(request, cancel, self.explore_executor.as_ref())
             .map_err(|e| WorkflowRuntimeError::ExploreChild(e.to_string()))?;
-        Ok(out.summary_label)
+        Ok((out.status, out.summary_label))
     }
 }
 
@@ -478,6 +518,8 @@ mod tests {
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0].status, crate::ChildResultStatus::Failed);
         assert_eq!(kids[0].summary_label, "explore-boom");
+        // Honest fail: step not Completed; workflow Failed (retries=0 default).
+        assert_eq!(rt.status(sid), Some(WorkflowStatus::Failed));
         // Gate slot released — another explore can admit.
         assert!(!rt.gate().lock().unwrap().is_active(&kids[0].child_id));
     }
@@ -503,9 +545,87 @@ mod tests {
         assert_eq!(summary, "cancelled");
         let kids = store.list_by_parent(&sid.to_string()).unwrap();
         assert_eq!(kids[0].status, crate::ChildResultStatus::Cancelled);
+        // Honest cancel: workflow Cancelled, not advanced as Completed.
+        assert_eq!(rt.status(sid), Some(WorkflowStatus::Cancelled));
         rt.cancel_session(sid);
         assert!(rt.status(sid).is_none());
         assert!(!rt.gate().lock().unwrap().is_active(&kids[0].child_id));
+    }
+
+    #[test]
+    fn cancel_session_stops_worktree_binding() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo)
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(&repo)
+            .status();
+        std::fs::write(repo.join("README"), b"x").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .status();
+        let wt = Arc::new(
+            crate::WorktreeManager::open(dir.path().join("wt.db"), dir.path().join("worktrees"))
+                .unwrap(),
+        );
+        let rt = WorkflowRuntime::new(
+            store,
+            Arc::new(MockRoleExecutor::completing("role-ok")),
+            Arc::new(MockExploreExecutor::completing("explore-ok")),
+        )
+        .unwrap()
+        .with_worktree_manager(wt.clone());
+        let sid = Uuid::new_v4();
+        let binding = wt
+            .create_for_role(sid, &repo, crate::AgentWorkRole::Build)
+            .unwrap();
+        assert_eq!(binding.state, crate::WorktreeLifecycleState::Active);
+        rt.start(sid, WorkflowEngine::feature_skeleton_recipe(), repo)
+            .unwrap();
+        rt.cancel_session(sid);
+        let after = wt.get_by_session(sid).unwrap().expect("binding retained");
+        assert_eq!(after.state, crate::WorktreeLifecycleState::Stopped);
+        assert_eq!(after.worktree_id, binding.worktree_id);
+    }
+
+    #[test]
+    fn role_failure_fails_step_not_complete() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let rt = WorkflowRuntime::new(
+            store.clone(),
+            Arc::new(MockRoleExecutor::failing("role-boom")),
+            Arc::new(MockExploreExecutor::completing("explore-ok")),
+        )
+        .unwrap();
+        let sid = Uuid::new_v4();
+        rt.start(
+            sid,
+            WorkflowEngine::feature_skeleton_recipe(),
+            dir.path().join("repo"),
+        )
+        .unwrap();
+        let summary = rt.run_next_ready_step(sid).unwrap();
+        assert_eq!(summary, "role-boom");
+        let kids = store.list_by_parent(&sid.to_string()).unwrap();
+        assert_eq!(kids[0].status, crate::ChildResultStatus::Failed);
+        assert_eq!(rt.status(sid), Some(WorkflowStatus::Failed));
     }
 
     #[test]
@@ -586,5 +706,55 @@ mod tests {
         assert_eq!(drained.unwrap().text, "next");
         let again = intents.take_follow_up_on_run_terminal(sid, run_id).unwrap();
         assert!(again.is_none());
+    }
+
+    #[test]
+    fn feature_skeleton_research_uses_agent_loop_not_git() {
+        use crate::mock_provider::{MockProvider, MockStreamItem};
+        use crate::role_agent_loop::AgentLoopRoleExecutor;
+        use crate::storage::MemoryEventStore;
+        use crate::{PolicyEngine, SandboxScope};
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+
+        let provider = Arc::new(MockProvider::scripted(
+            "wf-research",
+            "test",
+            [vec![MockStreamItem::Chunk {
+                chunk_id: 1,
+                text: "wf-research-ok".into(),
+            }]],
+        ));
+        let artifacts = tempfile::tempdir().unwrap();
+        let role_exec = Arc::new(AgentLoopRoleExecutor::new(
+            provider.clone(),
+            Box::new(|_id| Arc::new(MemoryEventStore::default())),
+            PolicyEngine::new(SandboxScope::local_workspace(&repo)),
+            artifacts.path(),
+        ));
+        let rt = WorkflowRuntime::new(
+            store,
+            role_exec,
+            Arc::new(MockExploreExecutor::completing("explore-ok")),
+        )
+        .unwrap();
+
+        let sid = Uuid::new_v4();
+        rt.start(sid, WorkflowEngine::feature_skeleton_recipe(), repo)
+            .unwrap();
+        let summary = rt.run_next_ready_step(sid).unwrap();
+        assert_eq!(summary, "wf-research-ok");
+        assert!(
+            !provider.received_messages().is_empty(),
+            "Research step must call AgentLoop/Mock provider, not git status"
+        );
     }
 }

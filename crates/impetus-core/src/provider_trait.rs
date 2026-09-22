@@ -6,7 +6,7 @@
 
 use crate::{AgentRuntime, ProviderError, ProviderHealth, ProviderMessage};
 use async_trait::async_trait;
-use impetus_protocol::AgentCapabilitySnapshot;
+use impetus_protocol::{AgentCapabilitySnapshot, ModelCapabilityFlags};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -19,14 +19,40 @@ pub struct StreamOptions {
     pub reasoning_effort: Option<String>,
 }
 
+/// One model from remote or static catalog discovery (provider is source of truth).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCatalogEntry {
+    pub model_id: String,
+    pub model_display_name: Option<String>,
+    pub reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: Option<String>,
+    pub capabilities: ModelCapabilityFlags,
+    /// Non-secret provider extras (OpenRouter/OpenAI-compat fields as JSON).
+    pub provider_options: serde_json::Value,
+}
+
+impl ModelCatalogEntry {
+    /// Id-only row: empty efforts, all capabilities false/0 (honest when API gave only ids).
+    pub fn id_only(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            model_display_name: None,
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            capabilities: ModelCapabilityFlags::default(),
+            provider_options: serde_json::Value::Null,
+        }
+    }
+}
+
 /// Result of remote model catalog discovery (OpenAI-compat `/v1/models`, etc.).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ModelCatalogResult {
-    /// Remote discovery succeeded with at least one model id.
-    Discovered { model_ids: Vec<String> },
+    /// Remote discovery succeeded with at least one model.
+    Discovered { models: Vec<ModelCatalogEntry> },
     /// Discovery unsupported or failed — static profile/catalog only (never fake Healthy).
     StaticFallback {
-        model_ids: Vec<String>,
+        models: Vec<ModelCatalogEntry>,
         reason_redacted: String,
     },
 }
@@ -98,10 +124,10 @@ pub trait ModelProvider: Send + Sync + Debug {
         None
     }
 
-    /// Discover model ids (e.g. OpenAI-compat `GET /v1/models`). Default: static profile model.
+    /// Discover models (e.g. OpenAI-compat `GET /v1/models`). Default: static profile model.
     async fn discover_models(&self) -> ModelCatalogResult {
         ModelCatalogResult::StaticFallback {
-            model_ids: vec![self.model_id().to_string()],
+            models: vec![ModelCatalogEntry::id_only(self.model_id())],
             reason_redacted: "remote model discovery not supported".into(),
         }
     }

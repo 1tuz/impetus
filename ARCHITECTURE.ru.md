@@ -133,7 +133,8 @@ Zap adapter ──HarnessClient──┘
 ```
 
 Реализовано: durable events, policy/approval, versioned Unix-socket protocol
-(`IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12; Hello range), `HarnessClient`,
+(`IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12; Hello overlap
+`min_version`..`version`), `HarnessClient`,
 MCP SoT `$IMPETUS_DATA_DIR/mcp/*.json` + `ReloadMcpServers`, Explore bridge,
 session model IPC, Worktree/Workflow Build → real WorktreeManager, provider
 registry, shared-prefix forks + checkpoints, command/JSON client,
@@ -142,9 +143,13 @@ upload/read/MIME; prod age GC 7d), ephemeral **`AttachmentStore`**. Zap adapter
 — experimental. `impetus components` — static catalog (не live IPC registry).
 
 **Partial / Planned (см. [ARCHITECTURE.md](ARCHITECTURE.md) + [TODO.md](TODO.md)):**
-Desktop Review/PTY polish; Extension CLI keep (marketplace Won't); Browser
-provider **Planned** (library only; CDP Parked); MemoryStore **Planned** (no
-control-plane IPC); Module Runtime control plane; ACP gaps.
+Desktop Review/PTY polish; Extension CLI keep (marketplace Won't); daemon
+ExtensionRuntime inventory on Harness (`ListExtensions`) Implemented;
+AgentLoop skill inject Remaining; Browser provider
+**Partial** (daemon health/negotiate = honest Absent; CDP Parked); MemoryStore
+**Implemented** (control-plane IPC + JSONL persist + AgentLoop project-scope
+context inject on Prompt/FollowUp/ResolveApproval resume);
+Module Runtime control plane; ACP gaps.
 
 Не путать: `AttachmentStore` ≠ `ArtifactStore`. Doctor описывает оба честно.
 
@@ -158,9 +163,11 @@ control-plane IPC); Module Runtime control plane; ACP gaps.
 
 ## IPC compatibility (PROTO)
 
-- `IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12. **Hello принимает
-  `[12, 13]`**; вне диапазона → `Incompatible` (+ `min_supported` /
-  `supported_version`). Cap intersection после version match.
+- `IPC_VERSION` = 13, `IPC_MIN_SUPPORTED` = 12. **Hello:** client шлёт
+  preferred `version` (max) + optional `min_version` (omit → exact);
+  server выбирает highest overlap с `[IPC_MIN_SUPPORTED, IPC_VERSION]`;
+  empty overlap → `Incompatible` (+ `min_supported` / `supported_version`).
+  Cap intersection после version selection.
 - Presentation crates берут wire/event DTO из `impetus-client::protocol`
   (façade над `impetus-protocol`). TUI/Desktop не зависят от `impetus-core` для
   **типов**.
@@ -171,8 +178,10 @@ control-plane IPC); Module Runtime control plane; ACP gaps.
   `owner_session_id`. Cross-session deny; events только owner session.
   Cwd containment; Agent → `prepare_pty_sandbox` на macOS. Daemon wires
   `SqlitePtySessionStore` (metadata durable; live PTY не переживает restart).
-- Caps: workspace Files, Git, `structured_diff`, `pty`, `list_mcp` /
+- Caps: workspace Files, Git, `structured_diff` (advertise DiffObservation;
+  wire gate GetDiff/GetFileDiff = `git`), `pty`, `list_mcp` /
   `list_models`, `mcp_manage`, `session_model` / worktrees, `artifact_read`.
+  Первый Hello замораживает negotiated caps на соединение.
 
 ## Harness Kernel — неподвижные инварианты
 
@@ -597,8 +606,8 @@ source URL, timestamp, content hash, truncation; model gets bounded preview/chun
 
 ### Browser
 
-**Planned** (library contracts only). Daemon negotiate/health IPC нет; doctor
-reports absent. CDP/WebDriver **Parked**. Optional `BrowserService` →
+**Partial**: daemon IPC `GetBrowserHealth` / `NegotiateBrowser` — honest Absent
+(`compatible=false`). CDP/WebDriver **Parked**. Optional `BrowserService` →
 `BrowserProvider` contract — не Implemented Available. **Не обязателен** для
 ordinary search/fetch. **Не тащить** Chromium/Playwright/Node в mandatory core.
 
@@ -680,8 +689,19 @@ global unhealthy.
 ACP — protocol для внешних coding agents, не universal provider API и не auth
 store. Подключение через `ExternalAgentAdapter`: discovery, version, capability
 negotiation, lifecycle, stream, cancel, reconnect, permissions; CLI-owned auth.
-Поддержка backend — по installed version + ACP registry/discovery, не по имени
-или неизвестному flag.
+Model/reasoning → `session/set_config_option` перед prompt; `NeedsApproval` →
+durable approval IPC (`wait_approval_resolution`). Поддержка backend — по
+installed version + ACP registry/discovery, не по имени или неизвестному flag.
+
+**Security:** ACP agent child не наследует Impetus control-plane env
+(`IMPETUS_SOCKET`, `IMPETUS_DATA_DIR`, raw `*_TOKEN` / `API_KEY`). Profile
+reject + SDK overlay blank + `IMPETUS_ACP_CHILD=1` (см. EN checklist #66).
+`ResolveApproval` на daemon path привязан к Unix-соединению CreateSession
+(`resolve_approval_bound`). Attach/Fork/Restore биндят только если unbound или
+тот же connection — Attach не крадёт owner. Чужое Resolve → `Unavailable`.
+Residual: disconnect owner не детектится; reclaim через Attach запрещён.
+Peer-cred на macOS не используем. Первый успешный Hello замораживает caps;
+re-Hello не расширяет.
 
 ## Diagnostics
 
@@ -723,14 +743,14 @@ update, disable. Optional component update без полного релиза Im
 | Context | shared-prefix forks, checkpoints, compaction; TUI `Ctrl+B` | lazy modules |
 | DurableArtifactStore | Implemented (SHA-256; upload/read/MIME; prod age GC 7d; TUI `/attach`) | — |
 | AttachmentStore | ephemeral RAM (approvals/diffs) | intentional; not ArtifactStore |
-| IPC | v13 Hello range [12,13]; Files/Git/pty/mcp/session_model caps | Desktop SoT polish |
+| IPC | v13 Hello overlap `min_version`..`version`; Files/Git/pty/mcp/session_model caps | Desktop SoT polish |
 | Agent loop | Implemented + Explore bridge | mid-run child stream thin |
-| Web research | search/fetch Implemented; Browser **Planned** | CDP Parked |
+| Web research | search/fetch Implemented; Browser **Partial** (Absent IPC) | CDP Parked |
 | TUI | `impetus ui` + Files/Git/Review/Activity/PTY | sequence picker polish |
 | Doctor | `impetus doctor` / `--json` | unchanged role |
 | Module Runtime | library Partial | daemon control plane |
 | Extensions | Partial CLI keep; marketplace Won't | — |
-| MemoryStore | Planned (library only) | control-plane IPC |
+| MemoryStore | Implemented (IPC + persist + Prompt/FollowUp/approval-resume inject) | — |
 | RTK | dev convention (CodeWhale) | optional output optimizer module |
 | Remote | models/stubs | controlled E2E flow |
 

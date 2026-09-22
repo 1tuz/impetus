@@ -3,7 +3,7 @@
 //! Manages registered providers and routes requests by provider_id.
 //! No central concrete enum: providers are registered at runtime.
 
-use crate::{ModelCatalogResult, ModelProvider, ProviderError, ProviderHealth};
+use crate::{ModelCatalogEntry, ModelCatalogResult, ModelProvider, ProviderError, ProviderHealth};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -115,40 +115,40 @@ impl ProviderRegistry {
             let catalog = provider.discover_models().await;
             let is_default_provider = provider_id == default_provider_id;
             match catalog {
-                ModelCatalogResult::Discovered { model_ids } => {
-                    for (idx, model_id) in model_ids.into_iter().enumerate() {
-                        let mut status = ModelProviderStatus::basic(
-                            provider_id.clone(),
-                            model_id,
+                ModelCatalogResult::Discovered { models } => {
+                    for (idx, entry) in models.into_iter().enumerate() {
+                        let mut status = status_from_entry(
+                            &provider_id,
+                            entry,
                             ModelProviderHealthLabel::Healthy,
                             is_default_provider && idx == 0,
                         );
                         status.availability = ModelAvailability::Available;
                         status.agent_capabilities = agent_caps.clone();
-                        status.provider_options = serde_json::json!({
-                            "discovery": "remote_v1_models"
-                        });
+                        status.provider_options =
+                            merge_discovery_tag(status.provider_options, "remote_v1_models", None);
                         out.push(status);
                     }
                 }
                 ModelCatalogResult::StaticFallback {
-                    model_ids,
+                    models,
                     reason_redacted,
                 } => {
-                    for (idx, model_id) in model_ids.into_iter().enumerate() {
-                        let mut status = ModelProviderStatus::basic(
-                            provider_id.clone(),
-                            model_id,
+                    for (idx, entry) in models.into_iter().enumerate() {
+                        let mut status = status_from_entry(
+                            &provider_id,
+                            entry,
                             // Honest: do not claim Healthy when discovery failed/absent.
                             ModelProviderHealthLabel::Unknown,
                             is_default_provider && idx == 0,
                         );
                         status.availability = ModelAvailability::Unknown;
                         status.agent_capabilities = agent_caps.clone();
-                        status.provider_options = serde_json::json!({
-                            "discovery": "static_fallback",
-                            "reason": reason_redacted,
-                        });
+                        status.provider_options = merge_discovery_tag(
+                            status.provider_options,
+                            "static_fallback",
+                            Some(reason_redacted.as_str()),
+                        );
                         out.push(status);
                     }
                 }
@@ -173,6 +173,36 @@ impl ProviderRegistry {
             first.is_default = true;
         }
         out
+    }
+
+    /// Advertise reasoning efforts for `provider_id`/`model_id` via discovery.
+    ///
+    /// Empty advertised list is honest when the catalog entry exists but has no
+    /// efforts. Unknown model id with a non-empty catalog → [`ProviderError::ModelUnavailable`].
+    /// Empty catalog → allow id with empty efforts (honest unknown / no metadata).
+    pub async fn advertised_reasoning_efforts(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<(Vec<String>, Option<String>), ProviderError> {
+        let provider = self.get(provider_id)?;
+        let catalog = provider.discover_models().await;
+        let models = match catalog {
+            ModelCatalogResult::Discovered { models }
+            | ModelCatalogResult::StaticFallback { models, .. } => models,
+        };
+        if let Some(entry) = models.iter().find(|m| m.model_id == model_id) {
+            return Ok((
+                entry.reasoning_efforts.clone(),
+                entry.default_reasoning_effort.clone(),
+            ));
+        }
+        if models.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        Err(ProviderError::ModelUnavailable(format!(
+            "model `{model_id}` not in provider `{provider_id}` catalog"
+        )))
     }
 
     /// Check if a provider is registered.
@@ -205,6 +235,46 @@ impl Default for ProviderRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn status_from_entry(
+    provider_id: &str,
+    entry: ModelCatalogEntry,
+    health: ModelProviderHealthLabel,
+    is_default: bool,
+) -> ModelProviderStatus {
+    let mut status =
+        ModelProviderStatus::basic(provider_id, entry.model_id.clone(), health, is_default);
+    if let Some(name) = entry.model_display_name {
+        status.model_display_name = Some(name);
+    }
+    status.reasoning_efforts = entry.reasoning_efforts;
+    status.default_reasoning_effort = entry.default_reasoning_effort;
+    status.capabilities = entry.capabilities;
+    status.provider_options = entry.provider_options;
+    status
+}
+
+fn merge_discovery_tag(
+    existing: serde_json::Value,
+    discovery: &str,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut map = match existing {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    map.insert(
+        "discovery".into(),
+        serde_json::Value::String(discovery.into()),
+    );
+    if let Some(reason) = reason {
+        map.insert(
+            "reason".into(),
+            serde_json::Value::String(reason.to_owned()),
+        );
+    }
+    serde_json::Value::Object(map)
 }
 
 #[cfg(test)]
@@ -245,6 +315,8 @@ mod tests {
         assert!(status[0].is_default);
         assert_eq!(status[0].model_id, "model1");
         assert!(!status[1].is_default);
+        assert!(status[0].reasoning_efforts.is_empty());
+        assert!(!status[0].capabilities.reasoning);
     }
 
     #[tokio::test]
@@ -262,6 +334,25 @@ mod tests {
             serde_json::json!("static_fallback")
         );
         assert!(status[0].is_default);
+        assert_eq!(status[0].reasoning_efforts, vec!["low", "medium", "high"]);
+        assert!(!status[0].capabilities.tools);
+        assert!(status[0].capabilities.reasoning);
+    }
+
+    #[tokio::test]
+    async fn advertised_efforts_come_from_mock_catalog() {
+        let registry = ProviderRegistry::new();
+        registry
+            .register(Arc::new(
+                MockProvider::default_mock().with_reasoning_efforts(["low", "medium", "high"]),
+            ))
+            .unwrap();
+        let (efforts, default) = registry
+            .advertised_reasoning_efforts("mock", "mock-model")
+            .await
+            .unwrap();
+        assert_eq!(efforts, vec!["low", "medium", "high"]);
+        assert_eq!(default.as_deref(), Some("medium"));
     }
 
     #[test]

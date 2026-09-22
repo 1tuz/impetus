@@ -48,6 +48,15 @@ pub struct PtyOutputView {
     pub spill_artifact: Option<crate::protocol::DurableArtifactRef>,
 }
 
+/// Workflow control-plane snapshot (`IpcResponse::WorkflowStatus`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowIpcStatus {
+    pub session_id: uuid::Uuid,
+    /// Debug name of harness `WorkflowStatus` (`Running`, `Completed`, …).
+    pub status: String,
+    pub last_summary: Option<String>,
+}
+
 /// A dedicated event connection. It owns only its sequence cursor; durable
 /// history remains in the harness event store.
 pub trait EventSubscription: Send {
@@ -747,6 +756,129 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Provider catalog (`ListProviders`) — same SoT / response as [`Self::list_models`].
+    async fn list_providers(&self) -> Result<Vec<protocol::ModelProviderStatus>> {
+        match self.request(IpcRequest::ListProviders).await? {
+            IpcResponse::Models { providers } => Ok(providers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Current session model selection (daemon SoT).
+    async fn get_session_model(
+        &self,
+        session_id: uuid::Uuid,
+    ) -> Result<protocol::SessionModelSelection> {
+        match self
+            .request(IpcRequest::GetSessionModel { session_id })
+            .await?
+        {
+            IpcResponse::SessionModel { selection, .. } => Ok(selection),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Override session model / reasoning without rebinding ProviderProfile.
+    async fn set_session_model(
+        &self,
+        session_id: uuid::Uuid,
+        provider_id: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+    ) -> Result<protocol::SessionModelSelection> {
+        match self
+            .request(IpcRequest::SetSessionModel {
+                session_id,
+                provider_id,
+                model_id,
+                reasoning_effort,
+            })
+            .await?
+        {
+            IpcResponse::SessionModel { selection, .. } => Ok(selection),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Reload MCP catalog from daemon SoT (`$IMPETUS_DATA_DIR/mcp/*.json`).
+    async fn reload_mcp_servers(&self) -> Result<Vec<protocol::McpServerStatus>> {
+        match self.request(IpcRequest::ReloadMcpServers).await? {
+            IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Start a workflow recipe (`bug` | `feature` | `refactor`) for a session.
+    async fn start_workflow(
+        &self,
+        session_id: uuid::Uuid,
+        recipe: impl Into<String>,
+    ) -> Result<WorkflowIpcStatus> {
+        match self
+            .request(IpcRequest::StartWorkflow {
+                session_id,
+                recipe: recipe.into(),
+            })
+            .await?
+        {
+            IpcResponse::WorkflowStatus {
+                session_id,
+                status,
+                last_summary,
+            } => Ok(WorkflowIpcStatus {
+                session_id,
+                status,
+                last_summary,
+            }),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Advance one ready workflow step (live child spawn / approval skip).
+    async fn advance_workflow(&self, session_id: uuid::Uuid) -> Result<WorkflowIpcStatus> {
+        match self
+            .request(IpcRequest::AdvanceWorkflow { session_id })
+            .await?
+        {
+            IpcResponse::WorkflowStatus {
+                session_id,
+                status,
+                last_summary,
+            } => Ok(WorkflowIpcStatus {
+                session_id,
+                status,
+                last_summary,
+            }),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Cancel session workflow + child admissions.
+    async fn cancel_workflow(&self, session_id: uuid::Uuid) -> Result<WorkflowIpcStatus> {
+        match self
+            .request(IpcRequest::CancelWorkflow { session_id })
+            .await?
+        {
+            IpcResponse::WorkflowStatus {
+                session_id,
+                status,
+                last_summary,
+            } => Ok(WorkflowIpcStatus {
+                session_id,
+                status,
+                last_summary,
+            }),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Resolve a pending approval.
     async fn resolve_approval(
         &self,
@@ -963,9 +1095,10 @@ impl InMemoryTransport {
 #[cfg(any(test, feature = "in-memory"))]
 impl HarnessClient for InMemoryTransport {
     async fn hello(&self) -> Result<IpcResponse> {
-        use protocol::{IPC_CAPABILITIES, IPC_VERSION};
+        use protocol::{IPC_CAPABILITIES, IPC_MIN_SUPPORTED, IPC_VERSION};
         Ok(self.harness.handle(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: IPC_CAPABILITIES
                 .iter()
                 .map(|capability| (*capability).to_owned())
@@ -1122,6 +1255,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_providers_and_session_model_helpers() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let client = InMemoryTransport::new(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+
+        let via_models = client.list_models().await.unwrap();
+        let via_providers = client.list_providers().await.unwrap();
+        assert_eq!(via_models, via_providers);
+        assert!(!via_providers.is_empty());
+
+        let session_id = client
+            .create_session(workspace.path().to_path_buf())
+            .await
+            .unwrap();
+        let selection = client.get_session_model(session_id).await.unwrap();
+        assert!(!selection.provider_id.is_empty());
+        assert!(!selection.model_id.is_empty());
+        assert!(
+            selection.reasoning_effort.is_none(),
+            "default session model must not invent reasoning_effort"
+        );
+
+        // Reject invented effort not in advertised list.
+        let mock = via_providers
+            .iter()
+            .find(|p| p.provider_id == selection.provider_id)
+            .expect("session provider in catalog");
+        let bogus = "definitely-not-an-advertised-effort";
+        assert!(
+            !mock.reasoning_efforts.iter().any(|e| e == bogus),
+            "test assumption: {bogus} must not be advertised"
+        );
+        assert!(
+            client
+                .set_session_model(
+                    session_id,
+                    selection.provider_id.clone(),
+                    selection.model_id.clone(),
+                    Some(bogus.into()),
+                )
+                .await
+                .is_err()
+        );
+
+        // When efforts are advertised, a real one must succeed.
+        if let Some(effort) = mock.reasoning_efforts.first() {
+            let with_effort = client
+                .set_session_model(
+                    session_id,
+                    selection.provider_id.clone(),
+                    selection.model_id.clone(),
+                    Some(effort.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                with_effort.reasoning_effort.as_deref(),
+                Some(effort.as_str())
+            );
+        }
+
+        let updated = client
+            .set_session_model(
+                session_id,
+                selection.provider_id.clone(),
+                selection.model_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(updated.reasoning_effort.is_none());
+        assert_eq!(client.get_session_model(session_id).await.unwrap(), updated);
+
+        let servers = client.reload_mcp_servers().await.unwrap();
+        assert!(servers.is_empty(), "in-memory harness has no MCP SoT hook");
+    }
+
+    #[tokio::test]
     async fn upload_artifact_chunks_into_durable_store() {
         let artifact_root = tempfile::tempdir().expect("artifacts");
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1208,6 +1422,7 @@ mod tests {
         let mut raw = UnixStream::connect(&dir).await.unwrap();
         let hello = serde_json::to_string(&IpcRequest::Hello {
             version: IPC_VERSION + 1,
+            min_version: None,
             capabilities: vec![],
         })
         .unwrap();

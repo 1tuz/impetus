@@ -767,9 +767,10 @@ mod tests {
             .iter()
             .find(|probe| probe["name"] == "capability.extension_runtime")
             .expect("extension runtime probe");
-        assert_eq!(ext["status"], "OK");
+        assert_eq!(ext["status"], "WARN");
         assert_eq!(ext["details"]["mcp_live_tools_in_loop"], true);
         assert_eq!(ext["details"]["impetusd_autoload"], true);
+        assert_eq!(ext["details"]["agent_loop_skill_inject"], false);
 
         let blob = json.to_string();
         assert!(!blob.contains("sk-"));

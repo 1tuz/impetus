@@ -295,6 +295,25 @@ impl MemoryStore {
         &self.entries
     }
 
+    /// Look up an entry by id.
+    pub fn get(&self, id: &str) -> Option<&MemoryEntry> {
+        self.find_index(id).map(|idx| &self.entries[idx])
+    }
+
+    /// Remove all entries. Returns how many were removed.
+    pub fn clear(&mut self) -> usize {
+        let n = self.entries.len();
+        self.entries.clear();
+        n
+    }
+
+    /// Remove entries in one scope. Returns how many were removed.
+    pub fn clear_scope(&mut self, scope: MemoryScope) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.scope != scope);
+        before - self.entries.len()
+    }
+
     pub fn entries_in_scope(&self, scope: MemoryScope) -> impl Iterator<Item = &MemoryEntry> {
         self.entries
             .iter()

@@ -907,6 +907,12 @@ pub struct AgentCapabilitySnapshot {
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
+    /// Model select values from agent `session/new` config_options (ACP SoT).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_ids: Vec<String>,
+    /// ThoughtLevel / reasoning select values from agent config_options (ACP SoT).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thought_levels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -938,7 +944,8 @@ pub struct ModelProviderStatus {
 }
 
 impl ModelProviderStatus {
-    /// Minimal catalog row (ids + health); richer fields default empty/unknown.
+    /// Minimal catalog row (ids + health). Does **not** invent capabilities or
+    /// reasoning efforts — those come only from provider/discovery metadata.
     pub fn basic(
         provider_id: impl Into<String>,
         model_id: impl Into<String>,
@@ -955,14 +962,9 @@ impl ModelProviderStatus {
                 ModelProviderHealthLabel::Unavailable { .. } => ModelAvailability::Unavailable,
                 ModelProviderHealthLabel::Unknown => ModelAvailability::Unknown,
             },
-            reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
-            default_reasoning_effort: Some("medium".into()),
-            capabilities: ModelCapabilityFlags {
-                tools: true,
-                reasoning: true,
-                vision: false,
-                context_window: 0,
-            },
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            capabilities: ModelCapabilityFlags::default(),
             service_tiers: Vec::new(),
             provider_options: serde_json::Value::Null,
             agent_capabilities: None,
@@ -971,6 +973,50 @@ impl ModelProviderStatus {
             health,
             is_default,
         }
+    }
+
+    /// Honest static row when remote discovery is unsupported or failed.
+    pub fn unknown_static(
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        is_default: bool,
+    ) -> Self {
+        Self::basic(
+            provider_id,
+            model_id,
+            ModelProviderHealthLabel::Unknown,
+            is_default,
+        )
+    }
+}
+
+#[cfg(test)]
+mod model_provider_status_tests {
+    use super::*;
+
+    #[test]
+    fn basic_does_not_invent_capabilities_or_reasoning() {
+        let status = ModelProviderStatus::basic(
+            "mock",
+            "mock-model",
+            ModelProviderHealthLabel::Healthy,
+            true,
+        );
+        assert!(status.reasoning_efforts.is_empty());
+        assert!(status.default_reasoning_effort.is_none());
+        assert!(!status.capabilities.tools);
+        assert!(!status.capabilities.reasoning);
+        assert!(!status.capabilities.vision);
+        assert_eq!(status.capabilities.context_window, 0);
+        assert_eq!(status.availability, ModelAvailability::Available);
+    }
+
+    #[test]
+    fn unknown_static_marks_unknown_availability() {
+        let status = ModelProviderStatus::unknown_static("p", "m", false);
+        assert_eq!(status.health, ModelProviderHealthLabel::Unknown);
+        assert_eq!(status.availability, ModelAvailability::Unknown);
+        assert!(status.reasoning_efforts.is_empty());
     }
 }
 
@@ -1186,4 +1232,90 @@ pub struct McpServerUpsert {
     /// Env var names or Keychain labels only.
     #[serde(default)]
     pub env_keys: Vec<String>,
+}
+
+/// Visibility boundary for a contextual memory entry (wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryEntryScope {
+    Project,
+    Team,
+    User,
+}
+
+/// Labels describing where a memory entry came from. Never holds secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryProvenanceInfo {
+    pub source: String,
+    pub kind: String,
+}
+
+/// Contextual memory entry snapshot (labels + redacted content).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryEntryInfo {
+    pub id: String,
+    pub scope: MemoryEntryScope,
+    pub content: String,
+    pub provenance: MemoryProvenanceInfo,
+}
+
+/// Loaded extension inventory row (daemon ExtensionRuntime; labels only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionStatusInfo {
+    pub installation_id: String,
+    pub module_id: String,
+    pub module_name: String,
+    pub version: String,
+    /// Source adapter label (`agent_skills`, `mcp`, …).
+    pub source: String,
+    /// Lifecycle status (`enabled`; Disabled/Unloaded never appear in loaded set).
+    pub status: String,
+}
+
+/// Export format for session memory control-plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryExportFormat {
+    Jsonl,
+    Markdown,
+}
+
+/// Honest browser provider health for daemon negotiate/health IPC.
+///
+/// CDP/WebDriver stay Parked — production path reports Absent/Unavailable,
+/// never a fake Available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum BrowserHealthStatus {
+    Unavailable {
+        reason: String,
+    },
+    Degraded {
+        reason: String,
+    },
+    Misconfigured {
+        reason: String,
+    },
+    Available {
+        provider_id: String,
+        capabilities: Vec<String>,
+    },
+}
+
+impl BrowserHealthStatus {
+    pub const ABSENT_REASON: &'static str = "no browser provider registered (optional track)";
+
+    pub fn absent() -> Self {
+        Self::Unavailable {
+            reason: Self::ABSENT_REASON.into(),
+        }
+    }
+}
+
+/// Negotiate result for optional browser track (no session/CDP).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserNegotiateInfo {
+    pub protocol_version: String,
+    pub compatible: bool,
+    pub reason: String,
 }

@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod gateway_v2;
 pub mod mock;
 pub mod profile;
+pub mod session_config;
 
 pub use gateway::{AcpGateway, AgentStatus, GatewayError};
 pub use gateway_v2::{
@@ -14,4 +15,8 @@ pub use gateway_v2::{
     PermissionDecision, PermissionKind, PermissionOption, PermissionRequest, StreamUpdate,
 };
 pub use mock::MockAgent;
-pub use profile::{AcpProfile, CredentialStrategy};
+pub use profile::{ACP_CHILD_ENV, AcpProfile, CredentialStrategy, agent_sdk_env_overlay};
+pub use session_config::{
+    ConfigOptionSet, SessionConfigApplyError, SessionLaunchOptions, advertised_model_ids,
+    advertised_thought_levels, plan_config_option_sets,
+};

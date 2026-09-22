@@ -295,10 +295,11 @@ impl OpenAiCompatibleProvider {
     }
 
     /// `GET {base}/v1/models` — Keychain credential by reference only; never logged.
+    /// Returns catalog entries; metadata only when present in JSON (never invents efforts).
     pub async fn list_remote_models(
         &self,
         credential: Option<&str>,
-    ) -> Result<Vec<String>, ProviderError> {
+    ) -> Result<Vec<crate::ModelCatalogEntry>, ProviderError> {
         if matches!(
             self.profile.credential_strategy,
             CredentialStrategy::KeychainReference { .. }
@@ -518,29 +519,164 @@ impl OpenAiCompatibleProvider {
     }
 }
 
-fn parse_openai_models_list(body: &[u8]) -> Result<Vec<String>, ProviderError> {
+fn parse_openai_models_list(body: &[u8]) -> Result<Vec<crate::ModelCatalogEntry>, ProviderError> {
+    use impetus_protocol::ModelCapabilityFlags;
+
     #[derive(Deserialize)]
     struct ModelsResponse {
-        data: Vec<ModelEntry>,
+        data: Vec<serde_json::Value>,
     }
-    #[derive(Deserialize)]
-    struct ModelEntry {
-        id: String,
-    }
+
     let parsed: ModelsResponse =
         serde_json::from_slice(body).map_err(|_| ProviderError::MalformedStream)?;
-    let mut ids: Vec<String> = parsed
-        .data
-        .into_iter()
-        .map(|entry| entry.id)
-        .filter(|id| !id.trim().is_empty())
-        .collect();
-    ids.sort();
-    ids.dedup();
-    if ids.is_empty() {
+
+    let mut entries: Vec<crate::ModelCatalogEntry> = Vec::new();
+    for raw in parsed.data {
+        let Some(id) = raw
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+
+        let model_display_name = raw
+            .get("name")
+            .or_else(|| raw.get("display_name"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
+        let context_window = raw
+            .get("context_length")
+            .or_else(|| raw.get("context_window"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let reasoning_efforts =
+            string_list_field(&raw, &["reasoning_efforts", "supported_reasoning_efforts"]);
+        let default_reasoning_effort = raw
+            .get("default_reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
+        let supported = string_list_field(&raw, &["supported_parameters", "supported_features"]);
+        let mut capabilities = ModelCapabilityFlags {
+            tools: supported.iter().any(|p| p == "tools" || p == "tool_choice"),
+            reasoning: !reasoning_efforts.is_empty()
+                || supported.iter().any(|p| {
+                    p == "reasoning" || p == "reasoning_effort" || p == "include_reasoning"
+                }),
+            vision: supported.iter().any(|p| p == "vision" || p == "image")
+                || modality_includes_image(&raw),
+            context_window,
+        };
+        // Id-only / no metadata: keep reasoning false even if list empty (already false).
+        if reasoning_efforts.is_empty() && !capabilities.reasoning {
+            capabilities.reasoning = false;
+        }
+
+        let provider_options = extract_non_secret_extras(&raw);
+
+        entries.push(crate::ModelCatalogEntry {
+            model_id: id,
+            model_display_name,
+            reasoning_efforts,
+            default_reasoning_effort,
+            capabilities,
+            provider_options,
+        });
+    }
+
+    entries.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+    entries.dedup_by(|a, b| a.model_id == b.model_id);
+    if entries.is_empty() {
         return Err(ProviderError::RequestFailed("empty models list".into()));
     }
-    Ok(ids)
+    Ok(entries)
+}
+
+fn string_list_field(raw: &serde_json::Value, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(arr) = raw.get(*key).and_then(|v| v.as_array()) {
+            return arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn modality_includes_image(raw: &serde_json::Value) -> bool {
+    if let Some(mods) = raw
+        .pointer("/architecture/input_modalities")
+        .and_then(|v| v.as_array())
+    {
+        return mods.iter().any(|v| {
+            v.as_str()
+                .map(|s| s.eq_ignore_ascii_case("image"))
+                .unwrap_or(false)
+        });
+    }
+    if let Some(modality) = raw
+        .pointer("/architecture/modality")
+        .and_then(|v| v.as_str())
+    {
+        return modality.to_ascii_lowercase().contains("image");
+    }
+    false
+}
+
+/// Keep CloseRouter/OpenAI-compat extras as JSON; drop credentials-shaped keys.
+fn extract_non_secret_extras(raw: &serde_json::Value) -> serde_json::Value {
+    const SKIP: &[&str] = &[
+        "id",
+        "name",
+        "display_name",
+        "context_length",
+        "context_window",
+        "reasoning_efforts",
+        "supported_reasoning_efforts",
+        "default_reasoning_effort",
+        "supported_parameters",
+        "supported_features",
+    ];
+    const SECRETISH: &[&str] = &[
+        "api_key",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "credential",
+    ];
+    let Some(obj) = raw.as_object() else {
+        return serde_json::Value::Null;
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in obj {
+        let lower = key.to_ascii_lowercase();
+        if SKIP.contains(&key.as_str()) {
+            continue;
+        }
+        if SECRETISH.iter().any(|s| lower.contains(s)) {
+            continue;
+        }
+        out.insert(key.clone(), value.clone());
+    }
+    if out.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(out)
+    }
 }
 
 enum StreamAttemptError {
@@ -816,12 +952,17 @@ mod tests {
             RetryBudget::default(),
         )
         .unwrap();
-        let ids = provider.list_remote_models(None).await.unwrap();
+        let models = provider.list_remote_models(None).await.unwrap();
         server.await.unwrap();
         assert_eq!(
-            ids,
-            vec!["gpt-test-a".to_string(), "gpt-test-b".to_string()]
+            models
+                .iter()
+                .map(|m| m.model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-test-a", "gpt-test-b"]
         );
+        assert!(models[0].reasoning_efforts.is_empty());
+        assert!(!models[0].capabilities.reasoning);
     }
 
     #[tokio::test]
@@ -894,8 +1035,56 @@ mod tests {
     #[test]
     fn parse_models_list_filters_empty_ids() {
         let body = br#"{"data":[{"id":"a"},{"id":""},{"id":"b"}]}"#;
-        let ids = parse_openai_models_list(body).unwrap();
-        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+        let models = parse_openai_models_list(body).unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|m| m.model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert!(models[0].reasoning_efforts.is_empty());
+        assert!(!models[0].capabilities.reasoning);
+    }
+
+    #[test]
+    fn parse_models_list_keeps_openrouter_metadata_without_inventing_efforts() {
+        let body = br#"{
+            "data":[{
+                "id":"openai/gpt-4",
+                "name":"GPT-4",
+                "context_length":8192,
+                "owned_by":"openai",
+                "supported_parameters":["tools","temperature"],
+                "architecture":{"modality":"text->text","input_modalities":["text"]}
+            }]
+        }"#;
+        let models = parse_openai_models_list(body).unwrap();
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.model_id, "openai/gpt-4");
+        assert_eq!(m.model_display_name.as_deref(), Some("GPT-4"));
+        assert_eq!(m.capabilities.context_window, 8192);
+        assert!(m.capabilities.tools);
+        assert!(!m.capabilities.reasoning);
+        assert!(m.reasoning_efforts.is_empty());
+        assert_eq!(m.provider_options["owned_by"], "openai");
+    }
+
+    #[test]
+    fn parse_models_list_uses_advertised_reasoning_efforts_only() {
+        let body = br#"{
+            "data":[{
+                "id":"reasoner",
+                "reasoning_efforts":["low","high"],
+                "default_reasoning_effort":"low",
+                "supported_parameters":["reasoning"]
+            }]
+        }"#;
+        let models = parse_openai_models_list(body).unwrap();
+        assert_eq!(models[0].reasoning_efforts, vec!["low", "high"]);
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("low"));
+        assert!(models[0].capabilities.reasoning);
     }
 
     #[test]

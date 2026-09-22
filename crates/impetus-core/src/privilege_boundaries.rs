@@ -77,16 +77,74 @@ mod tests {
             src.contains("/usr/bin/sandbox-exec"),
             "Seatbelt must wrap via userspace sandbox-exec"
         );
-        for needle in [
-            "sudo ",
-            "osascript",
-            "AuthorizationCreate",
-            "SFAuthorization",
-        ] {
+        for needle in ESCALATION_SOURCE_NEEDLES {
             assert!(
                 !src.contains(needle),
                 "sandbox must not escalate privileges via `{needle}`"
             );
         }
     }
+
+    /// Process spawn path must stay userspace (Seatbelt wrap, never sudo/authd).
+    #[test]
+    fn process_spawn_source_has_no_privilege_escalation() {
+        let src = include_str!("execution/process.rs");
+        for needle in ESCALATION_SOURCE_NEEDLES {
+            assert!(
+                !src.contains(needle),
+                "process spawn must not escalate via `{needle}`"
+            );
+        }
+        assert!(
+            src.contains("production_sandbox_provider") || src.contains("spawn_sandboxed"),
+            "macOS process spawn must go through Seatbelt prepare path"
+        );
+    }
+
+    /// Role-child spawn must not shell out to escalation helpers.
+    #[test]
+    fn role_child_source_has_no_privilege_escalation() {
+        let src = include_str!("role_child.rs");
+        for needle in ESCALATION_SOURCE_NEEDLES {
+            assert!(
+                !src.contains(needle),
+                "role_child must not escalate via `{needle}`"
+            );
+        }
+    }
+
+    /// Seatbelt SBPL is userspace confinement — no Authorization Services / admin UI.
+    #[test]
+    fn seatbelt_profile_source_is_userspace_only() {
+        let src = include_str!("execution/sandbox.rs");
+        let start = src
+            .find("fn seatbelt_profile(")
+            .expect("seatbelt_profile present");
+        let end = src[start..]
+            .find("\nfn ")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let profile_fn = &src[start..end];
+        for needle in ESCALATION_SOURCE_NEEDLES {
+            assert!(
+                !profile_fn.contains(needle),
+                "Seatbelt profile must not require admin via `{needle}`"
+            );
+        }
+        assert!(
+            profile_fn.contains("(deny default)"),
+            "Seatbelt profile must be a pure SBPL string"
+        );
+    }
+
+    const ESCALATION_SOURCE_NEEDLES: &[&str] = &[
+        "sudo ",
+        "Command::new(\"sudo\")",
+        "osascript",
+        "withAdministratorPrivileges",
+        "AuthorizationCreate",
+        "SFAuthorization",
+        "SMJobBless",
+        "PrivilegedHelperTools",
+    ];
 }

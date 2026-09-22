@@ -889,6 +889,73 @@ impl AgentRuntime {
         Ok(self.projection()?.pending_approvals.get(&id).cloned())
     }
 
+    /// Latest user decision for `approval_id` from durable Resolved events.
+    /// `None` while still pending (or never requested).
+    pub fn approval_user_decision(&self, approval_id: Uuid) -> Result<Option<bool>, RuntimeError> {
+        for event in self.events()?.iter().rev() {
+            if let EventPayload::Approval(ApprovalEvent::Resolved { request }) = &event.payload
+                && request.id == approval_id
+            {
+                return Ok(Some(matches!(request.state, ApprovalState::Approved)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Wait until durable `ResolveApproval` settles `approval_id`, or `cancel` fires.
+    /// Returns `true` when user accepted. Cancel / store close / missing → error
+    /// (callers must map to Deny — never silent Allow).
+    pub async fn wait_approval_resolution(
+        &self,
+        approval_id: Uuid,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<bool, RuntimeError> {
+        let mut notifications = self.store.subscribe_notifications();
+        loop {
+            if let Some(accepted) = self.approval_user_decision(approval_id)? {
+                return Ok(accepted);
+            }
+            if self.pending_approval(approval_id)?.is_none() {
+                return Err(RuntimeError::MissingApproval(approval_id));
+            }
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    return Err(RuntimeError::Denied("approval wait cancelled".into()));
+                }
+                recv = notifications.recv() => {
+                    match recv {
+                        Ok((session_id, _)) if session_id == self.session_id => {}
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            return Err(RuntimeError::Denied(
+                                "event store closed while awaiting approval".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Locate the most recent pending approval matching `action` (after
+    /// [`Self::request_action`]).
+    pub fn latest_pending_approval_for(
+        &self,
+        action: &Action,
+    ) -> Result<Option<ApprovalRequest>, RuntimeError> {
+        for event in self.events()?.iter().rev() {
+            if let EventPayload::Approval(ApprovalEvent::Requested { request }) = &event.payload
+                && &request.action == action
+                && self.pending_approval(request.id)?.is_some()
+            {
+                return Ok(Some(request.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn active_run_id(&self) -> Result<Option<Uuid>, RuntimeError> {
         Ok(self.projection()?.active_run_id)
     }

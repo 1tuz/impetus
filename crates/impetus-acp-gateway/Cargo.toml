@@ -22,6 +22,10 @@ uuid.workspace = true
 name = "mock_agent_bin"
 path = "examples/mock_agent_bin.rs"
 
+[[example]]
+name = "acp_sdk_mock_agent"
+path = "examples/acp_sdk_mock_agent.rs"
+
 [dev-dependencies]
 which = "7.0"
 tempfile = "3.0"

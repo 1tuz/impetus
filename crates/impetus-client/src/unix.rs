@@ -6,7 +6,8 @@
 //! `Incompatible` response as a hard failure.
 
 use crate::protocol::{
-    IPC_CAPABILITIES, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES,
+    IPC_CAPABILITIES, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
+    MAX_IPC_LINE_BYTES,
 };
 use crate::{EventSubscription, HarnessClient};
 use anyhow::{Context, Result, anyhow, bail};
@@ -119,6 +120,7 @@ impl HarnessClient for UnixSocketTransport {
     async fn hello(&self) -> Result<IpcResponse> {
         self.round_trip(IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: IPC_CAPABILITIES
                 .iter()
                 .map(|capability| (*capability).to_owned())
@@ -149,6 +151,7 @@ impl HarnessClient for UnixSocketTransport {
         for request in [
             IpcRequest::Hello {
                 version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
                 capabilities: vec!["subscribe".into()],
             },
             IpcRequest::Subscribe {

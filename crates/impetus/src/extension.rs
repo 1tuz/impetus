@@ -1,13 +1,16 @@
-//! CLI wrappers for extension lifecycle plan + install + remove + doctor + repair.
+//! CLI wrappers for extension lifecycle plan + install + remove + enable +
+//! disable + unload + list + doctor + repair.
 //!
-//! Offline (no daemon): wraps `plan_install` / `apply_install` / `remove_install` /
-//! `doctor_install` / `repair_install`.
+//! Offline (no daemon IPC): wraps plan/apply/remove/enable/disable/unload/
+//! doctor/repair. CLI is the control plane; daemon reloads Enabled rows via
+//! `ExtensionRuntime::reload_from_store` on restart.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use impetus_core::{
-    ExtensionInstallIntent, ExtensionStateStore, InstallPlan, OwnershipStore, apply_install,
-    doctor_install, plan_install, remove_install, repair_install,
+    ExtensionInstallIntent, ExtensionLifecycleStatus, ExtensionRuntime, ExtensionStateStore,
+    InstallPlan, OwnershipStore, apply_install, disable_install, doctor_install, enable_install,
+    plan_install, remove_install, repair_install, unload_install,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -161,6 +164,104 @@ pub fn remove(installation_id: &str, root: Option<&Path>, json: bool) -> Result<
         println!("  removed: {}", result.removed_paths.len());
         for p in &result.removed_paths {
             println!("    - {}", p.display());
+        }
+    }
+    Ok(())
+}
+
+/// Enable a disabled or unloaded install (restore sidelined files).
+pub fn enable(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let result = enable_install(installation_id, &ownership, &state_store)
+        .with_context(|| format!("enable install {installation_id}"))?;
+    print_lifecycle(&result, "Enabled", json)
+}
+
+/// Disable install: sideline files; not loaded on restart.
+pub fn disable(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let result = disable_install(installation_id, &ownership, &state_store)
+        .with_context(|| format!("disable install {installation_id}"))?;
+    print_lifecycle(&result, "Disabled", json)
+}
+
+/// Unload install: sideline files + drop from runtime reload set.
+pub fn unload(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (ownership, state_store) = open_stores(&target_root)?;
+    let result = unload_install(installation_id, &ownership, &state_store)
+        .with_context(|| format!("unload install {installation_id}"))?;
+    print_lifecycle(&result, "Unloaded", json)
+}
+
+fn print_lifecycle(result: &impetus_core::LifecycleResult, verb: &str, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!("{verb} extension");
+        println!("  installation_id: {}", result.installation_id);
+        println!("  status: {:?}", result.status);
+        println!("  touched: {}", result.touched_paths.len());
+        for p in &result.touched_paths {
+            println!("    ~ {}", p.display());
+        }
+    }
+    Ok(())
+}
+
+/// List install states (+ which would load on restart).
+pub fn list(root: Option<&Path>, json: bool) -> Result<()> {
+    let target_root = resolve_target_root(root)?;
+    let (_ownership, state_store) = open_stores(&target_root)?;
+    let states = state_store.list_all().context("list install states")?;
+    let runtime = ExtensionRuntime::reload_from_store(&state_store).context("reload runtime")?;
+
+    #[derive(Serialize)]
+    struct Row<'a> {
+        installation_id: &'a str,
+        module_id: &'a str,
+        module_name: &'a str,
+        version: &'a str,
+        status: ExtensionLifecycleStatus,
+        loaded_on_restart: bool,
+    }
+
+    let rows: Vec<Row<'_>> = states
+        .iter()
+        .map(|s| Row {
+            installation_id: &s.installation_id,
+            module_id: &s.resolution.module_id,
+            module_name: &s.resolution.module_name,
+            version: &s.resolution.version,
+            status: s.status,
+            loaded_on_restart: runtime.is_loaded(&s.installation_id),
+        })
+        .collect();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else {
+        println!(
+            "Extensions ({} install(s); {} loaded on restart)",
+            rows.len(),
+            runtime.loaded_ids().len()
+        );
+        if rows.is_empty() {
+            println!("  (none)");
+            return Ok(());
+        }
+        for row in &rows {
+            println!(
+                "  [{}] {}  {} ({}) v{}",
+                format!("{:?}", row.status).to_lowercase(),
+                row.installation_id,
+                row.module_name,
+                row.module_id,
+                row.version
+            );
+            println!("    loaded_on_restart: {}", row.loaded_on_restart);
         }
     }
     Ok(())

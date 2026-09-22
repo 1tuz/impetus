@@ -348,7 +348,7 @@ mod tests {
         let denied = messages
             .iter()
             .flatten()
-            .any(|msg| msg.role() == "tool" && msg.content().contains("not in Explore allowlist"));
+            .any(|msg| msg.role() == "tool" && msg.content().contains("not in tool allowlist"));
         assert!(denied, "expected allowlist denial in tool observations");
     }
 

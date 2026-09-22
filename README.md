@@ -79,7 +79,10 @@ Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
   Production MCP SoT: `impetusd` autoloads **only** `$IMPETUS_DATA_DIR/mcp/*.json`
   + live `ReloadMcpServers`; `ListMcpServers` / `ListModels` IPC
   (`connected=false` until first tool use). Explore child + Workflow Explore
-  share one AgentLoop bridge. MemoryStore / Browser daemon IPC still **Planned**.
+  share one AgentLoop bridge. MemoryStore control-plane IPC **Implemented**
+  (session JSONL under data dir) + AgentLoop project-scope context inject
+  on Prompt/FollowUp/ResolveApproval resume (approval-resume). Browser daemon
+  health/negotiate **Partial** (honest Absent; CDP Parked).
 - Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
   containment; Agent origin Seatbelt on macOS; optional Sqlite metadata store;
   live PTY not restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).

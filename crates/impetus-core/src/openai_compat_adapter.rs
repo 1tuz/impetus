@@ -1,8 +1,9 @@
 //! Adapter for legacy OpenAiCompatibleProvider to work with ModelProvider trait.
 
 use crate::{
-    CredentialResolver, ModelCatalogResult, ModelProvider, OpenAiCompatibleProvider, ProviderError,
-    ProviderHealth, ProviderMessage, StreamEvent, StreamOptions,
+    CredentialResolver, ModelCatalogEntry, ModelCatalogResult, ModelProvider,
+    OpenAiCompatibleProvider, ProviderError, ProviderHealth, ProviderMessage, StreamEvent,
+    StreamOptions,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ impl ModelProvider for OpenAiCompatibleAdapter {
             Ok(value) => value,
             Err(_) => {
                 return ModelCatalogResult::StaticFallback {
-                    model_ids: vec![self.model_id().to_string()],
+                    models: vec![ModelCatalogEntry::id_only(self.model_id())],
                     reason_redacted: "credential unavailable for model discovery".into(),
                 };
             }
@@ -65,9 +66,9 @@ impl ModelProvider for OpenAiCompatibleAdapter {
             .list_remote_models(credential.as_deref())
             .await
         {
-            Ok(model_ids) => ModelCatalogResult::Discovered { model_ids },
+            Ok(models) => ModelCatalogResult::Discovered { models },
             Err(error) => ModelCatalogResult::StaticFallback {
-                model_ids: vec![self.model_id().to_string()],
+                models: vec![ModelCatalogEntry::id_only(self.model_id())],
                 reason_redacted: error.to_string(),
             },
         }

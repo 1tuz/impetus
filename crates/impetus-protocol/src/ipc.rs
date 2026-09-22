@@ -1,12 +1,14 @@
 use crate::Event;
 use crate::types::{
-    ApprovalDetail, CheckpointInfo, ChildResult, DurableArtifactMeta, DurableArtifactRef,
-    ExecutionMode, GitBranchInfo, GitChangedFile, GitCurrentBranch, GitDiffPayload,
-    GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus, MergeReadyReport,
-    ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState, ReadOnlyToolKind,
-    ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection, SourceLocation,
-    SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent,
-    WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
+    ApprovalDetail, BrowserHealthStatus, BrowserNegotiateInfo, CheckpointInfo, ChildResult,
+    DurableArtifactMeta, DurableArtifactRef, ExecutionMode, ExtensionStatusInfo, GitBranchInfo,
+    GitChangedFile, GitCurrentBranch, GitDiffPayload, GitRepositoryState, GitStatusSnapshot,
+    HoverInfo, McpServerStatus, McpServerUpsert, MemoryEntryInfo, MemoryEntryScope,
+    MemoryExportFormat, MemoryProvenanceInfo, MergeReadyReport, ModelProviderStatus, PolicyConfig,
+    PolicyStore, PtySessionState, ReadOnlyToolKind, ResolvedInstructions, RuntimeStatus,
+    SessionInfo, SessionModelSelection, SourceLocation, SubsystemHealth, ToolOutcome,
+    UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent, WorkspaceFileMetadata,
+    WorkspaceSearchResult, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -72,6 +74,9 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     // ApprovalDetail UI contract: schema id impetus.approval_detail.v1
     // (see APPROVAL_DETAIL_SCHEMA_* / docs note in ARCHITECTURE.md).
     "get_approval_detail",
+    // Daemon binds ResolveApproval to the Unix connection that Create/Attach/
+    // Fork/Restore'd the session (closes same-uid drive-by resolve).
+    "resolve_approval_bound",
     "context",
     "diagnostics",
     "artifact_upload",
@@ -107,13 +112,25 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "worktrees",
     // MCP SoT mutate/reload under $IMPETUS_DATA_DIR/mcp (IPC v13).
     "mcp_manage",
+    // Contextual MemoryStore control-plane (session-associated; additive).
+    "memory",
+    "memory_manage",
+    // Browser negotiate/health stub (Absent/Unavailable; CDP Parked).
+    "browser",
+    // ExtensionRuntime inventory (List/Get; CLI remains control plane).
+    "extension_runtime",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum IpcRequest {
     Hello {
+        /// Client preferred / maximum protocol version.
         version: u16,
+        /// Inclusive minimum the client can speak. Omitted → treat as `version`
+        /// (legacy exact-version clients).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_version: Option<u16>,
         capabilities: Vec<String>,
     },
     CreateSession {
@@ -443,6 +460,64 @@ pub enum IpcRequest {
     },
     /// Reload MCP catalog from daemon SoT (`$IMPETUS_DATA_DIR/mcp/*.json`).
     ReloadMcpServers,
+    /// Upsert MCP server JSON under daemon SoT (`mcp/{id}.json`).
+    UpsertMcpServer {
+        server: McpServerUpsert,
+    },
+    /// Remove MCP server JSON (enabled and disabled forms).
+    RemoveMcpServer {
+        id: String,
+    },
+    /// Enable a previously disabled MCP server (`*.json.disabled` → `*.json`).
+    EnableMcpServer {
+        id: String,
+    },
+    /// Disable MCP server without deleting (`*.json` → `*.json.disabled`).
+    DisableMcpServer {
+        id: String,
+    },
+    /// List contextual memory entries for a session (optional scope filter).
+    ListMemory {
+        session_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<MemoryEntryScope>,
+    },
+    /// Get one memory entry by id within a session store.
+    GetMemory {
+        session_id: Uuid,
+        id: String,
+    },
+    /// Append-safe write (create or append; never silent overwrite).
+    AppendMemory {
+        session_id: Uuid,
+        id: String,
+        scope: MemoryEntryScope,
+        content: String,
+        provenance: MemoryProvenanceInfo,
+    },
+    /// Clear session memory (all entries or one scope).
+    ClearMemory {
+        session_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<MemoryEntryScope>,
+    },
+    /// Export session memory as JSONL or markdown (labels + content only).
+    ExportMemory {
+        session_id: Uuid,
+        format: MemoryExportFormat,
+    },
+    /// Browser provider health (honest Absent/Unavailable when unwired).
+    GetBrowserHealth,
+    /// Browser protocol negotiate stub (compatible=false when absent).
+    NegotiateBrowser {
+        protocol_version: String,
+    },
+    /// List Enabled extensions loaded into daemon ExtensionRuntime.
+    ListExtensions,
+    /// Status for one loaded installation_id (Missing when not in runtime).
+    GetExtensionStatus {
+        installation_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -660,6 +735,36 @@ pub enum IpcResponse {
     McpReloaded {
         servers: Vec<McpServerStatus>,
     },
+    MemoryEntries {
+        session_id: Uuid,
+        entries: Vec<MemoryEntryInfo>,
+    },
+    MemoryEntry {
+        session_id: Uuid,
+        entry: MemoryEntryInfo,
+    },
+    MemoryCleared {
+        session_id: Uuid,
+        removed: u64,
+    },
+    MemoryExport {
+        session_id: Uuid,
+        format: MemoryExportFormat,
+        body: String,
+    },
+    BrowserHealth {
+        status: BrowserHealthStatus,
+    },
+    BrowserNegotiate {
+        result: BrowserNegotiateInfo,
+    },
+    /// Loaded ExtensionRuntime inventory (Enabled only).
+    Extensions {
+        extensions: Vec<ExtensionStatusInfo>,
+    },
+    ExtensionStatus {
+        extension: ExtensionStatusInfo,
+    },
     Incompatible {
         supported_version: u16,
         /// Inclusive lower bound the server still accepts.
@@ -702,6 +807,7 @@ mod sentinel_protocol {
     fn protocol_messages_round_trip() {
         let request = IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec!["session_attach".into()],
         };
         assert_eq!(
@@ -951,6 +1057,7 @@ mod sentinel_protocol {
     fn hello_includes_execution_mode_capabilities() {
         let request = IpcRequest::Hello {
             version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
             capabilities: vec![
                 "execution_mode".into(),
                 "approval_scope_file_edits".into(),
@@ -1054,8 +1161,60 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"structured_diff"));
         assert!(IPC_CAPABILITIES.contains(&"worktrees"));
         assert!(IPC_CAPABILITIES.contains(&"session_model"));
+        assert!(IPC_CAPABILITIES.contains(&"memory"));
+        assert!(IPC_CAPABILITIES.contains(&"memory_manage"));
+        assert!(IPC_CAPABILITIES.contains(&"mcp_manage"));
+        assert!(IPC_CAPABILITIES.contains(&"browser"));
+        assert!(IPC_CAPABILITIES.contains(&"extension_runtime"));
+        assert!(IPC_CAPABILITIES.contains(&"resolve_approval_bound"));
         assert_eq!(IPC_VERSION, 13);
         assert_eq!(IPC_MIN_SUPPORTED, 12);
+    }
+
+    #[test]
+    fn memory_and_mcp_manage_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        let append = IpcRequest::AppendMemory {
+            session_id,
+            id: "note-1".into(),
+            scope: MemoryEntryScope::Project,
+            content: "hello".into(),
+            provenance: MemoryProvenanceInfo {
+                source: "user".into(),
+                kind: "note".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&append).unwrap()).unwrap(),
+            append
+        );
+        let upsert = IpcRequest::UpsertMcpServer {
+            server: McpServerUpsert {
+                id: "echo".into(),
+                name: "echo".into(),
+                command: "true".into(),
+                args: vec![],
+                transport: crate::types::McpTransport::Stdio,
+                capabilities: crate::types::McpCapabilities {
+                    tools: true,
+                    ..crate::types::McpCapabilities::default()
+                },
+                env_keys: vec!["LABEL_ONLY".into()],
+            },
+        };
+        let encoded = serde_json::to_string(&upsert).unwrap();
+        assert!(!encoded.contains("secret"));
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&encoded).unwrap(),
+            upsert
+        );
+        let health = IpcResponse::BrowserHealth {
+            status: BrowserHealthStatus::absent(),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&health).unwrap()).unwrap(),
+            health
+        );
     }
 
     #[test]

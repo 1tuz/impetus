@@ -8,8 +8,10 @@ use agent_client_protocol::schema::v1::{
     AuthMethod, AuthMethodId, AuthenticateRequest, CancelNotification, ContentBlock,
     InitializeRequest, NewSessionRequest, PermissionOptionId,
     PermissionOptionKind as SdkPermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolKind,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigId, SessionConfigOptionValue, SessionConfigValueId, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
+    ToolKind,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo};
 use anyhow::{Context, Result};
@@ -19,6 +21,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+use crate::session_config::{
+    SessionLaunchOptions, advertised_model_ids, advertised_thought_levels, plan_config_option_sets,
+};
 
 /// ACP Gateway state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +128,12 @@ pub struct CachedAgentCapabilities {
     pub auth_method_ids: Vec<String>,
     pub agent_name: Option<String>,
     pub agent_version: Option<String>,
+    /// Model select values from the last `session/new` config_options (if any).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_ids: Vec<String>,
+    /// ThoughtLevel select values from the last session config_options.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thought_levels: Vec<String>,
 }
 
 /// ACP Gateway using official SDK.
@@ -173,6 +185,11 @@ impl AcpGatewayV2 {
         self.cached_capabilities.lock().await.clone()
     }
 
+    /// Seed / replace cached initialize+session config snapshot (tests / probe).
+    pub async fn seed_cached_capabilities(&self, caps: CachedAgentCapabilities) {
+        *self.cached_capabilities.lock().await = Some(caps);
+    }
+
     /// Non-async peek for sync catalog paths (ListModels). Returns None if lock busy.
     pub fn cached_capabilities_blocking(
         &self,
@@ -185,8 +202,20 @@ impl AcpGatewayV2 {
         *self.state.lock().await
     }
 
-    /// Start agent and run session.
+    /// Start agent and run session with optional model/reasoning ACP config writes.
     pub async fn start_session(&self, workspace_dir: PathBuf, prompt: String) -> Result<SessionId> {
+        self.start_session_with_options(workspace_dir, prompt, SessionLaunchOptions::default())
+            .await
+    }
+
+    /// Start agent session and apply Impetus model/reasoning via ACP
+    /// `session/set_config_option` before `session/prompt`.
+    pub async fn start_session_with_options(
+        &self,
+        workspace_dir: PathBuf,
+        prompt: String,
+        launch: SessionLaunchOptions,
+    ) -> Result<SessionId> {
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<CancelCommand>(1);
         {
             let mut active_cancel = self.active_cancel.lock().await;
@@ -261,6 +290,8 @@ impl AcpGatewayV2 {
                         .agent_info
                         .as_ref()
                         .map(|info| info.version.clone()),
+                    model_ids: Vec::new(),
+                    thought_levels: Vec::new(),
                 };
                 *cached_capabilities.lock().await = Some(caps);
 
@@ -311,6 +342,38 @@ impl AcpGatewayV2 {
                 let sid = new_session_response.session_id.clone();
                 *session_id_clone.lock().await = Some(sid.clone());
                 *active_session.lock().await = Some(sid.clone());
+
+                let config_options = new_session_response
+                    .config_options
+                    .clone()
+                    .unwrap_or_default();
+                {
+                    let mut guard = cached_capabilities.lock().await;
+                    if let Some(caps) = guard.as_mut() {
+                        caps.model_ids = advertised_model_ids(&config_options);
+                        caps.thought_levels = advertised_thought_levels(&config_options);
+                    }
+                }
+
+                let sets = plan_config_option_sets(&config_options, &launch).map_err(|error| {
+                    agent_client_protocol::Error::invalid_params().data(error.to_string())
+                })?;
+                for set in sets {
+                    info!(
+                        "ACP session/set_config_option category={} id={} value={}",
+                        set.category, set.config_id, set.value_id
+                    );
+                    let _ = connection
+                        .send_request(SetSessionConfigOptionRequest::new(
+                            sid.clone(),
+                            SessionConfigId::new(set.config_id.clone()),
+                            SessionConfigOptionValue::value_id(SessionConfigValueId::new(
+                                set.value_id.clone(),
+                            )),
+                        ))
+                        .block_task()
+                        .await?;
+                }
 
                 debug!("Session created: {:?}", sid);
 

@@ -855,6 +855,13 @@ impl WorktreeManager {
         Ok(())
     }
 
+    /// Global catalog of managed bindings that are not closed.
+    ///
+    /// Used by IPC `ListWorktrees` when `session_id` is omitted.
+    pub fn list_catalog(&self) -> Result<Vec<WorktreeBinding>, WorktreeError> {
+        self.list_non_closed()
+    }
+
     fn list_non_closed(&self) -> Result<Vec<WorktreeBinding>, WorktreeError> {
         let conn = self.conn.lock().expect("worktree db lock");
         let mut stmt = conn.prepare(
@@ -1708,5 +1715,23 @@ mod tests {
             .attempt_merge(session, "main")
             .expect_err("must refuse dirty");
         assert!(matches!(err, WorktreeError::NotMergeReady(_)));
+    }
+
+    #[test]
+    fn list_catalog_returns_non_closed_without_session_filter() {
+        let (_store, repo, manager, _) = temp_manager();
+        let s1 = Uuid::new_v4();
+        let s2 = Uuid::new_v4();
+        let b1 = manager.create(s1, repo.path()).expect("create1");
+        let b2 = manager.create(s2, repo.path()).expect("create2");
+        manager.close(s2).expect("close2");
+
+        let catalog = manager.list_catalog().expect("catalog");
+        let ids: Vec<_> = catalog.iter().map(|b| b.worktree_id.as_str()).collect();
+        assert!(ids.contains(&b1.worktree_id.as_str()));
+        assert!(
+            !ids.contains(&b2.worktree_id.as_str()),
+            "closed binding must not appear in catalog"
+        );
     }
 }
