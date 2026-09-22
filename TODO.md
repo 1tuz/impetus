@@ -47,8 +47,9 @@ Harness-first unify. Do not invent parallel Desktop/TUI feature logic.
       (`RuntimeStatus` / `SessionInfo` / `CheckpointInfo`) + events;
       feature-gate `InMemoryTransport` (`in-memory`; Unix default)
 - [x] Thin `impetus-protocol` crate owns IPC/events wire DTOs (no rusqlite/
-      reqwest/Harness); core + `impetus-client::protocol` re-export. Client
-      still path-deps core for Unix/`Harness`/`in-memory` runtime
+      reqwest/Harness); core + `impetus-client::protocol` re-export.
+      `impetus-core` optional behind client feature `in-memory` (Unix default
+      = protocol-only)
 - [x] Compatibility policy note: Hello remains exact-match until RFC for
       `min_supported`; bump IPC when adding Git/Files/PTY/activity caps
 - [x] Rich activity event model on parent session log (typed, not tool-name
@@ -113,12 +114,16 @@ Harness-first unify. Do not invent parallel Desktop/TUI feature logic.
 ### P1 — PTY capability (not TUI xterm)
 
 - [x] Real PTY via `portable-pty` 0.9.0 (replace stub fake PID); IPC
-      Start/Attach/Input/Output/Resize/Detach/Terminate/Status (`IPC_VERSION` 9,
+      Start/Attach/Input/Output/Resize/Detach/Terminate/Status (`IPC_VERSION`
+      12; every Pty* requires `session_id`; `PtySession.owner_session_id`;
       capability `pty`)
 - [x] Bounded output ring (256 KiB); daemon owns PTY; optional SqlitePtySessionStore
+      (`owner_session_id` column); cross-session deny; events → owner only
 - [x] TUI: passthrough attach (stdin/stdout/resize) + escape back to Ratatui —
       no custom ANSI emulator (`Ctrl+\` / `/pty`, detach `Ctrl+]`)
-- [x] Artifact spill for PTY overflow (ring drops oldest today)
+- [x] Artifact spill for PTY overflow: coalesce (`PTY_SPILL_COALESCE_BYTES`) +
+      `MAX_PTY_PENDING_SPILLS=4`; cwd containment (`resolve_pty_working_dir`);
+      Agent origin → `prepare_pty_sandbox` on macOS
 
 ### P1 — artifacts / MCP-model read APIs
 
@@ -178,7 +183,7 @@ harness (not a second implementation).
 | PCFG | PolicyConfig load/reload | Implemented | startup + IPC `ReloadPolicyConfig` | mid-run AgentLoop clone stale until next Prompt | invalid reload keeps prior | harness_api + effects + agent_loop | — | none | optional |
 | PSTORE | PolicyStore | Implemented | autoload + Get/Reload IPC + CLI | — | labels only | policy_store | — | none | optional |
 | SB-PATH | Path-scope sandbox fail-closed | Implemented | `effects.rs`, tools resolve, `workspace_files` resolve | — | deny outside root | sandbox_fail_closed / tools / workspace_files | — | via tools | via Files IPC |
-| SB-SEAT | macOS Seatbelt process wrap | Implemented | `execution/sandbox.rs` + process.rs | Linux/Win Planned; README still “spike” | spawn through sandbox-exec | macos_sandbox_production (heavy) | — | n/a | n/a |
+| SB-SEAT | macOS Seatbelt process wrap | Implemented | `execution/sandbox.rs` + process.rs; Agent PTY via `prepare_pty_sandbox` | Linux/Win Planned | spawn through sandbox-exec; Agent PTY Seatbelt on macOS | macos_sandbox_production (heavy) + pty unit | — | n/a | n/a |
 | RISK | RiskGate mode-aware | Implemented | EffectSeam | — | post-policy | risk_gate | POL | modes IPC | modes IPC |
 | APPR | Approvals + ApprovalDetail | Implemented | events + GetApprovalDetail; `approval_seatbelt_e2e` | fake write diff | Y/N + detail | harness_api (write only) | POL | overlays | cards |
 | KEY | Keychain API-key refs | Implemented | MacosKeychainResolver on profile | noninteractive fail-closed | no raw tokens in SQLite | doctor / CI env | — | n/a | n/a |
@@ -192,29 +197,29 @@ harness (not a second implementation).
 | ATT | Ephemeral AttachmentStore | Implemented | approvals/diffs RAM | GetAttachment unbound to session; TUI barely fetches | ephemeral only | attachments | APPR | partial | GetAttachment |
 | ALOOP | AgentLoop + tools | Implemented | Prompt path | — | — | agent_loop | POL | stream | stream |
 | MCP-RT | MCP runtime in daemon | Partial | autoload `mcp/*.json` → ToolProviderRuntime; `ListMcpServers` IPC | Desktop parses Codex TOML; lifecycle writes `{workspace}/.impetus/mcp/` (third path, not autoloaded); no live health probe on list | daemon SoT for catalog | daemon_wiring + harness_api | — | none | **must use IPC** |
-| EXP | Explore child (AgentLoop) | Implemented | `explore_spawn` + ChildResultStore | no live Child events on parent log | restricted tools | explore_* | EVT | `/children` poll | ListChildRuns |
+| EXP | Explore child (AgentLoop) | Implemented | `explore_spawn` + ChildResultStore + parent-log `Child*` | mid-run action stream still thin (see CHILD) | restricted tools | explore_* + `parent_event_log_gets_child_*` | EVT | Activity fold + `/children` | ListChildRuns |
 | WF | WorkflowRuntime role children | Implemented | Start/Advance/Cancel IPC | Role exec = process/echo stub; Workflow Explore ≠ AgentLoop Explore; fake worktree id | cancel + fair caps | workflow_runtime | EXP | workflow none | workflow IPC |
-| WT | WorktreeManager | Partial | library lifecycle + `impetusd` `open_daemon_worktree_manager` → `Harness::with_worktree_manager` (`worktrees.sqlite3` + `worktrees/`) | Build uses synthetic wt id; no create/merge IPC | create/stale/merge-ready | worktree_manager + daemon_wiring | SB-PATH | none | none (Desktop uses local git — anti-pattern) |
-| PTY | PTY sessions | Partial | `portable-pty` spawn + Pty* IPC (v9+) + ring + harness_api; overflow spill → DurableArtifactStore + `PtyEvent::Spill`; TUI `Ctrl+\` / `/pty` passthrough | store optional; no re-attach UI | real spawn + bounded I/O + spill + TUI passthrough | pty unit (cat/sleep/spill) + encode/detach unit | POL | Ctrl+\ passthrough | xterm.js later |
+| WT | WorktreeManager | Partial | library lifecycle + `impetusd` `open_daemon_worktree_manager` → `Harness::with_worktree_manager`; `switch_bound_branch` updates persisted `binding.branch` | Build uses synthetic wt id; no create/merge IPC | create/stale/merge-ready; binding branch sync on switch | worktree_manager + daemon_wiring | SB-PATH | none | none |
+| PTY | PTY sessions | Implemented | `portable-pty` + Pty* IPC v12 (`session_id` + `owner_session_id`); ring; coalesce spill (`MAX_PTY_PENDING_SPILLS=4`); cwd containment; User vs Agent (Agent → Seatbelt prepare on macOS); events to owner only; TUI `Ctrl+\` / `/pty` | optional store not always wired; Desktop xterm UI | real spawn + owner deny + spill + TUI passthrough | pty unit (owner/cwd/spill) + encode/detach | POL+SB-SEAT | Ctrl+\ passthrough | xterm.js later |
 | LSP | Coding tools / LSP | Partial | IPC GotoDefinition/Hover handlers | **impetusd never wires** ProcessLspBackend → always absent | binary-present → Available | coding_tools | — | none | none |
 | BRW | Browser provider | Partial | negotiate/health binary-present | navigate fail-closed without CDP | honest Available | browser modules | — | none | none |
 | STEER | SteerRewrite live provider | Implemented | ProviderSteerRewrite in daemon | — | one-shot rewrite | steer tests | ALOOP | Ctrl+T | intents |
 | MEM | MemoryStore | Partial | library only | not daemon control plane | — | memory_store | — | none | none |
 | EXT | Extension lifecycle | Partial | CLI plan/install/doctor | no marketplace | allowlisted ids | extension_* | — | none | none |
 | ACP | ACP ModelProvider | Partial | `--acp-profile` | tool/permission broker gaps | Incompatible explicit | acp gateway | — | via daemon | via daemon |
-| SCHEMA | Canonical schemas | Partial | approval/capabilities/extension/session/mcp in registry | matrix underclaims session/mcp | validate on load | schema.rs | — | n/a | n/a |
+| SCHEMA | Canonical schemas | Partial | approval/capabilities/extension/session/mcp in registry | broader validate-on-wire coverage | validate on load | schema.rs | — | n/a | n/a |
 
 ### Client protocol
 
 | ID | Capability | Status | Production paths | Remaining | AC | Tests | Deps | TUI | Desktop API |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| IPC | Unix IPC v11 + Hello exact-match | Implemented | `ipc.rs` IPC_VERSION=11 | no min_supported range; client still path-deps full core | Incompatible on skew | ipc / impetusd protocol | — | HarnessClient | HarnessClient (v11) |
-| PROTO | Thin protocol crate / façade | Implemented | `impetus-protocol` + `impetus-client::protocol` re-exports | client still path-deps core for Unix/`Harness`/`in-memory`; Desktop/TUI can import types via protocol without rusqlite for TYPES | Desktop/TUI import types via façade/protocol | client unit | IPC | boundary.rs | path-dep client |
+| IPC | Unix IPC v12 + Hello exact-match | Implemented | `ipc.rs` IPC_VERSION=12; Pty* require `session_id`; `PtySession.owner_session_id` | no min_supported range | Incompatible on skew; PTY owner binding | ipc / impetusd protocol / sentinel_protocol | — | HarnessClient | HarnessClient (v12) |
+| PROTO | Thin protocol crate / façade | Implemented | `impetus-protocol` + `impetus-client::protocol` re-exports; `impetus-core` optional (`in-memory` feature) | Unix default has no core dep; Desktop/TUI import types via protocol | Desktop/TUI import types via façade/protocol | client unit | IPC | boundary.rs | path-dep client |
 | ACT | Rich activity events | Implemented | Tool Observed/Started/Finished(+id)/Output + FileRead/Search* + Agent Chunk/ReasoningSummary + Child* + Pty* + Command* | Desktop stream map parity | same events TUI+Desktop | events serialize + FileRead emit path | EVT | Activity fold | stream map |
-| GIT | Git/branches/status/diff IPC | Implemented | IPC `git` + `git_ops` / harness; WorktreeManager cwd; TUI `Ctrl+B`; Desktop BranchSelect via harness | create-branch UX polish; worktrees UI | daemon owns checkout | git_ops + harness | WT | Ctrl+B picker | harness git_* |
+| GIT | Git/branches/status/diff IPC | Implemented | IPC `git` + `git_ops` (`status --porcelain=v1 -z`); WorktreeManager cwd; TUI `Ctrl+B`; Desktop BranchSelect via harness | create-branch UX polish; worktrees UI | daemon owns checkout; NUL-safe status | git_ops + harness | WT | Ctrl+B picker | harness git_* |
 | FILES | Workspace Files read API | Implemented | IPC + TUI `Ctrl+F` `/` search + Desktop FileTree list/read/search | CodeMirror highlight optional | path-safe structured | workspace_files | SB-PATH | Ctrl+F + `/` search | FileTree search+list |
 | DIFF | Typed Diff/Review API | Implemented | producer + ApprovalDetail observation/unified; GitDiff patch + `observation` hunks IPC v11 (`structured_diff`); WorktreeManager counts overlay; HarnessClient structured helpers; TUI Review prefers observation | ArtifactRef spill for huge diffs; Desktop Review | structured hunks on GetDiff/GetFileDiff | diff_observation + harness temp-repo | GIT | Review pane (F6/Ctrl+R) | Review UI |
-| CHILD | Child live events | Partial | explore/role/workflow emit `Child*` on parent log + List/GetChildRuns | mid-run action stream thin | live + snapshot | `parent_event_log_gets_child_started_then_finished` | EXP/WF | Activity fold | tree |
+| CHILD | Child live events | Implemented | explore/role/workflow emit `Child*` on parent log + List/GetChildRuns | mid-run action stream still thin (progress/tool detail) | Started/Finished on parent log + snapshot APIs | `parent_event_log_gets_child_started_then_finished` | EXP/WF | Activity fold | tree |
 | MCP-RD | ListMcpServers / ListModels IPC | Implemented | harness + Desktop AttachMenu via IPC (v10) | TUI picker later; no live MCP health probe on list | read-only status | harness_api + ipc | MCP-RT | picker later | harness list_* |
 
 ### Frontends
@@ -248,8 +253,9 @@ harness (not a second implementation).
   Hover handlers, API search, browser negotiate
 - TUI: hotkeys (#302), themes (#304), Explore/modes, `/children`, approvals,
   large-paste artifacts
-- Desktop sibling: rebase to IPC v7 + live subscribe / modes / approval cards
-  (see `impetus-desktop/TODO.md`) — **still** must migrate git/MCP to harness
+- Desktop sibling: rebase to IPC v7+ + live subscribe / modes / approval cards;
+  harness Git/MCP/Models/Files (see `impetus-desktop/TODO.md`) — Review/PTY UI
+  polish still open
 
 ---
 

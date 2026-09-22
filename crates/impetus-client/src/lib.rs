@@ -30,6 +30,7 @@ pub use unix::UnixSocketTransport;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PtySessionView {
     pub pty_id: u64,
+    pub owner_session_id: uuid::Uuid,
     pub state: protocol::PtySessionState,
     pub command: String,
     pub cols: u16,
@@ -559,12 +560,14 @@ pub trait HarnessClient: Send + Sync {
         {
             IpcResponse::PtySession {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,
                 rows,
             } => Ok(PtySessionView {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,
@@ -576,16 +579,21 @@ pub trait HarnessClient: Send + Sync {
     }
 
     /// Re-attach a previously detached live PTY.
-    async fn pty_attach(&self, pty_id: u64) -> Result<PtySessionView> {
-        match self.request(IpcRequest::PtyAttach { pty_id }).await? {
+    async fn pty_attach(&self, session_id: uuid::Uuid, pty_id: u64) -> Result<PtySessionView> {
+        match self
+            .request(IpcRequest::PtyAttach { session_id, pty_id })
+            .await?
+        {
             IpcResponse::PtySession {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,
                 rows,
             } => Ok(PtySessionView {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,
@@ -597,10 +605,11 @@ pub trait HarnessClient: Send + Sync {
     }
 
     /// Write bytes to PTY stdin.
-    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()> {
+    async fn pty_input(&self, session_id: uuid::Uuid, pty_id: u64, data: &[u8]) -> Result<()> {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
         match self
             .request(IpcRequest::PtyInput {
+                session_id,
                 pty_id,
                 data_b64: BASE64.encode(data),
             })
@@ -613,10 +622,19 @@ pub trait HarnessClient: Send + Sync {
     }
 
     /// Drain bounded output from the PTY ring buffer.
-    async fn pty_output(&self, pty_id: u64, max_bytes: Option<usize>) -> Result<PtyOutputView> {
+    async fn pty_output(
+        &self,
+        session_id: uuid::Uuid,
+        pty_id: u64,
+        max_bytes: Option<usize>,
+    ) -> Result<PtyOutputView> {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
         match self
-            .request(IpcRequest::PtyOutput { pty_id, max_bytes })
+            .request(IpcRequest::PtyOutput {
+                session_id,
+                pty_id,
+                max_bytes,
+            })
             .await?
         {
             IpcResponse::PtyOutput {
@@ -642,9 +660,20 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
-    async fn pty_resize(&self, pty_id: u64, cols: u16, rows: u16) -> Result<()> {
+    async fn pty_resize(
+        &self,
+        session_id: uuid::Uuid,
+        pty_id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
         match self
-            .request(IpcRequest::PtyResize { pty_id, cols, rows })
+            .request(IpcRequest::PtyResize {
+                session_id,
+                pty_id,
+                cols,
+                rows,
+            })
             .await?
         {
             IpcResponse::PtyOk { .. } => Ok(()),
@@ -653,32 +682,43 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
-    async fn pty_detach(&self, pty_id: u64) -> Result<()> {
-        match self.request(IpcRequest::PtyDetach { pty_id }).await? {
+    async fn pty_detach(&self, session_id: uuid::Uuid, pty_id: u64) -> Result<()> {
+        match self
+            .request(IpcRequest::PtyDetach { session_id, pty_id })
+            .await?
+        {
             IpcResponse::PtyOk { .. } => Ok(()),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }
     }
 
-    async fn pty_terminate(&self, pty_id: u64) -> Result<()> {
-        match self.request(IpcRequest::PtyTerminate { pty_id }).await? {
+    async fn pty_terminate(&self, session_id: uuid::Uuid, pty_id: u64) -> Result<()> {
+        match self
+            .request(IpcRequest::PtyTerminate { session_id, pty_id })
+            .await?
+        {
             IpcResponse::PtyOk { .. } => Ok(()),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }
     }
 
-    async fn pty_status(&self, pty_id: u64) -> Result<PtySessionView> {
-        match self.request(IpcRequest::PtyStatus { pty_id }).await? {
+    async fn pty_status(&self, session_id: uuid::Uuid, pty_id: u64) -> Result<PtySessionView> {
+        match self
+            .request(IpcRequest::PtyStatus { session_id, pty_id })
+            .await?
+        {
             IpcResponse::PtySession {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,
                 rows,
             } => Ok(PtySessionView {
                 pty_id,
+                owner_session_id,
                 state,
                 command,
                 cols,

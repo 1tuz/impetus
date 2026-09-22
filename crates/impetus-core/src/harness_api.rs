@@ -1545,18 +1545,44 @@ fn handle_request(
             name,
             checkout,
         } => match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
-            Ok(cwd) => match crate::create_branch(&cwd.path, &name, checkout) {
-                Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
-                Err(error) => git_ops_error(error),
-            },
+            Ok(cwd) => {
+                if let (Some(mgr), Some(_)) = (worktree_manager.as_deref(), cwd.binding.as_ref()) {
+                    match mgr.create_bound_branch(session_id, &name, checkout) {
+                        Ok(binding) => match crate::get_current_branch(&binding.path) {
+                            Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                            Err(error) => git_ops_error(error),
+                        },
+                        Err(error) => worktree_switch_error(error),
+                    }
+                } else {
+                    match crate::create_branch(&cwd.path, &name, checkout) {
+                        Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                        Err(error) => git_ops_error(error),
+                    }
+                }
+            }
             Err(response) => response,
         },
         IpcRequest::SwitchBranch { session_id, name } => {
             match session_git_cwd(&store, &policy, worktree_manager.as_deref(), session_id) {
-                Ok(cwd) => match crate::switch_branch(&cwd.path, &name) {
-                    Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
-                    Err(error) => git_ops_error(error),
-                },
+                Ok(cwd) => {
+                    if let (Some(mgr), Some(_)) =
+                        (worktree_manager.as_deref(), cwd.binding.as_ref())
+                    {
+                        match mgr.switch_bound_branch(session_id, &name) {
+                            Ok(binding) => match crate::get_current_branch(&binding.path) {
+                                Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                                Err(error) => git_ops_error(error),
+                            },
+                            Err(error) => worktree_switch_error(error),
+                        }
+                    } else {
+                        match crate::switch_branch(&cwd.path, &name) {
+                            Ok(branch) => IpcResponse::CurrentBranch { session_id, branch },
+                            Err(error) => git_ops_error(error),
+                        }
+                    }
+                }
                 Err(response) => response,
             }
         }
@@ -1634,98 +1660,136 @@ fn handle_request(
             cols.unwrap_or(80),
             rows.unwrap_or(24),
         ),
-        IpcRequest::PtyAttach { pty_id } => match pty.attach(crate::PtySessionId(pty_id)) {
-            Ok(session) => {
-                pty_notice(&store, None, format!("pty {pty_id} attached"));
-                pty_session_response(session)
+        IpcRequest::PtyAttach { session_id, pty_id } => {
+            match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+                Ok(_) => match pty.attach(crate::PtySessionId(pty_id)) {
+                    Ok(session) => {
+                        pty_notice(&store, session_id, format!("pty {pty_id} attached"));
+                        pty_session_response(session)
+                    }
+                    Err(error) => pty_error(error),
+                },
+                Err(error) => pty_error(error),
             }
+        }
+        IpcRequest::PtyInput {
+            session_id,
+            pty_id,
+            data_b64,
+        } => match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+            Ok(_) => match decode_pty_b64(&data_b64) {
+                Ok(data) => match pty.write_input(crate::PtySessionId(pty_id), &data) {
+                    Ok(()) => IpcResponse::PtyOk { pty_id },
+                    Err(error) => pty_error(error),
+                },
+                Err(message) => IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    message,
+                },
+            },
             Err(error) => pty_error(error),
         },
-        IpcRequest::PtyInput { pty_id, data_b64 } => match decode_pty_b64(&data_b64) {
-            Ok(data) => match pty.write_input(crate::PtySessionId(pty_id), &data) {
-                Ok(()) => IpcResponse::PtyOk { pty_id },
-                Err(error) => pty_error(error),
-            },
-            Err(message) => IpcResponse::Error {
-                code: IpcErrorCode::InvalidRequest,
-                message,
-            },
-        },
-        IpcRequest::PtyOutput { pty_id, max_bytes } => {
-            let max = max_bytes.unwrap_or(crate::DEFAULT_PTY_READ_BYTES);
-            match pty.read_output(crate::PtySessionId(pty_id), max) {
-                Ok(chunk) => {
-                    if let Some(artifact) = chunk.spill_artifact.clone() {
-                        let dropped_bytes = artifact.byte_count as u64;
-                        pty_emit(
-                            &store,
-                            None,
-                            crate::PtyEvent::Spill {
-                                pty_id,
-                                artifact,
-                                dropped_bytes,
-                            },
-                        );
+        IpcRequest::PtyOutput {
+            session_id,
+            pty_id,
+            max_bytes,
+        } => match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+            Ok(owner) => {
+                let max = max_bytes.unwrap_or(crate::DEFAULT_PTY_READ_BYTES);
+                match pty.read_output(crate::PtySessionId(pty_id), max) {
+                    Ok(chunk) => {
+                        if let Some(artifact) = chunk.spill_artifact.clone() {
+                            let dropped_bytes = artifact.byte_count as u64;
+                            pty_emit(
+                                &store,
+                                owner.owner_session_id,
+                                crate::PtyEvent::Spill {
+                                    pty_id,
+                                    artifact,
+                                    dropped_bytes,
+                                },
+                            );
+                        }
+                        if chunk.eof {
+                            let preview = crate::bound_activity_preview(&String::from_utf8_lossy(
+                                &chunk.data,
+                            ));
+                            pty_emit(
+                                &store,
+                                owner.owner_session_id,
+                                crate::PtyEvent::Output {
+                                    pty_id,
+                                    preview,
+                                    dropped_total: chunk.dropped_total,
+                                    eof: true,
+                                },
+                            );
+                        }
+                        IpcResponse::PtyOutput {
+                            pty_id,
+                            data_b64: encode_pty_b64(&chunk.data),
+                            dropped_total: chunk.dropped_total,
+                            eof: chunk.eof,
+                            spill_artifact: chunk.spill_artifact,
+                        }
                     }
-                    // Durable sample only on eof flush (avoid flooding poll reads).
-                    if chunk.eof {
-                        let preview =
-                            crate::bound_activity_preview(&String::from_utf8_lossy(&chunk.data));
-                        pty_emit(
-                            &store,
-                            None,
-                            crate::PtyEvent::Output {
-                                pty_id,
-                                preview,
-                                dropped_total: chunk.dropped_total,
-                                eof: true,
-                            },
-                        );
-                    }
-                    IpcResponse::PtyOutput {
-                        pty_id,
-                        data_b64: encode_pty_b64(&chunk.data),
-                        dropped_total: chunk.dropped_total,
-                        eof: chunk.eof,
-                        spill_artifact: chunk.spill_artifact,
-                    }
+                    Err(error) => pty_error(error),
                 }
-                Err(error) => pty_error(error),
             }
-        }
-        IpcRequest::PtyResize { pty_id, cols, rows } => {
-            match pty.resize(crate::PtySessionId(pty_id), cols, rows) {
+            Err(error) => pty_error(error),
+        },
+        IpcRequest::PtyResize {
+            session_id,
+            pty_id,
+            cols,
+            rows,
+        } => match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+            Ok(_) => match pty.resize(crate::PtySessionId(pty_id), cols, rows) {
                 Ok(()) => IpcResponse::PtyOk { pty_id },
                 Err(error) => pty_error(error),
+            },
+            Err(error) => pty_error(error),
+        },
+        IpcRequest::PtyDetach { session_id, pty_id } => {
+            match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+                Ok(_) => match pty.detach(crate::PtySessionId(pty_id)) {
+                    Ok(()) => {
+                        pty_notice(&store, session_id, format!("pty {pty_id} detached"));
+                        IpcResponse::PtyOk { pty_id }
+                    }
+                    Err(error) => pty_error(error),
+                },
+                Err(error) => pty_error(error),
             }
         }
-        IpcRequest::PtyDetach { pty_id } => match pty.detach(crate::PtySessionId(pty_id)) {
-            Ok(()) => {
-                pty_notice(&store, None, format!("pty {pty_id} detached"));
-                IpcResponse::PtyOk { pty_id }
+        IpcRequest::PtyTerminate { session_id, pty_id } => {
+            match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+                Ok(owner) => match pty.terminate(crate::PtySessionId(pty_id)) {
+                    Ok(()) => {
+                        let exit_code =
+                            pty.get_session(crate::PtySessionId(pty_id))
+                                .and_then(|session| match session.state {
+                                    crate::PtySessionState::Exited { exit_code } => exit_code,
+                                    _ => None,
+                                });
+                        pty_emit(
+                            &store,
+                            owner.owner_session_id,
+                            crate::PtyEvent::Exited { pty_id, exit_code },
+                        );
+                        IpcResponse::PtyOk { pty_id }
+                    }
+                    Err(error) => pty_error(error),
+                },
+                Err(error) => pty_error(error),
             }
-            Err(error) => pty_error(error),
-        },
-        IpcRequest::PtyTerminate { pty_id } => match pty.terminate(crate::PtySessionId(pty_id)) {
-            Ok(()) => {
-                let exit_code = pty
-                    .get_session(crate::PtySessionId(pty_id))
-                    .and_then(|session| match session.state {
-                        crate::PtySessionState::Exited { exit_code } => exit_code,
-                        _ => None,
-                    });
-                pty_emit(&store, None, crate::PtyEvent::Exited { pty_id, exit_code });
-                IpcResponse::PtyOk { pty_id }
+        }
+        IpcRequest::PtyStatus { session_id, pty_id } => {
+            match pty.require_owner(crate::PtySessionId(pty_id), session_id) {
+                Ok(session) => pty_session_response(session),
+                Err(error) => pty_error(error),
             }
-            Err(error) => pty_error(error),
-        },
-        IpcRequest::PtyStatus { pty_id } => match pty.get_session(crate::PtySessionId(pty_id)) {
-            Some(session) => pty_session_response(session),
-            None => IpcResponse::Error {
-                code: IpcErrorCode::MissingSession,
-                message: format!("unknown pty session: {pty_id}"),
-            },
-        },
+        }
         // Daemon SoT catalog reads (labels/status only; never env/credentials).
         IpcRequest::ListMcpServers => {
             let servers = match tool_providers {
@@ -1795,6 +1859,26 @@ fn git_ops_error(error: crate::GitOpsError) -> IpcResponse {
     }
 }
 
+fn worktree_switch_error(error: crate::WorktreeError) -> IpcResponse {
+    use crate::WorktreeError;
+    let code = match &error {
+        WorktreeError::InvalidBranchName(_)
+        | WorktreeError::BranchExists(_)
+        | WorktreeError::UnknownBranch(_) => IpcErrorCode::InvalidRequest,
+        WorktreeError::Dirty
+        | WorktreeError::ConflictInProgress
+        | WorktreeError::InvalidTransition { .. }
+        | WorktreeError::PathMissing(_)
+        | WorktreeError::NotFound(_)
+        | WorktreeError::NotFoundId(_) => IpcErrorCode::Conflict,
+        _ => IpcErrorCode::Internal,
+    };
+    IpcResponse::Error {
+        code,
+        message: error.to_string(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_pty_start(
     store: &Arc<dyn EventStore>,
@@ -1811,14 +1895,16 @@ fn handle_pty_start(
         Ok(runtime) => runtime,
         Err(error) => return runtime_error(error),
     };
-    let cwd = match working_dir {
-        Some(path) => path,
-        None => match runtime.workspace_root() {
-            Ok(root) => root,
-            Err(error) => return runtime_error(error),
-        },
+    let workspace_root = match runtime.workspace_root() {
+        Ok(root) => root,
+        Err(error) => return runtime_error(error),
+    };
+    let cwd = match crate::resolve_pty_working_dir(&workspace_root, working_dir) {
+        Ok(path) => path,
+        Err(error) => return pty_error(error),
     };
     match pty.start(
+        session_id,
         command,
         args,
         cwd,
@@ -1846,6 +1932,7 @@ fn handle_pty_start(
 fn pty_session_response(session: crate::PtySession) -> IpcResponse {
     IpcResponse::PtySession {
         pty_id: session.id.0,
+        owner_session_id: session.owner_session_id,
         state: session.state,
         command: session.command,
         cols: session.cols,
@@ -1859,10 +1946,14 @@ fn pty_error(error: crate::PtySessionError) -> IpcResponse {
         PtySessionError::SessionNotFound(_) | PtySessionError::NotLive(_) => {
             IpcErrorCode::MissingSession
         }
+        PtySessionError::NotOwner(_) => IpcErrorCode::Unavailable,
+        PtySessionError::UnsafeWorkingDir(_) => IpcErrorCode::InvalidRequest,
         PtySessionError::AlreadyRunning(_) | PtySessionError::ApprovalRequired => {
             IpcErrorCode::Conflict
         }
-        PtySessionError::PolicyDenied(_) => IpcErrorCode::Unavailable,
+        PtySessionError::PolicyDenied(_) | PtySessionError::SandboxDenied(_) => {
+            IpcErrorCode::Unavailable
+        }
         PtySessionError::SpawnFailed(_) | PtySessionError::Io(_) | PtySessionError::Storage(_) => {
             IpcErrorCode::Internal
         }
@@ -1881,30 +1972,14 @@ fn pty_manager_with_default_artifacts(seam: crate::EffectSeam) -> Arc<crate::Pty
     }
 }
 
-fn pty_notice(store: &Arc<dyn EventStore>, session_id: Option<uuid::Uuid>, message: String) {
-    let Some(session_id) = session_id.or_else(|| {
-        store
-            .list_sessions()
-            .ok()
-            .and_then(|sessions| sessions.into_iter().next().map(|s| s.id))
-    }) else {
-        return;
-    };
+fn pty_notice(store: &Arc<dyn EventStore>, session_id: uuid::Uuid, message: String) {
     let _ = store.append_next(
         session_id,
         EventPayload::Notice(NoticeEvent::Runtime { message }),
     );
 }
 
-fn pty_emit(store: &Arc<dyn EventStore>, session_id: Option<uuid::Uuid>, event: crate::PtyEvent) {
-    let Some(session_id) = session_id.or_else(|| {
-        store
-            .list_sessions()
-            .ok()
-            .and_then(|sessions| sessions.into_iter().next().map(|s| s.id))
-    }) else {
-        return;
-    };
+fn pty_emit(store: &Arc<dyn EventStore>, session_id: uuid::Uuid, event: crate::PtyEvent) {
     let _ = store.append_next(session_id, EventPayload::Pty(event));
 }
 

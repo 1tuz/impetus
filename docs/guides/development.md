@@ -105,8 +105,8 @@ cargo test -p impetus-core --lib -- sentinel
 ```
 
 Honest boundary: these are colocated lib tests (same binaries PR CI already
-runs). Heavy `crates/*/tests/` suites (Seatbelt spike, audit-log IPC fixtures)
-stay outside the PR gate by design — see below.
+runs). Heavy `crates/*/tests/` suites (Seatbelt production E2E, audit-log IPC
+fixtures) stay outside the PR gate by design — see below.
 
 ## Manual / heavy tests
 

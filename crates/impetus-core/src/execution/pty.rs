@@ -1,8 +1,25 @@
 //! PTY session management with durable state and bounded output.
 //!
 //! Daemon owns the PTY (`portable-pty`). Clients attach via IPC; no terminal
-//! emulator lives here. Ring overflow spills dropped bytes to
-//! [`DurableArtifactStore`] when wired; the ring itself stays bounded.
+//! emulator lives here.
+//!
+//! ## Bounds
+//! - Ring: [`MAX_PTY_RING_BYTES`] (256 KiB). Oldest bytes leave the ring first.
+//! - Spill coalesce: overflow accumulates until [`PTY_SPILL_COALESCE_BYTES`]
+//!   then one DurableArtifact is queued (not one artifact per tiny read).
+//! - Pending spill refs: at most [`MAX_PTY_PENDING_SPILLS`]; oldest ref dropped
+//!   when full (artifact bytes remain on disk until GC).
+//!
+//! ## Ownership
+//! Every live PTY has a stable [`PtySession::owner_session_id`]. IPC ops must
+//! present that session; cross-session input/terminate is denied.
+//!
+//! ## Security
+//! - **User terminal** (IPC `PtyStart`, `ActionOrigin::User`): cwd must stay
+//!   inside the session workspace (canonicalize + symlink-safe containment).
+//! - **Agent PTY** (`ActionOrigin::Agent`): same cwd rule **plus** macOS
+//!   Seatbelt wrap via the shared sandbox prepare path. Non-macOS agent spawn
+//!   is fail-closed.
 
 use crate::{
     Action, ActionKind, ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectAdmission,
@@ -13,14 +30,21 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, nativ
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Ring capacity for PTY output (bytes). Oldest bytes spill (or drop) on overflow.
 pub const MAX_PTY_RING_BYTES: usize = 256 * 1024;
+
+/// Coalesce overflow into one artifact once this many bytes accumulate.
+pub const PTY_SPILL_COALESCE_BYTES: usize = 16 * 1024;
+
+/// Max unread spill ArtifactRefs queued for `read_output` consumers.
+pub const MAX_PTY_PENDING_SPILLS: usize = 4;
 
 /// MIME for PTY overflow spill bodies (raw PTY bytes, not necessarily UTF-8).
 const PTY_SPILL_CONTENT_TYPE: &str = "application/octet-stream";
@@ -42,10 +66,16 @@ pub enum PtySessionError {
     ApprovalRequired,
     #[error("session not found: {0:?}")]
     SessionNotFound(PtySessionId),
+    #[error("pty {0:?} is owned by another session")]
+    NotOwner(PtySessionId),
     #[error("session already running: {0:?}")]
     AlreadyRunning(PtySessionId),
     #[error("session not live (detached metadata only): {0:?}")]
     NotLive(PtySessionId),
+    #[error("PTY working_dir escapes workspace: {0}")]
+    UnsafeWorkingDir(String),
+    #[error("PTY sandbox denied: {0}")]
+    SandboxDenied(String),
     #[error("PTY spawn failed: {0}")]
     SpawnFailed(String),
     #[error("io error: {0}")]
@@ -58,6 +88,8 @@ pub enum PtySessionError {
 #[derive(Debug, Clone)]
 pub struct PtySession {
     pub id: PtySessionId,
+    /// Durable harness session that owns this PTY (event routing + ACL).
+    pub owner_session_id: Uuid,
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: PathBuf,
@@ -72,6 +104,7 @@ pub struct PtySession {
 impl PtySession {
     pub fn new(
         id: PtySessionId,
+        owner_session_id: Uuid,
         command: impl Into<String>,
         args: Vec<String>,
         working_dir: PathBuf,
@@ -79,6 +112,7 @@ impl PtySession {
     ) -> Self {
         Self {
             id,
+            owner_session_id,
             command: command.into(),
             args,
             working_dir,
@@ -125,6 +159,8 @@ struct OutputRing {
     data: VecDeque<u8>,
     capacity: usize,
     dropped_total: u64,
+    /// Bytes awaiting coalesce into a DurableArtifactRef.
+    spill_buffer: Vec<u8>,
     /// Overflow batches spilled to DurableArtifactStore, FIFO for read_output.
     pending_spills: VecDeque<DurableArtifactRef>,
 }
@@ -135,6 +171,7 @@ impl OutputRing {
             data: VecDeque::with_capacity(capacity.min(4096)),
             capacity,
             dropped_total: 0,
+            spill_buffer: Vec::new(),
             pending_spills: VecDeque::new(),
         }
     }
@@ -154,7 +191,47 @@ impl OutputRing {
         spilled
     }
 
+    /// Buffer overflow bytes; flush coalesced artifacts into pending queue.
+    fn note_overflow(
+        &mut self,
+        spilled: &[u8],
+        artifacts: Option<&DurableArtifactStore>,
+        force: bool,
+    ) {
+        if !spilled.is_empty() {
+            self.spill_buffer.extend_from_slice(spilled);
+        }
+        if self.spill_buffer.is_empty() {
+            return;
+        }
+        loop {
+            let threshold = PTY_SPILL_COALESCE_BYTES.min(self.capacity.max(1));
+            let ready = force || self.spill_buffer.len() >= threshold;
+            if !ready {
+                break;
+            }
+            let take = if force {
+                self.spill_buffer.len()
+            } else {
+                threshold.min(self.spill_buffer.len())
+            };
+            if take == 0 {
+                break;
+            }
+            let chunk: Vec<u8> = self.spill_buffer.drain(..take).collect();
+            if let Some(artifact) = spill_overflow_bytes(artifacts, &chunk) {
+                self.record_spill(artifact);
+            }
+            if force {
+                break;
+            }
+        }
+    }
+
     fn record_spill(&mut self, artifact: DurableArtifactRef) {
+        while self.pending_spills.len() >= MAX_PTY_PENDING_SPILLS {
+            let _ = self.pending_spills.pop_front();
+        }
         self.pending_spills.push_back(artifact);
     }
 
@@ -177,6 +254,8 @@ struct LivePty {
     stop: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
     eof: Arc<AtomicBool>,
+    /// Keeps Seatbelt session temp alive for agent-origin PTYs (macOS).
+    _sandbox_keepalive: Option<super::sandbox::PtySandboxKeepAlive>,
 }
 
 impl LivePty {
@@ -259,6 +338,7 @@ impl PtySessionManager {
     /// Request a new PTY session through policy and effect seam (metadata only).
     pub fn request(
         &self,
+        owner_session_id: Uuid,
         command: impl Into<String>,
         args: Vec<String>,
         working_dir: PathBuf,
@@ -286,7 +366,14 @@ impl PtySessionManager {
         let session_id = PtySessionId(*next_id);
         *next_id += 1;
 
-        let session = PtySession::new(session_id, command, args, working_dir, origin);
+        let session = PtySession::new(
+            session_id,
+            owner_session_id,
+            command,
+            args,
+            working_dir,
+            origin,
+        );
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -300,6 +387,7 @@ impl PtySessionManager {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
+        owner_session_id: Uuid,
         command: impl Into<String>,
         args: Vec<String>,
         working_dir: PathBuf,
@@ -308,8 +396,14 @@ impl PtySessionManager {
         rows: u16,
         intent_revision: u64,
     ) -> Result<PtySession, PtySessionError> {
-        let (session_id, admission) =
-            self.request(command, args, working_dir, origin, intent_revision)?;
+        let (session_id, admission) = self.request(
+            owner_session_id,
+            command,
+            args,
+            working_dir,
+            origin,
+            intent_revision,
+        )?;
 
         {
             let mut sessions = self
@@ -338,9 +432,24 @@ impl PtySessionManager {
         }
     }
 
+    /// Deny ops when caller session is not the PTY owner.
+    pub fn require_owner(
+        &self,
+        pty_id: PtySessionId,
+        session_id: Uuid,
+    ) -> Result<PtySession, PtySessionError> {
+        let session = self
+            .get_session(pty_id)
+            .ok_or(PtySessionError::SessionNotFound(pty_id))?;
+        if session.owner_session_id != session_id {
+            return Err(PtySessionError::NotOwner(pty_id));
+        }
+        Ok(session)
+    }
+
     /// Spawn PTY session after approval (or immediate Allow).
     pub fn spawn(&self, session_id: PtySessionId) -> Result<(), PtySessionError> {
-        let (command, args, working_dir, env, cols, rows) = {
+        let (command, args, working_dir, env, cols, rows, origin, owner_workspace) = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -360,6 +469,8 @@ impl PtySessionManager {
                 session.env.clone(),
                 session.cols,
                 session.rows,
+                session.origin,
+                session.working_dir.clone(),
             )
         };
 
@@ -386,6 +497,8 @@ impl PtySessionManager {
             rows,
             self.ring_capacity,
             artifacts,
+            origin,
+            &owner_workspace,
         ) {
             Ok(live) => live,
             Err(error) => {
@@ -712,12 +825,14 @@ impl PtySessionManager {
 fn open_live_pty(
     command: &str,
     args: &[String],
-    working_dir: &PathBuf,
+    working_dir: &Path,
     env: &[(String, String)],
     cols: u16,
     rows: u16,
     ring_capacity: usize,
     artifacts: Option<Arc<DurableArtifactStore>>,
+    origin: ActionOrigin,
+    workspace_root: &Path,
 ) -> Result<LivePty, PtySessionError> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -729,14 +844,8 @@ fn open_live_pty(
         })
         .map_err(|error| PtySessionError::SpawnFailed(error.to_string()))?;
 
-    let mut cmd = CommandBuilder::new(command);
-    for arg in args {
-        cmd.arg(arg);
-    }
-    cmd.cwd(working_dir);
-    for (key, value) in env {
-        cmd.env(key, value);
-    }
+    let (cmd, sandbox_keepalive) =
+        build_pty_command(command, args, working_dir, env, origin, workspace_root)?;
 
     let child = pair
         .slave
@@ -769,19 +878,17 @@ fn open_live_pty(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let spilled = match ring_reader.lock() {
-                            Ok(mut ring) => ring.push_slice(&buf[..n]),
-                            Err(_) => Vec::new(),
-                        };
-                        if let Some(artifact) = spill_overflow_bytes(artifacts.as_deref(), &spilled)
-                            && let Ok(mut ring) = ring_reader.lock()
-                        {
-                            ring.record_spill(artifact);
+                        if let Ok(mut ring) = ring_reader.lock() {
+                            let spilled = ring.push_slice(&buf[..n]);
+                            ring.note_overflow(&spilled, artifacts.as_deref(), false);
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
+            }
+            if let Ok(mut ring) = ring_reader.lock() {
+                ring.note_overflow(&[], artifacts.as_deref(), true);
             }
             eof_reader.store(true, Ordering::SeqCst);
         })
@@ -796,7 +903,87 @@ fn open_live_pty(
         stop,
         reader: Some(reader_handle),
         eof,
+        _sandbox_keepalive: sandbox_keepalive,
     })
+}
+
+fn build_pty_command(
+    command: &str,
+    args: &[String],
+    working_dir: &Path,
+    env: &[(String, String)],
+    origin: ActionOrigin,
+    workspace_root: &Path,
+) -> Result<(CommandBuilder, Option<super::sandbox::PtySandboxKeepAlive>), PtySessionError> {
+    match origin {
+        ActionOrigin::User => {
+            let mut cmd = CommandBuilder::new(command);
+            for arg in args {
+                cmd.arg(arg);
+            }
+            cmd.cwd(working_dir);
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+            Ok((cmd, None))
+        }
+        ActionOrigin::Agent => {
+            #[cfg(target_os = "macos")]
+            {
+                let prepared = super::sandbox::prepare_pty_sandbox(
+                    command,
+                    args,
+                    workspace_root,
+                    working_dir,
+                    env,
+                    false,
+                )
+                .map_err(|e| PtySessionError::SandboxDenied(e.to_string()))?;
+                let mut cmd = CommandBuilder::new(prepared.executable);
+                for arg in &prepared.args {
+                    cmd.arg(arg);
+                }
+                cmd.cwd(&prepared.working_dir);
+                for (key, value) in &prepared.env {
+                    cmd.env(key, value);
+                }
+                Ok((cmd, Some(prepared.keepalive)))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (command, args, working_dir, env, workspace_root);
+                Err(PtySessionError::SandboxDenied(
+                    "agent PTY requires macOS Seatbelt; fail-closed on this platform".into(),
+                ))
+            }
+        }
+    }
+}
+
+/// Resolve PTY cwd under workspace with symlink-escape protection.
+pub fn resolve_pty_working_dir(
+    workspace_root: &Path,
+    working_dir: Option<PathBuf>,
+) -> Result<PathBuf, PtySessionError> {
+    let root = workspace_root.canonicalize().map_err(|err| {
+        PtySessionError::UnsafeWorkingDir(format!("canonicalize workspace: {err}"))
+    })?;
+    let Some(requested) = working_dir else {
+        return Ok(root);
+    };
+    if requested.is_absolute() {
+        let resolved = requested.canonicalize().map_err(|err| {
+            PtySessionError::UnsafeWorkingDir(format!("{}: {err}", requested.display()))
+        })?;
+        if !resolved.starts_with(&root) {
+            return Err(PtySessionError::UnsafeWorkingDir(
+                requested.display().to_string(),
+            ));
+        }
+        return Ok(resolved);
+    }
+    crate::workspace_files::resolve_workspace_path(&root, &requested)
+        .map_err(|err| PtySessionError::UnsafeWorkingDir(err.to_string()))
 }
 
 /// Store overflow bytes when an artifact store is wired. No-op / None otherwise.
@@ -870,7 +1057,14 @@ mod tests {
     fn pty_session_request_creates_session() {
         let manager = PtySessionManager::new(test_seam());
 
-        let result = manager.request("bash", vec![], std::env::temp_dir(), ActionOrigin::Agent, 1);
+        let result = manager.request(
+            Uuid::nil(),
+            "bash",
+            vec![],
+            std::env::temp_dir(),
+            ActionOrigin::Agent,
+            1,
+        );
 
         assert!(result.is_ok());
         let (session_id, admission) = result.unwrap();
@@ -885,6 +1079,7 @@ mod tests {
         let manager = PtySessionManager::new(test_seam());
         let session = manager
             .start(
+                Uuid::nil(),
                 "cat",
                 vec![],
                 std::env::temp_dir(),
@@ -921,6 +1116,7 @@ mod tests {
         let manager = PtySessionManager::new(test_seam());
         let session = manager
             .start(
+                Uuid::nil(),
                 "sleep",
                 vec!["30".into()],
                 std::env::temp_dir(),
@@ -996,6 +1192,7 @@ mod tests {
 
         let session = manager
             .start(
+                Uuid::nil(),
                 "cat",
                 vec![],
                 std::env::temp_dir(),
@@ -1056,10 +1253,93 @@ mod tests {
     }
 
     #[test]
+    fn sentinel_pty_cross_session_input_denied() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let manager = PtySessionManager::new(test_seam());
+        let session = manager
+            .start(
+                owner,
+                "cat",
+                vec![],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                80,
+                24,
+                1,
+            )
+            .expect("start");
+        assert!(matches!(
+            manager.require_owner(session.id, other),
+            Err(PtySessionError::NotOwner(_))
+        ));
+        assert!(manager.require_owner(session.id, owner).is_ok());
+        manager.terminate(session.id).ok();
+    }
+
+    #[test]
+    fn sentinel_pty_cwd_rejects_escape() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path().canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!("pty-escape-{}", Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&outside);
+        let err = resolve_pty_working_dir(&root, Some(outside)).expect_err("outside");
+        assert!(matches!(err, PtySessionError::UnsafeWorkingDir(_)));
+        let err = resolve_pty_working_dir(&root, Some(PathBuf::from("../.."))).expect_err("dotdot");
+        assert!(matches!(err, PtySessionError::UnsafeWorkingDir(_)));
+        let ok = resolve_pty_working_dir(&root, None).expect("default");
+        assert_eq!(ok, root);
+    }
+
+    #[test]
+    fn sentinel_pty_reattach_preserves_owner_and_output() {
+        let owner = Uuid::new_v4();
+        let manager = PtySessionManager::new(test_seam());
+        let session = manager
+            .start(
+                owner,
+                "cat",
+                vec![],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                80,
+                24,
+                1,
+            )
+            .expect("start");
+        manager
+            .write_input(session.id, b"reattach-ok\n")
+            .expect("write");
+        manager.detach(session.id).expect("detach");
+        let again = manager.attach(session.id).expect("attach");
+        assert_eq!(again.owner_session_id, owner);
+        let out = wait_output(&manager, session.id, b"reattach-ok");
+        assert!(
+            out.windows(b"reattach-ok".len())
+                .any(|w| w == b"reattach-ok")
+        );
+        manager.terminate(session.id).ok();
+    }
+
+    #[test]
+    fn sentinel_pty_pending_spills_bounded() {
+        let mut ring = OutputRing::new(4);
+        for i in 0..20 {
+            let art = DurableArtifactRef {
+                id: format!("art-{i}"),
+                byte_count: 1,
+            };
+            ring.record_spill(art);
+        }
+        assert!(ring.pending_spills.len() <= MAX_PTY_PENDING_SPILLS);
+    }
+
+    #[test]
     fn pty_agent_start_requires_approval() {
         let manager = PtySessionManager::new(test_seam());
         let err = manager
             .start(
+                Uuid::nil(),
                 "cat",
                 vec![],
                 std::env::temp_dir(),

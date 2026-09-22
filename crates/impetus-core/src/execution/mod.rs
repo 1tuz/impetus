@@ -17,12 +17,13 @@ pub use process::{
     ProcessExecutionRequest, ProcessOutput,
 };
 pub use pty::{
-    DEFAULT_PTY_READ_BYTES, MAX_PTY_RING_BYTES, PtyOutputChunk, PtySession, PtySessionError,
-    PtySessionId, PtySessionManager, PtySessionState,
+    DEFAULT_PTY_READ_BYTES, MAX_PTY_PENDING_SPILLS, MAX_PTY_RING_BYTES, PTY_SPILL_COALESCE_BYTES,
+    PtyOutputChunk, PtySession, PtySessionError, PtySessionId, PtySessionManager, PtySessionState,
+    resolve_pty_working_dir,
 };
 pub use sandbox::{
-    MacosSeatbeltSandbox, PreparedSandboxCommand, SandboxCommandRequest, SandboxDecision,
-    SandboxDecisionState, SandboxError, SandboxProvider, UnavailableSandboxProvider,
-    production_sandbox_provider,
+    MacosSeatbeltSandbox, PreparedPtySandbox, PreparedSandboxCommand, PtySandboxKeepAlive,
+    SandboxCommandRequest, SandboxDecision, SandboxDecisionState, SandboxError, SandboxProvider,
+    UnavailableSandboxProvider, prepare_pty_sandbox, production_sandbox_provider,
 };
 pub use storage::{PtySessionRecord, PtySessionStore, PtySessionStoreError, SqlitePtySessionStore};

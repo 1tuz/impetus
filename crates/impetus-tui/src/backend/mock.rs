@@ -729,6 +729,7 @@ impl UiBackend for MockBackend {
             .insert(pty_id, banner.into_bytes());
         Ok(impetus_client::PtySessionView {
             pty_id,
+            owner_session_id: _session_id,
             state: impetus_client::protocol::PtySessionState::Running { pid: 0 },
             command,
             cols: cols.unwrap_or(80),
@@ -736,7 +737,7 @@ impl UiBackend for MockBackend {
         })
     }
 
-    async fn pty_input(&self, pty_id: u64, data: &[u8]) -> Result<()> {
+    async fn pty_input(&self, _session_id: Uuid, pty_id: u64, data: &[u8]) -> Result<()> {
         let mut pending = self.inner.pty_pending.lock().await;
         let Some(buf) = pending.get_mut(&pty_id) else {
             return Err(anyhow!("unknown demo pty {pty_id}"));
@@ -748,6 +749,7 @@ impl UiBackend for MockBackend {
 
     async fn pty_output(
         &self,
+        _session_id: Uuid,
         pty_id: u64,
         max_bytes: Option<usize>,
     ) -> Result<impetus_client::PtyOutputView> {
@@ -766,7 +768,13 @@ impl UiBackend for MockBackend {
         })
     }
 
-    async fn pty_resize(&self, pty_id: u64, _cols: u16, _rows: u16) -> Result<()> {
+    async fn pty_resize(
+        &self,
+        _session_id: Uuid,
+        pty_id: u64,
+        _cols: u16,
+        _rows: u16,
+    ) -> Result<()> {
         let pending = self.inner.pty_pending.lock().await;
         if !pending.contains_key(&pty_id) {
             return Err(anyhow!("unknown demo pty {pty_id}"));
@@ -774,7 +782,7 @@ impl UiBackend for MockBackend {
         Ok(())
     }
 
-    async fn pty_detach(&self, pty_id: u64) -> Result<()> {
+    async fn pty_detach(&self, _session_id: Uuid, pty_id: u64) -> Result<()> {
         self.inner.pty_pending.lock().await.remove(&pty_id);
         Ok(())
     }

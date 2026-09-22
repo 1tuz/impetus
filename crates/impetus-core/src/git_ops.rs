@@ -208,31 +208,73 @@ pub fn git_status(cwd: &Path) -> Result<GitStatusSnapshot, GitOpsError> {
 
 pub fn list_changed_files(cwd: &Path) -> Result<Vec<GitChangedFile>, GitOpsError> {
     ensure_repo(cwd)?;
-    let out = git(cwd, &["status", "--porcelain=v1", "-uall"])?;
+    // NUL-separated porcelain v1: robust for spaces / unicode / " -> " in names.
+    let out = git(cwd, &["status", "--porcelain=v1", "-z", "-uall"])?;
+    Ok(parse_porcelain_z(&out))
+}
+
+/// Parse `git status --porcelain=v1 -z` output into changed files.
+fn parse_porcelain_z(raw: &str) -> Vec<GitChangedFile> {
+    let bytes = raw.as_bytes();
     let mut files = Vec::new();
-    for line in out.lines() {
-        if line.len() < 3 {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Skip empty records (leading/trailing NULs).
+        if bytes[i] == 0 {
+            i += 1;
             continue;
         }
-        let code = &line[..2];
-        let rest = line[3..].trim();
-        if rest.is_empty() {
-            continue;
+        if i + 3 > bytes.len() {
+            break;
         }
-        // Rename: "R  old -> new" / "RM old -> new"
-        let path = if let Some((from, to)) = rest.split_once(" -> ") {
-            let _ = from;
-            PathBuf::from(to)
+        let code = std::str::from_utf8(&bytes[i..i + 2]).unwrap_or("??");
+        // XY<space>path\0  OR  for rename/copy: XY<space>path\0orig\0 — actually
+        // with -z: "XY path\0" for normal; "XY\0old\0new\0" is wrong.
+        // Spec: entry is `XY PATH\0` or for rename/copy `XY ORIG_PATH\0PATH\0`
+        // where XY may be followed by space then first path until NUL.
+        let after_xy = i + 2;
+        let path_start = if after_xy < bytes.len() && bytes[after_xy] == b' ' {
+            after_xy + 1
         } else {
-            PathBuf::from(rest)
+            after_xy
+        };
+        let Some(first_nul) = bytes[path_start..].iter().position(|&b| b == 0) else {
+            break;
+        };
+        let first_end = path_start + first_nul;
+        let first = String::from_utf8_lossy(&bytes[path_start..first_end]).into_owned();
+        i = first_end + 1;
+
+        let kind = classify_porcelain(code);
+        let is_rename_or_copy = code
+            .as_bytes()
+            .first()
+            .is_some_and(|c| *c == b'R' || *c == b'C')
+            || code
+                .as_bytes()
+                .get(1)
+                .is_some_and(|c| *c == b'R' || *c == b'C');
+        let path = if is_rename_or_copy {
+            match bytes[i..].iter().position(|&b| b == 0) {
+                Some(second_nul) => {
+                    let second_end = i + second_nul;
+                    let second = String::from_utf8_lossy(&bytes[i..second_end]).into_owned();
+                    i = second_end + 1;
+                    let _ = first;
+                    PathBuf::from(second)
+                }
+                None => PathBuf::from(first),
+            }
+        } else {
+            PathBuf::from(first)
         };
         files.push(GitChangedFile {
             path,
-            kind: classify_porcelain(code),
+            kind,
             status_code: Some(code.to_string()),
         });
     }
-    Ok(files)
+    files
 }
 
 pub fn get_diff(cwd: &Path, base_ref: Option<&str>) -> Result<GitDiffPayload, GitOpsError> {
@@ -519,6 +561,21 @@ mod sentinel_git {
 
         let changed = list_changed_files(cwd).expect("changed");
         assert_eq!(changed.len(), 1);
+    }
+
+    #[test]
+    fn porcelain_z_handles_spaces_unicode_and_arrow_in_name() {
+        let raw = "?? weird name with spaces.txt\0?? file with -> arrow.txt\0?? юникод.txt\0R  old.txt\0new name.txt\0";
+        let files = parse_porcelain_z(raw);
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "weird name with spaces.txt"));
+        assert!(names.iter().any(|n| n == "file with -> arrow.txt"));
+        assert!(names.iter().any(|n| n == "юникод.txt"));
+        assert!(names.iter().any(|n| n == "new name.txt"));
+        assert!(!names.iter().any(|n| n == "old.txt"));
     }
 
     #[test]

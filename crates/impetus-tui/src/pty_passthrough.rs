@@ -165,10 +165,10 @@ async fn run_attached(
 
     write_banner(pty_id)?;
 
-    let end = match drive_io(backend, pty_id).await {
+    let end = match drive_io(backend, session_id, pty_id).await {
         Ok(end) => end,
         Err(error) => {
-            let _ = backend.pty_detach(pty_id).await;
+            let _ = backend.pty_detach(session_id, pty_id).await;
             PassthroughEnd::Failed {
                 pty_id: Some(pty_id),
                 message: error.to_string(),
@@ -181,11 +181,15 @@ async fn run_attached(
     Ok(end)
 }
 
-async fn drive_io(backend: &dyn UiBackend, pty_id: u64) -> Result<PassthroughEnd> {
+async fn drive_io(
+    backend: &dyn UiBackend,
+    session_id: Uuid,
+    pty_id: u64,
+) -> Result<PassthroughEnd> {
     let mut out = stdout();
     loop {
         let chunk = backend
-            .pty_output(pty_id, Some(16 * 1024))
+            .pty_output(session_id, pty_id, Some(16 * 1024))
             .await
             .context("PtyOutput")?;
         if !chunk.data.is_empty() {
@@ -207,7 +211,10 @@ async fn drive_io(backend: &dyn UiBackend, pty_id: u64) -> Result<PassthroughEnd
             }
             match read().context("read terminal input")? {
                 TerminalEvent::Key(key) if is_detach_key(key) => {
-                    backend.pty_detach(pty_id).await.context("PtyDetach")?;
+                    backend
+                        .pty_detach(session_id, pty_id)
+                        .await
+                        .context("PtyDetach")?;
                     let _ = writeln!(out, "\r\n[impetus] detached PTY {pty_id} ({DETACH_HINT})");
                     let _ = out.flush();
                     return Ok(PassthroughEnd::Detached { pty_id });
@@ -215,20 +222,20 @@ async fn drive_io(backend: &dyn UiBackend, pty_id: u64) -> Result<PassthroughEnd
                 TerminalEvent::Key(key) => {
                     if let Some(bytes) = encode_key(key) {
                         backend
-                            .pty_input(pty_id, &bytes)
+                            .pty_input(session_id, pty_id, &bytes)
                             .await
                             .context("PtyInput")?;
                     }
                 }
                 TerminalEvent::Paste(text) => {
                     backend
-                        .pty_input(pty_id, text.as_bytes())
+                        .pty_input(session_id, pty_id, text.as_bytes())
                         .await
                         .context("PtyInput paste")?;
                 }
                 TerminalEvent::Resize(cols, rows) => {
                     backend
-                        .pty_resize(pty_id, cols.max(1), rows.max(1))
+                        .pty_resize(session_id, pty_id, cols.max(1), rows.max(1))
                         .await
                         .context("PtyResize")?;
                 }
