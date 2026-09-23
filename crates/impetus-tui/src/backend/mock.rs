@@ -247,6 +247,7 @@ impl MockBackend {
                         affected_files: vec!["crates/impetus/src/tui.rs".to_owned()],
                         estimated_scope: Some("Lines(2)".to_owned()),
                         attachment_refs: vec![],
+                        attachments: vec![],
                     },
                 );
                 let approval = ApprovalCard {
@@ -512,6 +513,17 @@ impl UiBackend for MockBackend {
             .get(&approval_id)
             .cloned()
             .ok_or_else(|| anyhow!("approval detail not found"))
+    }
+
+    async fn get_attachment(
+        &self,
+        _session_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<(String, Vec<u8>)> {
+        Ok((
+            "text/plain".into(),
+            format!("demo attachment {attachment_id}").into_bytes(),
+        ))
     }
 
     async fn diagnostics(&self) -> Result<String> {

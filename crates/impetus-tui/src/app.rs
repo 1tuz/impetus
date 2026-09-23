@@ -458,6 +458,7 @@ mod tests {
                     affected_files: vec!["crates/impetus-tui/src/app.rs".to_owned()],
                     estimated_scope: Some("Lines(2)".to_owned()),
                     attachment_refs: vec![],
+                    attachments: vec![],
                 }),
             },
         );

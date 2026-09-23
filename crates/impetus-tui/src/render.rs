@@ -1623,9 +1623,26 @@ fn render_approval_detail(frame: &mut Frame, app: &AppState, theme: Theme) {
                 Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
             )));
             for attachment in &detail.attachment_refs {
+                let fetched = detail
+                    .attachments
+                    .iter()
+                    .find(|body| body.id == *attachment);
+                let label = match fetched {
+                    Some(body) => {
+                        let preview = String::from_utf8_lossy(&body.content);
+                        let preview = preview.lines().next().unwrap_or("").trim();
+                        if preview.is_empty() {
+                            format!("{attachment} ({})", body.content_type)
+                        } else {
+                            let clipped: String = preview.chars().take(72).collect();
+                            format!("{attachment} · {clipped}")
+                        }
+                    }
+                    None => attachment.to_string(),
+                };
                 lines.push(Line::from(vec![
                     Span::styled("  • ", Style::default().fg(theme.border)),
-                    Span::styled(attachment.to_string(), Style::default().fg(theme.text)),
+                    Span::styled(label, Style::default().fg(theme.text)),
                 ]));
             }
             lines.push(Line::from(""));

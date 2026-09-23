@@ -197,6 +197,10 @@ pub enum IpcRequest {
         approval_id: Uuid,
         accepted: bool,
     },
+    /// Fetch an ephemeral approval/diff attachment bound to `session_id`.
+    ///
+    /// Foreign sessions are denied; missing or TTL-expired attachments return a
+    /// deterministic harness error (`Unavailable`).
     GetAttachment {
         session_id: Uuid,
         attachment_id: Uuid,
@@ -597,6 +601,7 @@ pub enum IpcResponse {
         session_id: Uuid,
         approval_id: Uuid,
     },
+    /// Ephemeral attachment bytes for the owning `session_id` only.
     Attachment {
         session_id: Uuid,
         attachment_id: Uuid,

@@ -36,7 +36,6 @@ Actionable after Now. Not priority theatre.
 
 ### Daemon / protocol
 
-- [ ] AttachmentStore: bind `GetAttachment` to session; TUI fetch path
 - [ ] Child mid-run action stream (progress / tool detail on parent log)
 - [ ] ACP live reconnect polish after cancel/crash (stream/registry/health/#335 landed)
 

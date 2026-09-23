@@ -956,6 +956,32 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Read an ephemeral approval/diff attachment bound to `session_id`.
+    ///
+    /// Returns `(content_type, bytes)`. Foreign session / missing / expired map
+    /// to harness `Unavailable` errors.
+    async fn get_attachment(
+        &self,
+        session_id: uuid::Uuid,
+        attachment_id: uuid::Uuid,
+    ) -> Result<(String, Vec<u8>)> {
+        match self
+            .request(IpcRequest::GetAttachment {
+                session_id,
+                attachment_id,
+            })
+            .await?
+        {
+            IpcResponse::Attachment {
+                content_type,
+                content,
+                ..
+            } => Ok((content_type, content)),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Fetch durable artifact metadata (size, sha256, optional content_type).
     async fn get_artifact_metadata(
         &self,

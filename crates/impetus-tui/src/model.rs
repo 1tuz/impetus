@@ -318,6 +318,16 @@ pub struct ApprovalDetailView {
     pub affected_files: Vec<String>,
     pub estimated_scope: Option<String>,
     pub attachment_refs: Vec<Uuid>,
+    /// Bodies fetched via `GetAttachment` with the owning session id.
+    pub attachments: Vec<FetchedAttachment>,
+}
+
+/// Session-bound ephemeral attachment fetched for the approval detail panel.
+#[derive(Clone, Debug)]
+pub struct FetchedAttachment {
+    pub id: Uuid,
+    pub content_type: String,
+    pub content: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
