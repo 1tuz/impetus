@@ -22,6 +22,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+use crate::redact::{StreamExportAudit, redact_json, redact_text};
 use crate::session_config::{
     SessionLaunchOptions, advertised_model_ids, advertised_thought_levels, plan_config_option_sets,
 };
@@ -71,14 +72,23 @@ pub fn permission_outcome(decision: PermissionDecision) -> RequestPermissionOutc
 /// Streaming update from agent.
 #[derive(Debug, Clone)]
 pub enum StreamUpdate {
-    /// Text chunk
+    /// Text chunk (already scrubbed of control chars).
     Text(String),
-    /// Tool use update
-    ToolUse { tool_name: String, status: String },
-    /// Status change
+    /// Tool use — arguments are redacted for durable harness / ToolOrchestrator.
+    ToolUse {
+        tool_call_id: String,
+        tool_name: String,
+        status: String,
+        kind: String,
+        arguments: serde_json::Value,
+    },
+    /// Status change (tool progress / session info labels).
     Status(String),
-    /// Session completed
+    /// Session completed with an explicit ACP stop_reason.
     Completed { stop_reason: StopReason },
+    /// Transport/agent ended without a definitive stop_reason (disconnect/crash).
+    /// Must never be mapped to harness `Completed`.
+    Interrupted { reason: String },
     /// Error occurred
     Error(String),
 }
@@ -211,6 +221,11 @@ impl AcpGatewayV2 {
     /// Get current state.
     pub async fn state(&self) -> GatewayState {
         *self.state.lock().await
+    }
+
+    /// Non-async peek for sync health/doctor paths. Returns None if lock busy.
+    pub fn state_blocking(&self) -> Result<GatewayState, tokio::sync::TryLockError> {
+        self.state.try_lock().map(|g| *g)
     }
 
     /// Start agent and run session with optional model/reasoning ACP config writes.
@@ -434,6 +449,10 @@ impl AcpGatewayV2 {
             ) {
                 *self.state.lock().await = GatewayState::Crashed;
             }
+            // Honest disconnect: never imply Completed when the agent died mid-turn.
+            let _ = self.update_tx.send(StreamUpdate::Interrupted {
+                reason: format!("acp session ended without stop_reason: {error:#}"),
+            });
             return Err(error);
         }
 
@@ -488,6 +507,44 @@ impl AcpGatewayV2 {
         self.permission_rx.lock().await.recv().await
     }
 
+    /// Redacted export-audit row for a stream update (CI / doctor / export).
+    pub fn audit_update(update: &StreamUpdate) -> StreamExportAudit {
+        match update {
+            StreamUpdate::Text(text) => {
+                let scrubbed = redact_text(text);
+                StreamExportAudit::Text {
+                    chars: scrubbed.chars().count(),
+                    redacted: scrubbed != *text,
+                }
+            }
+            StreamUpdate::ToolUse {
+                tool_call_id,
+                tool_name,
+                status,
+                kind,
+                arguments,
+            } => StreamExportAudit::ToolUse {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                status: status.clone(),
+                kind: kind.clone(),
+                arguments: redact_json(arguments),
+            },
+            StreamUpdate::Status(label) => StreamExportAudit::Status {
+                label: redact_text(label),
+            },
+            StreamUpdate::Completed { stop_reason } => StreamExportAudit::Completed {
+                stop_reason: format!("{stop_reason:?}"),
+            },
+            StreamUpdate::Interrupted { reason } => StreamExportAudit::Interrupted {
+                reason: redact_text(reason),
+            },
+            StreamUpdate::Error(message) => StreamExportAudit::Error {
+                message: redact_text(message),
+            },
+        }
+    }
+
     async fn handle_session_notification(
         notification: SessionNotification,
         update_tx: mpsc::UnboundedSender<StreamUpdate>,
@@ -508,27 +565,72 @@ impl AcpGatewayV2 {
             SessionUpdate::AgentThoughtChunk(chunk) => {
                 debug!("Agent thought chunk");
                 if let ContentBlock::Text(text) = &chunk.content {
-                    let _ = update_tx.send(StreamUpdate::Text(format!("[thought] {}", text.text)));
+                    // Summary label only — never dump hidden CoT into tool args.
+                    let scrubbed = redact_text(&text.text);
+                    let _ = update_tx.send(StreamUpdate::Status(format!(
+                        "thought: {}",
+                        truncate_label(&scrubbed, 160)
+                    )));
                 }
             }
             SessionUpdate::ToolCall(tool_call) => {
                 debug!("Tool call: {:?}", tool_call.title);
+                let arguments = tool_call
+                    .raw_input
+                    .as_ref()
+                    .map(redact_json)
+                    .unwrap_or(serde_json::Value::Null);
                 let _ = update_tx.send(StreamUpdate::ToolUse {
-                    tool_name: tool_call.title.clone(),
-                    status: "started".into(),
+                    tool_call_id: tool_call.tool_call_id.0.to_string(),
+                    tool_name: sanitize_label(&tool_call.title),
+                    status: format!("{:?}", tool_call.status).to_ascii_lowercase(),
+                    kind: format!("{:?}", tool_call.kind).to_ascii_lowercase(),
+                    arguments,
                 });
             }
             SessionUpdate::ToolCallUpdate(tool_update) => {
                 debug!("Tool call update: {:?}", tool_update.tool_call_id);
-                if let Some(status) = &tool_update.fields.status {
-                    let _ = update_tx.send(StreamUpdate::Status(format!("Tool: {:?}", status)));
-                }
+                let status = tool_update
+                    .fields
+                    .status
+                    .map(|s| format!("{s:?}").to_ascii_lowercase())
+                    .unwrap_or_else(|| "updated".into());
+                let tool_name = tool_update
+                    .fields
+                    .title
+                    .as_deref()
+                    .map(sanitize_label)
+                    .unwrap_or_else(|| "tool".into());
+                let kind = tool_update
+                    .fields
+                    .kind
+                    .map(|k| format!("{k:?}").to_ascii_lowercase())
+                    .unwrap_or_else(|| "other".into());
+                let arguments = tool_update
+                    .fields
+                    .raw_input
+                    .as_ref()
+                    .map(redact_json)
+                    .unwrap_or(serde_json::Value::Null);
+                let _ = update_tx.send(StreamUpdate::ToolUse {
+                    tool_call_id: tool_update.tool_call_id.0.to_string(),
+                    tool_name,
+                    status: status.clone(),
+                    kind,
+                    arguments,
+                });
+                let _ = update_tx.send(StreamUpdate::Status(format!(
+                    "tool {} → {}",
+                    tool_update.tool_call_id.0, status
+                )));
             }
             SessionUpdate::UsageUpdate(usage) => {
                 debug!("Usage update: {:?}", usage);
+                let _ = update_tx.send(StreamUpdate::Status("usage".into()));
             }
             SessionUpdate::SessionInfoUpdate(info) => {
                 debug!("Session info update: {:?}", info);
+                let _ = update_tx.send(StreamUpdate::Status("session_info".into()));
             }
             _ => {
                 debug!("Other session update: {:?}", notification.update);
@@ -641,11 +743,17 @@ fn permission_choice_kind(kind: SdkPermissionOptionKind) -> PermissionChoiceKind
 }
 
 fn sanitize_label(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(160)
-        .collect()
+    truncate_label(
+        &value
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>(),
+        160,
+    )
+}
+
+fn truncate_label(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
 }
 
 fn select_auth_method(

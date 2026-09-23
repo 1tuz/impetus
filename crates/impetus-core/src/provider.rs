@@ -229,6 +229,9 @@ pub enum ProviderError {
     MissingCredential,
     #[error("provider request cancelled")]
     Cancelled,
+    /// Stream ended without a definitive completion — never map to harness Completed.
+    #[error("provider interrupted with unknown outcome: {0}")]
+    InterruptedUnknown(String),
     #[error("provider request failed: {0}")]
     RequestFailed(String),
     #[error("provider returned malformed stream")]
