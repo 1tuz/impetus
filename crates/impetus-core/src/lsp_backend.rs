@@ -1,13 +1,17 @@
-//! Optional real LSP backend spawn seam (rust-analyzer / clangd / …) (#282).
+//! Optional LSP backend identity seam (rust-analyzer / clangd / …) (#282 / #336).
 //!
 //! Harness talks through existing [`CodingToolsProvider`] / [`CodingToolsService`]:
-//! definition / references / diagnostics / symbols / hover. Concrete LSP process
-//! spawn stays **out of core** — no rust-analyzer / clangd crates as required
-//! deps, and **no compile-time LSP binary path**. Runtime may carry an optional
-//! path label for a future adapter; this seam never launches an LSP process.
+//! definition / references / diagnostics / symbols / hover / cancel. This module
+//! is the **identity + launch-hint** slot only — no rust-analyzer / clangd crates
+//! as required deps, and **no compile-time LSP binary path**. It never launches
+//! an LSP process (see [`crate::ProcessLspBackend`] for generic stdio client).
+//!
+//! Extension-first (#336): concrete language packs belong under extension
+//! `LspIntegration` (+ permission `lsp`). Browser CDP/WebDriver stays
+//! `BrowserIntegration` / Parked — not this seam.
 //!
 //! Out of scope: full LSP protocol completeness, multi-language installers,
-//! TUI IDE UI (#283 vendor-parity docs).
+//! TUI IDE UI (#283 vendor-parity docs), CDP/WebDriver.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

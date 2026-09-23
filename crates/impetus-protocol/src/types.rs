@@ -733,6 +733,57 @@ pub struct HoverInfo {
     pub range: Option<SourceRange>,
 }
 
+/// Diagnostic severity (labels only; coding-tools IPC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+/// One diagnostic for a path/range (coding-tools IPC; no secrets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingDiagnostic {
+    pub path: PathBuf,
+    pub range: SourceRange,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// Symbol kind (coarse; not full LSP enum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolKind {
+    File,
+    Module,
+    Namespace,
+    Class,
+    Method,
+    Function,
+    Variable,
+    Constant,
+    Field,
+    Enum,
+    Interface,
+    Struct,
+    TypeParameter,
+    Other,
+}
+
+/// Document / workspace symbol entry (coding-tools IPC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub location: SourceLocation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubsystemHealth {
     pub event_store: SubsystemStatus,

@@ -279,11 +279,13 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     Ok(harness)
 }
 
-/// Attach ProcessLspBackend when a runtime binary is discoverable.
+/// Attach ProcessLspBackend when a runtime binary is discoverable (#336).
 ///
 /// Discovery order: `IMPETUS_LSP_BINARY`, then `rust-analyzer` on `PATH`.
-/// Missing binary → leave Absent (Goto/Hover stay Unavailable — honest).
-/// Never prompts for install privileges; userspace PATH only.
+/// Missing binary → leave Absent (coding IPC stays Unavailable — honest).
+/// Generic stdio client only — concrete language packs / Browser CDP stay
+/// extension-first (`LspIntegration` / `BrowserIntegration`). Never prompts
+/// for install privileges; userspace PATH only.
 fn wire_daemon_coding_tools(harness: Harness) -> Harness {
     let Some(binary) = discover_lsp_binary() else {
         return harness;
@@ -629,6 +631,9 @@ fn required_capability(request: &IpcRequest) -> &'static str {
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
         IpcRequest::Hover { .. } => "coding_hover",
+        IpcRequest::CodingDiagnostics { .. } => "coding_diagnostics",
+        IpcRequest::CodingSymbols { .. } => "coding_symbols",
+        IpcRequest::CancelCodingRequest { .. } => "coding_cancel",
         IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
             "execution_mode"
         }

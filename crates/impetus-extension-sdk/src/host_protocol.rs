@@ -16,6 +16,25 @@ pub const METHOD_SHUTDOWN: &str = "extension/shutdown";
 /// Liveness probe (optional for children).
 pub const METHOD_PING: &str = "extension/ping";
 
+// --- Coding / Browser capability dispatch (extension-first; #336) ---
+// Core owns contracts + IPC + host dispatch tokens. Concrete Browser CDP /
+// WebDriver and language-pack installers live in extensions, not core.
+
+/// Extension `LspIntegration`: go-to-definition.
+pub const METHOD_CODING_DEFINITION: &str = "coding/definition";
+/// Extension `LspIntegration`: hover.
+pub const METHOD_CODING_HOVER: &str = "coding/hover";
+/// Extension `LspIntegration`: diagnostics pull / last push.
+pub const METHOD_CODING_DIAGNOSTICS: &str = "coding/diagnostics";
+/// Extension `LspIntegration`: document symbols.
+pub const METHOD_CODING_SYMBOLS: &str = "coding/symbols";
+/// Extension `LspIntegration`: cancel in-flight request.
+pub const METHOD_CODING_CANCEL: &str = "coding/cancel";
+/// Extension `BrowserIntegration`: negotiate (Absent until CDP land).
+pub const METHOD_BROWSER_NEGOTIATE: &str = "browser/negotiate";
+/// Extension `BrowserIntegration`: health (Absent until CDP land).
+pub const METHOD_BROWSER_HEALTH: &str = "browser/health";
+
 /// `extension/initialize` params.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InitializeParams {
@@ -90,5 +109,16 @@ mod tests {
         let back: JsonRpcRequest<InitializeParams> = serde_json::from_str(&line).unwrap();
         assert_eq!(back.method, METHOD_INITIALIZE);
         assert_eq!(back.params.unwrap().protocol_version, 1);
+    }
+
+    #[test]
+    fn coding_and_browser_dispatch_tokens_stable() {
+        assert_eq!(METHOD_CODING_DEFINITION, "coding/definition");
+        assert_eq!(METHOD_CODING_HOVER, "coding/hover");
+        assert_eq!(METHOD_CODING_DIAGNOSTICS, "coding/diagnostics");
+        assert_eq!(METHOD_CODING_SYMBOLS, "coding/symbols");
+        assert_eq!(METHOD_CODING_CANCEL, "coding/cancel");
+        assert_eq!(METHOD_BROWSER_NEGOTIATE, "browser/negotiate");
+        assert_eq!(METHOD_BROWSER_HEALTH, "browser/health");
     }
 }

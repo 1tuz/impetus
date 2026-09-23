@@ -1,5 +1,12 @@
-//! Minimal JSON-RPC LSP stdio client for optional real process spawn (#282 / #311).
+//! Minimal JSON-RPC LSP stdio client — generic process infrastructure (#282 / #311 / #336).
+//!
+//! Extension-first (#336): this is **not** a concrete language pack. Core owns
+//! spawn / handshake / crash-respawn / `$/cancelRequest` / pull surfaces that
+//! already exist on [`CodingToolsProvider`]. Language-specific installers and
+//! Browser CDP/WebDriver stay in extensions (`LspIntegration` /
+//! `BrowserIntegration`).
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -10,8 +17,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::coding_tools::{
-    CodingDiagnostic, CodingToolsError, CodingToolsProvider, DocumentSymbol, HoverInfo,
-    PositionQuery, SourceLocation, SourceRange,
+    CodingDiagnostic, CodingToolsError, CodingToolsProvider, DiagnosticSeverity, DocumentSymbol,
+    HoverInfo, PositionQuery, SourceLocation, SourceRange, SymbolKind,
 };
 use crate::lsp_backend::{
     LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
@@ -23,6 +30,8 @@ pub struct ProcessLspBackend {
     family: LspBackendFamily,
     launch: LspBackendLaunchHint,
     session: Mutex<Option<LspSession>>,
+    /// Last diagnostics pushed via `textDocument/publishDiagnostics`.
+    diagnostics_cache: Mutex<HashMap<PathBuf, Vec<CodingDiagnostic>>>,
 }
 
 struct LspSession {
@@ -38,6 +47,7 @@ impl ProcessLspBackend {
             family: module.family(),
             launch: module.launch_hint().clone(),
             session: Mutex::new(None),
+            diagnostics_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -46,6 +56,65 @@ impl ProcessLspBackend {
             family: LspBackendFamily::RustAnalyzer,
             launch,
             session: Mutex::new(None),
+            diagnostics_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn ingest_notification(&self, msg: &Value) {
+        let Some(method) = msg.get("method").and_then(|m| m.as_str()) else {
+            return;
+        };
+        if method != "textDocument/publishDiagnostics" {
+            return;
+        }
+        let Some(params) = msg.get("params") else {
+            return;
+        };
+        let Some(uri) = params.get("uri").and_then(|u| u.as_str()) else {
+            return;
+        };
+        let path = PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri));
+        let items = params
+            .get("diagnostics")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let parsed: Vec<CodingDiagnostic> = items
+            .into_iter()
+            .filter_map(|item| {
+                let range = item.get("range")?;
+                let start = range.get("start")?;
+                let end = range.get("end")?;
+                let severity = match item.get("severity").and_then(|s| s.as_u64()).unwrap_or(1) {
+                    1 => DiagnosticSeverity::Error,
+                    2 => DiagnosticSeverity::Warning,
+                    3 => DiagnosticSeverity::Information,
+                    _ => DiagnosticSeverity::Hint,
+                };
+                Some(CodingDiagnostic {
+                    path: path.clone(),
+                    range: SourceRange::new(
+                        start.get("line")?.as_u64()? as u32,
+                        start.get("character")?.as_u64()? as u32,
+                        end.get("line")?.as_u64()? as u32,
+                        end.get("character")?.as_u64()? as u32,
+                    ),
+                    severity,
+                    message: item
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    code: item.get("code").and_then(|c| {
+                        c.as_str()
+                            .map(str::to_string)
+                            .or_else(|| c.as_i64().map(|n| n.to_string()))
+                    }),
+                })
+            })
+            .collect();
+        if let Ok(mut cache) = self.diagnostics_cache.lock() {
+            cache.insert(path, parsed);
         }
     }
 
@@ -195,7 +264,15 @@ impl LspSession {
             .map_err(|e| CodingToolsError::Unavailable(format!("lsp json: {e}")))
     }
 
-    fn request(&mut self, method: &str, params: Value) -> Result<Value, CodingToolsError> {
+    fn request_with_notify<F>(
+        &mut self,
+        method: &str,
+        params: Value,
+        mut on_notify: F,
+    ) -> Result<Value, CodingToolsError>
+    where
+        F: FnMut(&Value),
+    {
         let id = self.next_id;
         self.next_id += 1;
         self.write_message(&json!({
@@ -204,10 +281,14 @@ impl LspSession {
             "method": method,
             "params": params
         }))?;
-        // Drain until matching id (skip notifications).
+        // Drain until matching id; surface notifications (e.g. publishDiagnostics).
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             let msg = self.read_message()?;
+            if msg.get("method").is_some() && msg.get("id").is_none() {
+                on_notify(&msg);
+                continue;
+            }
             if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
                 if let Some(err) = msg.get("error") {
                     return Err(CodingToolsError::Unavailable(format!("lsp error: {err}")));
@@ -216,6 +297,10 @@ impl LspSession {
             }
         }
         Err(CodingToolsError::Unavailable("lsp request timeout".into()))
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, CodingToolsError> {
+        self.request_with_notify(method, params, |_| {})
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<(), CodingToolsError> {
@@ -272,18 +357,77 @@ fn locations_from_lsp(value: &Value) -> Vec<SourceLocation> {
         .collect()
 }
 
+fn lsp_request(
+    backend: &ProcessLspBackend,
+    method: &str,
+    params: Value,
+) -> Result<Value, CodingToolsError> {
+    backend.ensure_session()?;
+    let mut guard = backend.session.lock().expect("lsp session");
+    let session = guard
+        .as_mut()
+        .ok_or_else(|| CodingToolsError::Unavailable(LSP_BACKEND_NOT_IMPLEMENTED.into()))?;
+    session.request_with_notify(method, params, |msg| backend.ingest_notification(msg))
+}
+
+fn symbols_from_lsp(path: &Path, value: &Value) -> Vec<DocumentSymbol> {
+    let items = value.as_array().cloned().unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?.to_string();
+            let kind = match item.get("kind").and_then(|k| k.as_u64()).unwrap_or(0) {
+                1 => SymbolKind::File,
+                2 => SymbolKind::Module,
+                3 => SymbolKind::Namespace,
+                5 => SymbolKind::Class,
+                6 => SymbolKind::Method,
+                12 => SymbolKind::Function,
+                13 => SymbolKind::Variable,
+                14 => SymbolKind::Constant,
+                8 => SymbolKind::Field,
+                10 => SymbolKind::Enum,
+                11 => SymbolKind::Interface,
+                23 => SymbolKind::Struct,
+                26 => SymbolKind::TypeParameter,
+                _ => SymbolKind::Other,
+            };
+            let range = item
+                .get("location")
+                .and_then(|l| l.get("range"))
+                .or_else(|| item.get("range"))
+                .or_else(|| item.get("selectionRange"))?;
+            let start = range.get("start")?;
+            let end = range.get("end")?;
+            Some(DocumentSymbol {
+                name,
+                kind,
+                location: SourceLocation::new(
+                    path,
+                    SourceRange::new(
+                        start.get("line")?.as_u64()? as u32,
+                        start.get("character")?.as_u64()? as u32,
+                        end.get("line")?.as_u64()? as u32,
+                        end.get("character")?.as_u64()? as u32,
+                    ),
+                ),
+                container_name: item
+                    .get("containerName")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
 #[async_trait]
 impl CodingToolsProvider for ProcessLspBackend {
     async fn definition(
         &self,
         query: &PositionQuery,
     ) -> Result<Vec<SourceLocation>, CodingToolsError> {
-        self.ensure_session()?;
-        let mut guard = self.session.lock().expect("lsp session");
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| CodingToolsError::Unavailable(LSP_BACKEND_NOT_IMPLEMENTED.into()))?;
-        let result = session.request(
+        let result = lsp_request(
+            self,
             "textDocument/definition",
             json!({
                 "textDocument": { "uri": path_to_uri(&query.path) },
@@ -300,12 +444,8 @@ impl CodingToolsProvider for ProcessLspBackend {
         &self,
         query: &PositionQuery,
     ) -> Result<Vec<SourceLocation>, CodingToolsError> {
-        self.ensure_session()?;
-        let mut guard = self.session.lock().expect("lsp session");
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| CodingToolsError::Unavailable(LSP_BACKEND_NOT_IMPLEMENTED.into()))?;
-        let result = session.request(
+        let result = lsp_request(
+            self,
             "textDocument/references",
             json!({
                 "textDocument": { "uri": path_to_uri(&query.path) },
@@ -319,25 +459,28 @@ impl CodingToolsProvider for ProcessLspBackend {
         Ok(locations_from_lsp(&result))
     }
 
-    async fn diagnostics(&self, _path: &Path) -> Result<Vec<CodingDiagnostic>, CodingToolsError> {
-        Err(CodingToolsError::Unavailable(
-            "LSP diagnostics push-only in this slice".into(),
-        ))
+    async fn diagnostics(&self, path: &Path) -> Result<Vec<CodingDiagnostic>, CodingToolsError> {
+        // Ensure session so any pending publishDiagnostics can land on later requests;
+        // pull returns last cached push for this path (empty = none yet — honest).
+        let _ = self.ensure_session();
+        let cache = self.diagnostics_cache.lock().expect("diagnostics cache");
+        Ok(cache.get(path).cloned().unwrap_or_default())
     }
 
-    async fn symbols(&self, _path: &Path) -> Result<Vec<DocumentSymbol>, CodingToolsError> {
-        Err(CodingToolsError::Unavailable(
-            "LSP documentSymbol not wired in this slice".into(),
-        ))
+    async fn symbols(&self, path: &Path) -> Result<Vec<DocumentSymbol>, CodingToolsError> {
+        let result = lsp_request(
+            self,
+            "textDocument/documentSymbol",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) }
+            }),
+        )?;
+        Ok(symbols_from_lsp(path, &result))
     }
 
     async fn hover(&self, query: &PositionQuery) -> Result<Option<HoverInfo>, CodingToolsError> {
-        self.ensure_session()?;
-        let mut guard = self.session.lock().expect("lsp session");
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| CodingToolsError::Unavailable(LSP_BACKEND_NOT_IMPLEMENTED.into()))?;
-        let result = session.request(
+        let result = lsp_request(
+            self,
             "textDocument/hover",
             json!({
                 "textDocument": { "uri": path_to_uri(&query.path) },
@@ -374,6 +517,16 @@ impl CodingToolsProvider for ProcessLspBackend {
             contents,
             range: None,
         }))
+    }
+
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError> {
+        self.ensure_session()?;
+        let mut guard = self.session.lock().expect("lsp session");
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| CodingToolsError::Unavailable(LSP_BACKEND_NOT_IMPLEMENTED.into()))?;
+        session.notify("$/cancelRequest", json!({ "id": request_id }))?;
+        Ok(())
     }
 }
 
@@ -478,5 +631,47 @@ exit 0
             backend.ensure_session().is_ok(),
             "respawn after crash must succeed"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_request_sends_dollar_cancel_when_session_live() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("fake-lsp-cancel.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+while true; do
+  IFS= read -r line || exit 0
+  case "$line" in
+    Content-Length:*)
+      len=${line#Content-Length: }
+      len=$(echo "$len" | tr -d '\r')
+      IFS= read -r _
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      if echo "$body" | grep -q '"method":"initialize"'; then
+        id=$(echo "$body" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+        resp="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}"
+        printf "Content-Length: %s\r\n\r\n%s" "${#resp}" "$resp"
+      fi
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let backend =
+            ProcessLspBackend::rust_analyzer(LspBackendLaunchHint::with_runtime_binary(script));
+        assert!(backend.handshake().ready);
+        backend
+            .cancel_request(99)
+            .await
+            .expect("cancel should notify live session");
     }
 }
