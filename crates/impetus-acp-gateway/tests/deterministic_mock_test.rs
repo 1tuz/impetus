@@ -85,19 +85,39 @@ async fn stream_update_types_are_constructible() {
     // Validate all StreamUpdate variants
     let text = StreamUpdate::Text("hello".into());
     let tool_use = StreamUpdate::ToolUse {
+        tool_call_id: "tc-1".into(),
         tool_name: "bash".into(),
-        status: "running".into(),
+        status: "inprogress".into(),
+        kind: "execute".into(),
+        arguments: serde_json::json!({"cmd": "ls"}),
     };
     let status = StreamUpdate::Status("thinking".into());
-    // Note: StopReason variants depend on agent-client-protocol version
-    // let completed = StreamUpdate::Completed {
-    //     stop_reason: StopReason::Complete,
-    // };
+    let interrupted = StreamUpdate::Interrupted {
+        reason: "disconnect".into(),
+    };
     let error = StreamUpdate::Error("test error".into());
 
-    // All variants constructible
     assert!(matches!(text, StreamUpdate::Text(_)));
     assert!(matches!(tool_use, StreamUpdate::ToolUse { .. }));
     assert!(matches!(status, StreamUpdate::Status(_)));
+    assert!(matches!(interrupted, StreamUpdate::Interrupted { .. }));
     assert!(matches!(error, StreamUpdate::Error(_)));
+}
+
+#[tokio::test]
+async fn export_audit_redacts_tool_arguments() {
+    let update = StreamUpdate::ToolUse {
+        tool_call_id: "tc-1".into(),
+        tool_name: "fetch".into(),
+        status: "pending".into(),
+        kind: "fetch".into(),
+        arguments: serde_json::json!({
+            "url": "https://example.com",
+            "api_key": "sk-secret-value"
+        }),
+    };
+    let audit = AcpGatewayV2::audit_update(&update);
+    let encoded = serde_json::to_string(&audit).expect("encode");
+    assert!(!encoded.contains("sk-secret-value"));
+    assert!(encoded.contains("[REDACTED]") || encoded.contains("REDACTED"));
 }

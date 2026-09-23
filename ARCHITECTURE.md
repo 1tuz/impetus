@@ -188,7 +188,7 @@ impetusd  — authoritative daemon
 | MemoryStore (contextual knowledge) | Implemented | Daemon control-plane IPC List/Get/Append/Clear/Export + JSONL under `$IMPETUS_DATA_DIR/memory/` (`memory` / `memory_manage`). AgentLoop Prompt/FollowUp/approval-resume injects project-scoped session entries as a bounded system context block (`SessionMemoryRuntime::prompt_context_block` → `inject_memory_context`); empty store = no-op. |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
 | Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`; remaining gaps = broader validate-on-wire coverage |
-| ACP as ModelProvider backend | Partial | `--acp-profile` + gateway V2 + `AcpAdapter`; model/reasoning via ACP `session/set_config_option` before `session/prompt` (SDK mock integration test) (#322). `NeedsApproval` → durable approval IPC (`wait_approval_resolution`). Remaining: tool-use orchestration completeness (#66). |
+| ACP as ModelProvider backend | Implemented | `--acp-profile` + gateway V2 + `AcpAdapter`; tool/status → `StreamEvent`; disconnect → `InterruptedUnknown` (never false `Completed`); registry/health/redaction (#335 / #66). Live smoke Partial. |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste + filesystem attach (`/attach` · `Ctrl+Shift+A`), streaming; Prompt/Steer/FollowUp; execution modes; **model picker** F8/`/model` via `ListProviders`/`SetSessionModel` (Provider→Model→Reasoning→catalog options; unavailable disabled; restore after reconnect; options local until #328) (#337); `/children`; Files `Ctrl+F`; git branch `Ctrl+B`; Review F6/`Ctrl+R`/`/review`; Activity fold; PTY `Ctrl+\` passthrough; fork `/fork`+`Ctrl+Shift+K` / checkpoints F7/`/checkpoint` / workspace path prompt on `/new` (#311/#315). Remaining: sequence picker polish. |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR CI critical security E2E suite | Partial | Path-aware PR: macOS clippy/`--lib --bins`; Linux fmt + `cargo check`; heavy `crates/*/tests/` = local/`task verify` |
@@ -487,13 +487,14 @@ impetusd --acp-profile PATH
 Pointers:
 
 - Crate: [`crates/impetus-acp-gateway`](crates/impetus-acp-gateway/)
-  (`gateway_v2.rs`, `profile.rs`; legacy custom JSON-RPC `gateway.rs` still
-  in tree, not the production path)
+  (`gateway_v2.rs`, `profile.rs`, `registry.rs`, `health.rs`, `redact.rs`;
+  legacy custom JSON-RPC `gateway.rs` quarantined — module import only, not
+  crate-root / production selection)
 - Adapter: [`crates/impetus-core/src/acp_adapter.rs`](crates/impetus-core/src/acp_adapter.rs)
 - Daemon flag: `impetusd --acp-profile PATH` in
   [`crates/impetusd/src/main.rs`](crates/impetusd/src/main.rs)
 - Deterministic (no secrets / no external binary): unit tests in
-  `gateway_v2.rs` + `profile.rs`; crate tests
+  `gateway_v2.rs` + `profile.rs` + `registry.rs` + `redact.rs` + `health.rs`; crate tests
   [`tests/deterministic_mock_test.rs`](crates/impetus-acp-gateway/tests/deterministic_mock_test.rs)
 - Live smoke (ignored, needs installed agent + agent-owned creds):
   [`tests/acp_v2_smoke.rs`](crates/impetus-acp-gateway/tests/acp_v2_smoke.rs)
@@ -511,31 +512,29 @@ Pointers:
 | ACP agent child env isolation | Implemented | Profile rejects control-plane `IMPETUS_*`; SDK overlay blanks `IMPETUS_SOCKET` / secrets + sets `IMPETUS_ACP_CHILD=1` (SDK has no `env_clear`; marker unused for daemon peer filter). Legacy `gateway.rs` uses `env_clear` + filtered inherit. Residual: blank ≠ hide default socket path under HOME |
 | Explicit `auth_method_id` (never `auth_methods.first()`) | Implemented | `select_auth_method`; missing/unsupported → `Incompatible` / error |
 | `--acp-profile` daemon wiring → `ModelProvider` | Implemented | `Harness::with_acp_gateway` + `AcpAdapter` |
-| Stream via `session/update` → harness `StreamEvent` | Partial | Text deltas wired; tool-use / status mostly logged, not full tool orchestration |
-| Cancel via ACP `session/cancel` | Partial | `cancel_active_session` + adapter cancel path; restart/reconnect semantics thin |
+| Stream via `session/update` → harness `StreamEvent` | Implemented | Text + redacted `ToolUse` → `StreamEvent::ToolCall`; status/thought → `Reasoning`; `Completed` → `Finish` |
+| Cancel via ACP `session/cancel` | Partial | `cancel_active_session` + adapter cancel path; live reconnect polish Remaining |
 | Permission → Policy → ACP option | Implemented | Gateway wire is transport-only `Select\|Deny` (`permission_outcome`); `NeedsApproval` brokered in `AcpAdapter` → durable `ApprovalRequest` + `ResolveApproval` → Select/Deny (never reaches gateway response) |
 | Explicit `GatewayState::Incompatible` | Implemented | Auth / protocol mismatch sets incompatible; not a silent continue |
 | Deterministic mock / CI tests (no secrets) | Implemented | Profile/auth/cancel unit coverage + spawned SDK mock receives `session/set_config_option` (`tests/acp_config_option_apply.rs`, `examples/acp_sdk_mock_agent.rs`). Stronger process smoke Remaining under #66 |
 | Live smoke (Codex ACP / Grok Build / peers) | Partial | `acp_v2_smoke` ignored; depends on installed CLI + agent-owned auth |
-| ACP registry / discovery / version probing | Planned | Backends chosen by installed version + discovery — not assumed CLI flags |
-| Health / status surface for ACP backend | Planned | `AcpAdapter::health` returns `Unknown` |
+| ACP registry / discovery / version probing | Implemented | `registry.rs` — PATH/probe-root discovery + `--version` probe; builtin candidate catalog; deterministic mock bins |
+| Health / status surface for ACP backend | Implemented | `AcpBackendStatus` / `AcpAdapter::health` from `GatewayState` + cached caps |
 | Durable approval broker for ACP `NeedsApproval` | Implemented | `decide_permission` / `AgentRuntime::wait_approval_resolution`; never self-approves |
-| Redaction / export guarantees specific to ACP payloads | Planned | Kernel redaction exists; ACP-specific export audit still open |
-| Drop or quarantine legacy custom JSON-RPC gateway | Planned | `gateway.rs` + older mock path remain; V2 is the intended path |
+| Redaction / export guarantees specific to ACP payloads | Implemented | `redact.rs` + `AcpGatewayV2::audit_update`; tool args scrubbed before harness events |
+| Drop or quarantine legacy custom JSON-RPC gateway | Implemented | `gateway` module kept for migration/tests; **not** crate-root re-export; production alias `ProductionAcpGateway = AcpGatewayV2` |
 | Draft ACP **protocol** v2 features | Out of scope | Requires RFC + compatibility tests; SDK 2.x ≠ protocol v2 |
 
 ### Remaining gaps for #66 (honest)
 
-- Richer stream mapping (tool-use into ToolOrchestrator / durable events)
-- Restart / disconnect: durable session preserved; never report unknown as
-  `Completed`
-- Registry/discovery so Codex/Claude/Cursor/Gemini/Qwen support tracks
-  installed agent capability, not hard-coded flags
-- Stronger deterministic mock agent process tests in CI
-- Ubuntu / live smoke slices tracked separately (e.g. #293) — not this docs PR
+- Live reconnect polish after `session/cancel` / agent crash mid-turn
+- Stronger deterministic mock agent process tests in CI (beyond unit + config_option spawn)
+- Ubuntu / live smoke slices tracked separately (e.g. #293) — not this slice
 
-Docs index for the checklist: this section (#294). Runtime hardening code
-remains under classic #66.
+Disconnect honesty (#335): adapter returns `ProviderError::InterruptedUnknown` when the
+stream ends without an ACP `stop_reason`; harness maps that to
+`RunEvent::InterruptedUnknown` — never invents `Completed`. Durable session
+events remain in SQLite across restart.
 
 ## Canonical schema registry
 

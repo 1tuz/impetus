@@ -38,10 +38,13 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session/create","params":{}}' | ./target
 echo '{"jsonrpc":"2.0","id":3,"method":"exit","params":{}}' | ./target/debug/examples/mock_agent_bin
 ```
 
-### Через AcpGateway
+### Через legacy AcpGateway (migration/tests only)
+
+Production path uses `AcpGatewayV2` / `ProductionAcpGateway`. Legacy JSON-RPC:
 
 ```rust
-use impetus_acp_gateway::{AcpGateway, AcpProfile};
+use impetus_acp_gateway::gateway::AcpGateway;
+use impetus_acp_gateway::AcpProfile;
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -80,7 +83,7 @@ async fn main() {
 
 ```rust
 let profile: AcpProfile = serde_json::from_str(&config)?;
-let mut gateway = AcpGateway::new(profile)?;
+let mut gateway = impetus_acp_gateway::gateway::AcpGateway::new(profile)?;
 gateway.start().await?;
 ```
 

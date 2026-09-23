@@ -4,15 +4,15 @@
 //! Agent owns authentication; Impetus owns policy, session state, and orchestration.
 
 use crate::{
-    Action, ActionKind, ActionOrigin, AgentRuntime, ApprovalResolution, ModelProvider,
-    PolicyDecision, PolicyEngine, ProviderError, ProviderHealth, ProviderMessage, StreamEvent,
-    StreamOptions,
+    Action, ActionKind, ActionOrigin, AgentRuntime, ApprovalResolution, FinishReason,
+    ModelProvider, PolicyDecision, PolicyEngine, ProviderError, ProviderHealth, ProviderMessage,
+    StreamEvent, StreamOptions,
 };
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
 use impetus_acp_gateway::{
-    AcpGatewayV2, GatewayState, PermissionDecision, PermissionKind, PermissionRequest,
-    SessionLaunchOptions, StreamUpdate,
+    AcpBackendStatus, AcpGatewayV2, AcpHealthKind, GatewayState, PermissionDecision,
+    PermissionKind, PermissionRequest, SessionLaunchOptions, StreamUpdate,
 };
 use impetus_protocol::AgentCapabilitySnapshot;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,52 @@ impl AcpAdapter {
     ) {
         self.gateway.seed_cached_capabilities(caps).await;
     }
+
+    /// Doctor / status surface: gateway state + cached agent labels.
+    pub fn backend_status(&self) -> AcpBackendStatus {
+        let state = self
+            .gateway
+            .state_blocking()
+            .unwrap_or(GatewayState::NotStarted);
+        let caps = self.gateway.cached_capabilities_blocking().ok().flatten();
+        AcpBackendStatus::from_state(state, caps.as_ref())
+    }
+}
+
+fn map_stop_reason(stop: agent_client_protocol::schema::v1::StopReason) -> FinishReason {
+    use agent_client_protocol::schema::v1::StopReason;
+    match stop {
+        StopReason::EndTurn => FinishReason::Stop,
+        StopReason::MaxTokens => FinishReason::Length,
+        StopReason::MaxTurnRequests => FinishReason::Other,
+        StopReason::Refusal => FinishReason::ContentFilter,
+        StopReason::Cancelled => FinishReason::Other,
+        _ => FinishReason::Other,
+    }
+}
+
+fn tool_use_to_stream_event(
+    tool_call_id: String,
+    tool_name: String,
+    status: &str,
+    arguments: serde_json::Value,
+) -> Option<StreamEvent> {
+    // Emit ToolCall when the agent starts / has input — ToolOrchestrator consumes these.
+    let status = status.to_ascii_lowercase();
+    if status.contains("failed") {
+        return None;
+    }
+    if status.contains("completed") || status.contains("update") {
+        // Progress-only updates stay as Status via caller; skip duplicate ToolCall.
+        if arguments.is_null() {
+            return None;
+        }
+    }
+    Some(StreamEvent::ToolCall {
+        id: tool_call_id,
+        name: tool_name,
+        arguments,
+    })
 }
 
 fn action_for_permission(request: &PermissionRequest, workspace: &Path) -> Option<Action> {
@@ -218,9 +264,16 @@ impl ModelProvider for AcpAdapter {
     }
 
     fn health(&self) -> ProviderHealth {
-        // Blocking check is not possible with async state; return Unknown.
-        // Real health is observed via monitoring / first session.
-        ProviderHealth::Unknown
+        match self.backend_status().health {
+            AcpHealthKind::Healthy => ProviderHealth::Healthy,
+            AcpHealthKind::Unknown => ProviderHealth::Unknown,
+            AcpHealthKind::Unavailable => ProviderHealth::Unavailable {
+                last_error_redacted: self
+                    .backend_status()
+                    .detail_redacted
+                    .unwrap_or_else(|| "acp backend unavailable".into()),
+            },
+        }
     }
 
     fn agent_capabilities(&self) -> Option<AgentCapabilitySnapshot> {
@@ -342,6 +395,10 @@ impl ModelProvider for AcpAdapter {
                 .await
         });
 
+        // Honest completion: Ok(()) only after an explicit ACP stop_reason.
+        let mut saw_completed = false;
+        let mut session_task_done = false;
+
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -354,7 +411,7 @@ impl ModelProvider for AcpAdapter {
                     return Err(ProviderError::Cancelled);
                 }
 
-                update = self.gateway.recv_update() => {
+                update = self.gateway.recv_update(), if !session_task_done || !saw_completed => {
                     match update {
                         Some(StreamUpdate::Text(text)) => {
                             debug!("Received text chunk: {} chars", text.len());
@@ -363,26 +420,69 @@ impl ModelProvider for AcpAdapter {
                                 e
                             })?;
                         }
-                        Some(StreamUpdate::ToolUse { tool_name, status }) => {
-                            debug!("Tool use: {} - {}", tool_name, status);
+                        Some(StreamUpdate::ToolUse {
+                            tool_call_id,
+                            tool_name,
+                            status,
+                            kind: _,
+                            arguments,
+                        }) => {
+                            debug!("Tool use: {} ({}) - {}", tool_name, tool_call_id, status);
+                            if let Some(event) = tool_use_to_stream_event(
+                                tool_call_id,
+                                tool_name,
+                                &status,
+                                arguments,
+                            ) {
+                                on_event(event)?;
+                            } else {
+                                on_event(StreamEvent::Reasoning {
+                                    content: format!("tool status: {status}"),
+                                })?;
+                            }
                         }
                         Some(StreamUpdate::Status(status)) => {
                             debug!("Status update: {}", status);
+                            on_event(StreamEvent::Reasoning {
+                                content: status,
+                            })?;
                         }
                         Some(StreamUpdate::Completed { stop_reason }) => {
                             info!("Session completed: {:?}", stop_reason);
+                            saw_completed = true;
+                            if matches!(
+                                stop_reason,
+                                agent_client_protocol::schema::v1::StopReason::Cancelled
+                            ) {
+                                return Err(ProviderError::Cancelled);
+                            }
+                            on_event(StreamEvent::Finish {
+                                reason: map_stop_reason(stop_reason),
+                            })?;
+                            if session_task_done {
+                                break;
+                            }
+                        }
+                        Some(StreamUpdate::Interrupted { reason }) => {
+                            error!("ACP interrupted without stop_reason: {}", reason);
+                            return Err(ProviderError::InterruptedUnknown(reason));
                         }
                         Some(StreamUpdate::Error(err)) => {
                             error!("Agent error: {}", err);
                             return Err(ProviderError::RequestFailed(err));
                         }
                         None => {
-                            break;
+                            if saw_completed {
+                                break;
+                            }
+                            return Err(ProviderError::InterruptedUnknown(
+                                "acp update channel closed without stop_reason".into(),
+                            ));
                         }
                     }
                 }
 
-                perm_req = self.gateway.recv_permission_request() => {
+                perm_req = self.gateway.recv_permission_request(), if !session_task_done => {
                     match perm_req {
                         Some((request, response_tx)) => {
                             warn!(
@@ -404,31 +504,48 @@ impl ModelProvider for AcpAdapter {
                             }
                         }
                         None => {
-                            break;
+                            // Permission channel closed; keep draining updates.
                         }
                     }
                 }
 
-                session_result = &mut session_handle => {
+                session_result = &mut session_handle, if !session_task_done => {
+                    session_task_done = true;
                     match session_result {
                         Ok(Ok(session_id)) => {
-                            info!("Session completed: {:?}", session_id);
-                            break;
+                            info!("Session task finished: {:?}", session_id);
+                            if saw_completed {
+                                break;
+                            }
+                            // Drain: Completed may still be in the update channel.
                         }
                         Ok(Err(e)) => {
                             error!("Session failed: {}", e);
-                            return Err(ProviderError::RequestFailed(format!("session error: {}", e)));
+                            if saw_completed {
+                                break;
+                            }
+                            return Err(ProviderError::InterruptedUnknown(format!(
+                                "acp session error without stop_reason: {e}"
+                            )));
                         }
                         Err(e) => {
                             error!("Session task panicked: {}", e);
-                            return Err(ProviderError::RequestFailed(format!("task panic: {}", e)));
+                            return Err(ProviderError::InterruptedUnknown(format!(
+                                "acp session task panic: {e}"
+                            )));
                         }
                     }
                 }
             }
         }
 
-        Ok(())
+        if saw_completed {
+            Ok(())
+        } else {
+            Err(ProviderError::InterruptedUnknown(
+                "acp stream ended without stop_reason".into(),
+            ))
+        }
     }
 }
 
@@ -739,5 +856,63 @@ mod tests {
                 .is_none(),
             "cancel must clear durable pending approval"
         );
+    }
+
+    #[test]
+    fn tool_use_maps_to_stream_event_for_orchestrator() {
+        let event = tool_use_to_stream_event(
+            "tc-9".into(),
+            "read_file".into(),
+            "inprogress",
+            serde_json::json!({"path": "README.md"}),
+        )
+        .expect("tool call");
+        match event {
+            StreamEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "tc-9");
+                assert_eq!(name, "read_file");
+                assert_eq!(arguments["path"], "README.md");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn health_unknown_before_session() {
+        use agent_client_protocol::AcpAgentConfig;
+        let workspace = tempfile::tempdir().expect("workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let adapter = AcpAdapter::new(
+            AcpAgentConfig::new("echo"),
+            None,
+            "acp".into(),
+            "model".into(),
+            workspace.path().to_path_buf(),
+            Arc::new(policy),
+        );
+        assert_eq!(adapter.health(), ProviderHealth::Unknown);
+        assert_eq!(
+            adapter.backend_status().gateway_state,
+            GatewayState::NotStarted
+        );
+    }
+
+    #[test]
+    fn stop_reason_end_turn_maps_to_finish_stop() {
+        assert_eq!(
+            map_stop_reason(agent_client_protocol::schema::v1::StopReason::EndTurn),
+            FinishReason::Stop
+        );
+    }
+
+    #[test]
+    fn interrupted_unknown_is_distinct_from_request_failed() {
+        let err = ProviderError::InterruptedUnknown("disconnect".into());
+        assert!(matches!(err, ProviderError::InterruptedUnknown(_)));
+        assert!(!err.is_transient());
     }
 }
