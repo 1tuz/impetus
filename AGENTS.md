@@ -150,7 +150,7 @@ Do not leave merged feature branches on the remote.
 
 - Divide work into atomic commits by single reason for change; do not mix tooling, product code, and independent documentation without necessity.
 - Before commit, execute `task verify` (fmt + `git diff --check`). Full
-  `task verify:full` is optional and usually unnecessary — PR Gate covers quality.
+  `task verify:full` is optional and usually unnecessary — PR Fast covers merge quality; Nightly Full covers deep regression.
 - **Commit message in English.** Format: `type: Brief summary (closes #N)` or `type(scope): Summary (refs #N)`
 - Allowed types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
 - Subject <= 72 characters, starts with lowercase (after `type:`), no trailing period
