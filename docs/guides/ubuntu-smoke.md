@@ -70,7 +70,8 @@ export IMPETUS_DATA_DIR="${HOME}/.local/share/impetus"
 export IMPETUS_SOCKET="${IMPETUS_DATA_DIR}/harness.sock"
 mkdir -p "${IMPETUS_DATA_DIR}"
 
-impetusd &          # or: cargo run -p impetusd
+impetus create      # lazy-starts impetusd when socket is down
+# or explicit: impetusd & / cargo run -p impetusd
 impetus doctor --json
 impetus create
 # prompt / stream with mock or localhost none-credential profile
