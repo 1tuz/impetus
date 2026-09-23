@@ -105,7 +105,7 @@ jobs:
           cargo test -p impetusd --test daemon_userspace_no_sudo -- --test-threads=1
           if [[ -f crates/impetusd/src/peer_isolation.rs ]]; then
             cargo test -p impetusd --test daemon_peer_isolation -- --test-threads=1
-            cargo test -p impetusd --lib peer_isolation -- --test-threads=1
+            cargo test -p impetusd --bin impetusd peer_isolation -- --test-threads=1
           fi
           cargo test -p impetus-core --lib 'pty|sandbox|seatbelt|keychain|auth' -- --test-threads=2
           # Daemon Unix socket E2E on Darwin (platform socket behaviour).
