@@ -14,7 +14,7 @@ Labels match [ARCHITECTURE.md](../../ARCHITECTURE.md): **Implemented** /
 
 ## What PR CI already covers
 
-Workflow: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). Detail:
+Workflows: [`.github/workflows/pr-fast.yml`](../../.github/workflows/pr-fast.yml) (PR) and [`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml) (full). Detail:
 [development.md](development.md) § Pull request CI.
 
 | Surface | Runner | What it proves today | Status |

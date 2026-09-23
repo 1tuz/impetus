@@ -24,7 +24,7 @@ task verify
 
 `task verify` is required for Rust changes (full workspace). If a change
 modifies `Cargo.toml` or `Cargo.lock`, run `task security` as well. Preview
-PR CI scope with `task ci:affected`. Update `.github/workflows/ci.yml` when
+PR CI scope with `task ci:affected`. Update `.github/workflows/pr-fast.yml` / `nightly.yml` when
 changing the merge gate.
 
 ## Scope and safety
