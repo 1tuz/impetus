@@ -24,7 +24,9 @@ pub use entrypoint::{EntrypointError, ExtensionEntrypoint, is_safe_relative_root
 pub use error::ExtensionSdkError;
 pub use host_protocol::{
     HOST_PROTOCOL_VERSION, InitializeParams, InitializeResult, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, METHOD_INITIALIZE, METHOD_PING, METHOD_SHUTDOWN,
+    JsonRpcResponse, METHOD_BROWSER_HEALTH, METHOD_BROWSER_NEGOTIATE, METHOD_CODING_CANCEL,
+    METHOD_CODING_DEFINITION, METHOD_CODING_DIAGNOSTICS, METHOD_CODING_HOVER,
+    METHOD_CODING_SYMBOLS, METHOD_INITIALIZE, METHOD_PING, METHOD_SHUTDOWN,
 };
 pub use id::{ExtensionId, ExtensionIdError, is_valid_extension_id};
 pub use lifecycle::{Extension, ExtensionError, ExtensionHealth};

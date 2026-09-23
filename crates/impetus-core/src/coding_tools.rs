@@ -1,15 +1,21 @@
-//! Typed coding-tool capability seam (TODO P1 §11 / #261 / #282).
+//! Typed coding-tool capability seam (TODO P1 §11 / #261 / #282 / #336).
 //!
 //! Harness requests language intelligence (definition, references, diagnostics,
-//! symbols, hover) through [`CodingToolsProvider`] — a replaceable backend.
-//! Runtime does **not** compile against or require a single LSP binary path
-//! (`rust-analyzer`, `clangd`, …). Optional [`crate::LspBackendModule`] carries a
-//! runtime path hint only; Absent/Mock remain the default. Real process spawn
-//! stays Planned (not a core dep).
+//! symbols, hover, cancel) through [`CodingToolsProvider`] — a replaceable
+//! backend. Runtime does **not** compile against or require a single LSP binary
+//! path (`rust-analyzer`, `clangd`, …). Optional [`crate::LspBackendModule`]
+//! carries a runtime path hint only; Absent/Mock remain the default.
+//!
+//! Extension-first boundary (#336): core owns this contract + policy + IPC
+//! dispatch. Generic stdio process client ([`crate::ProcessLspBackend`]) is
+//! infrastructure. Concrete language packs and Browser CDP/WebDriver stay in
+//! extensions (`LspIntegration` / `BrowserIntegration`); do not grow a second
+//! SoT in core.
 //!
 //! Payloads are path/range/label only — no secrets, tokens, or raw credentials.
 //!
-//! Out of scope: full LSP protocol completeness, IDE UI, language installers.
+//! Out of scope: full LSP protocol completeness, IDE UI, language installers,
+//! CDP/WebDriver.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +29,10 @@ use thiserror::Error;
 pub const ABSENT_CODING_TOOLS_REASON: &str =
     "no coding-tools provider registered (optional; no LSP binary required)";
 
-pub use impetus_protocol::{HoverInfo, SourceLocation, SourcePosition, SourceRange};
+pub use impetus_protocol::{
+    CodingDiagnostic, DiagnosticSeverity, DocumentSymbol, HoverInfo, SourceLocation,
+    SourcePosition, SourceRange, SymbolKind,
+};
 
 /// Query at a point in a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,57 +50,6 @@ impl PositionQuery {
     }
 }
 
-/// Diagnostic severity (labels only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiagnosticSeverity {
-    Error,
-    Warning,
-    Information,
-    Hint,
-}
-
-/// One diagnostic for a path/range.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodingDiagnostic {
-    pub path: PathBuf,
-    pub range: SourceRange,
-    pub severity: DiagnosticSeverity,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-}
-
-/// Symbol kind (coarse; not full LSP enum).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SymbolKind {
-    File,
-    Module,
-    Namespace,
-    Class,
-    Method,
-    Function,
-    Variable,
-    Constant,
-    Field,
-    Enum,
-    Interface,
-    Struct,
-    TypeParameter,
-    Other,
-}
-
-/// Document / workspace symbol entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DocumentSymbol {
-    pub name: String,
-    pub kind: SymbolKind,
-    pub location: SourceLocation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-}
-
 /// Failures from the coding-tools seam (fail-closed when backend absent).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CodingToolsError {
@@ -99,6 +57,8 @@ pub enum CodingToolsError {
     Unavailable(String),
     #[error("coding-tools provider error: {0}")]
     Provider(String),
+    #[error("coding-tools request cancelled: {0}")]
+    Cancelled(String),
 }
 
 impl CodingToolsError {
@@ -109,10 +69,15 @@ impl CodingToolsError {
     pub fn is_unavailable(&self) -> bool {
         matches!(self, Self::Unavailable(_))
     }
+
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled(_))
+    }
 }
 
 /// Optional language-intelligence backend. Implementations may wrap an LSP
-/// process later; core never hard-codes a binary path.
+/// process or an extension `LspIntegration` host_process; core never hard-codes
+/// a binary path.
 #[async_trait]
 pub trait CodingToolsProvider: Send + Sync {
     async fn definition(
@@ -130,6 +95,16 @@ pub trait CodingToolsProvider: Send + Sync {
     async fn symbols(&self, path: &Path) -> Result<Vec<DocumentSymbol>, CodingToolsError>;
 
     async fn hover(&self, query: &PositionQuery) -> Result<Option<HoverInfo>, CodingToolsError>;
+
+    /// Cancel an in-flight provider request by opaque numeric id.
+    ///
+    /// Default: fail-closed Unavailable (providers without cancel stay honest).
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError> {
+        let _ = request_id;
+        Err(CodingToolsError::Unavailable(
+            "coding-tools cancel not implemented by this provider".into(),
+        ))
+    }
 }
 
 /// Facade seen by harness callers — never a concrete LSP binary.
@@ -150,6 +125,8 @@ pub trait CodingToolsService: Send + Sync {
     async fn symbols(&self, path: &Path) -> Result<Vec<DocumentSymbol>, CodingToolsError>;
 
     async fn hover(&self, query: &PositionQuery) -> Result<Option<HoverInfo>, CodingToolsError>;
+
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError>;
 }
 
 /// Thin adapter: registered provider → service surface.
@@ -190,6 +167,10 @@ impl CodingToolsService for ProviderBackedCodingToolsService {
     async fn hover(&self, query: &PositionQuery) -> Result<Option<HoverInfo>, CodingToolsError> {
         self.provider.hover(query).await
     }
+
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError> {
+        self.provider.cancel_request(request_id).await
+    }
 }
 
 /// Default production surface when no optional provider is registered.
@@ -221,6 +202,10 @@ impl CodingToolsService for AbsentCodingToolsService {
     }
 
     async fn hover(&self, _query: &PositionQuery) -> Result<Option<HoverInfo>, CodingToolsError> {
+        Err(CodingToolsError::absent())
+    }
+
+    async fn cancel_request(&self, _request_id: u64) -> Result<(), CodingToolsError> {
         Err(CodingToolsError::absent())
     }
 }
@@ -289,6 +274,13 @@ impl CodingToolsService for OptionalCodingToolsService {
             None => Err(CodingToolsError::absent()),
         }
     }
+
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError> {
+        match &self.provider {
+            Some(p) => p.cancel_request(request_id).await,
+            None => Err(CodingToolsError::absent()),
+        }
+    }
 }
 
 /// In-memory mock for unit tests — no process, no binary, no network.
@@ -299,6 +291,8 @@ pub struct MockCodingToolsProvider {
     diagnostics: HashMap<PathBuf, Vec<CodingDiagnostic>>,
     symbols: HashMap<PathBuf, Vec<DocumentSymbol>>,
     hovers: HashMap<(PathBuf, SourcePosition), HoverInfo>,
+    /// When set, `cancel_request` succeeds for this id (and only this id).
+    cancelable_id: Option<u64>,
 }
 
 impl MockCodingToolsProvider {
@@ -334,6 +328,11 @@ impl MockCodingToolsProvider {
 
     pub fn with_hover(mut self, query: PositionQuery, hover: HoverInfo) -> Self {
         self.hovers.insert((query.path, query.position), hover);
+        self
+    }
+
+    pub fn with_cancelable(mut self, request_id: u64) -> Self {
+        self.cancelable_id = Some(request_id);
         self
     }
 }
@@ -375,6 +374,18 @@ impl CodingToolsProvider for MockCodingToolsProvider {
             .hovers
             .get(&(query.path.clone(), query.position))
             .cloned())
+    }
+
+    async fn cancel_request(&self, request_id: u64) -> Result<(), CodingToolsError> {
+        match self.cancelable_id {
+            Some(id) if id == request_id => Ok(()),
+            Some(_) => Err(CodingToolsError::Unavailable(
+                "mock coding-tools: unknown request id".into(),
+            )),
+            None => Err(CodingToolsError::Unavailable(
+                "coding-tools cancel not implemented by this provider".into(),
+            )),
+        }
     }
 }
 
@@ -442,6 +453,7 @@ mod tests {
                     range: Some(SourceRange::new(42, 3, 42, 6)),
                 },
             )
+            .with_cancelable(7)
     }
 
     #[tokio::test]
@@ -474,6 +486,8 @@ mod tests {
             hover.as_ref().map(|h| h.contents.as_str()),
             Some("fn run()")
         );
+
+        service.cancel_request(7).await.expect("cancel");
     }
 
     #[tokio::test]
@@ -496,6 +510,7 @@ mod tests {
         assert!(absent.diagnostics(path).await.unwrap_err().is_unavailable());
         assert!(absent.symbols(path).await.unwrap_err().is_unavailable());
         assert!(absent.hover(&query).await.unwrap_err().is_unavailable());
+        assert!(absent.cancel_request(1).await.unwrap_err().is_unavailable());
     }
 
     #[tokio::test]

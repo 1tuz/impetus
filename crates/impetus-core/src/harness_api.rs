@@ -1702,6 +1702,51 @@ fn handle_request(
                 },
             }
         }
+        IpcRequest::CodingDiagnostics { path } => {
+            let coding_tools = coding_tools.clone();
+            match crate::block_on_coding_tools(async move { coding_tools.diagnostics(&path).await })
+            {
+                Ok(diagnostics) => IpcResponse::CodingDiagnostics { diagnostics },
+                Err(error) if error.is_unavailable() => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: error.to_string(),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::CodingSymbols { path } => {
+            let coding_tools = coding_tools.clone();
+            match crate::block_on_coding_tools(async move { coding_tools.symbols(&path).await }) {
+                Ok(symbols) => IpcResponse::CodingSymbols { symbols },
+                Err(error) if error.is_unavailable() => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: error.to_string(),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
+        IpcRequest::CancelCodingRequest { request_id } => {
+            let coding_tools = coding_tools.clone();
+            match crate::block_on_coding_tools(async move {
+                coding_tools.cancel_request(request_id).await
+            }) {
+                Ok(()) => IpcResponse::CodingCancelAccepted { request_id },
+                Err(error) if error.is_unavailable() => IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message: error.to_string(),
+                },
+                Err(error) => IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: error.to_string(),
+                },
+            }
+        }
         IpcRequest::StartWorkflow { session_id, recipe } => {
             let Some(rt) = workflow_runtime.as_ref() else {
                 return IpcResponse::Error {
@@ -6480,6 +6525,55 @@ mod tests {
                 assert!(message.contains(crate::ABSENT_CODING_TOOLS_REASON));
             }
             other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coding_diagnostics_symbols_cancel_ipc_use_mock_provider() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let path = std::path::PathBuf::from("src/lib.rs");
+        let diag = crate::CodingDiagnostic {
+            path: path.clone(),
+            range: crate::SourceRange::new(1, 0, 1, 3),
+            severity: crate::DiagnosticSeverity::Error,
+            message: "boom".into(),
+            code: Some("E0001".into()),
+        };
+        let sym = crate::DocumentSymbol {
+            name: "main".into(),
+            kind: crate::SymbolKind::Function,
+            location: crate::SourceLocation::new(&path, crate::SourceRange::new(0, 0, 0, 4)),
+            container_name: None,
+        };
+        let mock = Arc::new(
+            crate::MockCodingToolsProvider::new()
+                .with_diagnostics(&path, vec![diag.clone()])
+                .with_symbols(&path, vec![sym.clone()])
+                .with_cancelable(42),
+        );
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_coding_tools(Arc::new(crate::OptionalCodingToolsService::with_provider(
+            mock,
+        )));
+
+        match harness.handle(IpcRequest::CodingDiagnostics { path: path.clone() }) {
+            IpcResponse::CodingDiagnostics { diagnostics } => {
+                assert_eq!(diagnostics, vec![diag]);
+            }
+            other => panic!("expected CodingDiagnostics, got {other:?}"),
+        }
+        match harness.handle(IpcRequest::CodingSymbols { path }) {
+            IpcResponse::CodingSymbols { symbols } => {
+                assert_eq!(symbols, vec![sym]);
+            }
+            other => panic!("expected CodingSymbols, got {other:?}"),
+        }
+        match harness.handle(IpcRequest::CancelCodingRequest { request_id: 42 }) {
+            IpcResponse::CodingCancelAccepted { request_id } => assert_eq!(request_id, 42),
+            other => panic!("expected CodingCancelAccepted, got {other:?}"),
         }
     }
 

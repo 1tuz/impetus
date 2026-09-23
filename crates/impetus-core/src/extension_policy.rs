@@ -3,6 +3,10 @@
 //! Declared tokens do **not** bypass RiskGate or grant `origin=user`.
 //! Hard-Deny against the current sandox scope blocks package activation;
 //! Allow / NeedsApproval still go through normal Policy at action time.
+//!
+//! Extension-first (#336): `Lsp` / `Browser` permissions gate activation of
+//! `LspIntegration` / `BrowserIntegration` packs. Core keeps coding-tools +
+//! browser negotiate IPC contracts; CDP/WebDriver stay out of core.
 
 use impetus_extension_sdk::ExtensionPermission;
 use impetus_protocol::{ActionKind, PolicyDecision};

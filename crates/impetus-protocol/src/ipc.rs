@@ -1,14 +1,14 @@
 use crate::Event;
 use crate::types::{
     ApprovalDetail, BrowserHealthStatus, BrowserNegotiateInfo, CheckpointInfo, ChildResult,
-    DurableArtifactMeta, DurableArtifactRef, ExecutionMode, ExtensionPackageInfo,
-    ExtensionStatusInfo, GitBranchInfo, GitChangedFile, GitCurrentBranch, GitDiffPayload,
-    GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus, McpServerUpsert,
-    MemoryEntryInfo, MemoryEntryScope, MemoryExportFormat, MemoryProvenanceInfo, MergeReadyReport,
-    ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState, ReadOnlyToolKind,
-    ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection, SourceLocation,
-    SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing, WorkspaceFileContent,
-    WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
+    CodingDiagnostic, DocumentSymbol, DurableArtifactMeta, DurableArtifactRef, ExecutionMode,
+    ExtensionPackageInfo, ExtensionStatusInfo, GitBranchInfo, GitChangedFile, GitCurrentBranch,
+    GitDiffPayload, GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus,
+    McpServerUpsert, MemoryEntryInfo, MemoryEntryScope, MemoryExportFormat, MemoryProvenanceInfo,
+    MergeReadyReport, ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState,
+    ReadOnlyToolKind, ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection,
+    SourceLocation, SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing,
+    WorkspaceFileContent, WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -82,13 +82,17 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "artifact_upload",
     // Durable artifact read / metadata (MIME persisted on upload).
     "artifact_read",
-    // Coding-tools IPC: definition (paths/ranges only; no secrets).
+    // Coding-tools IPC: definition/hover/diagnostics/symbols/cancel (paths/ranges only; no secrets).
+    // Concrete Browser CDP/WebDriver stays extension/Parked; core owns contracts + dispatch.
     "coding_definition",
     "execution_mode",
     "reload_policy_config",
     "reload_policy_store",
     "list_child_runs",
     "coding_hover",
+    "coding_diagnostics",
+    "coding_symbols",
+    "coding_cancel",
     "workflow_control",
     "approval_scope_file_edits",
     "approval_scope_full_auto",
@@ -284,6 +288,18 @@ pub enum IpcRequest {
         path: std::path::PathBuf,
         line: u32,
         character: u32,
+    },
+    /// Pull diagnostics for a path via optional coding-tools provider.
+    CodingDiagnostics {
+        path: std::path::PathBuf,
+    },
+    /// Document symbols for a path via optional coding-tools provider.
+    CodingSymbols {
+        path: std::path::PathBuf,
+    },
+    /// Cancel an in-flight coding-tools request by provider request id.
+    CancelCodingRequest {
+        request_id: u64,
     },
     /// Start a workflow recipe for a session (bug|feature|refactor).
     StartWorkflow {
@@ -660,6 +676,16 @@ pub enum IpcResponse {
     Hover {
         info: Option<HoverInfo>,
     },
+    CodingDiagnostics {
+        diagnostics: Vec<CodingDiagnostic>,
+    },
+    CodingSymbols {
+        symbols: Vec<DocumentSymbol>,
+    },
+    /// Coding-tools cancel accepted (LSP `$/cancelRequest` or provider no-op).
+    CodingCancelAccepted {
+        request_id: u64,
+    },
     WorkflowStatus {
         session_id: Uuid,
         status: String,
@@ -952,6 +978,49 @@ mod sentinel_protocol {
                 .unwrap(),
             response
         );
+    }
+
+    #[test]
+    fn coding_diagnostics_symbols_cancel_round_trip() {
+        let path = std::path::PathBuf::from("src/lib.rs");
+        let diag_req = IpcRequest::CodingDiagnostics { path: path.clone() };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&diag_req).unwrap()).unwrap(),
+            diag_req
+        );
+        let diag_resp = IpcResponse::CodingDiagnostics {
+            diagnostics: vec![CodingDiagnostic {
+                path: path.clone(),
+                range: crate::types::SourceRange::new(1, 0, 1, 2),
+                severity: crate::types::DiagnosticSeverity::Warning,
+                message: "unused".into(),
+                code: None,
+            }],
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&diag_resp).unwrap())
+                .unwrap(),
+            diag_resp
+        );
+        let sym_req = IpcRequest::CodingSymbols { path: path.clone() };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&sym_req).unwrap()).unwrap(),
+            sym_req
+        );
+        let cancel = IpcRequest::CancelCodingRequest { request_id: 9 };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&cancel).unwrap()).unwrap(),
+            cancel
+        );
+        let accepted = IpcResponse::CodingCancelAccepted { request_id: 9 };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&accepted).unwrap())
+                .unwrap(),
+            accepted
+        );
+        assert!(IPC_CAPABILITIES.contains(&"coding_diagnostics"));
+        assert!(IPC_CAPABILITIES.contains(&"coding_symbols"));
+        assert!(IPC_CAPABILITIES.contains(&"coding_cancel"));
     }
 
     #[test]
