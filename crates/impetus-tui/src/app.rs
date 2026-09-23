@@ -1631,6 +1631,8 @@ mod tests {
             provider_id: "mock".into(),
             model_id: "mock-fast".into(),
             reasoning_effort: Some("high".into()),
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         };
 
         let _ = apply_message(

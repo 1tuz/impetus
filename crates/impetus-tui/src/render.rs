@@ -1252,6 +1252,8 @@ fn render_model_picker(
                 .unwrap_or_else(|| "—".into()),
             model_id: state.draft_model_id.clone().unwrap_or_else(|| "—".into()),
             reasoning_effort: state.draft_reasoning.clone(),
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         }),
         state.draft_options.as_ref(),
     );

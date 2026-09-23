@@ -590,6 +590,8 @@ impl UiBackend for MockBackend {
             provider_id: default.provider_id.clone(),
             model_id: default.model_id.clone(),
             reasoning_effort: default.default_reasoning_effort.clone(),
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         })
     }
 
@@ -620,6 +622,8 @@ impl UiBackend for MockBackend {
             provider_id,
             model_id,
             reasoning_effort,
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         };
         drop(catalog);
         self.inner
