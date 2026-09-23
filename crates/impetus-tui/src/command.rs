@@ -54,6 +54,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: "F4 / Shift+Tab",
     },
     CommandSpec {
+        name: "model",
+        aliases: &["provider", "providers"],
+        description: "Provider → Model → Reasoning → options from daemon catalog",
+        shortcut: "F8",
+    },
+    CommandSpec {
         name: "plan",
         aliases: &[],
         description: "switch to non-mutating planning mode",
@@ -181,6 +187,7 @@ pub enum CommandAction {
     Resume(Option<Uuid>),
     Sessions,
     ModePicker,
+    ModelPicker,
     SetMode(ExecutionMode),
     SetPromptIntent(impetus_client::protocol::UserPromptIntent),
     ShowDiff,
@@ -258,6 +265,7 @@ pub fn parse_command(input: &str) -> Option<CommandAction> {
             }
         }
         "sessions" => CommandAction::Sessions,
+        "model" => CommandAction::ModelPicker,
         "mode" => match argument.to_ascii_lowercase().as_str() {
             "" => CommandAction::ModePicker,
             "plan" => CommandAction::SetMode(ExecutionMode::Plan),
@@ -439,6 +447,11 @@ mod tests {
     #[test]
     fn theme_commands_parse() {
         assert_eq!(parse_command("/theme"), Some(CommandAction::ThemePicker));
+        assert_eq!(parse_command("/model"), Some(CommandAction::ModelPicker));
+        assert_eq!(
+            parse_command("/providers"),
+            Some(CommandAction::ModelPicker)
+        );
         assert_eq!(
             parse_command("/theme next"),
             Some(CommandAction::CycleTheme)

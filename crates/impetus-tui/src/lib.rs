@@ -10,6 +10,7 @@
 mod app;
 mod backend;
 pub mod boundary;
+mod catalog;
 mod command;
 mod composer;
 mod diff;

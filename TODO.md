@@ -47,7 +47,7 @@ Actionable after Now. Not priority theatre.
 
 ### Clients
 
-- [ ] TUI: sequence / model picker polish
+- [ ] TUI: sequence picker polish
 - [ ] Desktop: PTY UI, model picker, worktrees UI; drop any remaining local
       MCP/provider config parse (daemon SoT only)
 

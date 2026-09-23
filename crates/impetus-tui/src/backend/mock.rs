@@ -2,7 +2,8 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use impetus_client::protocol::{
     CheckpointInfo, DurableArtifactMeta, DurableArtifactRef, GitBranchInfo, GitChangeKind,
-    GitChangedFile, GitCurrentBranch, GitDiffPayload, GitStatusSnapshot, WorkspaceDirEntry,
+    GitChangedFile, GitCurrentBranch, GitDiffPayload, GitStatusSnapshot, ModelAvailability,
+    ModelProviderHealthLabel, ModelProviderStatus, SessionModelSelection, WorkspaceDirEntry,
     WorkspaceDirListing, WorkspaceFileContent,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -37,6 +38,8 @@ struct MockInner {
     sessions: Mutex<Vec<SessionSummary>>,
     checkpoints: Mutex<Vec<CheckpointInfo>>,
     execution_modes: Mutex<HashMap<Uuid, ExecutionMode>>,
+    session_models: Mutex<HashMap<Uuid, SessionModelSelection>>,
+    provider_catalog: Mutex<Vec<ModelProviderStatus>>,
     branches: Mutex<Vec<GitBranchInfo>>,
     subscribers: Mutex<HashMap<Uuid, Vec<mpsc::Sender<Vec<UiEvent>>>>>,
     approval_details: Mutex<HashMap<Uuid, ApprovalDetailView>>,
@@ -67,6 +70,8 @@ impl MockBackend {
                 ]),
                 checkpoints: Mutex::new(Vec::new()),
                 execution_modes: Mutex::new(HashMap::new()),
+                session_models: Mutex::new(HashMap::new()),
+                provider_catalog: Mutex::new(demo_provider_catalog()),
                 branches: Mutex::new(vec![
                     GitBranchInfo {
                         name: "main".to_owned(),
@@ -300,6 +305,8 @@ impl UiBackend for MockBackend {
                 "artifact_read",
                 "git",
                 "pty",
+                "list_providers",
+                "session_model",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -544,6 +551,71 @@ impl UiBackend for MockBackend {
             .await
             .insert(session_id, mode);
         Ok(mode)
+    }
+
+    async fn list_providers(&self) -> Result<Vec<ModelProviderStatus>> {
+        Ok(self.inner.provider_catalog.lock().await.clone())
+    }
+
+    async fn get_session_model(&self, session_id: Uuid) -> Result<SessionModelSelection> {
+        if let Some(selection) = self
+            .inner
+            .session_models
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+        {
+            return Ok(selection);
+        }
+        let catalog = self.inner.provider_catalog.lock().await;
+        let default = catalog
+            .iter()
+            .find(|row| row.is_default)
+            .or_else(|| catalog.first())
+            .ok_or_else(|| anyhow!("demo catalog empty"))?;
+        Ok(SessionModelSelection {
+            provider_id: default.provider_id.clone(),
+            model_id: default.model_id.clone(),
+            reasoning_effort: default.default_reasoning_effort.clone(),
+        })
+    }
+
+    async fn set_session_model(
+        &self,
+        session_id: Uuid,
+        provider_id: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+    ) -> Result<SessionModelSelection> {
+        let catalog = self.inner.provider_catalog.lock().await;
+        let row = catalog
+            .iter()
+            .find(|row| row.provider_id == provider_id && row.model_id == model_id)
+            .ok_or_else(|| anyhow!("unknown provider/model in demo catalog"))?;
+        if matches!(row.availability, ModelAvailability::Unavailable)
+            || matches!(row.health, ModelProviderHealthLabel::Unavailable { .. })
+        {
+            return Err(anyhow!("model unavailable"));
+        }
+        if let Some(effort) = reasoning_effort.as_ref()
+            && !row.reasoning_efforts.is_empty()
+            && !row.reasoning_efforts.iter().any(|e| e == effort)
+        {
+            return Err(anyhow!("reasoning effort not advertised for model"));
+        }
+        let selection = SessionModelSelection {
+            provider_id,
+            model_id,
+            reasoning_effort,
+        };
+        drop(catalog);
+        self.inner
+            .session_models
+            .lock()
+            .await
+            .insert(session_id, selection.clone());
+        Ok(selection)
     }
 
     async fn list_workspace_dir(
@@ -826,6 +898,43 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn demo_provider_catalog() -> Vec<ModelProviderStatus> {
+    let mut mock_fast =
+        ModelProviderStatus::basic("mock", "mock-fast", ModelProviderHealthLabel::Healthy, true);
+    mock_fast.reasoning_efforts = vec!["low".into(), "medium".into(), "high".into()];
+    mock_fast.default_reasoning_effort = Some("medium".into());
+    mock_fast.service_tiers = vec!["flex".into(), "default".into()];
+    mock_fast.provider_options = serde_json::json!({ "region": ["local", "ci"] });
+
+    let mut mock_deep = ModelProviderStatus::basic(
+        "mock",
+        "mock-deep",
+        ModelProviderHealthLabel::Healthy,
+        false,
+    );
+    mock_deep.reasoning_efforts = vec!["medium".into(), "high".into()];
+    mock_deep.default_reasoning_effort = Some("high".into());
+
+    let mut offline = ModelProviderStatus::basic(
+        "offline",
+        "offline-model",
+        ModelProviderHealthLabel::Unavailable {
+            last_error_redacted: "provider unreachable".into(),
+        },
+        false,
+    );
+    offline.availability = ModelAvailability::Unavailable;
+
+    let other = ModelProviderStatus::basic(
+        "other",
+        "other-base",
+        ModelProviderHealthLabel::Unknown,
+        false,
+    );
+
+    vec![mock_fast, mock_deep, offline, other]
 }
 
 fn demo_entry(name: &str, path: &str, is_dir: bool) -> WorkspaceDirEntry {

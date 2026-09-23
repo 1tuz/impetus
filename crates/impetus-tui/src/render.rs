@@ -93,6 +93,11 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState, theme: Theme) {
         ),
         Span::styled("  ·  ", Style::default().fg(theme.border).bg(theme.surface)),
         Span::styled(
+            app.session_model_label(),
+            Style::default().fg(theme.yellow).bg(theme.surface),
+        ),
+        Span::styled("  ·  ", Style::default().fg(theme.border).bg(theme.surface)),
+        Span::styled(
             app.current_branch
                 .as_deref()
                 .map(|name| format!("⎇ {name}"))
@@ -557,6 +562,7 @@ fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
         }
         Overlay::Modes { selected } => render_mode_picker(frame, app, selected, theme),
         Overlay::Themes { selected } => render_theme_picker(frame, app, selected, theme),
+        Overlay::ModelPicker { state } => render_model_picker(frame, app, &state, theme),
         Overlay::Approval { selected } => render_approval(frame, app, selected, theme),
         Overlay::ApprovalDetail => render_approval_detail(frame, app, theme),
         Overlay::LargePaste => render_large_paste(frame, app, theme),
@@ -662,6 +668,7 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  F3                toggle inspector",
         "  Shift+Tab         cycle ASK → ACCEPT EDITS → PLAN → AUTO (daemon IPC)",
         "  F4                execution mode picker (includes BYPASS when unlocked)",
+        "  F8 / /model       Provider→Model→Reasoning→options (daemon catalog)",
         "  /mode /plan /ask /auto   set mode via daemon IPC",
         "  /theme            theme picker (Impetus neon + geek pack)",
         "  /attach [path]    attach local file via durable artifact_upload",
@@ -1215,6 +1222,196 @@ fn render_mode_picker(frame: &mut Frame, app: &AppState, selected: usize, theme:
             .highlight_style(theme.selected()),
         inner,
         &mut state,
+    );
+}
+
+fn render_model_picker(
+    frame: &mut Frame,
+    app: &AppState,
+    state: &crate::catalog::ModelPickerState,
+    theme: Theme,
+) {
+    use crate::catalog::{
+        ModelPickerStep, filter_by_query, models_for_provider, option_choices, provider_choices,
+        row_is_selectable, session_model_label,
+    };
+
+    let area = centered_rect(78, 72, frame.area());
+    frame.render_widget(Clear, area);
+    let step_label = match state.step {
+        ModelPickerStep::Provider => "provider",
+        ModelPickerStep::Model => "model",
+        ModelPickerStep::Reasoning => "reasoning",
+        ModelPickerStep::Options => "options",
+    };
+    let draft = session_model_label(
+        Some(&impetus_client::protocol::SessionModelSelection {
+            provider_id: state
+                .draft_provider_id
+                .clone()
+                .unwrap_or_else(|| "—".into()),
+            model_id: state.draft_model_id.clone().unwrap_or_else(|| "—".into()),
+            reasoning_effort: state.draft_reasoning.clone(),
+        }),
+        state.draft_options.as_ref(),
+    );
+    let title = format!(
+        " model · {step_label} · Enter · Esc/Left back · filter `{query}` · {draft} ",
+        query = if state.query.is_empty() {
+            "…"
+        } else {
+            state.query.as_str()
+        }
+    );
+    let block = panel_block(title.as_str(), true, theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let items: Vec<ListItem> = match state.step {
+        ModelPickerStep::Provider => {
+            let providers = provider_choices(&app.provider_catalog);
+            let filtered = filter_by_query(&providers, &state.query, |p| p.display_name.clone());
+            filtered
+                .into_iter()
+                .map(|(_, p)| {
+                    let active = app
+                        .session_model
+                        .as_ref()
+                        .is_some_and(|s| s.provider_id == p.provider_id);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            if active { "● " } else { "○ " },
+                            Style::default().fg(if active { theme.green } else { theme.border }),
+                        ),
+                        Span::styled(
+                            p.display_name.clone(),
+                            Style::default()
+                                .fg(if p.selectable {
+                                    theme.text
+                                } else {
+                                    theme.muted
+                                })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if p.selectable {
+                                format!("  ({})", p.provider_id)
+                            } else {
+                                format!("  ({})  unavailable", p.provider_id)
+                            },
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]))
+                })
+                .collect()
+        }
+        ModelPickerStep::Model => {
+            let provider_id = state.draft_provider_id.as_deref().unwrap_or("");
+            let models = models_for_provider(&app.provider_catalog, provider_id);
+            let filtered = filter_by_query(&models, &state.query, |row| {
+                row.model_display_name
+                    .clone()
+                    .unwrap_or_else(|| row.model_id.clone())
+            });
+            filtered
+                .into_iter()
+                .map(|(_, row)| {
+                    let selectable = row_is_selectable(row);
+                    let active = app.session_model.as_ref().is_some_and(|s| {
+                        s.provider_id == row.provider_id && s.model_id == row.model_id
+                    });
+                    let name = row
+                        .model_display_name
+                        .clone()
+                        .unwrap_or_else(|| row.model_id.clone());
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            if active { "● " } else { "○ " },
+                            Style::default().fg(if active { theme.green } else { theme.border }),
+                        ),
+                        Span::styled(
+                            name,
+                            Style::default()
+                                .fg(if selectable { theme.text } else { theme.muted })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if selectable {
+                                String::new()
+                            } else {
+                                "  unavailable".to_owned()
+                            },
+                            Style::default().fg(theme.yellow),
+                        ),
+                    ]))
+                })
+                .collect()
+        }
+        ModelPickerStep::Reasoning => {
+            let provider_id = state.draft_provider_id.as_deref().unwrap_or("");
+            let model_id = state.draft_model_id.as_deref().unwrap_or("");
+            let efforts = crate::catalog::find_row(&app.provider_catalog, provider_id, model_id)
+                .map(|row| row.reasoning_efforts.clone())
+                .unwrap_or_default();
+            efforts
+                .into_iter()
+                .map(|effort| {
+                    let active = state.draft_reasoning.as_deref() == Some(effort.as_str())
+                        || app
+                            .session_model
+                            .as_ref()
+                            .and_then(|s| s.reasoning_effort.as_deref())
+                            == Some(effort.as_str());
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            if active { "● " } else { "○ " },
+                            Style::default().fg(if active { theme.green } else { theme.border }),
+                        ),
+                        Span::styled(effort, Style::default().fg(theme.text)),
+                    ]))
+                })
+                .collect()
+        }
+        ModelPickerStep::Options => {
+            let provider_id = state.draft_provider_id.as_deref().unwrap_or("");
+            let model_id = state.draft_model_id.as_deref().unwrap_or("");
+            let mut items = vec![ListItem::new(Line::from(Span::styled(
+                "○ Skip options (catalog only; SetSessionModel options = #328)",
+                Style::default().fg(theme.muted),
+            )))];
+            if let Some(row) =
+                crate::catalog::find_row(&app.provider_catalog, provider_id, model_id)
+            {
+                for choice in option_choices(row) {
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        format!("○ {}", choice.label),
+                        Style::default().fg(theme.text),
+                    ))));
+                }
+            }
+            items
+        }
+    };
+
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Catalog empty for this step.",
+                Style::default().fg(theme.muted),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected.min(items.len().saturating_sub(1))));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(theme.selected()),
+        inner,
+        &mut list_state,
     );
 }
 
