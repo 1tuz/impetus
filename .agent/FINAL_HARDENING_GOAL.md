@@ -183,17 +183,22 @@ After implementation, launch a fresh review wave for architecture, tests, CI, AC
 
 Do not mark the goal complete until all are true:
 
-- PR pipeline is ultra-light and does not run macOS/tests/clippy/security by default
-- nightly full pipeline runs at 02:00 UTC+3 and manually on demand
-- local default checks are only fmt/diff plus optional tiny targeted diagnostics
-- service tier/provider options reach real provider requests and persist correctly
-- ACP has one complete durable permission path with no contradictory incomplete public fallback
-- real daemon E2E covers approval/provider options/MCP mutation and the other critical boundaries
-- external extension repositories can implement real capabilities through public SDK/host contracts
-- Browser/LSP/Memory ownership is explicit and non-duplicated
-- negotiated IPC capabilities are actually used client-side
-- Linux/nightly and macOS/nightly validations pass
-- docs match code
+- [x] PR pipeline is ultra-light and does not run macOS/tests/clippy/security by default
+- [x] nightly full pipeline runs at 02:00 UTC+3 and manually on demand
+- [x] local default checks are only fmt/diff plus optional tiny targeted diagnostics
+- [x] service tier/provider options reach real provider requests and persist correctly
+- [x] ACP has one complete durable permission path with no contradictory incomplete public fallback
+- [x] real daemon E2E covers approval/provider options/MCP mutation and the other critical boundaries
+- [x] external extension repositories can implement real capabilities through public SDK/host contracts
+      (git pin; crates.io still open — honesty Remaining)
+- [x] Browser/LSP/Memory ownership is explicit and non-duplicated
+- [x] negotiated IPC capabilities are actually used client-side (`UnixSocketTransport`)
+- [x] Linux/nightly and macOS/nightly validations pass (run `35845763392` green)
+- [x] docs match code (post #378 honesty wave)
+
+**Open external / Next (not GOAL blockers):** crates.io SDK publish; Tool/Command →
+AgentLoop catalog; `impetus-extensions` demo repo; deeper operate→EffectSeam if
+product demands it (today: manifest gate + honesty docs).
 
 ## Final report
 
