@@ -44,6 +44,7 @@ pub mod extension_compat;
 pub mod extension_host;
 pub mod extension_host_process;
 pub mod extension_id;
+pub mod extension_inventory;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
 pub mod extension_policy;
@@ -253,12 +254,18 @@ pub use extension_id::{
     is_valid_extension_id, join_under_extension_root, mcp_install_path, normalize_extension_id,
     skill_install_path,
 };
+pub use extension_inventory::{
+    EffectiveInventory, EffectiveInventoryEntry, InventoryError, InventoryKind, InventoryOrigin,
+    LegacyMigrationMarker, build_effective_inventory, daemon_legacy_skill_path,
+    daemon_legacy_skill_roots, effective_skill_roots, migrate_legacy_to_daemon,
+};
 pub use extension_lifecycle::{
-    ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionLifecycleStatus,
-    ExtensionRuntime, ExtensionState, ExtensionStateStore, InstallHealthReport, InstallPlan,
-    LifecycleError, LifecycleResult, PathHealthReport, PathHealthStatus, PlanError, RemoveError,
-    RemoveResult, RepairError, RepairResult, ResolutionPlan, apply_install, disable_install,
-    doctor_install, enable_install, plan_install, remove_install, repair_install, unload_install,
+    ApplyError, DoctorError, DoctorReport, ExtensionInstallIntent, ExtensionInstallLayout,
+    ExtensionLifecycleStatus, ExtensionRuntime, ExtensionState, ExtensionStateStore,
+    InstallHealthReport, InstallPlan, LifecycleError, LifecycleResult, PathHealthReport,
+    PathHealthStatus, PlanError, RemoveError, RemoveResult, RepairError, RepairResult,
+    ResolutionPlan, apply_install, disable_install, doctor_install, enable_install, plan_install,
+    plan_install_with_layout, remove_install, repair_install, unload_install,
 };
 pub use extension_manifest::{
     EXTENSION_SCHEMA_ID, EXTENSION_SCHEMA_VERSION, ExtensionManifest, ExtensionManifestError,

@@ -54,9 +54,12 @@ enum ExtensionAction {
         kind: extension::ExtensionKind,
         /// Path to SKILL.md / skill dir, or MCP config JSON
         path: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -68,9 +71,12 @@ enum ExtensionAction {
         kind: extension::ExtensionKind,
         /// Path to SKILL.md / skill dir, or MCP config JSON
         path: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -79,9 +85,12 @@ enum ExtensionAction {
     Remove {
         /// Installation ID from a prior `extension install`
         installation_id: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -90,9 +99,12 @@ enum ExtensionAction {
     Enable {
         /// Installation ID from a prior `extension install`
         installation_id: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -101,9 +113,12 @@ enum ExtensionAction {
     Disable {
         /// Installation ID from a prior `extension install`
         installation_id: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -112,18 +127,36 @@ enum ExtensionAction {
     Unload {
         /// Installation ID from a prior `extension install`
         installation_id: String,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
     },
-    /// List install states and restart-load eligibility
+    /// List install states / effective daemon inventory
     List {
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Emit JSON instead of human text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Migrate workspace `.impetus/` Enabled installs into daemon SoT
+    Migrate {
+        /// Legacy project root with `.impetus/install_state.db` (default: cwd)
+        #[arg(long)]
+        from: Option<String>,
+        /// Daemon data root (required unless $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -132,9 +165,12 @@ enum ExtensionAction {
     Doctor {
         /// Optional installation ID; omit to check all under --root
         installation_id: Option<String>,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -146,9 +182,12 @@ enum ExtensionAction {
         /// Overwrite paths whose digest no longer matches ownership (user edits)
         #[arg(long)]
         force: bool,
-        /// Target project root (default: cwd)
+        /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
+        /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
+        #[arg(long)]
+        data_dir: Option<String>,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
@@ -309,13 +348,16 @@ async fn main() -> Result<()> {
                     kind,
                     path,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
                     extension::plan(
                         *kind,
                         std::path::Path::new(path),
                         root_path.as_deref(),
+                        data_path.as_deref(),
                         *json,
                     )
                     .await?;
@@ -324,13 +366,16 @@ async fn main() -> Result<()> {
                     kind,
                     path,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
                     extension::install(
                         *kind,
                         std::path::Path::new(path),
                         root_path.as_deref(),
+                        data_path.as_deref(),
                         *json,
                     )
                     .await?;
@@ -338,55 +383,112 @@ async fn main() -> Result<()> {
                 ExtensionAction::Remove {
                     installation_id,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::remove(installation_id, root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::remove(
+                        installation_id,
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *json,
+                    )?;
                 }
                 ExtensionAction::Enable {
                     installation_id,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::enable(installation_id, root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::enable(
+                        installation_id,
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *json,
+                    )?;
                 }
                 ExtensionAction::Disable {
                     installation_id,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::disable(installation_id, root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::disable(
+                        installation_id,
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *json,
+                    )?;
                 }
                 ExtensionAction::Unload {
                     installation_id,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::unload(installation_id, root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::unload(
+                        installation_id,
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *json,
+                    )?;
                 }
-                ExtensionAction::List { root, json } => {
+                ExtensionAction::List {
+                    root,
+                    data_dir,
+                    json,
+                } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::list(root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::list(root_path.as_deref(), data_path.as_deref(), *json)?;
+                }
+                ExtensionAction::Migrate {
+                    from,
+                    data_dir,
+                    json,
+                } => {
+                    let from_path = from.as_ref().map(std::path::PathBuf::from);
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::migrate(from_path.as_deref(), data_path.as_deref(), *json)?;
                 }
                 ExtensionAction::Doctor {
                     installation_id,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::doctor(installation_id.as_deref(), root_path.as_deref(), *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::doctor(
+                        installation_id.as_deref(),
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *json,
+                    )?;
                 }
                 ExtensionAction::Repair {
                     installation_id,
                     force,
                     root,
+                    data_dir,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
-                    extension::repair(installation_id, root_path.as_deref(), *force, *json)?;
+                    let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
+                    extension::repair(
+                        installation_id,
+                        root_path.as_deref(),
+                        data_path.as_deref(),
+                        *force,
+                        *json,
+                    )?;
                 }
             }
             return Ok(());
@@ -645,10 +747,40 @@ mod tests {
                         installation_id,
                         json: true,
                         root: Some(root),
+                        ..
                     },
             } => {
                 assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");
                 assert_eq!(root, "/tmp/project");
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_migrate() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "migrate",
+            "--from",
+            "/tmp/project",
+            "--data-dir",
+            "/tmp/data",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Migrate {
+                        from: Some(from),
+                        data_dir: Some(data),
+                        json: true,
+                    },
+            } => {
+                assert_eq!(from, "/tmp/project");
+                assert_eq!(data, "/tmp/data");
             }
             _ => panic!("unexpected command variant"),
         }
@@ -740,6 +872,7 @@ mod tests {
                         installation_id: Some(id),
                         json: false,
                         root: Some(root),
+                        ..
                     },
             } => {
                 assert_eq!(id, "11111111-2222-3333-4444-555555555555");
@@ -770,6 +903,7 @@ mod tests {
                         force: true,
                         json: true,
                         root: Some(root),
+                        ..
                     },
             } => {
                 assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");

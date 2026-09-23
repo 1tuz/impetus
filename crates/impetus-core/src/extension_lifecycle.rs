@@ -273,6 +273,16 @@ pub enum RemoveError {
     InvalidId(#[from] ExtensionIdError),
 }
 
+/// Install destination layout: workspace project tree vs daemon data root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExtensionInstallLayout {
+    /// `{root}/.impetus/skills|mcp/…` (project-scoped).
+    #[default]
+    Workspace,
+    /// Daemon SoT: `{data}/extensions/legacy_skills/…` + `{data}/mcp/…`.
+    Daemon,
+}
+
 /// Plan install destinations under `target_root` without writing anything.
 ///
 /// Destinations (project-scoped layout used by instruction resolver):
@@ -282,13 +292,26 @@ pub async fn plan_install(
     intent: &ExtensionInstallIntent,
     target_root: &Path,
 ) -> Result<InstallPlan, PlanError> {
+    plan_install_with_layout(intent, target_root, ExtensionInstallLayout::Workspace).await
+}
+
+/// Plan with explicit workspace vs daemon SoT layout.
+pub async fn plan_install_with_layout(
+    intent: &ExtensionInstallIntent,
+    target_root: &Path,
+    layout: ExtensionInstallLayout,
+) -> Result<InstallPlan, PlanError> {
     match intent {
-        ExtensionInstallIntent::Skill { path } => plan_skill(path, target_root).await,
-        ExtensionInstallIntent::McpConfig { path } => plan_mcp_config(path, target_root),
+        ExtensionInstallIntent::Skill { path } => plan_skill(path, target_root, layout).await,
+        ExtensionInstallIntent::McpConfig { path } => plan_mcp_config(path, target_root, layout),
     }
 }
 
-async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanError> {
+async fn plan_skill(
+    path: &Path,
+    target_root: &Path,
+    layout: ExtensionInstallLayout,
+) -> Result<InstallPlan, PlanError> {
     let skill_md = if path.is_dir() {
         path.join("SKILL.md")
     } else {
@@ -316,7 +339,10 @@ async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, Plan
         vec!["instructions".to_string(), "triggers".to_string()],
     )?;
 
-    let dest = skill_install_path(target_root, &module_id)?;
+    let dest = match layout {
+        ExtensionInstallLayout::Workspace => skill_install_path(target_root, &module_id)?,
+        ExtensionInstallLayout::Daemon => crate::daemon_legacy_skill_path(target_root, &module_id)?,
+    };
     let resolution = ResolutionPlan {
         source: ExtensionSource::AgentSkills,
         module_id,
@@ -327,7 +353,11 @@ async fn plan_skill(path: &Path, target_root: &Path) -> Result<InstallPlan, Plan
     classify_plan(resolution, manifest, vec![dest])
 }
 
-fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanError> {
+fn plan_mcp_config(
+    path: &Path,
+    target_root: &Path,
+    layout: ExtensionInstallLayout,
+) -> Result<InstallPlan, PlanError> {
     if !path.is_file() {
         return Err(PlanError::Resolve(format!(
             "MCP config not found at {}",
@@ -353,7 +383,12 @@ fn plan_mcp_config(path: &Path, target_root: &Path) -> Result<InstallPlan, PlanE
         mcp_capability_tokens(&module),
     )?;
 
-    let dest = mcp_install_path(target_root, &module_id)?;
+    let dest = match layout {
+        ExtensionInstallLayout::Workspace => mcp_install_path(target_root, &module_id)?,
+        ExtensionInstallLayout::Daemon => {
+            crate::daemon_wiring::daemon_mcp_dir(target_root).join(format!("{module_id}.json"))
+        }
+    };
     let resolution = ResolutionPlan {
         source: ExtensionSource::Mcp,
         module_id,
