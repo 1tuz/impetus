@@ -474,7 +474,8 @@ impl PolicyStore {
             .collect()
     }
 
-    fn validate(&self) -> Result<(), PolicyStoreError> {
+    /// Validate store version and governed instruction labels (no secrets).
+    pub fn validate(&self) -> Result<(), PolicyStoreError> {
         if self.version != POLICY_STORE_VERSION {
             return Err(PolicyStoreError::UnsupportedVersion(self.version));
         }

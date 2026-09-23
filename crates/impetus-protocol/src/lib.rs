@@ -17,6 +17,8 @@ pub use events::{
 };
 pub use ipc::{
     IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode,
-    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
+    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, capability_allows, negotiate_ipc_version,
+    required_capability, trim_events_to_ipc_frame, validate_request_on_wire,
+    validate_response_on_wire,
 };
 pub use types::*;

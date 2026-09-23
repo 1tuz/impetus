@@ -838,6 +838,232 @@ fn default_min_supported() -> u16 {
     IPC_MIN_SUPPORTED
 }
 
+/// Select highest mutually supported IPC version in the client/server overlap.
+///
+/// Client omits `min_version` → treat as exact (`client_min = client_max`).
+/// Empty overlap → `None` (wire maps to [`IpcResponse::Incompatible`]).
+pub fn negotiate_ipc_version(
+    client_max: u16,
+    client_min: Option<u16>,
+    server_max: u16,
+    server_min: u16,
+) -> Option<u16> {
+    let client_min = client_min.unwrap_or(client_max);
+    if client_min > client_max {
+        return None;
+    }
+    let lo = client_min.max(server_min);
+    let hi = client_max.min(server_max);
+    if lo > hi { None } else { Some(hi) }
+}
+
+/// Capability name required after Hello for this request.
+///
+/// [`IpcRequest::Hello`] returns `None` (negotiated separately).
+pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
+    Some(match request {
+        IpcRequest::Hello { .. } => return None,
+        IpcRequest::CreateSession { .. } => "session_create",
+        IpcRequest::Attach { .. } => "session_attach",
+        IpcRequest::ListSessions => "session_list",
+        IpcRequest::ForkSession { .. } => "session_fork",
+        IpcRequest::CreateCheckpoint { .. }
+        | IpcRequest::ListCheckpoints { .. }
+        | IpcRequest::RestoreCheckpoint { .. } => "session_checkpoint",
+        IpcRequest::Stream { .. } => "event_stream",
+        IpcRequest::Prompt { .. } => "prompt",
+        IpcRequest::Context { .. } => "context",
+        IpcRequest::Cancel { .. } => "cancel",
+        IpcRequest::Tool { .. } => "tool",
+        IpcRequest::Subscribe { .. } => "subscribe",
+        IpcRequest::ResolveApproval { .. } => "resolve_approval",
+        IpcRequest::GetAttachment { .. } => "get_attachment",
+        IpcRequest::GetApprovalDetail { .. } => "get_approval_detail",
+        IpcRequest::BeginArtifactUpload { .. }
+        | IpcRequest::AppendArtifactChunk { .. }
+        | IpcRequest::FinishArtifactUpload { .. }
+        | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
+        IpcRequest::ReadArtifact { .. }
+        | IpcRequest::GetArtifactMetadata { .. }
+        | IpcRequest::ReadArtifactRange { .. } => "artifact_read",
+        IpcRequest::Diagnostics => "diagnostics",
+        IpcRequest::GotoDefinition { .. } => "coding_definition",
+        IpcRequest::Hover { .. } => "coding_hover",
+        IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
+            "execution_mode"
+        }
+        IpcRequest::ReloadPolicyConfig { .. } => "reload_policy_config",
+        IpcRequest::ReloadPolicyStore { .. } | IpcRequest::GetPolicyStore => "reload_policy_store",
+        IpcRequest::ListChildRuns { .. } | IpcRequest::GetChildRun { .. } => "list_child_runs",
+        IpcRequest::StartWorkflow { .. }
+        | IpcRequest::CancelWorkflow { .. }
+        | IpcRequest::AdvanceWorkflow { .. } => "workflow_control",
+        IpcRequest::ListWorkspaceDir { .. } => "workspace_list_dir",
+        IpcRequest::StatWorkspaceFile { .. } => "workspace_stat_file",
+        IpcRequest::ReadWorkspaceFile { .. } => "workspace_read_file",
+        IpcRequest::SearchWorkspaceFiles { .. } => "workspace_search_files",
+        IpcRequest::GetDiff { .. }
+        | IpcRequest::GetFileDiff { .. }
+        | IpcRequest::GetRepositoryState { .. }
+        | IpcRequest::ListBranches { .. }
+        | IpcRequest::GetCurrentBranch { .. }
+        | IpcRequest::CreateBranch { .. }
+        | IpcRequest::SwitchBranch { .. }
+        | IpcRequest::GitStatus { .. }
+        | IpcRequest::ListChangedFiles { .. } => "git",
+        IpcRequest::PtyStart { .. }
+        | IpcRequest::PtyAttach { .. }
+        | IpcRequest::PtyInput { .. }
+        | IpcRequest::PtyOutput { .. }
+        | IpcRequest::PtyResize { .. }
+        | IpcRequest::PtyDetach { .. }
+        | IpcRequest::PtyTerminate { .. }
+        | IpcRequest::PtyStatus { .. } => "pty",
+        IpcRequest::ListMcpServers => "list_mcp",
+        IpcRequest::ListModels => "list_models",
+        IpcRequest::ListProviders => "list_providers",
+        IpcRequest::GetSessionModel { .. } | IpcRequest::SetSessionModel { .. } => "session_model",
+        IpcRequest::CreateWorktree { .. }
+        | IpcRequest::ListWorktrees { .. }
+        | IpcRequest::GetWorktree { .. }
+        | IpcRequest::CloseWorktree { .. }
+        | IpcRequest::ResumeWorktree { .. }
+        | IpcRequest::StopWorktree { .. }
+        | IpcRequest::CheckWorktreeMergeReady { .. }
+        | IpcRequest::MergeWorktree { .. } => "worktrees",
+        IpcRequest::ReloadMcpServers
+        | IpcRequest::UpsertMcpServer { .. }
+        | IpcRequest::RemoveMcpServer { .. }
+        | IpcRequest::EnableMcpServer { .. }
+        | IpcRequest::DisableMcpServer { .. } => "mcp_manage",
+        IpcRequest::ListMemory { .. } | IpcRequest::GetMemory { .. } => "memory",
+        IpcRequest::AppendMemory { .. }
+        | IpcRequest::ClearMemory { .. }
+        | IpcRequest::ExportMemory { .. } => "memory_manage",
+        IpcRequest::GetBrowserHealth | IpcRequest::NegotiateBrowser { .. } => "browser",
+        IpcRequest::ListExtensions | IpcRequest::GetExtensionStatus { .. } => "extension_runtime",
+        IpcRequest::ReloadExtensionPackages
+        | IpcRequest::ListExtensionPackages
+        | IpcRequest::GetExtensionPackage { .. }
+        | IpcRequest::EnableExtensionPackage { .. }
+        | IpcRequest::DisableExtensionPackage { .. } => "extension_manage",
+    })
+}
+
+/// Fail closed on mutating / security-relevant request payloads before dispatch.
+///
+/// Covers versioned PolicyConfig/PolicyStore JSON, empty mutating ids, and
+/// SetSessionModel labels. Path-only reloads defer file IO to the harness.
+pub fn validate_request_on_wire(request: &IpcRequest) -> Result<(), String> {
+    match request {
+        IpcRequest::ReloadPolicyConfig { path, config_json } => {
+            match (path.as_ref(), config_json.as_ref()) {
+                (Some(_), Some(_)) => {
+                    Err("reload_policy_config: supply path or config_json, not both".into())
+                }
+                (None, None) => Err("reload_policy_config: supply path or config_json".into()),
+                (Some(_), None) => Ok(()),
+                (None, Some(json)) => PolicyConfig::parse(json)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            }
+        }
+        IpcRequest::ReloadPolicyStore { path, store_json } => {
+            match (path.as_ref(), store_json.as_ref()) {
+                (Some(_), Some(_)) => {
+                    Err("reload_policy_store: supply path or store_json, not both".into())
+                }
+                (None, None) => Err("reload_policy_store: supply path or store_json".into()),
+                (Some(_), None) => Ok(()),
+                (None, Some(json)) => PolicyStore::parse(json)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            }
+        }
+        IpcRequest::SetSessionModel {
+            provider_id,
+            model_id,
+            ..
+        } => {
+            if provider_id.trim().is_empty() {
+                return Err("set_session_model: provider_id must not be empty".into());
+            }
+            if model_id.trim().is_empty() {
+                return Err("set_session_model: model_id must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::UpsertMcpServer { server } => {
+            if server.id.trim().is_empty() {
+                return Err("upsert_mcp_server: id must not be empty".into());
+            }
+            if server.command.trim().is_empty() {
+                return Err("upsert_mcp_server: command must not be empty".into());
+            }
+            if server
+                .env_keys
+                .iter()
+                .any(|key| key.trim().is_empty() || key.contains('='))
+            {
+                return Err(
+                    "upsert_mcp_server: env_keys must be non-empty labels (never KEY=value)".into(),
+                );
+            }
+            Ok(())
+        }
+        IpcRequest::RemoveMcpServer { id }
+        | IpcRequest::EnableMcpServer { id }
+        | IpcRequest::DisableMcpServer { id } => {
+            if id.trim().is_empty() {
+                return Err("mcp_manage: id must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::AppendMemory { id, content, .. } => {
+            if id.trim().is_empty() {
+                return Err("append_memory: id must not be empty".into());
+            }
+            if content.is_empty() {
+                return Err("append_memory: content must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::ClearMemory { .. } | IpcRequest::ResolveApproval { .. } => Ok(()),
+        _ => Ok(()),
+    }
+}
+
+/// Fail closed on versioned mutating responses before they leave the daemon.
+pub fn validate_response_on_wire(response: &IpcResponse) -> Result<(), String> {
+    match response {
+        IpcResponse::ApprovalDetail { detail, .. } => {
+            detail.validate_schema_version().map_err(|e| e.to_string())
+        }
+        IpcResponse::PolicyConfig { config } => {
+            if config.version != crate::types::POLICY_CONFIG_VERSION {
+                return Err(format!(
+                    "unsupported policy config version: {} (expected {})",
+                    config.version,
+                    crate::types::POLICY_CONFIG_VERSION
+                ));
+            }
+            Ok(())
+        }
+        IpcResponse::PolicyStore { store } => store.validate().map_err(|e| e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// True when `capabilities` contains the capability required by `request`.
+///
+/// Hello always passes (no required cap). Used by client unix gating and tests.
+pub fn capability_allows(capabilities: &[String], request: &IpcRequest) -> bool {
+    match required_capability(request) {
+        None => true,
+        Some(required) => capabilities.iter().any(|c| c == required),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IpcErrorCode {
@@ -1385,5 +1611,163 @@ mod sentinel_protocol {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn adjacent_version_negotiation_selects_overlap() {
+        // v12-only client against current server → 12.
+        assert_eq!(
+            negotiate_ipc_version(12, Some(12), IPC_VERSION, IPC_MIN_SUPPORTED),
+            Some(12)
+        );
+        // Client speaks 12..=14 → highest = IPC_VERSION.
+        assert_eq!(
+            negotiate_ipc_version(IPC_VERSION, Some(12), IPC_VERSION, IPC_MIN_SUPPORTED),
+            Some(IPC_VERSION)
+        );
+        // Client only speaks 11 → empty overlap.
+        assert_eq!(
+            negotiate_ipc_version(11, Some(11), IPC_VERSION, IPC_MIN_SUPPORTED),
+            None
+        );
+        // Client newer than server, min still overlaps → server max.
+        assert_eq!(
+            negotiate_ipc_version(
+                IPC_VERSION + 1,
+                Some(IPC_MIN_SUPPORTED),
+                IPC_VERSION,
+                IPC_MIN_SUPPORTED
+            ),
+            Some(IPC_VERSION)
+        );
+        // Legacy exact-version on server max.
+        assert_eq!(
+            negotiate_ipc_version(IPC_VERSION, None, IPC_VERSION, IPC_MIN_SUPPORTED),
+            Some(IPC_VERSION)
+        );
+        // min_version > max → invalid.
+        assert_eq!(
+            negotiate_ipc_version(13, Some(14), IPC_VERSION, IPC_MIN_SUPPORTED),
+            None
+        );
+    }
+
+    #[test]
+    fn unsupported_capability_gate_rejects_optional_calls() {
+        let caps = vec!["session_list".to_string()];
+        assert!(capability_allows(&caps, &IpcRequest::ListSessions));
+        assert!(!capability_allows(&caps, &IpcRequest::ListMcpServers));
+        assert!(!capability_allows(
+            &caps,
+            &IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":1}"#.into()),
+            }
+        ));
+        assert!(capability_allows(
+            &[],
+            &IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: vec![],
+            }
+        ));
+        assert_eq!(
+            required_capability(&IpcRequest::ListMcpServers),
+            Some("list_mcp")
+        );
+        assert_eq!(
+            required_capability(&IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: None,
+                capabilities: vec![],
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn mutating_request_validate_on_wire_rejects_bad_payloads() {
+        assert!(
+            validate_request_on_wire(&IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":99}"#.into()),
+            })
+            .unwrap_err()
+            .contains("unsupported policy config version")
+        );
+        assert!(
+            validate_request_on_wire(&IpcRequest::SetSessionModel {
+                session_id: Uuid::nil(),
+                provider_id: " ".into(),
+                model_id: "m".into(),
+                reasoning_effort: None,
+            })
+            .unwrap_err()
+            .contains("provider_id")
+        );
+        assert!(
+            validate_request_on_wire(&IpcRequest::UpsertMcpServer {
+                server: McpServerUpsert {
+                    id: "echo".into(),
+                    name: "echo".into(),
+                    command: "true".into(),
+                    args: vec![],
+                    transport: crate::types::McpTransport::Stdio,
+                    capabilities: crate::types::McpCapabilities::default(),
+                    env_keys: vec!["TOKEN=secret".into()],
+                },
+            })
+            .unwrap_err()
+            .contains("env_keys")
+        );
+        assert!(
+            validate_request_on_wire(&IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":1}"#.into()),
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn mutating_response_validate_on_wire_checks_approval_detail_version() {
+        use crate::types::{
+            APPROVAL_DETAIL_SCHEMA_VERSION, Action, ActionKind, ActionOrigin, ApprovalRequest,
+        };
+
+        let mut detail = ApprovalDetail {
+            schema_version: APPROVAL_DETAIL_SCHEMA_VERSION,
+            request: ApprovalRequest::pending(
+                Action {
+                    origin: ActionOrigin::Agent,
+                    kind: ActionKind::WriteFile,
+                    summary: "edit".into(),
+                    target: Some("a.rs".into()),
+                },
+                "needs approval".into(),
+                1,
+            ),
+            diff_preview: None,
+            diff_observation: None,
+            affected_files: vec![],
+            estimated_scope: None,
+            attachment_refs: vec![],
+        };
+        let ok = IpcResponse::ApprovalDetail {
+            session_id: Uuid::nil(),
+            detail: Box::new(detail.clone()),
+        };
+        assert!(validate_response_on_wire(&ok).is_ok());
+        detail.schema_version = 99;
+        let bad = IpcResponse::ApprovalDetail {
+            session_id: Uuid::nil(),
+            detail: Box::new(detail),
+        };
+        assert!(
+            validate_response_on_wire(&bad)
+                .unwrap_err()
+                .contains("unsupported")
+        );
     }
 }

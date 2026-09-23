@@ -36,7 +36,6 @@ Actionable after Now. Not priority theatre.
 
 ### Daemon / protocol
 
-- [ ] Schema: broader validate-on-wire coverage
 - [ ] AttachmentStore: bind `GetAttachment` to session; TUI fetch path
 - [ ] Child mid-run action stream (progress / tool detail on parent log)
 - [ ] Same-uid peer isolation beyond connection-bind (enforce `IMPETUS_ACP_CHILD` /

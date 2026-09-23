@@ -288,6 +288,24 @@ pub fn validate_envelope(
     Ok(spec)
 }
 
+/// Schemas enforced on mutating / security-relevant IPC responses when present.
+pub const WIRE_RESPONSE_SCHEMAS: &[SchemaSpec] =
+    &[SCHEMA_APPROVAL_DETAIL, SCHEMA_SESSION, SCHEMA_CAPABILITIES];
+
+/// Validate ApprovalDetail JSON against the canonical wire envelope
+/// (`impetus.approval_detail.v1`), including unknown-field rejection.
+pub fn validate_approval_detail_wire(
+    value: &Value,
+) -> Result<&'static SchemaSpec, SchemaValidationError> {
+    validate_envelope(SCHEMA_APPROVAL_DETAIL.id, value)
+}
+
+/// Validate session nest-shape JSON (`impetus.session.v1`) for wire Session-ish
+/// payloads that carry `schema_version` + `session_id`.
+pub fn validate_session_wire(value: &Value) -> Result<&'static SchemaSpec, SchemaValidationError> {
+    validate_envelope(SCHEMA_SESSION.id, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +482,119 @@ mod tests {
                 id: "impetus.nope.v1".into(),
             }
         );
+    }
+
+    #[test]
+    fn wire_approval_detail_rejects_unknown_and_version_mismatch() {
+        let ok = json!({
+            "schema_version": 1,
+            "request": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "action": {
+                    "origin": "agent",
+                    "kind": "write_file",
+                    "summary": "edit",
+                    "target": "a.rs"
+                },
+                "reason": "needs approval",
+                "created_at_sequence": 1,
+                "state": "pending"
+            },
+            "diff_preview": null,
+            "affected_files": [],
+            "estimated_scope": null,
+            "attachment_refs": []
+        });
+        // Minimal shape for envelope field names — unknown keys still fail even if
+        // nested request JSON is incomplete for full ApprovalDetail deserialize.
+        let envelope = json!({
+            "schema_version": 1,
+            "request": {},
+            "diff_preview": null,
+            "diff_observation": null,
+            "affected_files": [],
+            "estimated_scope": null,
+            "attachment_refs": []
+        });
+        assert_eq!(
+            validate_approval_detail_wire(&envelope)
+                .expect("envelope ok")
+                .id,
+            SCHEMA_APPROVAL_DETAIL.id
+        );
+        let _ = ok; // documents full DTO shape for readers
+        let bad_version = json!({
+            "schema_version": 99,
+            "request": {},
+            "diff_preview": null,
+            "affected_files": [],
+            "estimated_scope": null,
+            "attachment_refs": []
+        });
+        assert!(matches!(
+            validate_approval_detail_wire(&bad_version).unwrap_err(),
+            SchemaValidationError::VersionMismatch { actual: 99, .. }
+        ));
+        let unknown = json!({
+            "schema_version": 1,
+            "request": {},
+            "diff_preview": null,
+            "affected_files": [],
+            "estimated_scope": null,
+            "attachment_refs": [],
+            "extra_field": true
+        });
+        assert!(matches!(
+            validate_approval_detail_wire(&unknown).unwrap_err(),
+            SchemaValidationError::UnknownCriticalField { field, .. } if field == "extra_field"
+        ));
+        assert!(
+            WIRE_RESPONSE_SCHEMAS
+                .iter()
+                .any(|s| s.id == SCHEMA_APPROVAL_DETAIL.id)
+        );
+    }
+
+    #[test]
+    fn wire_approval_detail_accepts_serialized_protocol_dto() {
+        use impetus_protocol::{
+            APPROVAL_DETAIL_SCHEMA_VERSION, Action, ActionKind, ActionOrigin, ApprovalDetail,
+            ApprovalRequest,
+        };
+
+        let detail = ApprovalDetail {
+            schema_version: APPROVAL_DETAIL_SCHEMA_VERSION,
+            request: ApprovalRequest::pending(
+                Action {
+                    origin: ActionOrigin::Agent,
+                    kind: ActionKind::WriteFile,
+                    summary: "edit".into(),
+                    target: Some("a.rs".into()),
+                },
+                "needs approval".into(),
+                1,
+            ),
+            diff_preview: Some("---\n+++".into()),
+            diff_observation: None,
+            affected_files: vec!["a.rs".into()],
+            estimated_scope: None,
+            attachment_refs: vec![],
+        };
+        let value = serde_json::to_value(&detail).expect("serialize");
+        validate_approval_detail_wire(&value).expect("wire envelope must accept live DTO");
+    }
+
+    #[test]
+    fn wire_session_rejects_leaked_provider_keys() {
+        let err = validate_session_wire(&json!({
+            "schema_version": 1,
+            "session_id": "00000000-0000-0000-0000-000000000001",
+            "model_id": "should-nest"
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            SchemaValidationError::LeakedNestedField { field, .. } if field == "model_id"
+        ));
     }
 }
