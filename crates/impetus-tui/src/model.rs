@@ -936,6 +936,10 @@ pub enum Overlay {
         selected: usize,
         checkpoints: Vec<impetus_client::protocol::CheckpointInfo>,
     },
+    /// Provider → Model → Reasoning → options from daemon catalog (#337).
+    ModelPicker {
+        state: crate::catalog::ModelPickerState,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -995,6 +999,13 @@ pub struct AppState {
     pub last_pointer: Option<PointerClick>,
     /// Current git branch from daemon (header / post-switch refresh).
     pub current_branch: Option<String>,
+    /// Daemon `ListProviders` catalog (no hard-coded vendors).
+    pub provider_catalog: Vec<impetus_client::protocol::ModelProviderStatus>,
+    /// Active session model from `Get`/`SetSessionModel` (daemon SoT).
+    pub session_model: Option<impetus_client::protocol::SessionModelSelection>,
+    /// Local options draft from catalog (`service_tier` / `provider_options`).
+    /// Passthrough via SetSessionModel waits on #328.
+    pub session_model_options: Option<serde_json::Value>,
 }
 
 impl AppState {
@@ -1033,7 +1044,17 @@ impl AppState {
             hit_targets: Vec::new(),
             last_pointer: None,
             current_branch: None,
+            provider_catalog: Vec::new(),
+            session_model: None,
+            session_model_options: None,
         }
+    }
+
+    pub fn session_model_label(&self) -> String {
+        crate::catalog::session_model_label(
+            self.session_model.as_ref(),
+            self.session_model_options.as_ref(),
+        )
     }
 
     /// Record timeline metrics from the last paint; clamp scroll if needed.

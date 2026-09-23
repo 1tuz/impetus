@@ -325,6 +325,29 @@ impl UiBackend for ImpetusBackend {
         self.client.set_execution_mode(session_id, mode).await
     }
 
+    async fn list_providers(&self) -> Result<Vec<impetus_client::protocol::ModelProviderStatus>> {
+        self.client.list_providers().await
+    }
+
+    async fn get_session_model(
+        &self,
+        session_id: Uuid,
+    ) -> Result<impetus_client::protocol::SessionModelSelection> {
+        self.client.get_session_model(session_id).await
+    }
+
+    async fn set_session_model(
+        &self,
+        session_id: Uuid,
+        provider_id: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+    ) -> Result<impetus_client::protocol::SessionModelSelection> {
+        self.client
+            .set_session_model(session_id, provider_id, model_id, reasoning_effort)
+            .await
+    }
+
     async fn list_workspace_dir(
         &self,
         session_id: Uuid,

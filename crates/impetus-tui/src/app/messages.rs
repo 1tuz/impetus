@@ -54,6 +54,24 @@ pub(super) enum AppMessage {
         generation: u64,
         result: Result<ExecutionMode, String>,
     },
+    SessionModelRestored {
+        session_id: Uuid,
+        generation: u64,
+        result: Result<
+            (
+                Vec<impetus_client::protocol::ModelProviderStatus>,
+                impetus_client::protocol::SessionModelSelection,
+            ),
+            String,
+        >,
+        open_picker: bool,
+    },
+    SessionModelUpdated {
+        session_id: Uuid,
+        generation: u64,
+        result: Result<impetus_client::protocol::SessionModelSelection, String>,
+        options: Option<serde_json::Value>,
+    },
     FilesDirListed {
         session_id: Uuid,
         generation: u64,
@@ -313,6 +331,80 @@ pub(super) fn apply_message(app: &mut AppState, message: AppMessage) -> Vec<Effe
                 }
                 Err(error) => {
                     app.show_toast(format!("mode change failed: {error}"), true);
+                }
+            }
+            app.dirty = true;
+        }
+        AppMessage::SessionModelRestored {
+            session_id,
+            generation,
+            result,
+            open_picker,
+        } => {
+            if !is_current_operation(app, session_id, generation) {
+                return vec![];
+            }
+            match result {
+                Ok((catalog, selection)) => {
+                    app.provider_catalog = catalog;
+                    app.session_model = Some(selection.clone());
+                    app.status_message = format!(
+                        "model · {}",
+                        crate::catalog::session_model_label(Some(&selection), None)
+                    );
+                    if open_picker {
+                        let mut state = crate::catalog::ModelPickerState::fresh(Some(&selection));
+                        // Highlight current provider when opening.
+                        let providers = crate::catalog::provider_choices(&app.provider_catalog);
+                        if let Some(idx) = providers
+                            .iter()
+                            .position(|p| p.provider_id == selection.provider_id)
+                        {
+                            state.selected = idx;
+                        }
+                        app.overlay = Overlay::ModelPicker { state };
+                    }
+                }
+                Err(error) => {
+                    app.show_toast(format!("provider catalog failed: {error}"), true);
+                }
+            }
+            app.dirty = true;
+        }
+        AppMessage::SessionModelUpdated {
+            session_id,
+            generation,
+            result,
+            options,
+        } => {
+            if !is_current_operation(app, session_id, generation) {
+                return vec![];
+            }
+            match result {
+                Ok(selection) => {
+                    app.session_model = Some(selection.clone());
+                    app.session_model_options = options;
+                    app.overlay = Overlay::None;
+                    app.status_message = format!(
+                        "model · {}",
+                        crate::catalog::session_model_label(
+                            Some(&selection),
+                            app.session_model_options.as_ref(),
+                        )
+                    );
+                    app.show_toast(
+                        format!(
+                            "Model: {}",
+                            crate::catalog::session_model_label(
+                                Some(&selection),
+                                app.session_model_options.as_ref(),
+                            )
+                        ),
+                        false,
+                    );
+                }
+                Err(error) => {
+                    app.show_toast(format!("set session model failed: {error}"), true);
                 }
             }
             app.dirty = true;

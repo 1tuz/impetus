@@ -8,6 +8,10 @@ use crossterm::event::{
     MouseEventKind,
 };
 
+use crate::catalog::{
+    self, ModelPickerState, ModelPickerStep, filter_by_query, merge_option_choice,
+    models_for_provider, option_choices, provider_choices, row_is_selectable,
+};
 use crate::command::{self, CommandAction};
 use crate::hit::{HitKind, PointerClick, cycle_prompt_intent, is_double_click, resolve_hit};
 use crate::model::{
@@ -196,6 +200,7 @@ pub(super) fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             app.dirty = true;
             return vec![Effect::LoadCheckpoints];
         }
+        KeyCode::F(8) => return vec![Effect::OpenModelPicker],
         KeyCode::PageUp => scroll_up(app, 10),
         KeyCode::PageDown => scroll_down(app, 10),
         KeyCode::Home if app.focus == Focus::Timeline => scroll_timeline_home(app),
@@ -494,6 +499,19 @@ pub(super) fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effec
             app.dirty = true;
             return vec![];
         }
+        if matches!(app.overlay, Overlay::ModelPicker { .. }) {
+            let Overlay::ModelPicker { mut state } = std::mem::take(&mut app.overlay) else {
+                unreachable!();
+            };
+            if state.step_back() {
+                app.overlay = Overlay::ModelPicker { state };
+                app.dirty = true;
+                return vec![];
+            }
+            app.overlay = Overlay::None;
+            app.dirty = true;
+            return vec![];
+        }
         let return_to_approval = matches!(app.overlay, Overlay::ApprovalDetail);
         app.overlay = if return_to_approval {
             Overlay::Approval { selected: 0 }
@@ -619,6 +637,7 @@ pub(super) fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effec
             }
             _ => (Overlay::Themes { selected }, vec![]),
         },
+        Overlay::ModelPicker { state } => handle_model_picker_key(app, state, key),
         Overlay::Approval { mut selected } => match key.code {
             KeyCode::Up => {
                 selected = selected.saturating_sub(1);
@@ -1261,6 +1280,7 @@ pub(super) fn execute_command(app: &mut AppState, action: CommandAction) -> Vec<
             app.overlay = Overlay::Modes { selected };
             vec![]
         }
+        CommandAction::ModelPicker => vec![Effect::OpenModelPicker],
         CommandAction::SetMode(mode) => set_execution_mode_effects(app, mode),
         CommandAction::SetPromptIntent(intent) => {
             app.prompt_intent = intent;
@@ -1380,10 +1400,6 @@ fn send_large_paste_effect(
 }
 
 fn set_execution_mode_effects(app: &mut AppState, mode: ExecutionMode) -> Vec<Effect> {
-    if app.active_session.is_none() {
-        app.show_toast("No active session. Create or resume one first.", true);
-        return vec![];
-    }
     if !execution_mode_is_available(mode, &app.connection.capabilities) {
         app.show_toast(
             format!(
@@ -1395,6 +1411,241 @@ fn set_execution_mode_effects(app: &mut AppState, mode: ExecutionMode) -> Vec<Ef
         return vec![];
     }
     vec![Effect::SetExecutionMode { mode }]
+}
+
+fn handle_model_picker_key(
+    app: &mut AppState,
+    mut state: ModelPickerState,
+    key: KeyEvent,
+) -> (Overlay, Vec<Effect>) {
+    match key.code {
+        KeyCode::Left => {
+            if state.step_back() {
+                (Overlay::ModelPicker { state }, vec![])
+            } else {
+                (Overlay::None, vec![])
+            }
+        }
+        KeyCode::Backspace if !state.query.is_empty() => {
+            state.query.pop();
+            state.selected = 0;
+            (Overlay::ModelPicker { state }, vec![])
+        }
+        KeyCode::Char(ch)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !matches!(
+                    state.step,
+                    ModelPickerStep::Reasoning | ModelPickerStep::Options
+                ) =>
+        {
+            state.query.push(ch);
+            state.selected = 0;
+            (Overlay::ModelPicker { state }, vec![])
+        }
+        KeyCode::Up => {
+            state.selected = state.selected.saturating_sub(1);
+            (Overlay::ModelPicker { state }, vec![])
+        }
+        KeyCode::Down => {
+            let len = model_picker_row_count(app, &state).max(1);
+            state.selected = (state.selected + 1).min(len.saturating_sub(1));
+            (Overlay::ModelPicker { state }, vec![])
+        }
+        KeyCode::Enter => advance_model_picker(app, state),
+        _ => (Overlay::ModelPicker { state }, vec![]),
+    }
+}
+
+fn model_picker_row_count(app: &AppState, state: &ModelPickerState) -> usize {
+    match state.step {
+        ModelPickerStep::Provider => {
+            let providers = provider_choices(&app.provider_catalog);
+            filter_by_query(&providers, &state.query, |p| p.display_name.clone()).len()
+        }
+        ModelPickerStep::Model => {
+            let Some(provider_id) = state.draft_provider_id.as_deref() else {
+                return 0;
+            };
+            let models = models_for_provider(&app.provider_catalog, provider_id);
+            filter_by_query(&models, &state.query, |row| {
+                row.model_display_name
+                    .clone()
+                    .unwrap_or_else(|| row.model_id.clone())
+            })
+            .len()
+        }
+        ModelPickerStep::Reasoning => {
+            let Some(provider_id) = state.draft_provider_id.as_deref() else {
+                return 0;
+            };
+            let Some(model_id) = state.draft_model_id.as_deref() else {
+                return 0;
+            };
+            catalog::find_row(&app.provider_catalog, provider_id, model_id)
+                .map(|row| row.reasoning_efforts.len())
+                .unwrap_or(0)
+        }
+        ModelPickerStep::Options => {
+            let Some(provider_id) = state.draft_provider_id.as_deref() else {
+                return 0;
+            };
+            let Some(model_id) = state.draft_model_id.as_deref() else {
+                return 0;
+            };
+            catalog::find_row(&app.provider_catalog, provider_id, model_id)
+                .map(|row| option_choices(row).len().saturating_add(1)) // + Skip
+                .unwrap_or(0)
+        }
+    }
+}
+
+fn advance_model_picker(app: &mut AppState, mut state: ModelPickerState) -> (Overlay, Vec<Effect>) {
+    match state.step {
+        ModelPickerStep::Provider => {
+            let providers = provider_choices(&app.provider_catalog);
+            let filtered = filter_by_query(&providers, &state.query, |p| p.display_name.clone());
+            let Some((_, choice)) = filtered.get(state.selected) else {
+                app.show_toast("No providers in catalog.", true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            if !choice.selectable {
+                app.show_toast(
+                    format!("Provider `{}` unavailable.", choice.provider_id),
+                    true,
+                );
+                return (Overlay::ModelPicker { state }, vec![]);
+            }
+            state.draft_provider_id = Some(choice.provider_id.clone());
+            state.draft_model_id = None;
+            state.draft_reasoning = None;
+            state.draft_options = None;
+            state.visited_reasoning = false;
+            state.step = ModelPickerStep::Model;
+            state.selected = 0;
+            state.query.clear();
+            (Overlay::ModelPicker { state }, vec![])
+        }
+        ModelPickerStep::Model => {
+            let Some(provider_id) = state.draft_provider_id.clone() else {
+                state.step = ModelPickerStep::Provider;
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let models = models_for_provider(&app.provider_catalog, &provider_id);
+            let filtered = filter_by_query(&models, &state.query, |row| {
+                row.model_display_name
+                    .clone()
+                    .unwrap_or_else(|| row.model_id.clone())
+            });
+            let Some((_, row)) = filtered.get(state.selected) else {
+                app.show_toast("No models for provider.", true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            if !row_is_selectable(row) {
+                app.show_toast(format!("Model `{}` unavailable.", row.model_id), true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            }
+            state.draft_model_id = Some(row.model_id.clone());
+            state.draft_reasoning = row.default_reasoning_effort.clone();
+            state.draft_options = None;
+            state.visited_reasoning = false;
+            state.query.clear();
+            state.selected = 0;
+            if !row.reasoning_efforts.is_empty() {
+                if let Some(default) = row.default_reasoning_effort.as_ref()
+                    && let Some(idx) = row.reasoning_efforts.iter().position(|e| e == default)
+                {
+                    state.selected = idx;
+                }
+                state.step = ModelPickerStep::Reasoning;
+                state.visited_reasoning = true;
+                return (Overlay::ModelPicker { state }, vec![]);
+            }
+            if !option_choices(row).is_empty() {
+                state.step = ModelPickerStep::Options;
+                return (Overlay::ModelPicker { state }, vec![]);
+            }
+            commit_model_picker(app, state)
+        }
+        ModelPickerStep::Reasoning => {
+            let Some(provider_id) = state.draft_provider_id.clone() else {
+                state.step = ModelPickerStep::Provider;
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let Some(model_id) = state.draft_model_id.clone() else {
+                state.step = ModelPickerStep::Model;
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let Some(row) = catalog::find_row(&app.provider_catalog, &provider_id, &model_id)
+            else {
+                app.show_toast("Catalog row missing.", true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let Some(effort) = row.reasoning_efforts.get(state.selected).cloned() else {
+                app.show_toast("Select a reasoning effort.", true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            state.draft_reasoning = Some(effort);
+            state.visited_reasoning = true;
+            state.selected = 0;
+            state.query.clear();
+            if !option_choices(row).is_empty() {
+                state.step = ModelPickerStep::Options;
+                return (Overlay::ModelPicker { state }, vec![]);
+            }
+            commit_model_picker(app, state)
+        }
+        ModelPickerStep::Options => {
+            let Some(provider_id) = state.draft_provider_id.clone() else {
+                state.step = ModelPickerStep::Provider;
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let Some(model_id) = state.draft_model_id.clone() else {
+                state.step = ModelPickerStep::Model;
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let Some(row) = catalog::find_row(&app.provider_catalog, &provider_id, &model_id)
+            else {
+                app.show_toast("Catalog row missing.", true);
+                return (Overlay::ModelPicker { state }, vec![]);
+            };
+            let choices = option_choices(row);
+            // index 0 = Skip / none
+            if state.selected == 0 {
+                state.draft_options = None;
+            } else if let Some(choice) = choices.get(state.selected.saturating_sub(1)) {
+                state.draft_options =
+                    Some(merge_option_choice(state.draft_options.clone(), choice));
+            }
+            commit_model_picker(app, state)
+        }
+    }
+}
+
+fn commit_model_picker(app: &mut AppState, state: ModelPickerState) -> (Overlay, Vec<Effect>) {
+    let Some(provider_id) = state.draft_provider_id.clone() else {
+        app.show_toast("Provider required.", true);
+        return (Overlay::ModelPicker { state }, vec![]);
+    };
+    let Some(model_id) = state.draft_model_id.clone() else {
+        app.show_toast("Model required.", true);
+        return (Overlay::ModelPicker { state }, vec![]);
+    };
+    if let Some(row) = catalog::find_row(&app.provider_catalog, &provider_id, &model_id)
+        && !row_is_selectable(row)
+    {
+        app.show_toast("Selected model is unavailable.", true);
+        return (Overlay::ModelPicker { state }, vec![]);
+    }
+    (
+        Overlay::None,
+        vec![Effect::SetSessionModel {
+            provider_id,
+            model_id,
+            reasoning_effort: state.draft_reasoning,
+            options: state.draft_options,
+        }],
+    )
 }
 
 pub(super) fn cycle_execution_mode(app: &mut AppState) -> Vec<Effect> {
@@ -1435,7 +1686,7 @@ fn show_selected_detail(app: &mut AppState) -> Vec<Effect> {
 
 fn status_body(app: &AppState) -> String {
     format!(
-        "# Session status\n\n- **Backend:** {}\n- **IPC:** v{}\n- **Session:** {}\n- **Run:** {}\n- **Mode:** {}\n- **Events rendered:** {}\n- **Last sequence:** {}\n- **Tokens used:** {}\n- **Context:** {}%\n- **Turns:** {}\n- **Compactions:** {}\n\nThe client owns only this projection. Durable history, policy and execution remain in `impetusd`.",
+        "# Session status\n\n- **Backend:** {}\n- **IPC:** v{}\n- **Session:** {}\n- **Run:** {}\n- **Mode:** {}\n- **Model:** {}\n- **Events rendered:** {}\n- **Last sequence:** {}\n- **Tokens used:** {}\n- **Context:** {}%\n- **Turns:** {}\n- **Compactions:** {}\n\nThe client owns only this projection. Durable history, policy and execution remain in `impetusd`.",
         app.connection.label,
         app.connection.protocol_version,
         app.active_session
@@ -1443,6 +1694,7 @@ fn status_body(app: &AppState) -> String {
             .unwrap_or_else(|| "none".to_owned()),
         app.run_state.label(),
         app.mode.label(),
+        app.session_model_label(),
         app.timeline.len(),
         app.last_sequence,
         app.budget.tokens_used,

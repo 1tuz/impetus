@@ -4,8 +4,10 @@
 //! Runs in CI without credentials or external binaries.
 
 use agent_client_protocol::AcpAgentConfig;
+use agent_client_protocol::schema::v1::RequestPermissionOutcome;
 use impetus_acp_gateway::{
     AcpGatewayV2, GatewayState, PermissionDecision, PermissionRequest, StreamUpdate,
+    permission_outcome,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,15 +55,18 @@ async fn policy_integration_routes_permission_through_gateway() {
     assert_eq!(request.request_id, "test-perm-1");
     assert_eq!(request.options.len(), 2);
 
-    // Test PermissionDecision variants
-    let allow = PermissionDecision::Select("allow-once".into());
-    let deny = PermissionDecision::Deny;
-    let needs_approval = PermissionDecision::NeedsApproval;
-
-    // Decisions are constructible
-    assert!(matches!(allow, PermissionDecision::Select(_)));
-    assert!(matches!(deny, PermissionDecision::Deny));
-    assert!(matches!(needs_approval, PermissionDecision::NeedsApproval));
+    // Transport-only: Select → ACP Selected(option_id); Deny → Cancelled.
+    // NeedsApproval cannot reach this layer (brokered in AcpAdapter).
+    match permission_outcome(PermissionDecision::Select("allow-once".into())) {
+        RequestPermissionOutcome::Selected(selected) => {
+            assert_eq!(selected.option_id.0.as_ref(), "allow-once");
+        }
+        other => panic!("expected Selected(allow-once), got {other:?}"),
+    }
+    assert!(matches!(
+        permission_outcome(PermissionDecision::Deny),
+        RequestPermissionOutcome::Cancelled
+    ));
 }
 
 #[tokio::test]

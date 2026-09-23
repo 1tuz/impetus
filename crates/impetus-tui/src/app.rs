@@ -1582,4 +1582,130 @@ mod tests {
         assert!(app.timeline[0].body.contains("artifact art-xyz · 2 KB"));
         assert!(app.timeline[0].body.contains("[Attached · notes.txt"));
     }
+
+    fn connection_with_model_caps() -> ConnectionInfo {
+        let mut connection = ConnectionInfo::default();
+        connection.capabilities.insert("list_providers".to_owned());
+        connection.capabilities.insert("session_model".to_owned());
+        connection
+    }
+
+    #[test]
+    fn f8_and_model_command_open_catalog_picker_effect() {
+        let mut app = AppState::new(connection_with_model_caps());
+        app.active_session = Some(Uuid::from_u128(0x337));
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+        assert!(matches!(effects.as_slice(), [Effect::OpenModelPicker]));
+
+        let effects = execute_command(&mut app, CommandAction::ModelPicker);
+        assert!(matches!(effects.as_slice(), [Effect::OpenModelPicker]));
+    }
+
+    #[test]
+    fn session_model_restored_opens_picker_and_shows_selection() {
+        let mut app = AppState::new(connection_with_model_caps());
+        let session_id = Uuid::from_u128(0x337);
+        app.active_session = Some(session_id);
+        app.subscription_generation = 1;
+
+        let mut healthy = impetus_client::protocol::ModelProviderStatus::basic(
+            "mock",
+            "mock-fast",
+            impetus_client::protocol::ModelProviderHealthLabel::Healthy,
+            true,
+        );
+        healthy.reasoning_efforts = vec!["low".into(), "high".into()];
+        let mut down = impetus_client::protocol::ModelProviderStatus::basic(
+            "offline",
+            "offline-model",
+            impetus_client::protocol::ModelProviderHealthLabel::Unavailable {
+                last_error_redacted: "down".into(),
+            },
+            false,
+        );
+        down.availability = impetus_client::protocol::ModelAvailability::Unavailable;
+
+        let selection = impetus_client::protocol::SessionModelSelection {
+            provider_id: "mock".into(),
+            model_id: "mock-fast".into(),
+            reasoning_effort: Some("high".into()),
+        };
+
+        let _ = apply_message(
+            &mut app,
+            AppMessage::SessionModelRestored {
+                session_id,
+                generation: 1,
+                result: Ok((vec![healthy, down], selection.clone())),
+                open_picker: true,
+            },
+        );
+
+        assert_eq!(app.session_model.as_ref(), Some(&selection));
+        assert_eq!(app.provider_catalog.len(), 2);
+        assert!(matches!(app.overlay, Overlay::ModelPicker { .. }));
+        assert!(app.session_model_label().contains("mock/mock-fast"));
+        assert!(!crate::catalog::row_is_selectable(&app.provider_catalog[1]));
+    }
+
+    #[test]
+    fn model_picker_rejects_unavailable_provider_on_enter() {
+        let mut app = AppState::new(connection_with_model_caps());
+        let mut down = impetus_client::protocol::ModelProviderStatus::basic(
+            "offline",
+            "offline-model",
+            impetus_client::protocol::ModelProviderHealthLabel::Unavailable {
+                last_error_redacted: "down".into(),
+            },
+            false,
+        );
+        down.availability = impetus_client::protocol::ModelAvailability::Unavailable;
+        app.provider_catalog = vec![down];
+        app.overlay = Overlay::ModelPicker {
+            state: crate::catalog::ModelPickerState::default(),
+        };
+
+        let effects =
+            handle_overlay_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(effects.is_empty());
+        assert!(matches!(app.overlay, Overlay::ModelPicker { .. }));
+        assert!(app.toast.as_ref().is_some_and(|t| t.error));
+    }
+
+    #[test]
+    fn model_picker_commit_emits_set_session_model() {
+        let mut app = AppState::new(connection_with_model_caps());
+        app.active_session = Some(Uuid::from_u128(0x337));
+        let mut row = impetus_client::protocol::ModelProviderStatus::basic(
+            "mock",
+            "mock-fast",
+            impetus_client::protocol::ModelProviderHealthLabel::Healthy,
+            true,
+        );
+        row.reasoning_efforts = vec!["medium".into()];
+        app.provider_catalog = vec![row];
+        let state = crate::catalog::ModelPickerState {
+            draft_provider_id: Some("mock".into()),
+            draft_model_id: Some("mock-fast".into()),
+            draft_reasoning: Some("medium".into()),
+            step: crate::catalog::ModelPickerStep::Reasoning,
+            visited_reasoning: true,
+            selected: 0,
+            ..Default::default()
+        };
+        app.overlay = Overlay::ModelPicker { state };
+
+        let effects =
+            handle_overlay_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SetSessionModel {
+                provider_id,
+                model_id,
+                reasoning_effort: Some(effort),
+                options: None,
+            }] if provider_id == "mock" && model_id == "mock-fast" && effort == "medium"
+        ));
+    }
 }

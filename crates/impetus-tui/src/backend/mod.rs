@@ -83,6 +83,21 @@ pub trait UiBackend: Send + Sync {
         session_id: Uuid,
         mode: impetus_client::protocol::ExecutionMode,
     ) -> Result<impetus_client::protocol::ExecutionMode>;
+    /// Daemon provider catalog (`ListProviders`); no credentials.
+    async fn list_providers(&self) -> Result<Vec<impetus_client::protocol::ModelProviderStatus>>;
+    /// Current session model selection (daemon SoT).
+    async fn get_session_model(
+        &self,
+        session_id: Uuid,
+    ) -> Result<impetus_client::protocol::SessionModelSelection>;
+    /// Override session model / reasoning (`SetSessionModel`).
+    async fn set_session_model(
+        &self,
+        session_id: Uuid,
+        provider_id: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+    ) -> Result<impetus_client::protocol::SessionModelSelection>;
     /// List workspace directory via harness IPC (no local fs).
     async fn list_workspace_dir(
         &self,
