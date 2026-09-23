@@ -976,25 +976,6 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
-    /// Pull durable session events after `after_sequence` (non-live Stream).
-    async fn stream_events(
-        &self,
-        session_id: uuid::Uuid,
-        after_sequence: u64,
-    ) -> Result<Vec<crate::protocol::Event>> {
-        match self
-            .request(IpcRequest::Stream {
-                session_id,
-                after_sequence,
-            })
-            .await?
-        {
-            IpcResponse::Events { events, .. } => Ok(events),
-            IpcResponse::Error { message, .. } => bail!(message),
-            response => bail!("unexpected response: {response:?}"),
-        }
-    }
-
     /// Upload bytes via chunked IPC into the durable artifact store.
     ///
     /// Returns only an [`crate::protocol::DurableArtifactRef`]; the raw body never
