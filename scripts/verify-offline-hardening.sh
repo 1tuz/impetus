@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Optional full offline suite (CI runners / rare local). Default local gate:
+#   task verify   # fmt + git diff --check only
+# PR quality lives in .github/workflows/ci.yml (Linux-heavy, macOS-platform).
 set -euo pipefail
 
 export CI=1

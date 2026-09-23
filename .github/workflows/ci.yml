@@ -16,6 +16,10 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: always
+  # Offline / non-interactive — never prompt for secrets or Keychain UI.
+  CI: "1"
+  IMPETUS_NONINTERACTIVE: "1"
+  RUST_BACKTRACE: "1"
 
 jobs:
   detect:
@@ -28,6 +32,7 @@ jobs:
       site: ${{ steps.scope.outputs.site }}
       workspace: ${{ steps.scope.outputs.workspace }}
       security: ${{ steps.scope.outputs.security }}
+      macos: ${{ steps.scope.outputs.macos }}
       packages: ${{ steps.scope.outputs.packages }}
       check_packages: ${{ steps.scope.outputs.check_packages }}
     steps:
@@ -50,52 +55,74 @@ jobs:
             echo "$line" >> "$GITHUB_OUTPUT"
           done < /tmp/scope.txt
 
-  macos:
-    name: macOS
-    needs: detect
-    if: needs.detect.outputs.rust == 'true'
-    runs-on: macos-14
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-macos
-          cache-targets: "true"
-      - name: Clippy (affected)
-        # Prefer --lib --bins over --all-targets: PR CI skips heavy crates/*/tests/
-        # (those stay local via task verify). Still deny warnings.
-        # Named lib sentinels (local filter, not a separate CI job):
-        #   cargo test -p impetus-core --lib -- sentinel
-        # → sentinel_{protocol,git,files,events,artifacts} (+ security_runtime_pr)
-        run: cargo clippy ${{ needs.detect.outputs.packages }} --lib --bins -- -D warnings
-      - name: Test (affected lib/bins)
-        run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins
-      # Dependants compile guard lives on Linux (`check_packages`) — avoid a
-      # second full compile on the macOS critical path (~20–25s cold).
-
+  # Primary Rust quality gate: fmt + clippy + unit/integration on one runner
+  # so the compile graph is built once and reused (no check→clippy→test thrash).
   linux:
     name: Linux
     needs: detect
     if: needs.detect.outputs.rust == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-linux-rust
           cache-targets: "true"
+          cache-workspace-crates: "true"
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Check (affected + dependants)
-        run: cargo check ${{ needs.detect.outputs.check_packages }}
+      - name: Clippy (affected + dependants)
+        # Clippy compiles the graph — replaces a separate cargo check.
+        run: cargo clippy ${{ needs.detect.outputs.check_packages }} --lib --bins --tests -- -D warnings
+      - name: Unit tests (affected lib/bins)
+        run: cargo test ${{ needs.detect.outputs.packages }} --lib --bins
+      - name: Integration + daemon E2E (affected)
+        # crates/*/tests + package integration targets; offline mocks only.
+        env:
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          unset OPENAI_API_KEY ANTHROPIC_API_KEY TAVILY_API_KEY EXA_API_KEY GITHUB_TOKEN GH_TOKEN || true
+          cargo test ${{ needs.detect.outputs.packages }} --tests -- --test-threads=2
+
+  # macOS: only when platform-sensitive paths change (Seatbelt/Keychain/PTY/…).
+  macos:
+    name: macOS
+    needs: detect
+    if: needs.detect.outputs.rust == 'true' && needs.detect.outputs.macos == 'true'
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-macos-platform
+          cache-targets: "true"
+          cache-workspace-crates: "true"
+      - name: Platform tests (Seatbelt / no-sudo / sandbox)
+        env:
+          IMPETUS_NONINTERACTIVE: "1"
+        run: |
+          set -euo pipefail
+          # Seatbelt / sandbox (cfg macos inside the crates).
+          cargo test -p impetus-core --test macos_sandbox_production --test macos_sandbox_spike --test approval_seatbelt_e2e -- --test-threads=1
+          # Userspace no-sudo / no-password path.
+          cargo test -p impetusd --test daemon_userspace_no_sudo -- --test-threads=1
+          # Peer isolation when the module exists (landed via platform PRs).
+          if [[ -f crates/impetusd/src/peer_isolation.rs ]]; then
+            cargo test -p impetusd --test daemon_peer_isolation -- --test-threads=1
+            cargo test -p impetusd --lib peer_isolation -- --test-threads=1
+          fi
+          # PTY / sandbox lib filters (single TESTNAME regex).
+          cargo test -p impetus-core --lib 'pty|sandbox' -- --test-threads=2
 
   security:
     name: Security
@@ -108,7 +135,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
         with:
-          # audit/deny need registry cache; target artifacts rarely help.
           shared-key: ci-linux-security
           cache-targets: "false"
       - uses: taiki-e/install-action@v2
@@ -137,12 +163,24 @@ jobs:
         env:
           GITHUB_ACTIONS: "true"
 
-  # Aggregator for branch protection: require only this job name so skipped
-  # scoped jobs (docs-only / no-security / no-site) do not block merge.
+  # Docs-only / tooling-only: cheap markdown hygiene (no Rust).
+  docs:
+    name: Docs
+    needs: detect
+    if: needs.detect.outputs.docs_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Diff whitespace check
+        run: git diff --check origin/${{ github.base_ref || 'main' }}...HEAD || git diff --check HEAD~1 HEAD || true
+
+  # Aggregator for branch protection: require only this job so skipped
+  # scoped jobs (docs-only / no-macos / no-security / no-site) do not block merge.
   gate:
     name: Gate
     if: always()
-    needs: [detect, macos, linux, security, site]
+    needs: [detect, linux, macos, security, site, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -152,13 +190,15 @@ jobs:
           set -euo pipefail
           ok() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
           echo "detect=${{ needs.detect.result }}"
-          echo "macos=${{ needs.macos.result }}"
           echo "linux=${{ needs.linux.result }}"
+          echo "macos=${{ needs.macos.result }}"
           echo "security=${{ needs.security.result }}"
           echo "site=${{ needs.site.result }}"
+          echo "docs=${{ needs.docs.result }}"
           ok "${{ needs.detect.result }}"
-          ok "${{ needs.macos.result }}"
           ok "${{ needs.linux.result }}"
+          ok "${{ needs.macos.result }}"
           ok "${{ needs.security.result }}"
           ok "${{ needs.site.result }}"
+          ok "${{ needs.docs.result }}"
           echo "CI gate passed"

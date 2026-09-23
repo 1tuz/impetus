@@ -23,23 +23,34 @@ tasks:
     cmds:
       - cargo fmt --all -- --check
 
+  diff:check:
+    desc: Проверить whitespace/conflict markers в diff
+    cmds:
+      - git diff --check
+
   test:
-    desc: Запустить unit-тесты всего Rust workspace
+    desc: 'Полный unit-suite (опционально; качество — на GitHub Actions)'
     cmds:
       - cargo test --workspace
 
   check:
-    desc: Проверить весь Rust workspace
+    desc: 'Полный cargo check (опционально; качество — на GitHub Actions)'
     cmds:
       - cargo check --workspace
 
   lint:
-    desc: Запустить Clippy без предупреждений
+    desc: 'Полный Clippy (опционально; качество — на GitHub Actions)'
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   verify:
-    desc: Выполнить обязательный pre-commit набор
+    desc: 'Дешёвый локальный gate перед push (тяжёлое — на CI)'
+    cmds:
+      - task: fmt
+      - task: diff:check
+
+  verify:full:
+    desc: 'Локальный полный workspace suite (редко; обычно не нужен)'
     cmds:
       - task: fmt
       - task: test

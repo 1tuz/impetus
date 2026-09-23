@@ -4,7 +4,7 @@
 
 Impetus is a Rust 2024 workspace. `Cargo.toml` pins Rust `1.98`.
 
-Local gate from the repository root (full workspace — use before handoff):
+### Local gate (cheap — default)
 
 ```zsh
 task verify
@@ -12,44 +12,49 @@ task verify
 
 ```zsh
 cargo fmt --all -- --check
-cargo test --workspace
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
 ```
 
-For dependency changes, also:
+Do **not** routinely run `cargo test/check/clippy --workspace` on a laptop.
+Heavy quality is on GitHub Actions. Optional full local suite: `task verify:full`.
 
-```zsh
-task security
-```
+For dependency changes, CI Security job runs `audit`/`deny`; local
+`task security` is optional.
 
 ## Pull request CI
 
 Workflow: `.github/workflows/ci.yml` (single PR pipeline).
 
-1. **Detect** — `scripts/ci-affected.sh` vs PR base (`main`).
-2. **macOS** (if Rust changed) — Clippy + `cargo test` on affected
-   packages with `--lib --bins` (not `--all-targets`); `cargo check` on
-   transitive dependants when a shared crate changed.
-3. **Linux** (if Rust changed) — `fmt` + `cargo check` on affected + dependants
-   (compile guard, not a second full test suite).
-4. **Security** — when `Cargo.toml` / `Cargo.lock` change (also `deny.toml`,
-   which does **not** trigger Rust jobs).
+1. **Detect** — `scripts/ci-affected.sh` vs PR base (`main`). Emits `rust`,
+   `macos`, `docs_only`, `packages`, `check_packages`, …
+2. **Linux** (if Rust) — primary gate: `fmt`, Clippy on affected + dependants
+   (`--lib --bins --tests -D warnings`), unit + integration/`crates/*/tests`
+   + daemon E2E for affected packages (offline mocks; no provider keys).
+3. **macOS** (if Rust **and** platform-sensitive paths) — Seatbelt / sandbox /
+   no-sudo / PTY filters only. Skipped for ordinary crate edits (does not block
+   Gate).
+4. **Security** — when `Cargo.toml` / `Cargo.lock` / `deny.toml` change.
 5. **Site** — only when `site/**` changes (`npm run check`).
-6. **Gate** — always-on aggregator for branch protection so skipped scoped jobs
+6. **Docs** — docs-only PRs get a cheap whitespace check (no Rust).
+7. **Gate** — always-on aggregator for branch protection so skipped scoped jobs
    do not fail required checks.
+
+Concurrency: `cancel-in-progress: true` — newer push cancels older CI on the
+same PR ref.
 
 Path scope notes: docs/markdown/assets skip Rust; `Taskfile.yml`, `.githooks/**`,
 and non-CI `scripts/*` also skip Rust (`scripts/ci-affected.sh` and
 `.github/workflows/ci.yml` still force workspace self-test). Dependants expand
 to a fixed point (e.g. `impetus-acp-gateway` pulls `impetus-core` and then
-core's consumers including `impetus-tui`).
+core's consumers including `impetus-tui`). Platform paths (sandbox/Seatbelt,
+PTY, Keychain/auth, ACP child profile, no-sudo daemon tests) set `macos=true`.
 
 Selector self-check: `bash scripts/tests/ci-affected.sh`.
 
-Ubuntu 24.04 PR CI is a **compile guard** (`cargo check`), not a clean-machine
-release smoke. What smoke must still prove (doctor, daemon, no secrets in
-logs, Linux data-dir override): [ubuntu-smoke.md](ubuntu-smoke.md).
+Ubuntu 24.04 PR CI is the **full affected Rust quality gate** (not merely a
+compile guard). What release smoke must still prove on a clean machine
+(doctor, daemon, no secrets in logs, Linux data-dir override):
+[ubuntu-smoke.md](ubuntu-smoke.md).
 
 ## Docs capability claims check
 

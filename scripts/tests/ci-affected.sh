@@ -47,6 +47,7 @@ expect docs rust false "$out"
 expect docs docs_only true "$out"
 expect docs security false "$out"
 expect docs workspace false "$out"
+expect docs macos false "$out"
 expect docs packages "" "$out"
 
 # --- deny.toml → security only ---
@@ -68,12 +69,33 @@ out="$(scope 'scripts/install.sh')"
 expect scripts rust false "$out"
 expect scripts workspace false "$out"
 
-# --- leaf crate ---
+# --- leaf crate (no macOS platform paths) ---
 out="$(scope 'crates/impetus-zap-adapter/src/lib.rs')"
 expect leaf rust true "$out"
 expect leaf workspace false "$out"
+expect leaf macos false "$out"
 expect leaf packages "-p impetus-zap-adapter" "$out"
 expect leaf check_packages "-p impetus-zap-adapter" "$out"
+
+# --- protocol leaf expands dependants, still no macOS ---
+out="$(scope 'crates/impetus-protocol/src/types.rs')"
+expect protocol rust true "$out"
+expect protocol macos false "$out"
+expect protocol packages "-p impetus-protocol" "$out"
+cp="$(val check_packages "$out")"
+contains protocol "$cp" "-p impetus-core"
+contains protocol "$cp" "-p impetus-client"
+
+# --- macOS-platform path trips macos=true ---
+out="$(scope 'crates/impetus-core/src/execution/sandbox.rs')"
+expect seatbelt rust true "$out"
+expect seatbelt macos true "$out"
+expect seatbelt packages "-p impetus-core" "$out"
+
+out="$(scope 'crates/impetusd/tests/daemon_userspace_no_sudo.rs')"
+expect nosudo rust true "$out"
+expect nosudo macos true "$out"
+expect nosudo packages "-p impetusd" "$out"
 
 # --- acp-gateway → transitive dependants (fixed-point) ---
 out="$(scope 'crates/impetus-acp-gateway/src/lib.rs')"
@@ -96,11 +118,12 @@ cp="$(val check_packages "$out")"
 contains core "$cp" "-p impetus-tui"
 contains core "$cp" "-p impetus-client"
 
-# --- Cargo.toml → workspace + security ---
+# --- Cargo.toml → workspace + security + macos ---
 out="$(scope 'Cargo.toml')"
 expect cargo rust true "$out"
 expect cargo workspace true "$out"
 expect cargo security true "$out"
+expect cargo macos true "$out"
 expect cargo packages "--workspace" "$out"
 expect cargo check_packages "--workspace" "$out"
 
