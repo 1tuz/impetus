@@ -24,7 +24,9 @@ pub use gateway_v2::{
 };
 pub use health::{AcpBackendStatus, AcpHealthKind};
 pub use mock::MockAgent;
-pub use profile::{ACP_CHILD_ENV, AcpProfile, CredentialStrategy, agent_sdk_env_overlay};
+pub use profile::{
+    ACP_CHILD_CONTROL_OK_ENV, ACP_CHILD_ENV, AcpProfile, CredentialStrategy, agent_sdk_env_overlay,
+};
 pub use redact::{StreamExportAudit, redact_json, redact_text};
 pub use registry::{
     AgentCandidate, BUILTIN_CANDIDATES, DiscoveredAgent, discover_agents, path_dirs_from_env,

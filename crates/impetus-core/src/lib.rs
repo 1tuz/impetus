@@ -293,7 +293,9 @@ pub use instructions::{
 };
 pub use ipc::{
     IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode,
-    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, trim_events_to_ipc_frame,
+    IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, capability_allows, negotiate_ipc_version,
+    required_capability, trim_events_to_ipc_frame, validate_request_on_wire,
+    validate_response_on_wire,
 };
 pub use lsp_backend::{
     LSP_BACKEND_NOT_IMPLEMENTED, LspBackendFamily, LspBackendHandshake, LspBackendLaunchHint,
@@ -391,9 +393,10 @@ pub use runtime::{
 pub use schema::{
     HARNESS_NEST_KEYS, KNOWN_SCHEMAS, NEST_HARNESS, NEST_PROVIDER, PROVIDER_NEST_KEYS,
     SCHEMA_APPROVAL_DETAIL, SCHEMA_CAPABILITIES, SCHEMA_EXTENSION, SCHEMA_MCP, SCHEMA_SESSION,
-    SchemaSpec, SchemaValidationError, lookup as lookup_schema, reject_leaked_nested_fields,
-    reject_unknown_critical_fields, require_nest_objects,
-    require_version as require_schema_version, validate_envelope as validate_schema_envelope,
+    SchemaSpec, SchemaValidationError, WIRE_RESPONSE_SCHEMAS, lookup as lookup_schema,
+    reject_leaked_nested_fields, reject_unknown_critical_fields, require_nest_objects,
+    require_version as require_schema_version, validate_approval_detail_wire,
+    validate_envelope as validate_schema_envelope, validate_session_wire,
 };
 pub use service_provider::{
     ExternalServiceHandle, ResolvedService, ServiceProvider, ServiceProviderKind, ServiceTrait,

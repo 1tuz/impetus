@@ -187,7 +187,7 @@ impetusd  — authoritative daemon
 | Extension lifecycle (plan/apply/ownership/enable/disable/unload/doctor/repair) | Partial | CLI control plane: `extension plan|install|remove|enable|disable|unload|list|doctor|repair` + durable status (`{path}.disabled`). Daemon loads Enabled inventory from `$IMPETUS_DATA_DIR/extensions/install_state.db` at start into Harness; IPC `ListExtensions` / `GetExtensionStatus` (`extension_runtime`). **Package SDK (#324/#329):** `impetus-extension-sdk` + host_process protocol (`operate`/`cancel`) + `ExtensionCapabilityRegistry` + IPC `extension_manage` + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT. **Remaining:** unify CLI vs daemon SoT for legacy installs; crates.io SDK; IPC operate. Allowlist `#296`. Not marketplace (Won't). |
 | MemoryStore (contextual knowledge) | Implemented | Daemon control-plane IPC List/Get/Append/Clear/Export + JSONL under `$IMPETUS_DATA_DIR/memory/` (`memory` / `memory_manage`). AgentLoop Prompt/FollowUp/approval-resume injects project-scoped session entries as a bounded system context block (`SessionMemoryRuntime::prompt_context_block` → `inject_memory_context`); empty store = no-op. |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
-| Versioned canonical schemas (`impetus.*.v1`) | Partial | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`; remaining gaps = broader validate-on-wire coverage |
+| Versioned canonical schemas (`impetus.*.v1`) | Implemented | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`. Mutating validate-on-wire: daemon rejects bad PolicyConfig/PolicyStore JSON, empty mutating ids, SetSessionModel labels, MCP `env_keys` KEY=value; ApprovalDetail responses run version + full envelope. Client unix retains negotiated caps/version and gates optional calls. Adjacent-version + unsupported-cap tests (#331). `IPC_VERSION` unchanged (14). |
 | ACP as ModelProvider backend | Implemented | `--acp-profile` + gateway V2 + `AcpAdapter`; tool/status → `StreamEvent`; disconnect → `InterruptedUnknown` (never false `Completed`); registry/health/redaction (#335 / #66). Live smoke Partial. |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste + filesystem attach (`/attach` · `Ctrl+Shift+A`), streaming; Prompt/Steer/FollowUp; execution modes; **model picker** F8/`/model` via `ListProviders`/`SetSessionModel` (Provider→Model→Reasoning→catalog options; unavailable disabled; restore after reconnect; options local until #328) (#337); `/children`; Files `Ctrl+F`; git branch `Ctrl+B`; Review F6/`Ctrl+R`/`/review`; Activity fold; PTY `Ctrl+\` passthrough; fork `/fork`+`Ctrl+Shift+K` / checkpoints F7/`/checkpoint` / workspace path prompt on `/new` (#311/#315). Remaining: sequence picker polish. |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
@@ -203,7 +203,9 @@ impetusd  — authoritative daemon
   version selection unchanged. **Per-connection freeze:** first successful Hello
   locks negotiated caps + version; subsequent Hello on the same connection
   echoes the frozen set (no privilege widen). Adjacent-version tests cover
-  v12-only clients.
+  v12-only clients (`negotiate_ipc_version` + daemon wire Hello). Unsupported
+  capability → `Unavailable` (daemon + client unix local gate). Mutating
+  request/response validate-on-wire before dispatch / after handle (#331).
 - Presentation crates import wire/event DTOs from
   `impetus-client::protocol` (façade over `impetus-protocol`). Do not depend on
   `impetus-core` from TUI/Desktop for **types**.
@@ -508,8 +510,9 @@ Pointers:
 | Stable ACP protocol v1 initialize | Implemented | `InitializeRequest::new(ProtocolVersion::V1)` |
 | Profile: absolute `command` + `args` + allow-listed non-secret `env` | Implemented | `AcpProfile::validate` / `to_agent_config` |
 | Agent-owned auth only (no Keychain/OAuth/raw token on ACP profile) | Implemented | `CredentialStrategy::AgentOwned` required; secret env names rejected |
-| ResolveApproval connection bind | Implemented | Daemon mints per-`serve_client` id; **CreateSession always binds**. Attach / Fork / Restore bind only if unbound or same connection — **Attach does not steal**. Foreign `ResolveApproval` → `Unavailable` (cap `resolve_approval_bound`). Residual: same-uid FS trust (0600 socket); owner disconnect not detected — reconnect cannot reclaim resolve without explicit transfer (YAGNI). Scrub blanks `IMPETUS_SOCKET` env (reduces accidental leak); default data-dir socket path still reachable — `IMPETUS_ACP_CHILD` is marker only, not peer filter / not peer-cred |
-| ACP agent child env isolation | Implemented | Profile rejects control-plane `IMPETUS_*`; SDK overlay blanks `IMPETUS_SOCKET` / secrets + sets `IMPETUS_ACP_CHILD=1` (SDK has no `env_clear`; marker unused for daemon peer filter). Legacy `gateway.rs` uses `env_clear` + filtered inherit. Residual: blank ≠ hide default socket path under HOME |
+| ResolveApproval connection bind | Implemented | Daemon mints per-`serve_client` id; **CreateSession always binds**. Attach / Fork / Restore bind only if unbound or same connection — **Attach does not steal**. Foreign `ResolveApproval` → `Unavailable` (cap `resolve_approval_bound`). Residual: same-uid FS trust (0600 socket + umask); owner disconnect not detected — reconnect cannot reclaim resolve without explicit transfer (YAGNI). Scrub blanks `IMPETUS_SOCKET` env; default data-dir socket path still reachable by same-uid unmarked peers |
+| ACP agent child env isolation | Implemented | Profile rejects control-plane `IMPETUS_*`; SDK overlay blanks `IMPETUS_SOCKET` / secrets + sets `IMPETUS_ACP_CHILD=1` (SDK has no `env_clear`). Legacy `gateway.rs` uses `env_clear` + filtered inherit. Residual: blank ≠ hide default socket path under HOME |
+| Same-uid peer isolation (control socket) | Implemented | `impetusd`: umask `0177` around bind; `getpeereid` / `SO_PEERCRED` uid gate (fail closed); exec-time environ peer filter denies `IMPETUS_ACP_CHILD=1` unless `IMPETUS_ACP_CHILD_CONTROL_OK=1` (profile-rejected / overlay-blanked). CLI/TUI unmarked clients unchanged. No sudo/password. Tests: `peer_isolation` unit + `daemon_peer_isolation` |
 | Explicit `auth_method_id` (never `auth_methods.first()`) | Implemented | `select_auth_method`; missing/unsupported → `Incompatible` / error |
 | `--acp-profile` daemon wiring → `ModelProvider` | Implemented | `Harness::with_acp_gateway` + `AcpAdapter` |
 | Stream via `session/update` → harness `StreamEvent` | Implemented | Text + redacted `ToolUse` → `StreamEvent::ToolCall`; status/thought → `Reasoning`; `Completed` → `Finish` |
@@ -548,6 +551,9 @@ Shared module [`schema`](crates/impetus-core/src/schema.rs):
 - Validation: version mismatch, unknown critical top-level fields, and
   leaked provider/harness keys fail clearly (`SchemaValidationError`);
   provider/harness details nest under `provider` / `harness` objects
+- Wire helpers: `validate_approval_detail_wire` / `validate_session_wire` +
+  `WIRE_RESPONSE_SCHEMAS`; protocol `validate_request_on_wire` /
+  `validate_response_on_wire` / `required_capability` / `capability_allows`
 - Lookup: `KNOWN_SCHEMAS` / `lookup_schema`
 - Extension contract: [`ExtensionManifest`](crates/impetus-core/src/extension_manifest.rs)
   (`id` / `kind` / `version` / `digest` / `capabilities`) validated on

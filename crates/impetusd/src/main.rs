@@ -3,15 +3,19 @@ use impetus_acp_gateway::AcpProfile;
 use impetus_core::{
     CredentialResolver, CredentialStrategy, Harness, IpcErrorCode, IpcRequest, IpcResponse,
     MAX_IPC_LINE_BYTES, NoCredentialResolver, OpenAiProvider, OpenAiRetryBudget, PolicyConfig,
-    PolicyEngine, ProviderError, ProviderProfile, SandboxScope, SqliteEventStore,
-    load_daemon_hook_prefilter, load_daemon_mcp_runtime, load_daemon_policy_store,
-    open_daemon_worktree_manager,
+    PolicyEngine, ProviderError, ProviderProfile, SCHEMA_APPROVAL_DETAIL, SandboxScope,
+    SqliteEventStore, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
+    load_daemon_policy_store, open_daemon_worktree_manager, required_capability,
+    validate_approval_detail_wire, validate_request_on_wire, validate_response_on_wire,
 };
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+
+#[cfg(unix)]
+mod peer_isolation;
 
 #[cfg(test)]
 use impetus_core::RunEvent;
@@ -40,10 +44,23 @@ async fn main() -> Result<()> {
         std::env::args_os().skip(1),
     )?);
     spawn_artifact_gc_loop(impetus_core::default_artifact_root());
-    let listener = UnixListener::bind(&socket_path).context("bind harness Unix socket")?;
+    // Restrictive umask before bind so the socket is born 0600; chmod follows.
+    let listener = {
+        #[cfg(unix)]
+        let previous_umask = peer_isolation::push_socket_umask();
+        let bound = UnixListener::bind(&socket_path).context("bind harness Unix socket");
+        #[cfg(unix)]
+        peer_isolation::pop_socket_umask(previous_umask);
+        bound?
+    };
     set_socket_permissions(&socket_path)?;
     loop {
         let (stream, _) = listener.accept().await.context("accept harness client")?;
+        #[cfg(unix)]
+        if let Err(error) = peer_isolation::admit_control_plane_peer(&stream) {
+            eprintln!("impetusd: rejected control-plane peer: {error}");
+            continue;
+        }
         let harness = harness.clone();
         tokio::spawn(async move {
             let _ = serve_client(stream, harness).await;
@@ -543,8 +560,14 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                         // Caps/version frozen after first successful Hello;
                         // mid-session requests use that set only.
                         debug_assert!(negotiated_version.is_some());
-                        let required = required_capability(&request);
-                        if !capabilities.iter().any(|c| c == required) {
+                        if let Err(message) = validate_request_on_wire(&request) {
+                            IpcResponse::Error {
+                                code: IpcErrorCode::InvalidRequest,
+                                message,
+                            }
+                        } else if let Some(required) = required_capability(&request)
+                            && !capabilities.iter().any(|c| c == required)
+                        {
                             IpcResponse::Error {
                                 code: IpcErrorCode::Unavailable,
                                 message: format!("capability `{required}` was not negotiated"),
@@ -567,8 +590,14 @@ async fn serve_client(stream: UnixStream, harness: Arc<Harness>) -> Result<()> {
                                 }
                                 _ => None,
                             };
-                            let response =
+                            let mut response =
                                 harness.handle_with_connection(Some(connection_id), request);
+                            if let Err(message) = validate_daemon_response_on_wire(&response) {
+                                response = IpcResponse::Error {
+                                    code: IpcErrorCode::Internal,
+                                    message: format!("response failed wire schema validation: {message}"),
+                                };
+                            }
                             if matches!(response, IpcResponse::Subscribed { .. }) {
                                 subscription = requested_subscription;
                                 // Initialize notification receiver on first subscription
@@ -602,99 +631,15 @@ async fn write_response(
     Ok(())
 }
 
-fn required_capability(request: &IpcRequest) -> &'static str {
-    match request {
-        IpcRequest::Hello { .. } => unreachable!("hello is negotiated separately"),
-        IpcRequest::CreateSession { .. } => "session_create",
-        IpcRequest::Attach { .. } => "session_attach",
-        IpcRequest::ListSessions => "session_list",
-        IpcRequest::ForkSession { .. } => "session_fork",
-        IpcRequest::CreateCheckpoint { .. }
-        | IpcRequest::ListCheckpoints { .. }
-        | IpcRequest::RestoreCheckpoint { .. } => "session_checkpoint",
-        IpcRequest::Stream { .. } => "event_stream",
-        IpcRequest::Prompt { .. } => "prompt",
-        IpcRequest::Context { .. } => "context",
-        IpcRequest::Cancel { .. } => "cancel",
-        IpcRequest::Tool { .. } => "tool",
-        IpcRequest::Subscribe { .. } => "subscribe",
-        IpcRequest::ResolveApproval { .. } => "resolve_approval",
-        IpcRequest::GetAttachment { .. } => "get_attachment",
-        IpcRequest::GetApprovalDetail { .. } => "get_approval_detail",
-        IpcRequest::BeginArtifactUpload { .. }
-        | IpcRequest::AppendArtifactChunk { .. }
-        | IpcRequest::FinishArtifactUpload { .. }
-        | IpcRequest::AbortArtifactUpload { .. } => "artifact_upload",
-        IpcRequest::ReadArtifact { .. }
-        | IpcRequest::GetArtifactMetadata { .. }
-        | IpcRequest::ReadArtifactRange { .. } => "artifact_read",
-        IpcRequest::Diagnostics => "diagnostics",
-        IpcRequest::GotoDefinition { .. } => "coding_definition",
-        IpcRequest::Hover { .. } => "coding_hover",
-        IpcRequest::CodingDiagnostics { .. } => "coding_diagnostics",
-        IpcRequest::CodingSymbols { .. } => "coding_symbols",
-        IpcRequest::CancelCodingRequest { .. } => "coding_cancel",
-        IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
-            "execution_mode"
-        }
-        IpcRequest::ReloadPolicyConfig { .. } => "reload_policy_config",
-        IpcRequest::ReloadPolicyStore { .. } | IpcRequest::GetPolicyStore => "reload_policy_store",
-        IpcRequest::ListChildRuns { .. } | IpcRequest::GetChildRun { .. } => "list_child_runs",
-        IpcRequest::StartWorkflow { .. }
-        | IpcRequest::CancelWorkflow { .. }
-        | IpcRequest::AdvanceWorkflow { .. } => "workflow_control",
-        IpcRequest::ListWorkspaceDir { .. } => "workspace_list_dir",
-        IpcRequest::StatWorkspaceFile { .. } => "workspace_stat_file",
-        IpcRequest::ReadWorkspaceFile { .. } => "workspace_read_file",
-        IpcRequest::SearchWorkspaceFiles { .. } => "workspace_search_files",
-        // GetDiff/GetFileDiff are git ops; `structured_diff` advertises
-        // DiffObservation enrichment on the same responses (not a separate method).
-        IpcRequest::GetDiff { .. }
-        | IpcRequest::GetFileDiff { .. }
-        | IpcRequest::GetRepositoryState { .. }
-        | IpcRequest::ListBranches { .. }
-        | IpcRequest::GetCurrentBranch { .. }
-        | IpcRequest::CreateBranch { .. }
-        | IpcRequest::SwitchBranch { .. }
-        | IpcRequest::GitStatus { .. }
-        | IpcRequest::ListChangedFiles { .. } => "git",
-        IpcRequest::PtyStart { .. }
-        | IpcRequest::PtyAttach { .. }
-        | IpcRequest::PtyInput { .. }
-        | IpcRequest::PtyOutput { .. }
-        | IpcRequest::PtyResize { .. }
-        | IpcRequest::PtyDetach { .. }
-        | IpcRequest::PtyTerminate { .. }
-        | IpcRequest::PtyStatus { .. } => "pty",
-        IpcRequest::ListMcpServers => "list_mcp",
-        IpcRequest::ListModels => "list_models",
-        IpcRequest::ListProviders => "list_providers",
-        IpcRequest::GetSessionModel { .. } | IpcRequest::SetSessionModel { .. } => "session_model",
-        IpcRequest::CreateWorktree { .. }
-        | IpcRequest::ListWorktrees { .. }
-        | IpcRequest::GetWorktree { .. }
-        | IpcRequest::CloseWorktree { .. }
-        | IpcRequest::ResumeWorktree { .. }
-        | IpcRequest::StopWorktree { .. }
-        | IpcRequest::CheckWorktreeMergeReady { .. }
-        | IpcRequest::MergeWorktree { .. } => "worktrees",
-        IpcRequest::ReloadMcpServers
-        | IpcRequest::UpsertMcpServer { .. }
-        | IpcRequest::RemoveMcpServer { .. }
-        | IpcRequest::EnableMcpServer { .. }
-        | IpcRequest::DisableMcpServer { .. } => "mcp_manage",
-        IpcRequest::ListMemory { .. } | IpcRequest::GetMemory { .. } => "memory",
-        IpcRequest::AppendMemory { .. }
-        | IpcRequest::ClearMemory { .. }
-        | IpcRequest::ExportMemory { .. } => "memory_manage",
-        IpcRequest::GetBrowserHealth | IpcRequest::NegotiateBrowser { .. } => "browser",
-        IpcRequest::ListExtensions | IpcRequest::GetExtensionStatus { .. } => "extension_runtime",
-        IpcRequest::ReloadExtensionPackages
-        | IpcRequest::ListExtensionPackages
-        | IpcRequest::GetExtensionPackage { .. }
-        | IpcRequest::EnableExtensionPackage { .. }
-        | IpcRequest::DisableExtensionPackage { .. } => "extension_manage",
+/// Protocol versioned checks plus canonical ApprovalDetail envelope.
+fn validate_daemon_response_on_wire(response: &IpcResponse) -> Result<(), String> {
+    validate_response_on_wire(response)?;
+    if let IpcResponse::ApprovalDetail { detail, .. } = response {
+        let value = serde_json::to_value(detail).map_err(|e| e.to_string())?;
+        validate_approval_detail_wire(&value).map_err(|e| e.to_string())?;
+        debug_assert_eq!(SCHEMA_APPROVAL_DETAIL.id, "impetus.approval_detail.v1");
     }
+    Ok(())
 }
 
 enum LineRead {
@@ -1932,6 +1877,123 @@ mod tests {
                 }
             ),
             "re-Hello must not unlock Bypass: {bypass:?}"
+        );
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn wire_adjacent_version_hello_selects_overlap() {
+        let harness = Arc::new(Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            impetus_core::harness_api::policy(),
+        ));
+        let (server, client) = UnixStream::pair().expect("create Unix pair");
+        let server_task = tokio::spawn(async move { serve_client(server, harness).await });
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        // v12-only client → negotiate 12.
+        writer
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&IpcRequest::Hello {
+                        version: 12,
+                        min_version: Some(12),
+                        capabilities: vec!["session_list".into()],
+                    })
+                    .unwrap()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("hello v12");
+        writer.flush().await.expect("flush");
+        let response: IpcResponse = serde_json::from_str(
+            &lines
+                .next_line()
+                .await
+                .expect("read")
+                .expect("hello response"),
+        )
+        .expect("parse");
+        match response {
+            IpcResponse::Hello { version, .. } => assert_eq!(version, 12),
+            other => panic!("expected Hello v12, got {other:?}"),
+        }
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn wire_unsupported_capability_and_mutating_validate() {
+        let harness = Arc::new(Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            impetus_core::harness_api::policy(),
+        ));
+        let (server, client) = UnixStream::pair().expect("create Unix pair");
+        let server_task = tokio::spawn(async move { serve_client(server, harness).await });
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        for request in [
+            IpcRequest::Hello {
+                version: IPC_VERSION,
+                min_version: Some(IPC_MIN_SUPPORTED),
+                capabilities: vec!["session_list".into(), "reload_policy_config".into()],
+            },
+            IpcRequest::ListMcpServers,
+            IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":99}"#.into()),
+            },
+            IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":1}"#.into()),
+            },
+        ] {
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(&request).unwrap()).as_bytes())
+                .await
+                .expect("send");
+        }
+        writer.flush().await.expect("flush");
+
+        let hello: IpcResponse =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(matches!(hello, IpcResponse::Hello { .. }));
+
+        let unsupported: IpcResponse =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(
+            matches!(
+                unsupported,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    ..
+                }
+            ),
+            "unsupported cap: {unsupported:?}"
+        );
+
+        let bad_policy: IpcResponse =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        match bad_policy {
+            IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message,
+            } => assert!(
+                message.contains("unsupported policy config version"),
+                "{message}"
+            ),
+            other => panic!("expected InvalidRequest for bad policy, got {other:?}"),
+        }
+
+        let ok_policy: IpcResponse =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(
+            matches!(ok_policy, IpcResponse::PolicyConfig { .. }),
+            "ok policy: {ok_policy:?}"
         );
 
         server_task.abort();
