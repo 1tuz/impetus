@@ -58,40 +58,25 @@ Do not automatically run workspace check/clippy/tests/E2E locally. A targeted te
 
 ### 2. Provider options and service tiers end-to-end
 
-The model catalog already exposes provider metadata, but request execution still only has model/reasoning overrides.
+**Shipped (verify):** catalog discovery → SetSessionModel validation/persist →
+`StreamOptions` → OpenAI-compatible request body (`service_tier` + generic
+`provider_options`). No silent fallback on unsupported values. Coverage:
+`openai_provider::request_body_includes_service_tier_and_provider_options`,
+harness `set_session_model_service_tier_and_options_reach_stream`,
+`daemon_unix_e2e` persist across restart.
 
-Implement an extensible provider/session option path:
-
-catalog discovery
--> session selection/persistence
--> validation against the selected provider/model
--> request/stream options
--> actual provider request
-
-Must support service tier and generic non-secret provider-specific model/request options without forcing a new IPC schema for every future provider field.
-
-Requirements:
-
-- no silent fallback
-- unavailable/invalid option produces a clear error
-- options survive reconnect/reopen/restart where session state is durable
-- CloseRouter/OpenAI-compatible adapters consume supported options when the provider exposes them
-- generic fallback remains honest when metadata is unavailable
-- tests prove selected options reach the actual mock/provider request, not only internal state
+Remaining honesty: CloseRouter-specific fields stay adapter metadata, not core
+enums — keep that boundary when adding providers.
 
 ### 3. ACP permission/approval path cleanup
 
-There must be exactly one production permission path.
+**Shipped (verify, do not reintroduce):** gateway is transport-only
+(`PermissionDecision::Select|Deny` only). Durable `NeedsApproval` is brokered
+solely in `AcpAdapter` → `ApprovalRequested` → `ResolveApproval` → exact ACP
+option. Public `respond_permission` no-op and `NeedsApproval`→Cancelled without
+a broker were removed (#339 / #360 / `daemon_unix_acp_permission`).
 
-Audit `crates/impetus-acp-gateway/src/gateway_v2.rs` and adapter wiring. Remove or complete any stale public path that still contains semantics such as:
-
-- `respond_permission` not implemented
-- `NeedsApproval` -> Cancelled fallback
-- `no approval flow yet`
-
-If the adapter already owns durable approvals, make the gateway API impossible to misuse and remove contradictory/dead fallback behavior.
-
-Required real flow:
+Required production flow (must remain the only path):
 
 ACP permission request
 -> Impetus policy
@@ -101,7 +86,7 @@ ACP permission request
 -> response to ACP
 -> agent continues
 
-Add integration coverage for approve, deny and reconnect/durable behavior where supported.
+Coverage: unit (`acp_adapter` needs_approval_*) + daemon E2E approve/deny.
 
 ### 4. Real daemon E2E coverage
 
