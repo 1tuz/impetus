@@ -16,7 +16,7 @@ use crate::explore_child::{
 use crate::policy::PolicyEngine;
 use crate::provider::ProviderMessage;
 use crate::provider_trait::ModelProvider;
-use crate::runtime::AgentRuntime;
+use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::tool_orchestrator::ToolOrchestrator;
 use crate::tool_schema::{BuiltinToolSchema, builtin_tool_schemas, canonical_tool_name};
@@ -83,7 +83,12 @@ impl ExploreChildExecutor for AgentLoopExploreExecutor {
     fn execute(
         &self,
         env: &ExploreChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
     ) -> Result<ExploreExecutorOutput, ExploreExecutorError> {
+        if let Some(mid) = mid_run {
+            mid.progress(Some(5), "explore:agent-loop");
+            mid.action("agent_loop", &env.context_label);
+        }
         let mut scope = self.policy_template.scope().clone();
         scope.workspace_root = env.metadata.cwd.clone();
         scope.allow_network = false;
@@ -142,6 +147,10 @@ impl ExploreChildExecutor for AgentLoopExploreExecutor {
                         })
                     })
                     .unwrap_or_else(|| "explore completed".to_string());
+
+                if let Some(mid) = mid_run {
+                    mid.progress(Some(100), "explore:done");
+                }
 
                 let artifact_ref_labels = runtime
                     .events()

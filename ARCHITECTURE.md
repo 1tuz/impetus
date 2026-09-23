@@ -86,8 +86,9 @@ role AgentLoop parity landed (#322) via `role_agent_loop` — not process stubs.
   ([`InMemoryAgentScheduler`](crates/impetus-core/src/agent_scheduler.rs), #253);
   Explore library + production `impetusd` `explore_spawn` (#306 / #308);
   WorkflowRuntime live role children (#311). Parent-log `Child*` lifecycle
-  events (Started/Finished) Implemented (#315 / #318); mid-run action detail
-  stream still thin.
+  events (Started/Finished) Implemented (#315 / #318); mid-run
+  `ChildEvent::Progress` / `Action` on parent stream Implemented (#333) —
+  flood-coalesced, session-isolated, reconnect via `list_after`, no hidden CoT.
 - **WorkflowEngine** — small declarative recipes (feature/bug/refactor); owns step
   order, budgets, retry, checkpoints, cancellation, result propagation. Role-tagged
   steps record scheduler handles via `begin_step_with_scheduler` (#253). Recipe
