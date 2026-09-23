@@ -65,9 +65,13 @@ pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
 }
 
 /// Injectable spawn path for tests. Production uses [`ensure_daemon_running`].
+///
+/// Returns a live [`std::process::Child`] when the caller must keep the spawn
+/// lock until that child exits or becomes ready. Tests that start an in-process
+/// Hello stub return `None`.
 pub async fn ensure_daemon_running_with<F>(socket_path: &str, spawn_daemon: F) -> Result<()>
 where
-    F: FnOnce(&str, &Path) -> Result<()>,
+    F: FnOnce(&str, &Path) -> Result<Option<std::process::Child>>,
 {
     if is_daemon_running(socket_path).await {
         return Ok(());
@@ -129,14 +133,19 @@ where
                     return Ok(());
                 }
 
-                let spawn_result = spawn_daemon(socket_path, &data_dir);
-                if let Err(err) = spawn_result {
-                    drop(lock);
-                    return Err(err).context("failed to spawn impetusd");
-                }
+                let mut child = match spawn_daemon(socket_path, &data_dir) {
+                    Ok(child) => child,
+                    Err(err) => {
+                        drop(lock);
+                        return Err(err).context("failed to spawn impetusd");
+                    }
+                };
 
                 let wait_budget = Duration::from_secs(3);
-                let result = wait_until_ready(socket_path, wait_budget).await;
+                let result =
+                    wait_until_ready_holding_child(socket_path, wait_budget, &mut child).await;
+                // Hold flock until ready or child is gone so a peer cannot start
+                // a second authoritative daemon while ours is still binding.
                 drop(lock);
                 return result.with_context(|| {
                     format!(
@@ -158,9 +167,12 @@ where
     }
 }
 
-fn spawn_impetusd_process(socket_path: &str, data_dir: &Path) -> Result<()> {
+fn spawn_impetusd_process(
+    socket_path: &str,
+    data_dir: &Path,
+) -> Result<Option<std::process::Child>> {
     let impetusd_path = find_impetusd_binary()?;
-    Command::new(&impetusd_path)
+    let child = Command::new(&impetusd_path)
         .env("IMPETUS_SOCKET", socket_path)
         .env("IMPETUS_DATA_DIR", data_dir)
         .stdin(Stdio::null())
@@ -168,21 +180,39 @@ fn spawn_impetusd_process(socket_path: &str, data_dir: &Path) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("failed to spawn impetusd at {impetusd_path}"))?;
-    Ok(())
+    Ok(Some(child))
 }
 
-async fn wait_until_ready(socket_path: &str, budget: Duration) -> Result<()> {
-    let steps = (budget.as_millis() / 300).max(1) as u32;
-    for attempt in 1..=steps {
-        sleep(Duration::from_millis(300)).await;
+async fn wait_until_ready_holding_child(
+    socket_path: &str,
+    budget: Duration,
+    child: &mut Option<std::process::Child>,
+) -> Result<()> {
+    let deadline = Instant::now() + budget;
+    loop {
         if is_daemon_running(socket_path).await {
             return Ok(());
         }
-        if attempt == steps {
+        if let Some(proc) = child.as_mut() {
+            match proc.try_wait() {
+                Ok(Some(status)) => {
+                    bail!("impetusd exited before ready ({status})");
+                }
+                Ok(None) => {}
+                Err(err) => bail!("failed to poll impetusd child: {err}"),
+            }
+        }
+        if Instant::now() >= deadline {
+            if let Some(proc) = child.as_mut() {
+                // Still binding past budget — kill so a peer retry cannot race
+                // a second authoritative process against a half-started daemon.
+                let _ = proc.kill();
+                let _ = proc.wait();
+            }
             bail!("daemon not ready within {budget:?}");
         }
+        sleep(Duration::from_millis(300)).await;
     }
-    Ok(())
 }
 
 /// Find impetusd binary in PATH or next to impetus binary.
@@ -284,11 +314,11 @@ impl SpawnLock {
 
 impl Drop for SpawnLock {
     fn drop(&mut self) {
-        let _ = flock_unlock(&self.file);
-        // Leave the path in place: flock is authoritative. Truncate contents
-        // so diagnostics do not show a stale owner after release.
+        // Truncate owner metadata while we still hold the exclusive flock so a
+        // peer cannot acquire, write its pid, then lose that metadata to us.
         let _ = self.file.set_len(0);
         let _ = self.file.flush();
+        let _ = flock_unlock(&self.file);
     }
 }
 
@@ -332,7 +362,7 @@ mod tests {
             .find("pub async fn ensure_daemon_running")
             .expect("ensure_daemon_running present");
         let end = src[start..]
-            .find("\nasync fn wait_until_ready")
+            .find("\nasync fn wait_until_ready_holding_child")
             .map(|i| start + i)
             .unwrap_or(src.len());
         let spawn_path = &src[start..end];
@@ -565,7 +595,7 @@ mod tests {
                 // Detach stub for test lifetime; keep stop alive via leak.
                 std::mem::forget(handle);
                 std::mem::forget(stop);
-                Ok(())
+                Ok(None)
             }
         })
         .await;
@@ -610,7 +640,7 @@ mod tests {
                             // Brief delay so winner can bind first; readiness wait covers rest.
                             thread::sleep(Duration::from_millis(20));
                         }
-                        Ok(())
+                        Ok(None)
                     }
                 })
                 .await
@@ -643,7 +673,7 @@ mod tests {
                 let (handle, stop) = spawn_hello_stub(socket);
                 std::mem::forget(handle);
                 std::mem::forget(stop);
-                Ok(())
+                Ok(None)
             }
         })
         .await;
@@ -665,9 +695,6 @@ mod tests {
         let stolen = Arc::new(AtomicUsize::new(0));
         let stolen_cb = Arc::clone(&stolen);
 
-        // Short readiness budget path: peer holds lock, no daemon → Busy loop
-        // must not acquire. Use a direct try_acquire probe (unit) + ensure that
-        // does not spawn.
         match SpawnLock::try_acquire(&lock_path).expect("probe") {
             LockAcquire::Busy => {}
             LockAcquire::Acquired(_) => panic!("must not steal active lock"),
@@ -675,22 +702,71 @@ mod tests {
 
         let ensure = tokio::spawn({
             let socket_str = socket_str.clone();
+            let socket = socket.clone();
             async move {
                 ensure_daemon_running_with(&socket_str, move |_s, _d| {
                     stolen_cb.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
+                    let (handle, stop) = spawn_hello_stub(socket);
+                    std::mem::forget(handle);
+                    std::mem::forget(stop);
+                    Ok(None)
                 })
                 .await
             }
         });
 
-        // Let ensure observe Busy a few times.
+        // Let ensure observe Busy a few times — must not spawn yet.
         sleep(Duration::from_millis(700)).await;
-        assert_eq!(stolen.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            stolen.load(Ordering::SeqCst),
+            0,
+            "must not steal active lock"
+        );
         drop(holder);
 
-        // After release without daemon, ensure may acquire and "spawn".
-        let _ = ensure.await;
+        let result = ensure.await.expect("join");
+        assert!(
+            result.is_ok(),
+            "after holder drop ensure must succeed: {result:?}"
+        );
+        assert_eq!(stolen.load(Ordering::SeqCst), 1);
+        assert!(is_daemon_running(&socket_str).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busy_waiter_recovers_when_holder_releases() {
+        // Same as active_lock scenario focused on Busy→acquire after Drop.
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().to_path_buf();
+        let lock_path = data_dir.join("daemon.spawn.lock");
+        let socket = data_dir.join("harness.sock");
+        let socket_str = socket.to_string_lossy().to_string();
+
+        let holder = match SpawnLock::try_acquire(&lock_path).expect("hold") {
+            LockAcquire::Acquired(lock) => lock,
+            LockAcquire::Busy => panic!("expected hold"),
+        };
+
+        let waiter = tokio::spawn({
+            let socket_str = socket_str.clone();
+            let socket = socket.clone();
+            async move {
+                ensure_daemon_running_with(&socket_str, move |_s, _d| {
+                    let (handle, stop) = spawn_hello_stub(socket);
+                    std::mem::forget(handle);
+                    std::mem::forget(stop);
+                    Ok(None)
+                })
+                .await
+            }
+        });
+
+        sleep(Duration::from_millis(400)).await;
+        drop(holder);
+        assert!(
+            waiter.await.expect("join").is_ok(),
+            "waiter must reclaim after holder death/release"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -729,7 +805,7 @@ mod tests {
                 let (handle, stop) = spawn_hello_stub(socket);
                 std::mem::forget(handle);
                 std::mem::forget(stop);
-                Ok(())
+                Ok(None)
             }
         })
         .await;
@@ -749,7 +825,7 @@ mod tests {
         let lock_path = data_dir.join("daemon.spawn.lock");
 
         // Spawn "succeeds" but never binds → wait timeout → lock released.
-        let err = ensure_daemon_running_with(&socket_str, |_s, _d| Ok(())).await;
+        let err = ensure_daemon_running_with(&socket_str, |_s, _d| Ok(None)).await;
         assert!(err.is_err());
         match SpawnLock::try_acquire(&lock_path).expect("after timeout") {
             LockAcquire::Acquired(_) => {}
