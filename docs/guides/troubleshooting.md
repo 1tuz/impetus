@@ -24,7 +24,11 @@ Defaults:
 Another `impetusd` may still be running, or a previous run left a socket at the
 configured path. Stop the owning process before starting a new daemon. The CLI
 removes a **stale** socket (path exists, nothing accepts) before spawn — do not
-delete a live socket while a daemon is healthy.
+delete a live socket while a daemon is healthy. Concurrent CLI spawns serialize
+on `$IMPETUS_DATA_DIR/daemon.spawn.lock`.
+
+If the socket is live but Hello returns `Incompatible` (protocol mismatch), the
+CLI **does not** unlink or respawn — upgrade client/daemon so versions overlap.
 
 ## A provider profile is rejected
 

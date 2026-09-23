@@ -26,10 +26,12 @@ the daemon `SandboxScope`:
 
 - hard-`Deny` (e.g. `network` when `allow_network=false`) → package stays
   `Failed`, not `Active`
-- `Allow` / `NeedsApproval` → package may become `Active`; mutating actions
-  still go through normal Policy at action time
+- `Allow` / `NeedsApproval` → package may become `Active` (activate-time
+  `NeedsApproval` does **not** block Active today)
+- host_process `operate` → manifest permission token + secret-key reject only
+  (not a second full EffectSeam pass)
 
-Harness actions still go through:
+Agent-origin harness tools still go through:
 
 `Policy → Deny | Allow | NeedsApproval` → Sandbox → Capability → Execution.
 

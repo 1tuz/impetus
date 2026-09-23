@@ -7,7 +7,9 @@ Canonical layer model: [ARCHITECTURE.md](../../ARCHITECTURE.md),
 ## `impetus` — client (primary UX)
 
 - CLI / TUI on top of `impetus-client::HarnessClient` (Unix socket transport).
-- **Lazy-starts** `impetusd` when the socket is down (`daemon::ensure_daemon_running`).
+- **Lazy-starts** `impetusd` when the socket is down (`daemon::ensure_daemon_running`):
+  stale unlink only if nothing listens; `daemon.spawn.lock` serializes concurrent
+  spawn; live socket + IPC `Incompatible` → hard stop (no unlink/respawn).
 - Does not open SQLite, does not store secrets, does not run sandbox directly —
   only typed IPC requests to `impetusd`.
 - Launch: `cargo run -p impetus -- <subcommand>` or installed `impetus …`.
@@ -31,7 +33,7 @@ Default data root:
 
 ## Dual CLI
 
-`impetus` — **primary** user-facing CLI/TUI.
+`impetus` — **primary** user-facing CLI/TUI (lazy-start).
 
-`impetus-cli` — legacy/secondary reference CLI. Migrate callers toward `impetus`;
-do **not** delete `impetus-cli`.
+`impetus-cli` — legacy/secondary reference CLI (**connect only**, no lazy-start).
+Migrate callers toward `impetus`; do **not** delete `impetus-cli`.
