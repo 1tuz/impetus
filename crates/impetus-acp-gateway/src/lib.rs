@@ -13,6 +13,7 @@ pub use gateway::{AcpGateway, AgentStatus, GatewayError};
 pub use gateway_v2::{
     AcpGatewayV2, CachedAgentCapabilities, GatewayState, GatewayV2Error, PermissionChoiceKind,
     PermissionDecision, PermissionKind, PermissionOption, PermissionRequest, StreamUpdate,
+    permission_outcome,
 };
 pub use mock::MockAgent;
 pub use profile::{ACP_CHILD_ENV, AcpProfile, CredentialStrategy, agent_sdk_env_overlay};

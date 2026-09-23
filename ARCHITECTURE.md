@@ -513,7 +513,7 @@ Pointers:
 | `--acp-profile` daemon wiring → `ModelProvider` | Implemented | `Harness::with_acp_gateway` + `AcpAdapter` |
 | Stream via `session/update` → harness `StreamEvent` | Partial | Text deltas wired; tool-use / status mostly logged, not full tool orchestration |
 | Cancel via ACP `session/cancel` | Partial | `cancel_active_session` + adapter cancel path; restart/reconnect semantics thin |
-| Permission → Policy → ACP option | Implemented | Allow/Deny mapped; `NeedsApproval` → durable `ApprovalRequest` + wait on `ResolveApproval` → Select/Deny |
+| Permission → Policy → ACP option | Implemented | Gateway wire is transport-only `Select\|Deny` (`permission_outcome`); `NeedsApproval` brokered in `AcpAdapter` → durable `ApprovalRequest` + `ResolveApproval` → Select/Deny (never reaches gateway response) |
 | Explicit `GatewayState::Incompatible` | Implemented | Auth / protocol mismatch sets incompatible; not a silent continue |
 | Deterministic mock / CI tests (no secrets) | Implemented | Profile/auth/cancel unit coverage + spawned SDK mock receives `session/set_config_option` (`tests/acp_config_option_apply.rs`, `examples/acp_sdk_mock_agent.rs`). Stronger process smoke Remaining under #66 |
 | Live smoke (Codex ACP / Grok Build / peers) | Partial | `acp_v2_smoke` ignored; depends on installed CLI + agent-owned auth |
