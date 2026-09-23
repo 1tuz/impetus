@@ -1378,7 +1378,7 @@ fn render_model_picker(
             let provider_id = state.draft_provider_id.as_deref().unwrap_or("");
             let model_id = state.draft_model_id.as_deref().unwrap_or("");
             let mut items = vec![ListItem::new(Line::from(Span::styled(
-                "○ Skip options (catalog only; SetSessionModel options = #328)",
+                "○ Skip options (catalog only)",
                 Style::default().fg(theme.muted),
             )))];
             if let Some(row) =

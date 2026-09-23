@@ -155,6 +155,7 @@ impl MockProvider {
             ],
         )
         .with_reasoning_efforts(["low", "medium", "high"])
+        .with_service_tiers(["default", "flex"])
     }
 }
 

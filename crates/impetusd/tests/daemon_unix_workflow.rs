@@ -38,6 +38,8 @@ async fn session_with_mock(client: &UnixSocketTransport) -> uuid::Uuid {
             "mock".into(),
             "mock-model".into(),
             Some("high".into()),
+            None,
+            serde_json::Value::Null,
         )
         .await
         .expect("set mock session model");

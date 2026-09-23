@@ -601,6 +601,8 @@ impl UiBackend for MockBackend {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+        provider_options: serde_json::Value,
     ) -> Result<SessionModelSelection> {
         let catalog = self.inner.provider_catalog.lock().await;
         let row = catalog
@@ -618,12 +620,39 @@ impl UiBackend for MockBackend {
         {
             return Err(anyhow!("reasoning effort not advertised for model"));
         }
+        if let Some(tier) = service_tier.as_ref() {
+            if row.service_tiers.is_empty() {
+                return Err(anyhow!(
+                    "service_tier rejected: model does not advertise service tiers"
+                ));
+            }
+            if !row.service_tiers.iter().any(|t| t == tier) {
+                return Err(anyhow!("service tier not advertised for model"));
+            }
+        }
+        if let serde_json::Value::Object(map) = &provider_options {
+            for key in map.keys() {
+                let lower = key.to_ascii_lowercase();
+                if lower.contains("api_key")
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                    || lower.contains("authorization")
+                {
+                    return Err(anyhow!(
+                        "provider_options key `{key}` rejected: looks like a secret"
+                    ));
+                }
+            }
+        } else if !provider_options.is_null() {
+            return Err(anyhow!("provider_options must be a JSON object or null"));
+        }
         let selection = SessionModelSelection {
             provider_id,
             model_id,
             reasoning_effort,
-            service_tier: None,
-            provider_options: serde_json::Value::Null,
+            service_tier,
+            provider_options,
         };
         drop(catalog);
         self.inner
