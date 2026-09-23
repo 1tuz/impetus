@@ -24,5 +24,6 @@ pub use impetus_protocol::{
     RuntimeStatus, SandboxEvent, SandboxPrepareState, SessionEvent, SessionInfo,
     SessionModelSelection, ToolEvent, ToolOutcome, UserPromptIntent, WorkspaceDirEntry,
     WorkspaceDirListing, WorkspaceFileContent, WorkspaceFileMetadata, WorkspaceSearchHit,
-    WorkspaceSearchResult, trim_events_to_ipc_frame,
+    WorkspaceSearchResult, capability_allows, negotiate_ipc_version, required_capability,
+    trim_events_to_ipc_frame, validate_request_on_wire, validate_response_on_wire,
 };

@@ -2,12 +2,13 @@
 //!
 //! Speaks the versioned, line-delimited JSON IPC implemented by the harness
 //! daemon. The client sends one JSON request per line and reads one JSON
-//! response per line. On connect it performs a `Hello` handshake and treats an
-//! `Incompatible` response as a hard failure.
+//! response per line. On connect it performs a `Hello` handshake, retains the
+//! negotiated version + capabilities, gates optional calls locally, and treats
+//! an `Incompatible` response as a hard failure.
 
 use crate::protocol::{
     IPC_CAPABILITIES, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode, IpcRequest, IpcResponse,
-    MAX_IPC_LINE_BYTES,
+    MAX_IPC_LINE_BYTES, capability_allows, required_capability, validate_response_on_wire,
 };
 use crate::{EventSubscription, HarnessClient};
 use anyhow::{Context, Result, anyhow, bail};
@@ -23,10 +24,13 @@ use tokio::sync::Mutex;
 ///
 /// The socket is shared behind a mutex so multiple concurrent requests from one
 /// client are serialized on the wire (the harness is single-stream per
-/// connection anyway).
+/// connection anyway). Negotiated Hello version + capabilities are frozen for
+/// the lifetime of this transport and gate optional requests before send.
 pub struct UnixSocketTransport {
     stream: Arc<Mutex<UnixStream>>,
     socket_path: PathBuf,
+    negotiated_version: u16,
+    negotiated_capabilities: Vec<String>,
 }
 
 impl UnixSocketTransport {
@@ -37,12 +41,21 @@ impl UnixSocketTransport {
             .with_context(|| {
                 format!("connect harness socket {}", socket_path.as_ref().display())
             })?;
-        let transport = Self {
+        let mut transport = Self {
             stream: Arc::new(Mutex::new(stream)),
             socket_path: socket_path.as_ref().to_path_buf(),
+            negotiated_version: 0,
+            negotiated_capabilities: Vec::new(),
         };
         match transport.hello().await? {
-            IpcResponse::Hello { .. } => Ok(transport),
+            IpcResponse::Hello {
+                version,
+                capabilities,
+            } => {
+                transport.negotiated_version = version;
+                transport.negotiated_capabilities = capabilities;
+                Ok(transport)
+            }
             IpcResponse::Incompatible {
                 supported_version,
                 upgrade_recommendation,
@@ -57,6 +70,24 @@ impl UnixSocketTransport {
             ),
             other => bail!("unexpected handshake response: {:?}", other),
         }
+    }
+
+    /// Negotiated IPC version from the first successful Hello.
+    pub fn negotiated_version(&self) -> u16 {
+        self.negotiated_version
+    }
+
+    /// Negotiated capability set from the first successful Hello.
+    pub fn negotiated_capabilities(&self) -> &[String] {
+        &self.negotiated_capabilities
+    }
+
+    fn gate_optional(&self, request: &IpcRequest) -> Result<()> {
+        if capability_allows(&self.negotiated_capabilities, request) {
+            return Ok(());
+        }
+        let required = required_capability(request).unwrap_or("unknown");
+        bail!("capability `{required}` was not negotiated with harness")
     }
 
     /// Serialize `request`, write it as one line, read one response line.
@@ -130,7 +161,11 @@ impl HarnessClient for UnixSocketTransport {
     }
 
     async fn request(&self, request: IpcRequest) -> Result<IpcResponse> {
+        self.gate_optional(&request)?;
         let response = self.round_trip(request).await?;
+        if let Err(message) = validate_response_on_wire(&response) {
+            return Err(anyhow!("invalid harness response: {message}"));
+        }
         if let IpcResponse::Error { code, message } = &response
             && *code == IpcErrorCode::InvalidRequest
         {
@@ -239,6 +274,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{
+        IPC_MIN_SUPPORTED, IPC_VERSION, IpcRequest, capability_allows, required_capability,
+    };
 
     #[tokio::test]
     async fn oversized_line_is_drained_before_next_response() {
@@ -254,5 +292,21 @@ mod tests {
             read_bounded_line(&mut reader, "next line").await.unwrap(),
             "ok\n"
         );
+    }
+
+    #[test]
+    fn client_capability_gate_rejects_unsupported_optional_calls() {
+        let negotiated = vec!["session_list".to_string()];
+        assert!(capability_allows(&negotiated, &IpcRequest::ListSessions));
+        assert!(!capability_allows(&negotiated, &IpcRequest::ListMcpServers));
+        assert_eq!(
+            required_capability(&IpcRequest::ReloadPolicyConfig {
+                path: None,
+                config_json: Some(r#"{"version":1}"#.into()),
+            }),
+            Some("reload_policy_config")
+        );
+        assert_eq!(IPC_MIN_SUPPORTED, 12);
+        assert_eq!(IPC_VERSION, 14);
     }
 }
