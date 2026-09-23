@@ -18,20 +18,41 @@ pub struct DaemonFixture {
 impl DaemonFixture {
     /// Spawn real `impetusd` binary (Cargo sets `CARGO_BIN_EXE_impetusd`).
     pub fn spawn() -> Self {
+        Self::spawn_with_args(&[] as &[&str], &[])
+    }
+
+    /// Like [`Self::spawn`], with CLI args (e.g. `--acp-profile PATH`) and env.
+    /// When `keep_stderr` is true, child stderr stays piped (caller must drain).
+    pub fn spawn_with_args(args: &[&str], extra_env: &[(&str, &str)]) -> Self {
+        Self::spawn_with_args_stderr(args, extra_env, false)
+    }
+
+    pub fn spawn_with_args_stderr(
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+        keep_stderr: bool,
+    ) -> Self {
         let data_dir = tempfile::tempdir().expect("temp data dir");
         let socket = data_dir.path().join("harness.sock");
         let bin = impetusd_bin();
-        let mut child = Command::new(&bin)
+        let mut cmd = Command::new(&bin);
+        cmd.args(args)
             .env("IMPETUS_DATA_DIR", data_dir.path())
             .env("IMPETUS_SOCKET", &socket)
             .env("IMPETUS_NONINTERACTIVE", "1")
             .env("CI", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("spawn {bin}: {e}"));
-        wait_for_socket_or_child(&socket, &mut child, Duration::from_secs(10));
+            .stderr(Stdio::piped());
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {bin}: {e}"));
+        wait_for_socket_or_child(&socket, &mut child, Duration::from_secs(15));
+        if !keep_stderr {
+            // Drop stderr pipe after ready so Drop kill does not block on a full pipe.
+            let _ = child.stderr.take();
+        }
         Self {
             data_dir,
             socket,

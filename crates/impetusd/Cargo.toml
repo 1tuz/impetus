@@ -27,6 +27,7 @@ libc = "0.2.189"
 security-framework = "=3.7.0"
 
 [dev-dependencies]
+impetus-acp-gateway = { path = "../impetus-acp-gateway" }
 impetus-client = { path = "../impetus-client" }
 impetus-protocol = { path = "../impetus-protocol" }
 serde_json.workspace = true

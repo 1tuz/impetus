@@ -51,6 +51,7 @@ no absolute command; `process_spawn` required.
 | --- | --- |
 | crates.io publish of SDK | No — git `rev` pin only |
 | Capabilities beyond skill roots / mcp enable / host handshake | Declare-only for AgentLoop tools |
+| `BrowserIntegration` / `LspIntegration` / `MemoryProvider` capability kinds | **Declare-only** in SDK enum — no public host API yet; do not treat as Implemented |
 | `impetus extension …` CLI for packages | No — that CLI is legacy Skill/MCP install |
 | Richer `host_process` tool surface | Handshake only today |
 
