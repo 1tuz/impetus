@@ -331,6 +331,7 @@ impl ModelProvider for AcpAdapter {
                 default_reasoning_effort: None,
                 capabilities: capabilities.clone(),
                 provider_options: serde_json::json!({ "source": "acp_config_options" }),
+                service_tiers: Vec::new(),
             })
             .collect();
 

@@ -442,13 +442,18 @@ pub enum IpcRequest {
     GetSessionModel {
         session_id: Uuid,
     },
-    /// Override session model / reasoning without rebinding ProviderProfile.
+    /// Override session model / reasoning / options without rebinding ProviderProfile.
     SetSessionModel {
         session_id: Uuid,
         provider_id: String,
         model_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
+        /// Non-secret adapter extras; secrets rejected on harness validation.
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        provider_options: serde_json::Value,
     },
     /// Create a managed git worktree bound to the session (Build role when `for_build`).
     CreateWorktree {

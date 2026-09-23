@@ -96,13 +96,15 @@ pub trait UiBackend: Send + Sync {
         &self,
         session_id: Uuid,
     ) -> Result<impetus_client::protocol::SessionModelSelection>;
-    /// Override session model / reasoning (`SetSessionModel`).
+    /// Override session model / reasoning / options (`SetSessionModel`).
     async fn set_session_model(
         &self,
         session_id: Uuid,
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+        provider_options: serde_json::Value,
     ) -> Result<impetus_client::protocol::SessionModelSelection>;
     /// List workspace directory via harness IPC (no local fs).
     async fn list_workspace_dir(

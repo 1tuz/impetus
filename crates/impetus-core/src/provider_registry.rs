@@ -205,6 +205,29 @@ impl ProviderRegistry {
         )))
     }
 
+    /// Advertised service tiers for a model id (catalog SoT). Empty = not advertised.
+    pub async fn advertised_service_tiers(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<Vec<String>, ProviderError> {
+        let provider = self.get(provider_id)?;
+        let catalog = provider.discover_models().await;
+        let models = match catalog {
+            ModelCatalogResult::Discovered { models }
+            | ModelCatalogResult::StaticFallback { models, .. } => models,
+        };
+        if let Some(entry) = models.iter().find(|m| m.model_id == model_id) {
+            return Ok(entry.service_tiers.clone());
+        }
+        if models.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(ProviderError::ModelUnavailable(format!(
+            "model `{model_id}` not in provider `{provider_id}` catalog"
+        )))
+    }
+
     /// Check if a provider is registered.
     pub fn contains(&self, provider_id: &str) -> bool {
         if let Ok(providers) = self.providers.read() {
@@ -251,6 +274,7 @@ fn status_from_entry(
     status.reasoning_efforts = entry.reasoning_efforts;
     status.default_reasoning_effort = entry.default_reasoning_effort;
     status.capabilities = entry.capabilities;
+    status.service_tiers = entry.service_tiers;
     status.provider_options = entry.provider_options;
     status
 }

@@ -91,6 +91,8 @@ mod tests {
             provider_id: "mock".into(),
             model_id: "mock-fast".into(),
             reasoning_effort: Some("high".into()),
+            service_tier: Some("flex".into()),
+            provider_options: serde_json::json!({ "temperature": 0.1 }),
         };
         store.save(sid, &selection).expect("save");
         let loaded = store.load(sid).expect("load").expect("present");

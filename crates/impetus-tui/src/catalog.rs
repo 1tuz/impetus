@@ -2,8 +2,8 @@
 //!
 //! Rows come from `ListProviders` only — no hard-coded vendor lists.
 //! Options are string keys/values from catalog metadata (`service_tiers`,
-//! `provider_options`); no invented enums. Applying `provider_options` through
-//! `SetSessionModel` waits on #328 — UI keeps a local draft for display.
+//! `provider_options`); no invented enums. Draft options pass through
+//! `SetSessionModel` as `service_tier` + remaining `provider_options`.
 
 use impetus_client::protocol::{
     ModelAvailability, ModelProviderHealthLabel, ModelProviderStatus, SessionModelSelection,
@@ -26,7 +26,7 @@ pub struct ModelPickerState {
     pub draft_provider_id: Option<String>,
     pub draft_model_id: Option<String>,
     pub draft_reasoning: Option<String>,
-    /// Local options draft (JSON object). Not sent until IPC gains the field.
+    /// Options draft (JSON object) sent via SetSessionModel on commit.
     pub draft_options: Option<serde_json::Value>,
     /// True when the wizard visited the Reasoning step (for Esc/Left back).
     pub visited_reasoning: bool,

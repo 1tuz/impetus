@@ -366,9 +366,18 @@ impl UiBackend for ImpetusBackend {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+        provider_options: serde_json::Value,
     ) -> Result<impetus_client::protocol::SessionModelSelection> {
         self.client
-            .set_session_model(session_id, provider_id, model_id, reasoning_effort)
+            .set_session_model(
+                session_id,
+                provider_id,
+                model_id,
+                reasoning_effort,
+                service_tier,
+                provider_options,
+            )
             .await
     }
 

@@ -780,13 +780,15 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
-    /// Override session model / reasoning without rebinding ProviderProfile.
+    /// Override session model / reasoning / options without rebinding ProviderProfile.
     async fn set_session_model(
         &self,
         session_id: uuid::Uuid,
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+        provider_options: serde_json::Value,
     ) -> Result<protocol::SessionModelSelection> {
         match self
             .request(IpcRequest::SetSessionModel {
@@ -794,6 +796,8 @@ pub trait HarnessClient: Send + Sync {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                service_tier,
+                provider_options,
             })
             .await?
         {
@@ -1399,6 +1403,8 @@ mod tests {
                     selection.provider_id.clone(),
                     selection.model_id.clone(),
                     Some(bogus.into()),
+                    None,
+                    serde_json::Value::Null,
                 )
                 .await
                 .is_err()
@@ -1412,6 +1418,8 @@ mod tests {
                     selection.provider_id.clone(),
                     selection.model_id.clone(),
                     Some(effort.clone()),
+                    None,
+                    serde_json::Value::Null,
                 )
                 .await
                 .unwrap();
@@ -1427,6 +1435,8 @@ mod tests {
                 selection.provider_id.clone(),
                 selection.model_id.clone(),
                 None,
+                None,
+                serde_json::Value::Null,
             )
             .await
             .unwrap();

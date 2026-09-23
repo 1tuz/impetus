@@ -88,7 +88,7 @@ pub(super) enum Effect {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
-        /// Local options draft retained in AppState (IPC passthrough = #328).
+        /// Catalog options draft: `service_tier` key + remaining → provider_options.
         options: Option<serde_json::Value>,
     },
     FilesListDir {
@@ -747,9 +747,17 @@ pub(super) fn execute_effect(
             let generation = app.subscription_generation;
             let backend = backend.clone();
             let tx = tx.clone();
+            let (service_tier, provider_options) = split_session_model_options(options.clone());
             spawn_detached(async move {
                 let result = backend
-                    .set_session_model(session_id, provider_id, model_id, reasoning_effort)
+                    .set_session_model(
+                        session_id,
+                        provider_id,
+                        model_id,
+                        reasoning_effort,
+                        service_tier,
+                        provider_options,
+                    )
                     .await
                     .map_err(|error| error.to_string());
                 let _ = tx
@@ -1096,4 +1104,29 @@ async fn load_review_snapshot(
         dirty: status.dirty,
         files: crate::review::build_file_rows(&files, Some(patch.as_str())),
     })
+}
+
+/// Split picker draft JSON into IPC fields.
+///
+/// `service_tier` string key → `service_tier`; remaining object keys →
+/// `provider_options`. Missing / empty draft → `(None, Null)`.
+fn split_session_model_options(
+    options: Option<serde_json::Value>,
+) -> (Option<String>, serde_json::Value) {
+    let Some(value) = options else {
+        return (None, serde_json::Value::Null);
+    };
+    let serde_json::Value::Object(mut map) = value else {
+        return (None, serde_json::Value::Null);
+    };
+    let service_tier = match map.remove("service_tier") {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+        _ => None,
+    };
+    let provider_options = if map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(map)
+    };
+    (service_tier, provider_options)
 }
