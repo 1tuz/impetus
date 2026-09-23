@@ -21,6 +21,11 @@ impl DaemonFixture {
         Self::spawn_with_args(&[] as &[&str], &[])
     }
 
+    /// Like [`Self::spawn`], with extra environment variables for fixtures.
+    pub fn spawn_with_env(extra_env: &[(&str, &str)]) -> Self {
+        Self::spawn_with_args(&[], extra_env)
+    }
+
     /// Like [`Self::spawn`], with CLI args (e.g. `--acp-profile PATH`) and env.
     /// When `keep_stderr` is true, child stderr stays piped (caller must drain).
     pub fn spawn_with_args(args: &[&str], extra_env: &[(&str, &str)]) -> Self {
@@ -82,6 +87,29 @@ impl DaemonFixture {
             .stderr(Stdio::null())
             .spawn()
             .unwrap_or_else(|e| panic!("respawn {bin}: {e}"));
+        wait_for_socket_or_child(&self.socket, &mut child, Duration::from_secs(10));
+        self.child = child;
+    }
+
+    /// Restart preserving fixture env (e.g. `IMPETUS_MOCK_APPROVAL_FIXTURE`).
+    pub fn restart_after_kill_with_env(&mut self, extra_env: &[(&str, &str)]) {
+        self.kill_in_place();
+        if self.socket.exists() {
+            let _ = std::fs::remove_file(&self.socket);
+        }
+        let bin = impetusd_bin();
+        let mut cmd = Command::new(&bin);
+        cmd.env("IMPETUS_DATA_DIR", self.data_dir.path())
+            .env("IMPETUS_SOCKET", &self.socket)
+            .env("IMPETUS_NONINTERACTIVE", "1")
+            .env("CI", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().unwrap_or_else(|e| panic!("respawn {bin}: {e}"));
         wait_for_socket_or_child(&self.socket, &mut child, Duration::from_secs(10));
         self.child = child;
     }

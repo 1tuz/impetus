@@ -157,6 +157,31 @@ impl MockProvider {
         .with_reasoning_efforts(["low", "medium", "high"])
         .with_service_tiers(["default", "flex"])
     }
+
+    /// Scripted mock for Unix-socket daemon E2E of durable approvals.
+    ///
+    /// First turn emits `write_file` (NeedsApproval); after ResolveApproval the
+    /// second turn finishes with a text chunk. Gated by
+    /// `IMPETUS_MOCK_APPROVAL_FIXTURE=1` in [`crate::Harness::new`] — never the
+    /// default production mock path.
+    pub fn approval_e2e_fixture() -> Self {
+        Self::scripted(
+            "mock",
+            "mock-model",
+            [
+                vec![MockStreamItem::ToolCall {
+                    id: "e2e-write".into(),
+                    tool: "write_file".into(),
+                    arguments: r#"{"path":"e2e-approval.txt","content":"from-approval"}"#.into(),
+                }],
+                vec![MockStreamItem::Chunk {
+                    chunk_id: 1,
+                    text: "done after approval".into(),
+                }],
+            ],
+        )
+        .with_reasoning_efforts(["low", "medium", "high"])
+    }
 }
 
 #[async_trait]
@@ -279,5 +304,28 @@ impl ModelProvider for MockProvider {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_e2e_fixture_emits_write_then_chunk() {
+        let fixture = MockProvider::approval_e2e_fixture();
+        assert_eq!(fixture.provider_id(), "mock");
+        assert_eq!(fixture.model_id(), "mock-model");
+        // Same-module test: peek scripted turns without consuming the provider.
+        let scripts = fixture.scripts.lock().expect("scripts");
+        assert_eq!(scripts.len(), 2);
+        assert!(matches!(
+            &scripts[0][0],
+            MockStreamItem::ToolCall { tool, .. } if tool == "write_file"
+        ));
+        assert!(matches!(
+            &scripts[1][0],
+            MockStreamItem::Chunk { text, .. } if text == "done after approval"
+        ));
     }
 }

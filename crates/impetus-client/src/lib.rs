@@ -816,6 +816,82 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Upsert an MCP server into daemon SoT (labels / env key names only).
+    async fn upsert_mcp_server(
+        &self,
+        server: protocol::McpServerUpsert,
+    ) -> Result<Vec<protocol::McpServerStatus>> {
+        match self.request(IpcRequest::UpsertMcpServer { server }).await? {
+            IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Remove an MCP server from daemon SoT.
+    async fn remove_mcp_server(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<Vec<protocol::McpServerStatus>> {
+        match self
+            .request(IpcRequest::RemoveMcpServer { id: id.into() })
+            .await?
+        {
+            IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Enable a previously disabled MCP server.
+    async fn enable_mcp_server(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<Vec<protocol::McpServerStatus>> {
+        match self
+            .request(IpcRequest::EnableMcpServer { id: id.into() })
+            .await?
+        {
+            IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Disable an MCP server (durable `.json` → `.json.disabled`).
+    async fn disable_mcp_server(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<Vec<protocol::McpServerStatus>> {
+        match self
+            .request(IpcRequest::DisableMcpServer { id: id.into() })
+            .await?
+        {
+            IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Pull durable session events after `after_sequence` (non-live Stream).
+    async fn stream_events(
+        &self,
+        session_id: uuid::Uuid,
+        after_sequence: u64,
+    ) -> Result<Vec<crate::protocol::Event>> {
+        match self
+            .request(IpcRequest::Stream {
+                session_id,
+                after_sequence,
+            })
+            .await?
+        {
+            IpcResponse::Events { events, .. } => Ok(events),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Start a workflow recipe (`bug` | `feature` | `refactor`) for a session.
     async fn start_workflow(
         &self,
@@ -899,25 +975,6 @@ pub trait HarnessClient: Send + Sync {
             .await?
         {
             IpcResponse::ApprovalResolved { .. } => Ok(()),
-            IpcResponse::Error { message, .. } => bail!(message),
-            response => bail!("unexpected response: {response:?}"),
-        }
-    }
-
-    /// Pull durable session events after `after_sequence` (non-live Stream).
-    async fn stream_events(
-        &self,
-        session_id: uuid::Uuid,
-        after_sequence: u64,
-    ) -> Result<Vec<crate::protocol::Event>> {
-        match self
-            .request(IpcRequest::Stream {
-                session_id,
-                after_sequence,
-            })
-            .await?
-        {
-            IpcResponse::Events { events, .. } => Ok(events),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }
