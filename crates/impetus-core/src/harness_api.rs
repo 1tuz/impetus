@@ -3639,6 +3639,14 @@ async fn run_agent_loop(
             // Cancel IPC already finished the run and owns follow-up drain.
             false
         }
+        Err(crate::AgentLoopError::Provider(crate::ProviderError::InterruptedUnknown(_)))
+            if matches!(runtime.status(), Ok(RuntimeStatus::Running)) =>
+        {
+            // Disconnect / crash / unknown mid-turn — durable session kept;
+            // never invent Completed.
+            let _ = runtime.finish_run(crate::RunEvent::InterruptedUnknown { run_id });
+            false
+        }
         Err(error) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
             let _ = runtime.finish_run(crate::RunEvent::Failed {
                 run_id,

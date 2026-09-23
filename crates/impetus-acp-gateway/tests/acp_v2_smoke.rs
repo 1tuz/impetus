@@ -53,14 +53,23 @@ async fn smoke_test_codex_acp_session() {
                     println!("Text: {}", text);
                     chunks_clone.lock().await.push(text);
                 }
-                StreamUpdate::ToolUse { tool_name, status } => {
-                    println!("Tool: {} - {}", tool_name, status);
+                StreamUpdate::ToolUse {
+                    tool_name,
+                    status,
+                    tool_call_id,
+                    ..
+                } => {
+                    println!("Tool: {} ({}) - {}", tool_name, tool_call_id, status);
                 }
                 StreamUpdate::Status(status) => {
                     println!("Status: {}", status);
                 }
                 StreamUpdate::Completed { stop_reason } => {
                     println!("Completed: {:?}", stop_reason);
+                    break;
+                }
+                StreamUpdate::Interrupted { reason } => {
+                    eprintln!("Interrupted: {}", reason);
                     break;
                 }
                 StreamUpdate::Error(err) => {

@@ -1,6 +1,9 @@
-//! Интеграционный тест: запускает mock_agent_bin через AcpGateway.
+//! Интеграционный тест: запускает mock_agent_bin через legacy AcpGateway.
+//!
+//! Legacy JSON-RPC path — migration/tests only; production uses AcpGatewayV2.
 
-use impetus_acp_gateway::{AcpGateway, AcpProfile, AgentStatus};
+use impetus_acp_gateway::AcpProfile;
+use impetus_acp_gateway::gateway::{AcpGateway, AgentStatus};
 use std::path::PathBuf;
 
 #[tokio::test]
