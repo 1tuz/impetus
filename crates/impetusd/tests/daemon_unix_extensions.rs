@@ -236,9 +236,7 @@ fn copy_host_process_echo_fixture(data_dir: &Path) {
     }
 }
 
-/// Daemon E2E: deterministic host_process fixture activates via initialize
-/// handshake (operate RPC covered in impetus-core unit tests; no IPC operate
-/// surface in this slice).
+/// Daemon E2E: host_process fixture activates and answers `echo` via IPC operate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_unix_host_process_fixture_activates() {
     let mut daemon = DaemonFixture::spawn();
@@ -294,6 +292,30 @@ async fn daemon_unix_host_process_fixture_activates() {
         pack.permissions
     );
     assert!(pack.last_error.is_none(), "no last_error: {pack:?}");
+
+    let operated = client
+        .request(IpcRequest::OperateExtensionPackage {
+            id: "host-process-echo".into(),
+            request_id: "e2e-echo-1".into(),
+            op: "echo".into(),
+            params: serde_json::json!({}),
+            permission: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("operate echo");
+    let IpcResponse::ExtensionOperate {
+        request_id,
+        op,
+        data,
+    } = operated
+    else {
+        panic!("expected ExtensionOperate, got {operated:?}");
+    };
+    assert_eq!(request_id, "e2e-echo-1");
+    assert_eq!(op, "echo");
+    assert_eq!(data["ok"], true);
+    assert_eq!(data["fixture"], "host-process-echo");
 
     let disabled = client
         .request(IpcRequest::DisableExtensionPackage {

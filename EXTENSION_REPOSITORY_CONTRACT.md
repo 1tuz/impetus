@@ -25,8 +25,9 @@ You should **not** need to read Impetus daemon private modules to author an
 4. Active packs feed AgentLoop / Context via `ExtensionCapabilityRegistry`
    skill roots (not install_state path scans).
 5. Daemon IPC: `ReloadExtensionPackages`, `ListExtensionPackages`,
-   `GetExtensionPackage`, `EnableExtensionPackage`, `DisableExtensionPackage`
-   (cap `extension_manage`). Clients do not load packages themselves.
+   `GetExtensionPackage`, `EnableExtensionPackage`, `DisableExtensionPackage`,
+   `OperateExtensionPackage` (cap `extension_manage`). Clients do not load
+   packages themselves.
 6. Per-package load failures are isolated (other packs continue).
 7. Durable disable across daemon restart
    (`$IMPETUS_DATA_DIR/extensions/disabled_packages.json`).
@@ -45,12 +46,18 @@ Spawn + `extension/initialize` / `extension/shutdown` JSON-RPC handshake
 (see `docs/extensions/host-protocol.md`); deactivate kills the child. No shell;
 no absolute command; `process_spawn` required.
 
+Daemon IPC (cap `extension_manage`): `OperateExtensionPackage` →
+`ExtensionOperate` (Active pack only; permission gate + secret-key reject +
+timeout). Client helper: `HarnessClient::operate_extension_package`.
+Well-known ops include `echo`, `tool/call`, `command/invoke`, coding/*,
+browser/*, `memory/recall|store`, `context/contribute` (see SDK `ops`).
+
 ## Remaining (do not assume shipped)
 
 | Item | Status |
 | --- | --- |
 | crates.io publish of SDK | No — git `rev` pin only |
-| Capabilities beyond skill roots / mcp enable / host handshake | SkillProvider Active; Tool/Command/AgentHook still declare-only for AgentLoop |
+| Tool/Command → AgentLoop tool catalog | Ops declared; AgentLoop still uses built-in + MCP tools (not extension Tool/Command catalog) |
 | `LspIntegration` / `BrowserIntegration` host operate | **Public** (#362): coding/* + browser/* ops routed when Active host_process present; core `ProcessLspBackend` / Absent remain fallback |
 | `MemoryProvider` / `ContextProvider` operate | **Public ops** `memory/recall|store`, `context/contribute` (#362); core MemoryStore IPC stays session SoT (#363) — not a second store |
 | `impetus extension …` CLI for packages | No — that CLI is legacy Skill/MCP install |
@@ -74,7 +81,9 @@ under the package directory).
 3. Drop under `$IMPETUS_DATA_DIR/extensions/packages/<dir>/`.
 4. IPC `ReloadExtensionPackages` (auto-activates valid instruction packs).
 5. Confirm via `ListExtensionPackages` + session `Context` (skill id present).
-6. `DisableExtensionPackage` → skill disappears from Context (durable across
+6. For `host_process`: `OperateExtensionPackage` (e.g. `op=echo`) →
+   `ExtensionOperate`.
+7. `DisableExtensionPackage` → skill disappears from Context (durable across
    daemon restart until `EnableExtensionPackage`).
 
 ## Compatibility

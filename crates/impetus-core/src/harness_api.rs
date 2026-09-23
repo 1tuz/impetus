@@ -2375,6 +2375,22 @@ fn handle_request(
             mcp_reload.clone(),
             &id,
         ),
+        IpcRequest::OperateExtensionPackage {
+            id,
+            request_id,
+            op,
+            params,
+            permission,
+            timeout_ms,
+        } => handle_operate_extension_package(
+            extension_host.as_ref(),
+            &id,
+            &request_id,
+            &op,
+            params,
+            permission.as_deref(),
+            timeout_ms,
+        ),
         IpcRequest::GetBrowserHealth => IpcResponse::BrowserHealth {
             status: crate::browser_health_via_extension(extension_host.as_ref()),
         },
@@ -2633,6 +2649,54 @@ fn handle_disable_extension_package(
             refresh_mcp_runtime_best_effort(tool_providers, mcp_reload);
             IpcResponse::ExtensionPackage { package }
         }
+        Err(err) => IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: err.to_string(),
+        },
+    }
+}
+
+fn handle_operate_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    id: &str,
+    request_id: &str,
+    op: &str,
+    params: serde_json::Value,
+    permission: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    if request_id.trim().is_empty() || op.trim().is_empty() {
+        return IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: "operate request_id and op must be non-empty".into(),
+        };
+    }
+    let perm = match permission {
+        None => None,
+        Some(token) => match token.parse::<impetus_extension_sdk::ExtensionPermission>() {
+            Ok(p) => Some(p),
+            Err(err) => {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    message: format!("invalid operate permission `{token}`: {err}"),
+                };
+            }
+        },
+    };
+    let timeout = timeout_ms.map(std::time::Duration::from_millis);
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.operate(id, request_id, op, params, perm, timeout) {
+        Ok(result) => IpcResponse::ExtensionOperate {
+            request_id: result.request_id,
+            op: result.op,
+            data: result.data,
+        },
         Err(err) => IpcResponse::Error {
             code: IpcErrorCode::InvalidRequest,
             message: err.to_string(),

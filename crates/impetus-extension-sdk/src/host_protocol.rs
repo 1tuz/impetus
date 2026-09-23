@@ -41,6 +41,12 @@ pub mod ops {
     /// Generic capability invoke — requires `OperateParams.permission`.
     pub const INVOKE: &str = "invoke";
 
+    // --- Tool / Command (permission declared on pack; no shell) ---
+    /// Extension `Tool`: invoke a named tool with JSON params.
+    pub const TOOL_CALL: &str = "tool/call";
+    /// Extension `Command`: invoke a named command (never shell argv).
+    pub const COMMAND_INVOKE: &str = "command/invoke";
+
     // --- LspIntegration (permission `lsp`) ---
     pub const CODING_DEFINITION: &str = super::METHOD_CODING_DEFINITION;
     pub const CODING_HOVER: &str = super::METHOD_CODING_HOVER;
