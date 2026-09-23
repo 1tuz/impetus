@@ -23,10 +23,13 @@ pub use config::{ConfigScope, ExtensionConfigSchema};
 pub use entrypoint::{EntrypointError, ExtensionEntrypoint, is_safe_relative_root};
 pub use error::ExtensionSdkError;
 pub use host_protocol::{
-    HOST_PROTOCOL_VERSION, InitializeParams, InitializeResult, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, METHOD_BROWSER_HEALTH, METHOD_BROWSER_NEGOTIATE, METHOD_CODING_CANCEL,
-    METHOD_CODING_DEFINITION, METHOD_CODING_DIAGNOSTICS, METHOD_CODING_HOVER,
-    METHOD_CODING_SYMBOLS, METHOD_INITIALIZE, METHOD_PING, METHOD_SHUTDOWN,
+    CancelParams, DEFAULT_OPERATE_TIMEOUT_MS, FORBIDDEN_SECRET_KEYS, HOST_PROTOCOL_VERSION,
+    InitializeParams, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    MAX_HOST_RPC_LINE_BYTES, METHOD_BROWSER_HEALTH, METHOD_BROWSER_NEGOTIATE, METHOD_CANCEL,
+    METHOD_CODING_CANCEL, METHOD_CODING_DEFINITION, METHOD_CODING_DIAGNOSTICS, METHOD_CODING_HOVER,
+    METHOD_CODING_SYMBOLS, METHOD_INITIALIZE, METHOD_OPERATE, METHOD_PING, METHOD_SHUTDOWN,
+    OperateParams, OperateResult, check_rpc_line_size, error_codes, gate_operate_permission, ops,
+    reject_secret_keys,
 };
 pub use id::{ExtensionId, ExtensionIdError, is_valid_extension_id};
 pub use lifecycle::{Extension, ExtensionError, ExtensionHealth};

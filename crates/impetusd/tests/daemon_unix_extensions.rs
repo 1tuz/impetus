@@ -6,7 +6,7 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use common::{DaemonFixture, workspace_root};
 use impetus_client::{HarnessClient, UnixSocketTransport};
@@ -203,5 +203,129 @@ async fn daemon_unix_extension_package_lifecycle() {
     assert!(
         !context_has_skill(&ctx_after, "demo-extension-skill"),
         "durable disable must keep skill out of Context after restart"
+    );
+}
+
+fn copy_host_process_echo_fixture(data_dir: &Path) {
+    // Integration tests run with cwd = crates/impetusd; fixture lives in sibling crate.
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../impetus-extension-sdk/fixtures/host-process-echo");
+    let src = src.canonicalize().unwrap_or_else(|e| {
+        panic!(
+            "host-process-echo fixture missing at {}: {e}",
+            src.display()
+        );
+    });
+    let dst = data_dir
+        .join("extensions")
+        .join("packages")
+        .join("host-process-echo");
+    fs::create_dir_all(&dst).expect("mkdir host-process-echo");
+    for name in ["extension.toml", "ext.sh"] {
+        fs::copy(src.join(name), dst.join(name)).unwrap_or_else(|e| {
+            panic!("copy {name} from {}: {e}", src.display());
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dst.join("ext.sh");
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+}
+
+/// Daemon E2E: deterministic host_process fixture activates via initialize
+/// handshake (operate RPC covered in impetus-core unit tests; no IPC operate
+/// surface in this slice).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_unix_host_process_fixture_activates() {
+    let mut daemon = DaemonFixture::spawn();
+    copy_host_process_echo_fixture(daemon.data_dir.path());
+
+    let client = UnixSocketTransport::connect(&daemon.socket)
+        .await
+        .expect("connect");
+
+    let hello = client.hello().await.expect("hello");
+    let IpcResponse::Hello {
+        version,
+        capabilities,
+        ..
+    } = hello
+    else {
+        panic!("expected Hello, got {hello:?}");
+    };
+    assert!(version >= 14, "need IPC v14, got {version}");
+    assert!(
+        capabilities.iter().any(|c| c == "extension_manage"),
+        "missing extension_manage"
+    );
+
+    let reloaded = client
+        .request(IpcRequest::ReloadExtensionPackages)
+        .await
+        .expect("reload");
+    let IpcResponse::ExtensionPackagesReloaded { loaded, failed } = reloaded else {
+        panic!("expected ExtensionPackagesReloaded, got {reloaded:?}");
+    };
+    assert_eq!(failed, 0, "host_process fixture must not fail load");
+    assert!(loaded >= 1, "expected at least host-process-echo loaded");
+
+    let listed = client
+        .request(IpcRequest::ListExtensionPackages)
+        .await
+        .expect("list");
+    let IpcResponse::ExtensionPackages { packages } = listed else {
+        panic!("expected ExtensionPackages, got {listed:?}");
+    };
+    let pack = packages
+        .iter()
+        .find(|p| p.id == "host-process-echo")
+        .expect("host-process-echo in inventory");
+    assert_eq!(
+        pack.phase, "active",
+        "host_process initialize handshake must leave package Active: {pack:?}"
+    );
+    assert!(
+        pack.permissions.iter().any(|p| p == "process_spawn"),
+        "process_spawn required: {:?}",
+        pack.permissions
+    );
+    assert!(pack.last_error.is_none(), "no last_error: {pack:?}");
+
+    let disabled = client
+        .request(IpcRequest::DisableExtensionPackage {
+            id: "host-process-echo".into(),
+        })
+        .await
+        .expect("disable");
+    let IpcResponse::ExtensionPackage { package } = disabled else {
+        panic!("expected ExtensionPackage, got {disabled:?}");
+    };
+    assert_eq!(package.phase, "disabled");
+
+    // Restart must keep durable disable (same SoT as instruction_pack path).
+    daemon.restart_after_kill();
+    let client2 = UnixSocketTransport::connect(&daemon.socket)
+        .await
+        .expect("reconnect");
+    let _ = client2
+        .request(IpcRequest::ReloadExtensionPackages)
+        .await
+        .expect("reload after restart");
+    let listed2 = client2
+        .request(IpcRequest::ListExtensionPackages)
+        .await
+        .expect("list after restart");
+    let IpcResponse::ExtensionPackages { packages } = listed2 else {
+        panic!("expected ExtensionPackages, got {listed2:?}");
+    };
+    assert!(
+        packages
+            .iter()
+            .any(|p| p.id == "host-process-echo" && p.phase == "disabled"),
+        "host-process-echo must stay disabled across restart: {packages:?}"
     );
 }

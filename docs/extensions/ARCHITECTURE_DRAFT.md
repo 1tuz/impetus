@@ -56,7 +56,7 @@ CLI install plans; SDK packages use `impetus.extension_package.v1` envelope.
 | --- | --- | --- |
 | `instruction_pack` | Declarative files | Skills/instructions under pack; AgentLoop via registry |
 | `mcp_bridge` | Existing MCP SoT | Declares MCP module id; spawn still via ToolProviderRuntime |
-| `host_process` | Out-of-process | Crash-isolated; JSON-RPC over stdio (minimal host protocol) |
+| `host_process` | Out-of-process | Crash-isolated; JSON-RPC over stdio (`initialize` / `operate` / `cancel`) |
 
 No `dlopen` / arbitrary in-process native ABI in v1. In-process Rust
 `Extension` trait is for **fixtures/tests** only (`catch_unwind` boundary).
