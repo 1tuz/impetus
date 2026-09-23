@@ -889,6 +889,9 @@ pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
         IpcRequest::Diagnostics => "diagnostics",
         IpcRequest::GotoDefinition { .. } => "coding_definition",
         IpcRequest::Hover { .. } => "coding_hover",
+        IpcRequest::CodingDiagnostics { .. } => "coding_diagnostics",
+        IpcRequest::CodingSymbols { .. } => "coding_symbols",
+        IpcRequest::CancelCodingRequest { .. } => "coding_cancel",
         IpcRequest::SetExecutionMode { .. } | IpcRequest::GetExecutionMode { .. } => {
             "execution_mode"
         }
