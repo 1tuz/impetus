@@ -42,6 +42,8 @@ manifest permission gate before dispatch (`echo` exempt); line size ≤
 `MAX_HOST_RPC_LINE_BYTES`. CDP/LSP stay in extensions, not core.
 
 Fixture: `crates/impetus-extension-sdk/fixtures/host-process-echo/`.
+Daemon IPC: `OperateExtensionPackage` / `ExtensionOperate` (cap
+`extension_manage`); client helper `HarnessClient::operate_extension_package`.
 
 ## Host responsibility
 
@@ -49,5 +51,6 @@ The SDK validates documents. The host (`impetus-core`) discovers packages,
 runs activate-time permission → SandboxScope gate (`extension_policy`), owns
 lifecycle state, exposes `ExtensionCapabilityRegistry` for AgentLoop / Context,
 spawns `host_process` children after `extension/initialize`, and dispatches
-`ExtensionHost::operate` / `cancel_operate` with crash cleanup.
-Mutating actions still go through Policy at action time.
+`ExtensionHost::operate` / `cancel_operate` with crash cleanup (also via IPC
+`OperateExtensionPackage`). Mutating actions still go through Policy at action
+time.

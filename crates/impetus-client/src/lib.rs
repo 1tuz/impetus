@@ -873,6 +873,38 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Typed `host_process` operate on an Active extension package
+    /// (`extension_manage` / `OperateExtensionPackage`).
+    async fn operate_extension_package(
+        &self,
+        id: impl Into<String>,
+        request_id: impl Into<String>,
+        op: impl Into<String>,
+        params: serde_json::Value,
+        permission: Option<String>,
+        timeout_ms: Option<u64>,
+    ) -> Result<(String, String, serde_json::Value)> {
+        match self
+            .request(IpcRequest::OperateExtensionPackage {
+                id: id.into(),
+                request_id: request_id.into(),
+                op: op.into(),
+                params,
+                permission,
+                timeout_ms,
+            })
+            .await?
+        {
+            IpcResponse::ExtensionOperate {
+                request_id,
+                op,
+                data,
+            } => Ok((request_id, op, data)),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Pull durable session events after `after_sequence` (non-live Stream).
     async fn stream_events(
         &self,

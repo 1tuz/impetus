@@ -90,56 +90,29 @@ Coverage: unit (`acp_adapter` needs_approval_*) + daemon E2E approve/deny.
 
 ### 4. Real daemon E2E coverage
 
-Extend the current real Unix-socket daemon E2E so it covers the remaining production boundaries instead of only unit-level state.
+**Shipped (verify):** Unix-socket E2E suite covers handshake, session,
+model/reasoning/provider options persist (`daemon_unix_e2e`), durable
+approvals + MCP mutate + Files/Diff (`daemon_unix_approvals_mcp_files`),
+ACP permission with mock agent (`daemon_unix_acp_permission`), extension
+lifecycle + host_process `OperateExtensionPackage` echo
+(`daemon_unix_extensions`), workflows, failures, reconnect paths as wired
+in `crates/impetusd/tests/`.
 
-At minimum cover:
-
-- protocol handshake/negotiation
-- create session
-- model selection
-- reasoning selection
-- provider option/service tier selection
-- prompt/stream
-- durable approval path
-- ACP permission mapping where feasible with a mock ACP agent
-- MCP mutation, not only list/reload
-- Git
-- Files/Diff
-- workflow execution
-- extension lifecycle/capability execution
-- PTY attach/detach
-- client reconnect
-- daemon restart/session restore
-- persisted model/reasoning/provider options
-
-No real cloud credentials.
+Honesty: keep expanding coverage for any new production boundary; do not
+claim “full matrix” without a named test file.
 
 ### 5. Extension host public capability surface
 
-Keep the modular harness philosophy: trusted core stays small; optional functionality is replaceable and disableable.
+**Shipped (verify):** Public SDK host_protocol ops (coding/*, browser/*,
+memory/*, context/*, `tool/call`, `command/invoke`, echo) + core
+`ExtensionHost::operate` gates + IPC `OperateExtensionPackage` /
+`ExtensionOperate` + `HarnessClient::operate_extension_package` +
+daemon E2E echo. SkillProvider Active; MCP bridge ↔ SoT.
 
-The public extension contract currently has richer capability kinds than the fully usable host surface. Finish enough public host API so independent extension repositories can implement real capabilities without private-core hacks.
-
-Priority public extension capabilities:
-
-- tool/command execution contract
-- context provider
-- browser integration contract
-- LSP integration contract
-- memory provider contract
-- skill provider / AgentLoop injection
-
-Requirements:
-
-- explicit manifest/version compatibility
-- explicit permissions
-- policy/approval boundaries remain in Impetus core
-- extension cannot bypass sandbox/policy/approval
-- extension failure must not crash the daemon
-- enable/disable/reload and restart lifecycle remain deterministic
-- independent external repository can build against public SDK only
-
-Do not copy first-party extension implementation back into core if it can live in `impetus-extensions`.
+**Remaining honesty:** Tool/Command ops are public contract tokens — AgentLoop
+tool catalog still built-in + MCP (not extension Tool/Command registration).
+crates.io SDK publish still open. Concrete CDP/WebDriver / language packs
+live in `impetus-extensions`, not core.
 
 ### 6. Decide Browser/LSP/Memory boundary cleanly
 

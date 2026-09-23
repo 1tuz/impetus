@@ -162,7 +162,14 @@ async fn run_permission_case(accepted: bool) {
     eprintln!("session {session_id}");
 
     let _ = client
-        .set_session_model(session_id, "mock-acp".into(), "Mock ACP".into(), None)
+        .set_session_model(
+            session_id,
+            "mock-acp".into(),
+            "Mock ACP".into(),
+            None,
+            None,
+            serde_json::Value::Null,
+        )
         .await
         .expect("set ACP session model");
     eprintln!("model set");

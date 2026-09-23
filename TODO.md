@@ -21,8 +21,6 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 ## Now
 
 - [ ] crates.io publish of `impetus-extension-sdk` (git `rev` pin recipe shipped)
-- [ ] IPC surface for `ExtensionHost::operate` (host_process operate RPC is in
-      core/SDK; clients still go through future typed IPC)
 
 ---
 
@@ -81,6 +79,6 @@ Actionable after Now. Not priority theatre.
 
 Shipped program slices: [#315](https://github.com/1tuz/impetus/issues/315) harness unify,
 [#320](https://github.com/1tuz/impetus/issues/320) production harden baseline — follow-up [#322](https://github.com/1tuz/impetus/issues/322).
-Daemon Unix E2E gaps (#357): approvals / MCP mutate / Files-Diff landed in
-`daemon_unix_approvals_mcp_files`; GOAL §4 still open for provider-option persist
-(#328) and ACP permission mapping with mock agent.
+Daemon Unix E2E: approvals / MCP mutate / Files-Diff (`daemon_unix_approvals_mcp_files`);
+provider-option persist (`daemon_unix_e2e`); ACP permission (`daemon_unix_acp_permission`);
+extension host_process operate (`daemon_unix_extensions` + `OperateExtensionPackage`).

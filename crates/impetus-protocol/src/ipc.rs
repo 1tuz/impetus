@@ -561,6 +561,19 @@ pub enum IpcRequest {
     DisableExtensionPackage {
         id: String,
     },
+    /// Typed `host_process` operate (Active pack only). Permission token must
+    /// match a declared manifest permission except for well-known `echo`.
+    OperateExtensionPackage {
+        id: String,
+        request_id: String,
+        op: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -830,6 +843,12 @@ pub enum IpcResponse {
         loaded: u32,
         failed: u32,
     },
+    /// Result of `OperateExtensionPackage` (host_process operate).
+    ExtensionOperate {
+        request_id: String,
+        op: String,
+        data: serde_json::Value,
+    },
     Incompatible {
         supported_version: u16,
         /// Inclusive lower bound the server still accepts.
@@ -959,7 +978,8 @@ pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
         | IpcRequest::ListExtensionPackages
         | IpcRequest::GetExtensionPackage { .. }
         | IpcRequest::EnableExtensionPackage { .. }
-        | IpcRequest::DisableExtensionPackage { .. } => "extension_manage",
+        | IpcRequest::DisableExtensionPackage { .. }
+        | IpcRequest::OperateExtensionPackage { .. } => "extension_manage",
     })
 }
 
@@ -1517,6 +1537,19 @@ mod sentinel_protocol {
             serde_json::from_str::<IpcRequest>(&reload_json).unwrap(),
             reload
         );
+        let operate = IpcRequest::OperateExtensionPackage {
+            id: "host-process-echo".into(),
+            request_id: "req-1".into(),
+            op: "echo".into(),
+            params: serde_json::json!({}),
+            permission: None,
+            timeout_ms: Some(5_000),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&operate).unwrap()).unwrap(),
+            operate
+        );
+        assert_eq!(required_capability(&operate), Some("extension_manage"));
         let packages = IpcResponse::ExtensionPackages {
             packages: vec![ExtensionPackageInfo {
                 id: "demo-pack".into(),
@@ -1535,6 +1568,16 @@ mod sentinel_protocol {
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&packages).unwrap())
                 .unwrap(),
             packages
+        );
+        let operate_ok = IpcResponse::ExtensionOperate {
+            request_id: "req-1".into(),
+            op: "echo".into(),
+            data: serde_json::json!({"ok": true}),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&operate_ok).unwrap())
+                .unwrap(),
+            operate_ok
         );
     }
 
@@ -1715,6 +1758,8 @@ mod sentinel_protocol {
                 provider_id: " ".into(),
                 model_id: "m".into(),
                 reasoning_effort: None,
+                service_tier: None,
+                provider_options: serde_json::Value::Null,
             })
             .unwrap_err()
             .contains("provider_id")
