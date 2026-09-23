@@ -55,13 +55,15 @@ Diagrams: [system-architecture.svg](assets/readme/system-architecture.svg),
 - Trusted kernel stays small; providers, context, extensions are replaceable layers
 - Reject features whose only justification is vendor parity or feature-count optics
 - **Daemon UX:** `impetus` (and `impetus ui` / `doctor`) ensure `impetusd` is
-  running: stale-socket unlink only when nothing listens; `daemon.spawn.lock`
-  serializes concurrent spawn via exclusive `flock` (kernel releases the lock
-  if the holder crashes — a leftover lock file cannot permanently block
-  autostart); live socket + IPC `Incompatible` → hard stop (never
-  unlink/respawn). Spawn inherits matching `IMPETUS_SOCKET` /
-  `IMPETUS_DATA_DIR`. Manual `impetusd` is for development, debugging, and
-  advanced profiles. Legacy `impetus-cli` connects only (no lazy-start).
+  running via shared crate `impetus-daemon-control` (CLI thin adapter; Desktop
+  and other hosts reuse the same lifecycle): stale-socket unlink only when
+  nothing listens; `daemon.spawn.lock` serializes concurrent spawn via
+  exclusive `flock` (kernel releases the lock if the holder crashes — a
+  leftover lock file cannot permanently block autostart); live socket + IPC
+  `Incompatible` → hard stop (never unlink/respawn). Spawn inherits matching
+  `IMPETUS_SOCKET` / `IMPETUS_DATA_DIR`. Manual `impetusd` is for development,
+  debugging, and advanced profiles. Legacy `impetus-cli` connects only (no
+  lazy-start).
 
 ## Trusted kernel
 

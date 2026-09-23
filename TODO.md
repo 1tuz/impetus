@@ -41,6 +41,8 @@ Actionable after Now. Not priority theatre.
 - [ ] TUI: sequence picker polish
 - [ ] Desktop: PTY UI, model picker, worktrees UI; drop any remaining local
       MCP/provider config parse (daemon SoT only)
+- [ ] Desktop: switch to `impetus-daemon-control`; delete local spawn; pass
+      bundled `impetusd` path
 
 ---
 
