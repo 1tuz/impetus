@@ -58,12 +58,12 @@ Actionable after Now. Not priority theatre.
 | Full Zap discovery/authorize | Checklist #290; production Parked |
 | Invert core → acp-gateway dependency | Parked mega-refactor |
 | Full thin-client domain split | Gradual PROTO; mega-split Parked |
-| Full LSP protocol | Parked beyond spawn + goto/hover/symbols + cancel + diagnostics cache; multi-language installers via extension `LspIntegration` operate (#362) |
 | Extension `MemoryProvider` | Optional operate (`memory/recall|store`); core MemoryStore remains session SoT (#363) |
 | macOS Instruments/authd proof | Parked — SIP interactive tooling; unit+userspace E2E cover no-sudo paths |
 | Custom TUI ANSI emulator | Won't — PTY passthrough only |
 | Hidden chain-of-thought UI | Won't — summary/intent only |
-| Browser CDP/WebDriver bridges | Parked — extension `BrowserIntegration` only; core keeps negotiate/health Absent (#336) |
+| Full LSP protocol (entire LSP spec in core) | Won't — shipped coding_* + `LspIntegration` / `ProcessLspBackend` (#391); language packs in extensions |
+| Browser CDP/WebDriver in core | Won't — health/negotiate + `BrowserIntegration` shipped (#391); CDP bridges only in extensions |
 
 ---
 

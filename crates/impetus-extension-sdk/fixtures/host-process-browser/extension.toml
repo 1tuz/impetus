@@ -1,0 +1,14 @@
+schema_version = 1
+id = "host-process-browser"
+name = "Host Process Browser"
+version = "0.1.0"
+description = "Deterministic host_process fixture for browser/health and browser/negotiate"
+author = "impetus"
+extension_api_version = 1
+capabilities = ["browser_integration"]
+permissions = ["process_spawn", "browser"]
+
+[entrypoint]
+kind = "host_process"
+command = "./ext.sh"
+args = []

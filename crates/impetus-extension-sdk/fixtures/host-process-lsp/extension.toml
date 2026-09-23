@@ -1,0 +1,14 @@
+schema_version = 1
+id = "host-process-lsp"
+name = "Host Process LSP"
+version = "0.1.0"
+description = "Deterministic host_process fixture for coding/* LSP operate ops"
+author = "impetus"
+extension_api_version = 1
+capabilities = ["lsp_integration"]
+permissions = ["process_spawn", "lsp"]
+
+[entrypoint]
+kind = "host_process"
+command = "./ext.sh"
+args = []
