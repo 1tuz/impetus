@@ -154,7 +154,7 @@ impetusd  — authoritative daemon
 | Privilege boundaries (no sudo/password) | Implemented | `privilege_boundaries` + RiskGate Deny on sudo/doas; PTY admit refuses `-l`/`--login`; runtime paths under `$HOME` / `IMPETUS_DATA_DIR`; Seatbelt userspace-only (#320). |
 | Execution modes (ASK/PLAN/ACCEPT_EDITS/AUTO) | Implemented | Daemon IPC `Set`/`Get` + durable projection + EffectSeam mode gate + RiskGate (#308). TUI Shift+Tab/F4/slash via IPC; `prompt_prefix` removed. BYPASS opt-in only (not Shift+Tab cycle). |
 | DurableArtifactStore (SHA-256, restart-safe) | Implemented | `durable_artifacts.rs`; tools/web/upload/read IPC; optional MIME; prod age GC 7d (`run_artifact_gc`, `impetusd` startup+6h; age-only, no ref-tracking); TUI `/attach` · `Ctrl+Shift+A` filesystem upload → ArtifactRef in composer |
-| Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — intentional, not durable |
+| Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — session-bound `GetAttachment` (owner ok / foreign deny / missing+expired); TUI fetch via session id; intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
 | AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests |
 | Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
@@ -291,7 +291,7 @@ cancel/replace are Implemented — see matrix.)
 | --- | --- | --- |
 | EventStore (SQLite WAL) | Durable | Ordered session history, approvals, budgets |
 | DurableArtifactStore | Durable | Large tool/web/paste bodies (SHA-256) |
-| AttachmentStore | Ephemeral (RAM) | Approval diff previews / detail DTOs |
+| AttachmentStore | Ephemeral (RAM) | Approval diff previews / detail DTOs; reads require owning `session_id` |
 
 Do not call AttachmentStore an ArtifactStore. Doctor must describe both honestly.
 
