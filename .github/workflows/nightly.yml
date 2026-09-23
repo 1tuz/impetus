@@ -65,7 +65,9 @@ jobs:
           set -euo pipefail
           unset OPENAI_API_KEY ANTHROPIC_API_KEY TAVILY_API_KEY EXA_API_KEY GITHUB_TOKEN GH_TOKEN || true
           # Full offline suite — ignored live/auth smokes stay ignored.
-          cargo test --workspace --all-targets -- --test-threads=2
+          # Do not use --all-targets: criterion benches reject libtest harness
+          # flags such as --test-threads.
+          cargo test --workspace --lib --bins --tests --examples -- --test-threads=2
 
   security:
     name: Security
