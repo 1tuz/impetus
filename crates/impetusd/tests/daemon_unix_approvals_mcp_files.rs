@@ -26,7 +26,7 @@ async fn wait_status(
             .resume_session(session_id)
             .await
             .unwrap_or_else(|e| panic!("attach while waiting for {label}: {e}"));
-        if want(status.clone()) {
+        if want(status) {
             return status;
         }
         if Instant::now() > deadline {
