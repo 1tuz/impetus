@@ -20,9 +20,6 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 
 ## Now
 
-Production-harden / Next items. Extension package host (#324) core path is on
-branch `feature/issue-324-extension-sdk-abi` — merge via PR when ready.
-
 - [ ] crates.io publish of `impetus-extension-sdk` (git `rev` pin recipe shipped)
 - [ ] Richer `host_process` operate surface beyond initialize/shutdown (tools)
 

@@ -17,6 +17,7 @@ docs=false
 site=false
 workspace=false
 security=false
+macos=false
 pkgs=""
 
 has_pkg() {
@@ -28,6 +29,10 @@ has_pkg() {
 
 mark_pkg() {
   has_pkg "$1" || pkgs="${pkgs:+$pkgs }$1"
+}
+
+mark_macos() {
+  macos=true
 }
 
 while IFS= read -r f; do
@@ -46,18 +51,42 @@ while IFS= read -r f; do
     Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml|.cargo/*)
       workspace=true
       rust=true
+      macos=true
       case "$f" in
         Cargo.toml|Cargo.lock) security=true ;;
       esac
       ;;
     # Self-test path: selector + workflow changes need full Rust scope.
-    .github/workflows/ci.yml|scripts/ci-affected.sh)
+    .github/workflows/ci.yml|scripts/ci-affected.sh|scripts/tests/ci-affected.sh)
       rust=true
       workspace=true
+      macos=true
       ;;
     # Tooling / hooks / non-CI scripts — no Rust compilation.
     Taskfile.yml|.githooks/*|scripts/*)
       ;;
+    # --- macOS-platform sensitive paths ---
+    crates/impetus-core/src/execution/sandbox.rs|\
+    crates/impetus-core/src/execution/pty.rs|\
+    crates/impetus-core/src/execution/process.rs|\
+    crates/impetus-core/src/auth.rs|\
+    crates/impetus-core/src/privilege_boundaries.rs|\
+    crates/impetus-core/tests/macos_sandbox_*|\
+    crates/impetus-core/tests/approval_seatbelt_e2e.rs|\
+    crates/impetusd/src/peer_isolation.rs|\
+    crates/impetusd/tests/daemon_userspace_no_sudo.rs|\
+    crates/impetusd/tests/daemon_peer_isolation.rs|\
+    crates/impetus-acp-gateway/src/profile.rs)
+      rust=true
+      mark_macos
+      case "$f" in
+        crates/impetus-core/*) mark_pkg impetus-core ;;
+        crates/impetusd/*) mark_pkg impetusd ;;
+        crates/impetus-acp-gateway/*) mark_pkg impetus-acp-gateway ;;
+      esac
+      ;;
+    crates/impetus-protocol/*) rust=true; mark_pkg impetus-protocol ;;
+    crates/impetus-extension-sdk/*) rust=true; mark_pkg impetus-extension-sdk ;;
     crates/impetus-core/*) rust=true; mark_pkg impetus-core ;;
     crates/impetus-acp-gateway/*) rust=true; mark_pkg impetus-acp-gateway ;;
     crates/impetus-client/*) rust=true; mark_pkg impetus-client ;;
@@ -70,6 +99,7 @@ while IFS= read -r f; do
     crates/*)
       rust=true
       workspace=true
+      macos=true
       ;;
   esac
 done <<< "$CHANGED"
@@ -77,6 +107,12 @@ done <<< "$CHANGED"
 # Direct reverse-deps (who depends on this package).
 direct_dependants() {
   case "$1" in
+    impetus-protocol)
+      echo "impetus-core impetus-client impetusd impetus-extension-sdk"
+      ;;
+    impetus-extension-sdk)
+      echo "impetus-core"
+      ;;
     impetus-acp-gateway)
       echo "impetus-core impetusd"
       ;;
@@ -127,6 +163,7 @@ done
 if [[ "$workspace" == true ]]; then
   packages="--workspace"
   check_packages="--workspace"
+  macos=true
 elif [[ "$rust" == true ]]; then
   packages=""
   for p in $pkgs; do
@@ -136,6 +173,7 @@ elif [[ "$rust" == true ]]; then
     packages="--workspace"
     check_packages="--workspace"
     workspace=true
+    macos=true
   else
     check_packages="$packages"
     for d in $dependants; do
@@ -160,5 +198,6 @@ echo "docs_only=$docs_only"
 echo "site=$site"
 echo "workspace=$workspace"
 echo "security=$security"
+echo "macos=$macos"
 echo "packages=$packages"
 echo "check_packages=$check_packages"

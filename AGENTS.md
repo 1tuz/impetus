@@ -6,7 +6,7 @@ Style (caveman), YAGNI/ponytail, **RTK**, and token reduction — see Codewhale 
 - Repo: `.codewhale/constitution.json`
 - **Every `bash`:** only through `rtk …` (`rtk cargo`, `rtk git`, `rtk rg`, …)
 
-**Subagents (CodeWhale):** only on explicit request or clear benefit; cap ≤5, **no more than 2 builders simultaneously**. On spawn immediately: `worktree: true`, full `write_roots` (if touching `Cargo.toml`/tests — include crate root, not just `src/…`), one narrow slice per child. **`task verify` — once by parent**, not in every child. On `wall_time_budget` / API error — checkpoint + re-dispatch one worker, not a batch of 5.
+**Subagents (CodeWhale):** only on explicit request or clear benefit; cap ≤5, **no more than 2 builders simultaneously**. On spawn immediately: `worktree: true`, full `write_roots` (if touching `Cargo.toml`/tests — include crate root, not just `src/…`), one narrow slice per child. **`task verify` (cheap fmt) — once by parent**, not full workspace compile in every child. On `wall_time_budget` / API error — checkpoint + re-dispatch one worker, not a batch of 5.
 
 This file covers product boundaries and verification for this repo only.
 
@@ -48,32 +48,43 @@ daemon/client path works end-to-end.
 
 ## Verification
 
-After Rust changes, must execute:
+Local Mac stays cheap. Default before push:
 
 ```zsh
-cargo fmt --all -- --check
-cargo test --workspace
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+task verify
+# ≡ cargo fmt --all -- --check && git diff --check
 ```
 
-For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/restart, profile validation, policy decision, and redaction/export.
+Do **not** run locally by default: `cargo test --workspace`, `cargo clippy --workspace`,
+`cargo check --workspace`, daemon/ACP/MCP/Workflow/PTY E2E. Quality lives on
+GitHub Actions. If CI fails one test, run **only that test** for diagnosis.
 
-`task verify` is short equivalent of four required Rust commands. `task setup` checks environment and installs repository-owned hooks.
+Optional full local suite (rare): `task verify:full`.
+
+For harness/provider/ACP/auth logic under test on CI: mocks only — no live keys,
+Keychain UI, or browser OAuth.
+
+`task setup` checks environment and installs repository-owned hooks.
 
 ## CI and Verification
 
-- Before handoff of Rust changes, execute `task verify` (locally) — full workspace.
-- **PR CI** (`.github/workflows/ci.yml`): path-aware. Docs-only skips Rust.
-  macOS runs `fmt` + Clippy/tests on **affected crates** (`--lib --bins`);
-  Linux runs cheap `cargo check` on affected + dependants. Workspace-wide
-  `Cargo.toml`/`Cargo.lock` changes broaden to `--workspace`. No nightly.
-- **Heavy tests:** `crates/*/tests/` and full `cargo test --workspace` stay
-  local via `task verify` / `task test` — not the PR merge gate.
-- **Security:** `cargo audit` / `cargo deny` only when dependency files change
-  (folded into CI). Pages only for `site/**` deploys.
-- On `Cargo.toml` or `Cargo.lock` changes, execute `task security` locally;
-  do not ignore RustSec/CVE/license findings without a versioned `deny.toml` entry.
+- **Before push:** `task verify` (fmt + `git diff --check` only).
+- **PR CI** (`.github/workflows/ci.yml`), path-aware:
+  - **Linux** — primary Rust gate: fmt, Clippy (`-D warnings`) on affected +
+    dependants, unit (`--lib --bins`) + integration/`crates/*/tests` + daemon
+    E2E for affected packages (offline mocks).
+  - **macOS** — only when platform-sensitive paths change (Seatbelt, Keychain,
+    PTY/sandbox, no-sudo, peer isolation). Skipped otherwise (does not block Gate).
+  - **Docs-only** — no Rust/macOS; cheap Docs job.
+  - **Security** — `Cargo.toml` / `Cargo.lock` / `deny.toml`.
+  - **Site** — `site/**` only.
+  - **Gate** — sole required check; skipped jobs do not fail merge.
+  - `cancel-in-progress: true` on the workflow concurrency group.
+- Workspace `Cargo.toml` / `Cargo.lock` / CI selector changes broaden to
+  `--workspace` (and enable macOS platform job).
+- On dependency file changes, prefer CI Security job; local `task security`
+  optional. Do not ignore RustSec/CVE/license findings without a versioned
+  `deny.toml` entry.
 - Preview scope: `task ci:affected`.
 
 ## Git and Commits
@@ -101,7 +112,7 @@ For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/r
 
 1. Work in feature branch (never in `main`)
 2. Atomic commits: each with `closes #N`, `fixes #N`, or `refs #N`
-3. **Before push:** mandatory `task verify` (fmt, test, check, clippy)
+3. **Before push:** mandatory `task verify` (fmt + `git diff --check`)
 4. **Push to feature branch:**
    ```bash
    git push -u origin feature/issue-42-short-description
@@ -112,8 +123,11 @@ For harness/provider/ACP/auth changes, add test without secrets: stream/cancel/r
    ```
    Or via GitHub Web UI
 6. **Enable auto-merge** in PR: `gh pr merge --auto --squash` after creation
-7. Required PR CI passes → **GitHub auto-merges to main**
+7. Required PR CI (**Gate**) passes → **GitHub auto-merges to main**
 8. After merge: `git checkout main && git pull` for next task
+
+Agent loop after edits: `fmt` → `git diff --check` → commit → push → read CI
+failure → fix → push. Do not run full local workspace CI before push.
 
 #### Auto-merge Setup (once per project)
 
@@ -133,7 +147,8 @@ Do not leave merged feature branches on the remote.
 ### Commit Rules
 
 - Divide work into atomic commits by single reason for change; do not mix tooling, product code, and independent documentation without necessity.
-- Before commit, execute `task verify`. For docs-only changes, additionally check links/diagrams with applicable local validator.
+- Before commit, execute `task verify` (fmt + `git diff --check`). Full
+  `task verify:full` is optional and usually unnecessary — PR Gate covers quality.
 - **Commit message in English.** Format: `type: Brief summary (closes #N)` or `type(scope): Summary (refs #N)`
 - Allowed types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
 - Subject <= 72 characters, starts with lowercase (after `type:`), no trailing period
