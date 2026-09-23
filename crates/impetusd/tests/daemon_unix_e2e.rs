@@ -113,6 +113,10 @@ async fn daemon_unix_e2e_handshake_session_model_prompt_mcp_git_pty() {
     assert_eq!(got.service_tier, service_tier);
     assert_eq!(got.provider_options, provider_options);
 
+    // Prompt uses session-bound StreamOptions. Outgoing options on the mock
+    // provider body are asserted in harness unit tests
+    // (`set_session_model_service_tier_and_options_reach_stream`); this E2E
+    // proves persist + restart + catalog selection on the live daemon path.
     let status = client
         .send_message_with_intent(
             session_id,
