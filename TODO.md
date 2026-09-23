@@ -42,6 +42,7 @@ Actionable after Now. Not priority theatre.
 - [ ] Child mid-run action stream (progress / tool detail on parent log)
 - [ ] Same-uid peer isolation beyond connection-bind (enforce `IMPETUS_ACP_CHILD` /
       peer-cred; umask before socket bind) — residual trust model, not #322 blocker
+- [ ] ACP live reconnect polish after cancel/crash (stream/registry/health/#335 landed)
 
 ### Clients
 
