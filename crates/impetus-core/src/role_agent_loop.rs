@@ -14,7 +14,7 @@ use crate::policy::PolicyEngine;
 use crate::provider::ProviderMessage;
 use crate::provider_trait::ModelProvider;
 use crate::role_child::{RoleChildEnv, RoleChildExecutor, RoleExecutorError, RoleExecutorOutput};
-use crate::runtime::AgentRuntime;
+use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::subagent_metadata::SubagentRole;
 use crate::tool_orchestrator::ToolOrchestrator;
@@ -110,11 +110,23 @@ impl AgentLoopRoleExecutor {
 }
 
 impl RoleChildExecutor for AgentLoopRoleExecutor {
-    fn execute(&self, env: &RoleChildEnv) -> Result<RoleExecutorOutput, RoleExecutorError> {
+    fn execute(
+        &self,
+        env: &RoleChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
+    ) -> Result<RoleExecutorOutput, RoleExecutorError> {
         if env.metadata.role == SubagentRole::Explore {
             return Err(RoleExecutorError::Failed(
                 "use AgentLoopExploreExecutor for Explore role".into(),
             ));
+        }
+
+        if let Some(mid) = mid_run {
+            mid.progress(
+                Some(5),
+                &format!("{}:agent-loop", env.metadata.role.as_str()),
+            );
+            mid.action("agent_loop", &env.context_label);
         }
 
         let workspace_root = role_workspace_root(env);
@@ -193,6 +205,10 @@ impl RoleChildExecutor for AgentLoopRoleExecutor {
                         })
                     })
                     .unwrap_or_else(|| format!("{} completed", role_tag.to_lowercase()));
+
+                if let Some(mid) = mid_run {
+                    mid.progress(Some(100), &format!("{}:done", role_tag));
+                }
 
                 let artifact_ref_labels = runtime
                     .events()

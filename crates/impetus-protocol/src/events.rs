@@ -7,9 +7,15 @@ use uuid::Uuid;
 
 pub const EVENT_SCHEMA_VERSION: u16 = 1;
 
-/// Max UTF-8 chars kept in activity previews (Pty/Command/File/Search).
+/// Max UTF-8 chars kept in activity previews (Pty/Command/File/Search/Child).
 /// Session EventStore rows are durable; keep previews small.
 pub const MAX_ACTIVITY_PREVIEW_CHARS: usize = 512;
+
+/// Hard cap on durable `ChildEvent::Progress` rows per child run (flood bound).
+pub const MAX_CHILD_PROGRESS_EVENTS_PER_RUN: usize = 32;
+
+/// Hard cap on durable `ChildEvent::Action` rows per child run (flood bound).
+pub const MAX_CHILD_ACTION_EVENTS_PER_RUN: usize = 64;
 
 /// Truncate activity preview for durable session-log rows.
 pub fn bound_activity_preview(text: &str) -> String {
@@ -19,6 +25,43 @@ pub fn bound_activity_preview(text: &str) -> String {
     } else {
         flat
     }
+}
+
+/// Coalesce mid-run Progress: drop identical consecutive summaries and runs over cap.
+///
+/// Returns bounded summary to append, or `None` when coalesced / capped.
+/// Never carries hidden CoT — callers must pass status/tool labels only.
+pub fn coalesce_child_progress(
+    last_summary: &mut Option<String>,
+    emitted: &mut usize,
+    summary: &str,
+) -> Option<String> {
+    if *emitted >= MAX_CHILD_PROGRESS_EVENTS_PER_RUN {
+        return None;
+    }
+    let bounded = bound_activity_preview(summary);
+    if bounded.is_empty() {
+        return None;
+    }
+    if last_summary.as_deref() == Some(bounded.as_str()) {
+        return None;
+    }
+    *last_summary = Some(bounded.clone());
+    *emitted += 1;
+    Some(bounded)
+}
+
+/// Bound + cap mid-run Action preview. Returns `None` when over cap or empty.
+pub fn coalesce_child_action(emitted: &mut usize, preview: &str) -> Option<String> {
+    if *emitted >= MAX_CHILD_ACTION_EVENTS_PER_RUN {
+        return None;
+    }
+    let bounded = bound_activity_preview(preview);
+    if bounded.is_empty() {
+        return None;
+    }
+    *emitted += 1;
+    Some(bounded)
 }
 
 /// Durability contract for session activity:
@@ -285,6 +328,23 @@ pub enum ChildEvent {
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current_action: Option<String>,
+    },
+    /// Bounded mid-run progress on the **parent** session log (never hidden CoT).
+    Progress {
+        child_id: String,
+        /// 0–100 when known; absent if unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        percent: Option<u8>,
+        /// Structured status/tool summary only — keep small via [`bound_activity_preview`].
+        summary: String,
+    },
+    /// Bounded mid-run tool/action step on the **parent** session log (never CoT).
+    Action {
+        child_id: String,
+        /// Tool or action name label.
+        name: String,
+        /// Bounded preview/summary (no secrets / hidden reasoning).
+        preview: String,
     },
     Finished {
         child_id: String,
@@ -1013,5 +1073,62 @@ mod sentinel_events {
         let preview = bound_activity_preview(&long);
         assert!(preview.ends_with('…'));
         assert_eq!(preview.chars().count(), MAX_ACTIVITY_PREVIEW_CHARS + 1);
+    }
+
+    #[test]
+    fn child_progress_and_action_serialize() {
+        let progress = EventPayload::Child(ChildEvent::Progress {
+            child_id: "c1".into(),
+            percent: Some(40),
+            summary: "listed cwd".into(),
+        });
+        let action = EventPayload::Child(ChildEvent::Action {
+            child_id: "c1".into(),
+            name: "list".into(),
+            preview: "3 entries".into(),
+        });
+        for payload in [progress, action] {
+            let json = serde_json::to_string(&payload).unwrap();
+            assert_eq!(
+                serde_json::from_str::<EventPayload>(&json).unwrap(),
+                payload
+            );
+        }
+        // Legacy Child without Progress/Action still decodes Started.
+        let legacy: ChildEvent = serde_json::from_str(
+            r#"{"state":"started","child_id":"c","parent_id":"p","role":"Explore"}"#,
+        )
+        .expect("legacy started");
+        assert!(matches!(legacy, ChildEvent::Started { .. }));
+    }
+
+    #[test]
+    fn coalesce_child_progress_drops_identical_and_caps() {
+        let mut last = None;
+        let mut emitted = 0;
+        assert_eq!(
+            coalesce_child_progress(&mut last, &mut emitted, "step-a").as_deref(),
+            Some("step-a")
+        );
+        assert_eq!(emitted, 1);
+        assert!(coalesce_child_progress(&mut last, &mut emitted, "step-a").is_none());
+        assert_eq!(emitted, 1);
+        assert_eq!(
+            coalesce_child_progress(&mut last, &mut emitted, "step-b").as_deref(),
+            Some("step-b")
+        );
+        emitted = MAX_CHILD_PROGRESS_EVENTS_PER_RUN;
+        assert!(coalesce_child_progress(&mut last, &mut emitted, "step-c").is_none());
+    }
+
+    #[test]
+    fn coalesce_child_action_bounds_preview_and_caps() {
+        let mut emitted = 0;
+        let long = "y".repeat(MAX_ACTIVITY_PREVIEW_CHARS + 5);
+        let preview = coalesce_child_action(&mut emitted, &long).expect("first");
+        assert!(preview.ends_with('…'));
+        assert_eq!(emitted, 1);
+        emitted = MAX_CHILD_ACTION_EVENTS_PER_RUN;
+        assert!(coalesce_child_action(&mut emitted, "more").is_none());
     }
 }

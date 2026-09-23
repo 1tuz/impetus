@@ -11,9 +11,10 @@ pub mod types;
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
     CompactionStructuralState, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent,
-    MAX_ACTIVITY_PREVIEW_CHARS, NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent,
-    SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent, ToolEventOutcome,
-    bound_activity_preview, legacy_payload,
+    MAX_ACTIVITY_PREVIEW_CHARS, MAX_CHILD_ACTION_EVENTS_PER_RUN, MAX_CHILD_PROGRESS_EVENTS_PER_RUN,
+    NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SandboxPrepareState,
+    SessionEvent, ToolEvent, ToolEventOutcome, bound_activity_preview, coalesce_child_action,
+    coalesce_child_progress, legacy_payload,
 };
 pub use ipc::{
     IPC_CAPABILITIES, IPC_EVENTS_FRAME_BUDGET, IPC_MIN_SUPPORTED, IPC_VERSION, IpcErrorCode,

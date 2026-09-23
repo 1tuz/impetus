@@ -2,8 +2,11 @@ use crate::{
     Action, ApprovalEvent, ApprovalRequest, ApprovalResolution, ApprovalResolver, ApprovalState,
     BudgetChecker, BudgetConfig, ChildEvent, DeferredEffect, EffectSeam, Event, EventPayload,
     EventStore, ExecutionMode, IntentEvent, NoticeEvent, PolicyEngine, ProjectionError, RunEvent,
-    Sandbox, ToolEvent, default_risk_gate, normalized_effect_from_action, reduce,
+    Sandbox, ToolEvent, coalesce_child_action, coalesce_child_progress, default_risk_gate,
+    normalized_effect_from_action, reduce,
 };
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -780,6 +783,32 @@ impl AgentRuntime {
         }))
     }
 
+    pub fn record_child_progress(
+        &self,
+        child_id: &str,
+        percent: Option<u8>,
+        summary: &str,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Child(ChildEvent::Progress {
+            child_id: child_id.to_owned(),
+            percent,
+            summary: crate::bound_activity_preview(summary),
+        }))
+    }
+
+    pub fn record_child_action(
+        &self,
+        child_id: &str,
+        name: &str,
+        preview: &str,
+    ) -> Result<(), RuntimeError> {
+        self.record(EventPayload::Child(ChildEvent::Action {
+            child_id: child_id.to_owned(),
+            name: name.to_owned(),
+            preview: crate::bound_activity_preview(preview),
+        }))
+    }
+
     pub fn record_child_finished(
         &self,
         child_id: &str,
@@ -794,7 +823,79 @@ impl AgentRuntime {
             error: error.map(str::to_owned),
         }))
     }
+}
 
+/// Flood-bounded Progress/Action emitter onto a parent session EventStore.
+///
+/// Structured status/tool summaries only — never hidden chain-of-thought.
+pub struct ChildMidRunReporter<'a> {
+    store: &'a dyn EventStore,
+    parent_session_id: String,
+    child_id: String,
+    progress_emitted: Cell<usize>,
+    last_progress: RefCell<Option<String>>,
+    action_emitted: Cell<usize>,
+}
+
+impl<'a> ChildMidRunReporter<'a> {
+    pub fn new(store: &'a dyn EventStore, parent_session_id: &str, child_id: &str) -> Self {
+        Self {
+            store,
+            parent_session_id: parent_session_id.to_owned(),
+            child_id: child_id.to_owned(),
+            progress_emitted: Cell::new(0),
+            last_progress: RefCell::new(None),
+            action_emitted: Cell::new(0),
+        }
+    }
+
+    /// Emit Progress when coalesce allows (identical summaries dropped; hard cap).
+    pub fn progress(&self, percent: Option<u8>, summary: &str) {
+        let mut last = self.last_progress.borrow_mut();
+        let mut emitted = self.progress_emitted.get();
+        let Some(bounded) = coalesce_child_progress(&mut last, &mut emitted, summary) else {
+            return;
+        };
+        self.progress_emitted.set(emitted);
+        let _ = AgentRuntime::emit_parent_child_event(
+            self.store,
+            &self.parent_session_id,
+            ChildEvent::Progress {
+                child_id: self.child_id.clone(),
+                percent,
+                summary: bounded,
+            },
+        );
+    }
+
+    /// Emit Action when under per-run cap (preview bounded).
+    pub fn action(&self, name: &str, preview: &str) {
+        let mut emitted = self.action_emitted.get();
+        let Some(bounded) = coalesce_child_action(&mut emitted, preview) else {
+            return;
+        };
+        self.action_emitted.set(emitted);
+        let _ = AgentRuntime::emit_parent_child_event(
+            self.store,
+            &self.parent_session_id,
+            ChildEvent::Action {
+                child_id: self.child_id.clone(),
+                name: name.to_owned(),
+                preview: bounded,
+            },
+        );
+    }
+
+    pub fn progress_emitted(&self) -> usize {
+        self.progress_emitted.get()
+    }
+
+    pub fn action_emitted(&self) -> usize {
+        self.action_emitted.get()
+    }
+}
+
+impl AgentRuntime {
     pub fn resolve_approval(&self, resolution: ApprovalResolution) -> Result<(), RuntimeError> {
         let mut approval = self
             .projection()?

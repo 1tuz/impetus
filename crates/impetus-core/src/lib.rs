@@ -210,9 +210,10 @@ pub use effects::{
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
     CompactionStructuralState, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent,
-    MAX_ACTIVITY_PREVIEW_CHARS, NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent,
-    SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent, ToolEventOutcome,
-    bound_activity_preview,
+    MAX_ACTIVITY_PREVIEW_CHARS, MAX_CHILD_ACTION_EVENTS_PER_RUN, MAX_CHILD_PROGRESS_EVENTS_PER_RUN,
+    NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SandboxPrepareState,
+    SessionEvent, ToolEvent, ToolEventOutcome, bound_activity_preview, coalesce_child_action,
+    coalesce_child_progress,
 };
 pub use execution::{
     DEFAULT_PTY_READ_BYTES, MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES,
@@ -394,7 +395,7 @@ pub use role_child::{
     RoleSpawnBridge, allowed_tools_for, default_echo_program,
 };
 pub use runtime::{
-    AGENT_CHUNK_COALESCE_BYTES, AGENT_CHUNK_PREVIEW_BYTES, AgentRuntime,
+    AGENT_CHUNK_COALESCE_BYTES, AGENT_CHUNK_PREVIEW_BYTES, AgentRuntime, ChildMidRunReporter,
     MAX_AGENT_CHUNK_EVENT_BYTES, RuntimeError, RuntimeStatus, bound_agent_chunk_text,
 };
 pub use schema::{

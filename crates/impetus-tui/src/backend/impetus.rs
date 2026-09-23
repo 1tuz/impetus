@@ -729,6 +729,26 @@ fn map_event(event: Event) -> UiEvent {
                 status,
                 current_action,
             },
+            ChildEvent::Progress {
+                child_id,
+                percent,
+                summary,
+            } => UiEventKind::ChildStatus {
+                child_id,
+                status: percent
+                    .map(|p| format!("progress:{p}%"))
+                    .unwrap_or_else(|| "progress".into()),
+                current_action: Some(summary),
+            },
+            ChildEvent::Action {
+                child_id,
+                name,
+                preview,
+            } => UiEventKind::ActivityStep {
+                label: format!("child · {name}"),
+                detail: Some(format!("child_id: {child_id}\n{preview}")),
+                is_error: false,
+            },
             ChildEvent::Finished {
                 child_id,
                 status,

@@ -25,7 +25,7 @@ use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
 use crate::child_result_store::{
     ChildResult, ChildResultError, ChildResultStatus, ChildResultStore,
 };
-use crate::runtime::AgentRuntime;
+use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
 use crate::tools::{ReadOnlyTool, ReadOnlyToolKind, ReadOnlyTools, ToolError, ToolOutcome};
@@ -100,8 +100,11 @@ pub enum ExploreExecutorError {
 
 /// Injectable child body — production later binds AgentLoop; tests inject fakes.
 pub trait ExploreChildExecutor: Send + Sync {
-    fn execute(&self, env: &ExploreChildEnv)
-    -> Result<ExploreExecutorOutput, ExploreExecutorError>;
+    fn execute(
+        &self,
+        env: &ExploreChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
+    ) -> Result<ExploreExecutorOutput, ExploreExecutorError>;
 }
 
 /// Parent-facing outcome after durable record + resume gate.
@@ -304,6 +307,10 @@ impl<'a> ExploreChildRunner<'a> {
             },
         );
 
+        let mid_run = self.parent_events.map(|store| {
+            ChildMidRunReporter::new(store, &request.parent_session_id, &request.child_id)
+        });
+
         let env = ExploreChildEnv {
             child_id: request.child_id.clone(),
             metadata: metadata.clone(),
@@ -314,7 +321,7 @@ impl<'a> ExploreChildRunner<'a> {
         let exec_result = if cancel.is_cancelled() {
             Err(ExploreExecutorError::Cancelled)
         } else {
-            executor.execute(&env)
+            executor.execute(&env, mid_run.as_ref())
         };
 
         let (status, summary_label, artifact_ref_labels) = match exec_result {
@@ -438,6 +445,7 @@ impl ExploreChildExecutor for ReadOnlyExploreExecutor {
     fn execute(
         &self,
         env: &ExploreChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
     ) -> Result<ExploreExecutorOutput, ExploreExecutorError> {
         if env.cancel.is_cancelled() {
             return Err(ExploreExecutorError::Cancelled);
@@ -446,6 +454,15 @@ impl ExploreChildExecutor for ReadOnlyExploreExecutor {
             .map_err(|err| ExploreExecutorError::Failed(format!("artifact store: {err}")))?;
         let tools = ReadOnlyTools::new(&env.metadata.cwd);
         let tool = Self::pick_tool(&env.metadata.allowed_tools, &env.metadata.cwd)?;
+        let tool_name = match &tool {
+            ReadOnlyTool::List { .. } => "list",
+            ReadOnlyTool::Read { .. } => "read",
+            ReadOnlyTool::Search { .. } => "search",
+        };
+        if let Some(mid) = mid_run {
+            mid.progress(Some(10), &format!("explore:{tool_name}"));
+            mid.action(tool_name, &env.context_label);
+        }
         if env.cancel.is_cancelled() {
             return Err(ExploreExecutorError::Cancelled);
         }
@@ -464,6 +481,9 @@ impl ExploreChildExecutor for ReadOnlyExploreExecutor {
                     artifact_ref_labels.push(artifact.id.clone());
                 }
                 let summary = format!("explore-{kind}:{}:{}", env.context_label, result.line_count);
+                if let Some(mid) = mid_run {
+                    mid.progress(Some(100), &summary);
+                }
                 Ok(ExploreExecutorOutput {
                     summary_label: summary,
                     artifact_ref_labels,
@@ -563,14 +583,21 @@ impl ExploreChildExecutor for MockExploreExecutor {
     fn execute(
         &self,
         env: &ExploreChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
     ) -> Result<ExploreExecutorOutput, ExploreExecutorError> {
         *self.last_env.lock().unwrap_or_else(|p| p.into_inner()) = Some(env.clone());
         let mode = self.mode.lock().unwrap_or_else(|p| p.into_inner()).clone();
         match mode {
-            MockExploreMode::Complete { summary, artifacts } => Ok(ExploreExecutorOutput {
-                summary_label: summary,
-                artifact_ref_labels: artifacts,
-            }),
+            MockExploreMode::Complete { summary, artifacts } => {
+                if let Some(mid) = mid_run {
+                    mid.progress(Some(50), &format!("mock:{}", env.context_label));
+                    mid.action("mock", &summary);
+                }
+                Ok(ExploreExecutorOutput {
+                    summary_label: summary,
+                    artifact_ref_labels: artifacts,
+                })
+            }
             MockExploreMode::Fail(reason) => Err(ExploreExecutorError::Failed(reason)),
             MockExploreMode::Cancel => Err(ExploreExecutorError::Cancelled),
             MockExploreMode::HonorCancelToken => {
@@ -680,6 +707,130 @@ mod tests {
                 } if status == "running"
             )),
             "expected StatusChanged(running)"
+        );
+        assert!(
+            child_payloads
+                .iter()
+                .any(|e| matches!(e, ChildEvent::Progress { .. })),
+            "expected mid-run Progress, got {child_payloads:?}"
+        );
+        assert!(
+            child_payloads
+                .iter()
+                .any(|e| matches!(e, ChildEvent::Action { .. })),
+            "expected mid-run Action, got {child_payloads:?}"
+        );
+        // Ordering: Started … Progress/Action … Finished
+        let started_at = child_payloads
+            .iter()
+            .position(|e| matches!(e, ChildEvent::Started { .. }))
+            .expect("started");
+        let mid_at = child_payloads
+            .iter()
+            .position(|e| matches!(e, ChildEvent::Progress { .. } | ChildEvent::Action { .. }))
+            .expect("mid");
+        let finished_at = child_payloads
+            .iter()
+            .rposition(|e| matches!(e, ChildEvent::Finished { .. }))
+            .expect("finished");
+        assert!(started_at < mid_at && mid_at < finished_at);
+    }
+
+    #[test]
+    fn mid_run_progress_coalesces_flood_and_stays_session_scoped() {
+        use crate::EventPayload;
+        use crate::MAX_CHILD_PROGRESS_EVENTS_PER_RUN;
+        use crate::storage::MemoryEventStore;
+
+        struct FloodProgressExecutor;
+
+        impl ExploreChildExecutor for FloodProgressExecutor {
+            fn execute(
+                &self,
+                _env: &ExploreChildEnv,
+                mid_run: Option<&ChildMidRunReporter<'_>>,
+            ) -> Result<ExploreExecutorOutput, ExploreExecutorError> {
+                let mid = mid_run.expect("mid_run");
+                for _ in 0..20 {
+                    mid.progress(Some(10), "same-step");
+                }
+                for i in 0..(MAX_CHILD_PROGRESS_EVENTS_PER_RUN + 5) {
+                    mid.progress(Some(i as u8 % 100), &format!("step-{i}"));
+                }
+                // Oversized preview must be bounded (no raw CoT dump).
+                mid.action("tool", &"z".repeat(crate::MAX_ACTIVITY_PREVIEW_CHARS + 40));
+                Ok(ExploreExecutorOutput {
+                    summary_label: "flood-done".into(),
+                    artifact_ref_labels: Vec::new(),
+                })
+            }
+        }
+
+        let (_dir, child_store) = temp_store();
+        let event_store = Arc::new(MemoryEventStore::default());
+        let parent_id = event_store.create_session().expect("parent");
+        let other_id = event_store.create_session().expect("other");
+        let cwd = tempfile::tempdir().expect("cwd");
+
+        let mut gate = ChildConcurrencyGate::new();
+        let mut runner = ExploreChildRunner::new(&mut gate, &child_store)
+            .with_parent_events(event_store.as_ref());
+        let mut request = sample_request(cwd.path().to_path_buf());
+        request.parent_session_id = parent_id.to_string();
+        request.child_id = "child-flood-1".into();
+
+        runner
+            .run(request, CancellationToken::new(), &FloodProgressExecutor)
+            .expect("run");
+
+        let parent_events = event_store.list(parent_id).expect("list parent");
+        let progress: Vec<_> = parent_events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Child(ChildEvent::Progress { summary, .. }) => Some(summary.as_str()),
+                _ => None,
+            })
+            .collect();
+        // 20 identical "same-step" → 1; then distinct steps capped.
+        assert_eq!(progress.iter().filter(|s| **s == "same-step").count(), 1);
+        assert!(progress.len() <= MAX_CHILD_PROGRESS_EVENTS_PER_RUN);
+        assert!(progress.len() > 1);
+
+        let action_preview = parent_events.iter().find_map(|e| match &e.payload {
+            EventPayload::Child(ChildEvent::Action { preview, .. }) => Some(preview.as_str()),
+            _ => None,
+        });
+        let preview = action_preview.expect("action");
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= crate::MAX_ACTIVITY_PREVIEW_CHARS + 1);
+
+        // Session isolation: sibling session has no child events.
+        let other = event_store.list(other_id).expect("list other");
+        assert!(
+            other
+                .iter()
+                .all(|e| !matches!(e.payload, EventPayload::Child(_))),
+            "other session must stay empty of child events"
+        );
+
+        // Reconnect cursor: list_after after Started still returns Progress/Action/Finished.
+        let started_seq = parent_events
+            .iter()
+            .find(|e| matches!(e.payload, EventPayload::Child(ChildEvent::Started { .. })))
+            .map(|e| e.sequence)
+            .expect("started seq");
+        let after = event_store
+            .list_after(parent_id, started_seq, usize::MAX)
+            .expect("list_after");
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e.payload, EventPayload::Child(ChildEvent::Progress { .. })))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e.payload, EventPayload::Child(ChildEvent::Finished { .. })))
         );
     }
 

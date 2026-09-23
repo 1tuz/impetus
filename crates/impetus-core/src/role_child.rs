@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::ChildEvent;
 use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
 use crate::child_result_store::{ChildResultError, ChildResultStatus, ChildResultStore};
-use crate::runtime::AgentRuntime;
+use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
 
@@ -100,7 +100,11 @@ pub enum RoleExecutorError {
 }
 
 pub trait RoleChildExecutor: Send + Sync {
-    fn execute(&self, env: &RoleChildEnv) -> Result<RoleExecutorOutput, RoleExecutorError>;
+    fn execute(
+        &self,
+        env: &RoleChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
+    ) -> Result<RoleExecutorOutput, RoleExecutorError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +220,10 @@ impl<'a> RoleChildRunner<'a> {
             },
         );
 
+        let mid_run = self.parent_events.map(|store| {
+            ChildMidRunReporter::new(store, &request.parent_session_id, &request.child_id)
+        });
+
         let env = RoleChildEnv {
             child_id: request.child_id.clone(),
             metadata: metadata.clone(),
@@ -228,7 +236,7 @@ impl<'a> RoleChildRunner<'a> {
         let exec_result = if cancel.is_cancelled() {
             Err(RoleExecutorError::Cancelled)
         } else {
-            executor.execute(&env)
+            executor.execute(&env, mid_run.as_ref())
         };
 
         let (status, summary_label, artifact_ref_labels) = match exec_result {
@@ -310,7 +318,11 @@ impl ProcessRoleChildExecutor {
 }
 
 impl RoleChildExecutor for ProcessRoleChildExecutor {
-    fn execute(&self, env: &RoleChildEnv) -> Result<RoleExecutorOutput, RoleExecutorError> {
+    fn execute(
+        &self,
+        env: &RoleChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
+    ) -> Result<RoleExecutorOutput, RoleExecutorError> {
         if env.cancel.is_cancelled() {
             return Err(RoleExecutorError::Cancelled);
         }
@@ -324,6 +336,14 @@ impl RoleChildExecutor for ProcessRoleChildExecutor {
             return Err(RoleExecutorError::Failed(
                 "role child requires non-empty args when program is set".into(),
             ));
+        }
+
+        if let Some(mid) = mid_run {
+            mid.progress(Some(5), &format!("{}:spawn", env.metadata.role.as_str()));
+            mid.action(
+                "spawn",
+                &format!("{} {}", program.display(), args.join(" ")),
+            );
         }
 
         let mut child = Command::new(&program)
@@ -345,12 +365,16 @@ impl RoleChildExecutor for ProcessRoleChildExecutor {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
+                        let summary = format!(
+                            "{}-process:{}",
+                            env.metadata.role.as_str().to_lowercase(),
+                            env.context_label
+                        );
+                        if let Some(mid) = mid_run {
+                            mid.progress(Some(100), &summary);
+                        }
                         return Ok(RoleExecutorOutput {
-                            summary_label: format!(
-                                "{}-process:{}",
-                                env.metadata.role.as_str().to_lowercase(),
-                                env.context_label
-                            ),
+                            summary_label: summary,
                             artifact_ref_labels: Vec::new(),
                         });
                     }
@@ -359,7 +383,12 @@ impl RoleChildExecutor for ProcessRoleChildExecutor {
                         status.code().unwrap_or(-1)
                     )));
                 }
-                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Ok(None) => {
+                    if let Some(mid) = mid_run {
+                        mid.progress(None, "running");
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
                 Err(e) => return Err(RoleExecutorError::Failed(format!("wait: {e}"))),
             }
         }
@@ -401,12 +430,20 @@ impl MockRoleExecutor {
 }
 
 impl RoleChildExecutor for MockRoleExecutor {
-    fn execute(&self, env: &RoleChildEnv) -> Result<RoleExecutorOutput, RoleExecutorError> {
+    fn execute(
+        &self,
+        env: &RoleChildEnv,
+        mid_run: Option<&ChildMidRunReporter<'_>>,
+    ) -> Result<RoleExecutorOutput, RoleExecutorError> {
         if self.honor_cancel && env.cancel.is_cancelled() {
             return Err(RoleExecutorError::Cancelled);
         }
         if let Some(reason) = &self.fail {
             return Err(RoleExecutorError::Failed(reason.clone()));
+        }
+        if let Some(mid) = mid_run {
+            mid.progress(Some(50), &format!("mock:{}", env.context_label));
+            mid.action("mock", &self.summary);
         }
         Ok(RoleExecutorOutput {
             summary_label: self.summary.clone(),
@@ -571,5 +608,48 @@ mod tests {
             req.to_metadata(),
             Err(RoleChildError::UseExploreModule)
         ));
+    }
+
+    #[test]
+    fn role_parent_log_orders_started_progress_action_finished() {
+        use crate::EventPayload;
+        use crate::storage::MemoryEventStore;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let store = ChildResultStore::open(dir.path().join("c.db")).unwrap();
+        let event_store = Arc::new(MemoryEventStore::default());
+        let parent_id = event_store.create_session().expect("parent");
+        let mut gate = ChildConcurrencyGate::new();
+        let mut runner =
+            RoleChildRunner::new(&mut gate, &store).with_parent_events(event_store.as_ref());
+        let mut req = research_req(&parent_id.to_string(), "role-mid-1", dir.path());
+        req.program = None;
+        req.args = vec![];
+
+        runner
+            .run(
+                req,
+                CancellationToken::new(),
+                &MockRoleExecutor::completing("role-summary"),
+            )
+            .expect("run");
+
+        let events = event_store.list(parent_id).expect("list");
+        let child: Vec<_> = events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Child(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert!(matches!(child.first(), Some(ChildEvent::Started { .. })));
+        assert!(matches!(child.last(), Some(ChildEvent::Finished { .. })));
+        assert!(
+            child
+                .iter()
+                .any(|e| matches!(e, ChildEvent::Progress { .. }))
+        );
+        assert!(child.iter().any(|e| matches!(e, ChildEvent::Action { .. })));
     }
 }
