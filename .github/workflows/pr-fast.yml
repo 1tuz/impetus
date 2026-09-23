@@ -122,7 +122,9 @@ jobs:
             echo "cargo check --workspace --lib --bins"
             cargo check --workspace --lib --bins
           else
-            echo "cargo check $PKGS --lib --bins"
+            # Bin-only crates (impetus, impetusd) have no lib target — `--lib` fails.
+            # Default `cargo check -p …` checks lib and/or bins as defined by each package.
+            echo "cargo check $PKGS"
             # shellcheck disable=SC2086
-            cargo check $PKGS --lib --bins
+            cargo check $PKGS
           fi
