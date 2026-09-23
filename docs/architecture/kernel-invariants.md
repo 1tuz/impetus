@@ -79,17 +79,26 @@ Execution requires explicit sandbox admission. **Today** that is path/network
 `allow_network`, web grants), plus macOS Seatbelt (`sandbox-exec`) wrapping
 process spawn in `execution/process.rs` (non-macOS remains path-scope only).
 
+Live types (not a `SandboxProfile` enum):
+
 ```rust
-pub enum SandboxProfile {
-    NoExecution,
-    ReadOnly,
+pub enum EffectCapability {
+    WorkspaceRead,
     WorkspaceWrite,
-    FullAccess,
+    ProcessSpawn,
+    NetworkConnect,
+}
+
+pub enum Sandbox {
+    Provisioned { scope: SandboxScope },
+    Unavailable { reason: String },
 }
 ```
 
 **Invariant:** Custom modules cannot escape sandbox boundaries or elevate privileges.
 Seatbelt on macOS is the live process wrapper; Linux/Windows OS-level wrap stays Planned.
+`ProcessSpawn` admit is kind-gated today (path-scope claims apply to workspace FS
+effects; full argv path-scope for process remains a hardening Remaining).
 
 ### 5. Durable Outcome
 
