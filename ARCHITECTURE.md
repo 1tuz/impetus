@@ -1,14 +1,42 @@
 # Impetus Architecture
 
-**Impetus** is a policy-centered local agent harness. The daemon (`impetusd`) owns
-durable state; clients (`impetus`, TUI, adapters) send typed requests and render
-events.
+**Impetus** is a policy-centered local agent harness: a **small Trusted Kernel**,
+**runtime services** around it, **replaceable** providers/extensions, and thin
+**clients**. The process `impetusd` hosts the authoritative runtime; clients
+send typed requests and render events.
 
 Code is the source of truth. Status labels below mean:
 
 - **Implemented** — production path in `impetusd` / client with tests
 - **Partial** — library or import path exists; not fully wired or incomplete
 - **Planned** — roadmap only
+
+Product one-liner and Quick Start: [README.md](README.md).
+
+## Canonical layers (terminology)
+
+| Term | Meaning | Not the same as |
+| --- | --- | --- |
+| **Trusted Kernel** | Logical non-bypassable control: EventStore, ArtifactStore, Policy, Approval, Sandbox, Capability gate, Executor, secret/reference boundary | The whole `impetus-core` crate |
+| **Runtime services** | Orchestration living *above* the kernel inside `impetusd` | Kernel invariants |
+| **Replaceable / optional** | Providers, MCP, skills, LSP/browser packs, host_process, search | Anything that can skip Policy |
+| **Clients** | CLI, TUI, Desktop, ACP, Zap adapter | Owners of SQLite / Keychain / policy |
+| **`impetusd`** | Authoritative **process** boundary (userspace). Ordinary `impetus` CLI **lazy-starts** it | A product users must launch by hand |
+| **`impetus-core`** | Rust **crate** with kernel *and* runtime libraries | Synonym for Trusted Kernel |
+
+```text
+Clients (impetus / TUI / Desktop / ACP / Zap)
+        │  HarnessClient · versioned Unix IPC
+        ▼
+impetusd  (authoritative process)
+  ├─ Runtime services — AgentLoop, Context, Tools, Providers, Workflows, …
+  └─ Trusted Kernel — EventStore · Policy · Approval · Sandbox · Executor · secrets
+        │
+        └─ Extension Host / SDK → replaceable packs (cannot bypass Policy)
+```
+
+Diagrams: [system-architecture.svg](assets/readme/system-architecture.svg),
+[execution-flow.svg](assets/readme/execution-flow.svg).
 
 ## Core principles
 
@@ -24,22 +52,37 @@ Code is the source of truth. Status labels below mean:
   escalation; PTY refuses login-shell argv (`-l` / `--login`)
 - Trusted kernel stays small; providers, context, extensions are replaceable layers
 - Reject features whose only justification is vendor parity or feature-count optics
+- **Daemon UX:** `impetus` ensures `impetusd` is running (stale socket cleanup +
+  spawn with matching `IMPETUS_SOCKET` / `IMPETUS_DATA_DIR`). Manual `impetusd`
+  is for development, debugging, and advanced profiles.
 
 ## Trusted kernel
 
 ```text
-EventStore + DurableArtifactStore + Policy + Approval + Sandbox + Executor
+EventStore + DurableArtifactStore + Policy + Approval + Sandbox + Capability + Executor
+(+ secret reference boundary — Keychain labels only)
 ```
 
-Replaceable layers above the kernel:
+These invariants are documented in
+[docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md).
+No custom provider or extension may forge `origin=user` or skip Approval.
+
+### Runtime services (above the kernel)
 
 ```text
-ProviderProtocol → ContextEngine → ToolOrchestrator
-  → AgentScheduler + WorkflowEngine + WorktreeManager
-  → ExtensionGateway
+AgentLoop · ContextEngine · ToolOrchestrator · ProviderRegistry
+AgentScheduler · WorkflowEngine · WorktreeManager
+memory / compaction · checkpoints · session forks
 ```
 
-### Orchestration stack (Next)
+### Replaceable layers
+
+```text
+Model providers · context strategies · MCP · browser · LSP
+skills / instruction packs · host_process extensions · search
+```
+
+### Orchestration stack (detail)
 
 In-memory orchestration today — recipes, role schedule handles, and worktree
 lifecycle. Not a live multi-process swarm.

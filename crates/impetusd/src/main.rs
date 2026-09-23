@@ -688,8 +688,15 @@ fn data_root() -> Result<PathBuf> {
     Ok(std::env::var_os("IMPETUS_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME is set on macOS"))
-                .join("Library/Application Support/Impetus")
+            let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
+            if cfg!(target_os = "macos") {
+                home.join("Library/Application Support/Impetus")
+            } else {
+                std::env::var_os("XDG_DATA_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".local/share"))
+                    .join("impetus")
+            }
         }))
 }
 
@@ -853,7 +860,11 @@ mod tests {
         );
         assert!(
             data_root_fn.contains("Library/Application Support/Impetus"),
-            "default data_root must be under user Application Support"
+            "macOS default data_root must be under user Application Support"
+        );
+        assert!(
+            data_root_fn.contains("XDG_DATA_HOME") || data_root_fn.contains(".local/share"),
+            "non-macOS default must use XDG or ~/.local/share"
         );
         for needle in [
             "/var/lib",

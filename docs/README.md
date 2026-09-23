@@ -23,6 +23,8 @@ Human map for Impetus documentation. Architecture truth stays in repo-root
 | [kernel-invariants.md](architecture/kernel-invariants.md) | Kernel rules |
 | [roadmap.md](architecture/roadmap.md) | Now / Next / Later narrative |
 | [capability-leases-and-repomap.md](architecture/capability-leases-and-repomap.md) | Design-only notes (leases / RepoMap) |
+| [diagrams/system-architecture.html](diagrams/system-architecture.html) | System map (kernel / runtime / extensions) |
+| [diagrams/execution-flow.html](diagrams/execution-flow.html) | Policy → Approval → Executor path |
 
 ## Reference
 

@@ -1,221 +1,177 @@
 # Impetus
 
-> **An ultra-lightweight, Rust-built, terminal-first, local-first, all-in-one agent harness for engineering.**
+> Local AI-agent **runtime / harness**: a small trusted kernel, replaceable modules around it, and thin clients that never own durable authority.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-4B8BBE.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-local--first-000000.svg)](#why-it-exists)
+[![Architecture](https://img.shields.io/badge/architecture-local--first-000000.svg)](#architecture-at-a-glance)
 
 <p align="center">
   <img src="./assets/readme/hero.svg" width="100%"
        alt="Impetus: a local runtime for durable engineering-agent sessions and explicit control">
 </p>
 
-Impetus is an ultra-lightweight, Rust-built all-in-one local agent harness: durable sessions, model/tool
-orchestration, safety decisions, credentials, and execution authority stay
-together behind replaceable terminal and remote clients. A client restart
-cannot silently discard an in-flight session or expand its access.
+## What is Impetus?
 
-**No root / sudo / password in normal mode.** `impetus` and `impetusd` run
-entirely in userspace under `$HOME` (or `IMPETUS_DATA_DIR`). Seatbelt is
-userspace `sandbox-exec`. Keychain reads are silent
-(`kSecUseAuthenticationUISkip`) — missing credentials fail closed; the daemon
-never shows an unlock / password dialog. Privilege escalation (`sudo` / `su` /
-login-shell `-l`) is refused by policy. Optional admin-only features stay
-opt-in and never block core flows.
+**Impetus** is a local-first agent harness for engineering work. Sessions, policy,
+approvals, sandboxing, secrets-by-reference, and execution live in one userspace
+process boundary (`impetusd`). CLI, TUI, Desktop, ACP, and Zap-style UIs connect
+as clients — they render and request; they do not own SQLite, Keychain, or policy.
 
-## Why it exists
+One sentence:
 
-Engineering agents need long-lived state and controlled tools without making a
-terminal UI, provider, or client application the source of truth. The harness
-is the sole authoritative owner of durable runtime/state; clients never own
-SQLite, policy, model/tool runtime, credentials, or session authority.
+**Small trusted center → replaceable providers, tools, extensions, and clients around it.**
 
-## Current and target
+No root / sudo / password in normal mode. Data under `$HOME` (or `IMPETUS_DATA_DIR`).
+Seatbelt is userspace `sandbox-exec`. Keychain reads are silent and fail-closed.
 
-**Product model.**
+## Principles
 
-```text
-impetus   → user-facing CLI / TUI (`impetus ui`)
-impetusd  → local-first harness daemon (authoritative runtime)
-```
+1. **Durable sessions** — SQLite WAL event log survives client crash and reconnect.
+2. **Policy before side effects** — every action carries `origin=user|agent` and
+   passes `Policy → Approval → Sandbox → Capability → Executor`.
+3. **Trusted kernel stays small** — events, artifacts, policy, approval, sandbox,
+   capability gate, executor, secret references. Everything else is replaceable.
+4. **Versioned IPC** — clients negotiate protocol version and capabilities; mismatch
+   is explicit `Incompatible`, not silent drift.
+5. **Honest Absent** — unwired optional tracks (browser CDP, …) report Unavailable,
+   never a fake “Available”.
 
-`impetusd` owns durable sessions, Event Log, SQLite, policy, execution, and
-credential references. Clients send typed requests and render events; they never
-own authoritative state.
-
-**Current.** The workspace ships `impetusd` and an `impetus` CLI client over
-versioned Unix-socket IPC and `HarnessClient`, plus provider registry foundations
-and an experimental Zap adapter. Also available: `impetus doctor` (diagnostics),
-`impetus ui` (Ratatui TUI), and Module Runtime foundations. Primary CLI is
-`impetus`; `impetus-cli` is the legacy/secondary surface (kept for existing
-workflows — migration note, not deletion).
-
-**Target.** Modular, extensible harness: `impetus` becomes first-class CLI/TUI;
-Zap keeps its own UI as another `HarnessClient` consumer. Honest adapter
-checklist (today vs Planned discovery/authorize): [Architecture — Zap path
-(#5)](ARCHITECTURE.md#zap-path-vs-standalone-clitui-5). See
-[Architecture](ARCHITECTURE.md) for kernel invariants vs replaceable modules.
-
-## What works now
-
-Honest status (detail: [ARCHITECTURE.md](ARCHITECTURE.md)):
-
-- Durable sessions and ordered audit events in SQLite WAL.
-- Versioned local Unix-socket negotiation before a client can act.
-- Typed actions through policy, approval, **path-scope** sandbox, capability, and
-  execution (fail-closed). On macOS, process spawn also wraps with Seatbelt
-  (`sandbox-exec`); non-macOS stays path-scope only.
-- Keychain references or a local no-secret provider endpoint; profiles never
-  store raw tokens.
-- Typed Rust client transport, CLI, TUI (`impetus ui`), ACP gateway library, and
-  an experimental Zap adapter.
-- Agent-loop vertical for filesystem reads plus approval-gated writes and shell;
-  large tool/web/paste bodies use durable content-addressed artifacts; approval
-  diffs use ephemeral in-memory attachments.
-- Context HOT/WARM/COLD, lazy tool/instruction descriptions, session
-  shared-prefix fork and checkpoints.
-- Extension **import** adapters (Skills, MCP, Claude/Codex/Cursor layouts).
-  Lifecycle CLI keep (`impetus extension plan|install|…`); no marketplace.
-  Production MCP SoT: `impetusd` autoloads **only** `$IMPETUS_DATA_DIR/mcp/*.json`
-  + live `ReloadMcpServers`; `ListMcpServers` / `ListModels` IPC
-  (`connected=false` until first tool use). Explore child + Workflow Explore
-  share one AgentLoop bridge. MemoryStore control-plane IPC **Implemented**
-  (session JSONL under data dir) + AgentLoop project-scope context inject
-  on Prompt/FollowUp/ResolveApproval resume (approval-resume). Browser daemon
-  health/negotiate **Partial** (honest Absent; CDP Parked).
-- Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
-  containment; Agent origin Seatbelt on macOS; optional Sqlite metadata store;
-  live PTY not restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).
-- Session model IPC (`ListProviders` / Get/SetSessionModel) + OpenAI Chat
-  Completions SSE default (`--provider-profile`); Anthropic library not default
-  daemon path. JSON Schema tool-arg validation before policy on builtins.
-
-## Request control flow
+## Architecture at a glance
 
 <p align="center">
-  <a href="./docs/architecture-map.html">
-    <img src="./assets/readme/request-control-flow-v2.svg" width="100%"
-         alt="Request control flow: a client sends a request to Impetus, which controls approval, execution, and durable local history">
-  </a>
+  <img src="./assets/readme/system-architecture.svg" width="100%"
+       alt="Clients → HarnessClient IPC → impetusd runtime services around a small Trusted Kernel, with replaceable extensions beside it">
 </p>
 
-This is the request-and-safety flow, not a complete system map. The canonical
-architecture explains current components, ownership, and the planned client
-paths: [Architecture](ARCHITECTURE.md).
+| Layer | Role | Examples |
+| --- | --- | --- |
+| **Clients** | UX only | `impetus` CLI/TUI, Desktop, ACP agents, Zap adapter |
+| **Process boundary** | Authoritative runtime | `impetusd` (lazy-started by CLI) |
+| **Runtime services** | Orchestration | AgentLoop, Context, ToolOrchestrator, ProviderRegistry, Workflows, Worktrees, memory/checkpoints |
+| **Trusted Kernel** | Non-bypassable control | EventStore, ArtifactStore, Policy, Approval, Sandbox, Capability, Executor, Keychain refs |
+| **Replaceable** | Disable / swap | model providers, MCP, skills, LSP/browser packs, host_process extensions, search |
 
-## Installation
+**`impetus-core` ≠ Trusted Kernel.** The Rust crate holds kernel *and* runtime
+libraries. The **Trusted Kernel** is the logical security/execution subset.
+**`impetusd`** is the process that hosts both — not a separate product users must
+babysit.
 
-The product landing page is published at [1tuz.github.io/impetus](https://1tuz.github.io/impetus/).
+Deep dive: [ARCHITECTURE.md](ARCHITECTURE.md). Invariants:
+[docs/architecture/kernel-invariants.md](docs/architecture/kernel-invariants.md).
 
-### Quick install
+### Execution flow
 
-Supported platforms: macOS Apple Silicon, Linux x86_64
+<p align="center">
+  <img src="./assets/readme/execution-flow.svg" width="100%"
+       alt="prompt → AgentLoop → tool proposal → Policy → Approval → Sandbox → Capability → Executor → EventStore">
+</p>
+
+(This is the admission path, not the full component map.)
+
+## Quick Start
+
+Supported: macOS Apple Silicon, Linux x86_64.
 
 ```zsh
 curl -fsSL https://raw.githubusercontent.com/1tuz/impetus/main/scripts/install.sh | zsh
-```
-
-Binaries will be installed to `~/.local/bin`. Add it to your PATH:
-
-```zsh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### From source
+From source:
 
 ```zsh
-git clone https://github.com/1tuz/impetus.git
-cd impetus
-task setup
-task verify
-cargo build --release -p impetus -p impetusd
+git clone https://github.com/1tuz/impetus.git && cd impetus
+task setup && cargo build --release -p impetus -p impetusd
 ```
 
-## Usage
+Put `target/release/impetus` and `impetusd` on your `PATH` (or use `~/.local/bin`).
 
-Start the daemon:
+## Example
 
-```zsh
-impetusd
-```
-
-In another terminal, create a session and interact:
+Ordinary use — **no manual `impetusd`**. The CLI starts the daemon if needed:
 
 ```zsh
 impetus create
 impetus prompt <session-id> "Summarize this repository"
 impetus stream <session-id>
-# When the stream shows a pending approval:
+# When an approval is pending:
 impetus approve <session-id> <approval-id>
-# Or reject it and let the model continue with the denial observation:
+# Or reject and continue with the denial observation:
 impetus approve <session-id> <approval-id> --reject
 ```
 
-For provider configuration, see [configuration docs](docs/guides/configuration.md).
-
-## Uninstall
-
-Remove binaries:
+TUI:
 
 ```zsh
-rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+impetus ui
 ```
 
-Remove data and sessions:
+Manual `impetusd` is for development, debugging, and advanced administration
+(custom `--policy-config` / `--provider-profile` / `--acp-profile`). See
+[configuration](docs/guides/configuration.md) and
+[troubleshooting](docs/guides/troubleshooting.md).
 
-```zsh
-rm -rf ~/Library/Application\ Support/Impetus  # macOS
-```
+## What works (code-backed)
 
-Remove credentials from macOS Keychain via **Keychain Access.app** or `security delete-generic-password`.
+Status labels match [ARCHITECTURE.md](ARCHITECTURE.md) (`Implemented` / `Partial`).
 
-For detailed cleanup steps, see [getting started](docs/guides/getting-started.md#uninstall).
-
-## Design stance
-
-Impetus is not a port or fork of another coding agent. It keeps a small trusted
-kernel (events, artifacts, policy, approval, sandbox, executor) and replaceable
-layers above it. Engineering principles (durable events, fail-closed admission,
-explicit approvals, opaque secret references) matter more than feature parity
-lists. Optional protocol/UX notes: [Design references](docs/reference/design-references.md).
-
-## Project layout
-
-| Path | Role |
+| Practice | Reality |
 | --- | --- |
-| `crates/impetus-core` | Durable events, runtime, policy, effects, providers, tools, and IPC types. |
-| `crates/impetusd` | Headless Unix-socket daemon and macOS Keychain resolver. |
-| `crates/impetus` | User-facing CLI / TUI client (`doctor`, `ui`, …). |
-| `crates/impetus-cli` | Legacy/secondary CLI; migrate callers to `impetus` over time (do not delete). |
-| `crates/impetus-tui` | Ratatui TUI library used by `impetus ui`. |
-| `crates/impetus-client` | `HarnessClient` contract and local transports. |
-| `crates/impetus-zap-adapter` | Historical/experimental Zap integration baseline. |
-| `crates/impetus-acp-gateway` | ACP profile and gateway library. |
+| Durable sessions + event log | SQLite WAL; reconnect replays events |
+| Checkpoint / fork | Named checkpoints + shared-prefix fork IPC |
+| Policy-before-execution | Typed actions through PolicyEngine |
+| Human approval gate | Durable `ApprovalRequested` / `ResolveApproval` |
+| Sandbox + capability | Path-scope admit; macOS Seatbelt on process spawn |
+| Secret references | Keychain labels only — never raw tokens in SQLite/logs |
+| Versioned IPC | Negotiate version + caps; client stores negotiated set |
+| Providers | Registry + OpenAI-compatible path; ACP adapter |
+| MCP | Autoload `$IMPETUS_DATA_DIR/mcp/*.json` + live reload |
+| Context | HOT/WARM/COLD + lazy tool/instruction descriptions |
+| Worktrees / workflows / subagents | Daemon-owned; role AgentLoop for Research/Build/Review |
+| Extensions | Package SDK + host_process operate; skill packs; no marketplace |
+| PTY | Daemon-owned passthrough; live handle not restart-durable |
+| Browser / full LSP packs | Partial / extension-first — honest Absent until wired |
+
+## Extension model
+
+Trusted core stays small. Optional packs declare capabilities
+(`SkillProvider`, `LspIntegration`, `BrowserIntegration`, `MemoryProvider`, …)
+and speak the public host protocol (`extension/operate`). Policy and approval
+remain in Impetus — an extension cannot grant itself `origin=user`.
+
+Canonical contract: [EXTENSION_REPOSITORY_CONTRACT.md](EXTENSION_REPOSITORY_CONTRACT.md).
 
 ## Documentation
 
-- [Docs map](docs/README.md) — guides, architecture, reference, archive.
-- [Architecture](ARCHITECTURE.md) — kernel + capability matrix (code-backed).
-- [TODO](TODO.md) — Now / Next / Later backlog.
-- [Roadmap](docs/architecture/roadmap.md) — short priority narrative.
-- [TUI notes](docs/reference/tui-ux-audit.md) — client UX constraints and audit.
-- [References](docs/reference/design-references.md) — protocols and libraries.
-- [Getting started](docs/guides/getting-started.md) — source-checkout setup.
-- [Development](docs/guides/development.md) — workspace checks and CI.
+| Doc | Owns |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Component matrix, ownership, honesty labels |
+| [kernel-invariants.md](docs/architecture/kernel-invariants.md) | Non-bypassable pipeline |
+| [reader-guide.md](docs/architecture/reader-guide.md) | Short CURRENT / TARGET map |
+| [TODO.md](TODO.md) / [roadmap.md](docs/architecture/roadmap.md) | Open work |
+| [docs/README.md](docs/README.md) | Guides index |
+| [getting-started.md](docs/guides/getting-started.md) | Source-checkout detail |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting |
 
 ## Development
 
 ```zsh
-task verify
+task verify   # fmt + git diff --check (default before push)
 ```
 
-When `Cargo.toml` or `Cargo.lock` changes, also run `task security`.
+PR merge gate is **PR Fast** (fmt + affected `cargo check`). Deep tests run on
+**Nightly Full**. See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Contributing
+## Uninstall
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md). For vulnerabilities, follow
-[SECURITY.md](SECURITY.md).
+```zsh
+rm -f ~/.local/bin/impetus ~/.local/bin/impetusd
+rm -rf ~/Library/Application\ Support/Impetus   # macOS default data dir
+# Linux default: ~/.local/share/impetus
+```
+
+Remove Keychain entries via Keychain Access or `security delete-generic-password`.
 
 ## License
 
-Licensed under [Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE).

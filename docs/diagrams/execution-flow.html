@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Impetus execution control flow</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #090c10; display: flex; justify-content: center; padding: 24px; font-family: system-ui, sans-serif; }
+  .frame { width: min(1200px, 100%); }
+  svg { width: 100%; height: auto; display: block; }
+  p { color: #93a1b0; font-size: 13px; max-width: 72ch; }
+  a { color: #e4a853; }
+</style>
+</head>
+<body>
+<main class="frame">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="exec-flow-title exec-flow-desc">
+  <title id="exec-flow-title">Impetus execution control flow</title>
+  <desc id="exec-flow-desc">Prompt enters AgentLoop, tool proposal hits Policy, optional Approval, then Sandbox, Capability, Executor, and durable EventStore.</desc>
+  <defs>
+    <style>@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+    <marker id="ef-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#e4a853"/></marker>
+    <marker id="ef-deny" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8393a2"/></marker>
+  </defs>
+  <rect width="1200" height="560" rx="24" fill="#090c10"/>
+
+  <text x="56" y="56" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="12" letter-spacing="0.16em">EXECUTION FLOW  NOT THE FULL SYSTEM MAP</text>
+  <text x="56" y="88" fill="#f4f1e9" font-family="'Geist', sans-serif" font-size="28" font-weight="600">Policy before side effects</text>
+
+  <!-- Main path boxes -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="56" y="140" width="120" height="64" rx="20" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="84" y="178" fill="#f4f1e9" font-size="14" font-weight="600">prompt</text>
+
+    <rect x="220" y="140" width="140" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="244" y="168" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">RUNTIME</text>
+    <text x="244" y="188" fill="#f4f1e9" font-size="14" font-weight="600">AgentLoop</text>
+
+    <rect x="404" y="140" width="140" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="420" y="168" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">PROPOSAL</text>
+    <text x="420" y="188" fill="#f4f1e9" font-size="14" font-weight="600">tool call</text>
+
+    <!-- Diamond: Policy -->
+    <path d="M640 172 L700 112 L760 172 L700 232 Z" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="676" y="168" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.08em">POLICY</text>
+    <text x="668" y="186" fill="#f4f1e9" font-size="13" font-weight="600">admit?</text>
+
+    <rect x="820" y="140" width="140" height="64" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="836" y="168" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">HUMAN</text>
+    <text x="836" y="188" fill="#f4f1e9" font-size="14" font-weight="600">Approval</text>
+
+    <rect x="1000" y="140" width="144" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="1016" y="168" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">BOUND</text>
+    <text x="1016" y="188" fill="#f4f1e9" font-size="14" font-weight="600">Sandbox</text>
+  </g>
+
+  <!-- Second row -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="820" y="320" width="140" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="836" y="348" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">CAP</text>
+    <text x="836" y="368" fill="#f4f1e9" font-size="14" font-weight="600">Capability</text>
+
+    <rect x="1000" y="320" width="144" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="1016" y="348" fill="#93a1b0" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">RUN</text>
+    <text x="1016" y="368" fill="#f4f1e9" font-size="14" font-weight="600">Executor</text>
+
+    <rect x="1000" y="440" width="144" height="64" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="1016" y="468" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">DURABLE</text>
+    <text x="1016" y="488" fill="#f4f1e9" font-size="14" font-weight="600">EventStore</text>
+
+    <!-- Deny sink -->
+    <rect x="560" y="320" width="140" height="64" rx="8" fill="#141b22" stroke="#536372" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="580" y="348" fill="#8393a2" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.1em">FAIL-CLOSED</text>
+    <text x="580" y="368" fill="#b6c0ca" font-size="14" font-weight="600">Deny / stop</text>
+  </g>
+
+  <!-- Connectors (orthogonal) -->
+  <g fill="none" stroke="#e4a853" stroke-width="2.2" stroke-linecap="round">
+    <path d="M176 172 H220" marker-end="url(#ef-arrow)"/>
+    <path d="M360 172 H404" marker-end="url(#ef-arrow)"/>
+    <path d="M544 172 H640" marker-end="url(#ef-arrow)"/>
+    <!-- Allow / NeedsApproval to Approval -->
+    <path d="M760 172 H820" marker-end="url(#ef-arrow)"/>
+    <path d="M960 172 H1000" marker-end="url(#ef-arrow)"/>
+    <!-- down to capability -->
+    <path d="M1072 204 V320" marker-end="url(#ef-arrow)"/>
+    <path d="M960 352 H1000" marker-end="url(#ef-arrow)"/>
+    <path d="M1072 384 V440" marker-end="url(#ef-arrow)"/>
+  </g>
+  <!-- Deny branch -->
+  <path d="M700 232 V320" fill="none" stroke="#8393a2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ef-deny)"/>
+
+  <g font-family="'Geist Mono', monospace" font-size="11" fill="#93a1b0">
+    <text x="768" y="128">Allow / NeedsApproval</text>
+    <text x="620" y="280">Deny</text>
+    <text x="56" y="520">origin=user|agent on every action · model cannot forge origin=user or self-approve</text>
+  </g>
+</svg>
+
+<p>Canonical SVG: <a href="../../assets/readme/execution-flow.svg"><code>assets/readme/execution-flow.svg</code></a> · Architecture: <a href="../../ARCHITECTURE.md">ARCHITECTURE.md</a></p>
+</main>
+</body>
+</html>

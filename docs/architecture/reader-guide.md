@@ -1,78 +1,58 @@
 # Architecture reader guide
 
-[ARCHITECTURE.md](../../ARCHITECTURE.md) — canonical architecture. This page —
-compact guide to CURRENT/TARGET.
+[ARCHITECTURE.md](../../ARCHITECTURE.md) — canonical architecture.
+[README.md](../../README.md) — product one-liner + Quick Start.
 
-## Binary topology (target)
+## Layers (memorize this)
 
 ```text
-impetus       → user-facing CLI / TUI (`impetus ui`)
-impetusd      → authoritative daemon
+Clients  →  HarnessClient / IPC  →  impetusd
+                                      ├─ Runtime services
+                                      └─ Trusted Kernel
+                                           └─ Extension Host (replaceable)
+```
+
+| Term | Meaning |
+| --- | --- |
+| Trusted Kernel | Policy / Approval / Sandbox / Executor / EventStore / secrets-by-ref |
+| Runtime services | AgentLoop, Context, Tools, Providers, Workflows, Worktrees, … |
+| `impetus-core` | Rust crate (kernel **and** runtime libs) — not a synonym for Kernel |
+| `impetusd` | Authoritative process; **lazy-started** by `impetus` for ordinary UX |
+
+## Binary topology
+
+```text
+impetus       → user-facing CLI / TUI (`impetus ui`) — ensures daemon
+impetusd      → authoritative daemon process
 impetus-core  → libraries (no binary)
 ```
 
-```text
-impetus ──HarnessClient──► impetusd ──► impetus-core
-```
-
-## CURRENT
+## CURRENT crates
 
 | Component | Path | Responsibility |
 | --- | --- | --- |
-| Core | `crates/impetus-core` | Events, session runtime, policy, approvals, effects, providers, tools, IPC types. |
-| Daemon | `crates/impetusd` | Unix-socket server, provider profile, macOS Keychain resolver. |
-| CLI client | `crates/impetus` | User-facing commands via `HarnessClient`, including `doctor` and `ui`. |
-| TUI | `crates/impetus-tui` | Ratatui client library used by `impetus ui`. |
-| Client contract | `crates/impetus-client` | `HarnessClient`, in-memory and Unix transports. |
-| Second CLI | `crates/impetus-cli` | Legacy/secondary; migrate toward `impetus` (do not delete). |
-| Zap adapter | `crates/impetus-zap-adapter` | Historical/experimental baseline. |
-| ACP gateway | `crates/impetus-acp-gateway` | Library for external ACP agents. Honesty checklist: [ACP production hardening (#66)](../../ARCHITECTURE.md#acp-production-hardening-checklist-66). |
-
-Harness (`impetusd`) owns SQLite, policy, Keychain lookup, execution authority,
-authoritative session state. Client disconnect preserves durable history; unknown
-work is not reported as completed.
-
-`ModelProvider` / `ProviderRegistry` — implemented foundations. Shared-prefix
-session fork + named checkpoints form the Session DAG product surface (IPC fork /
-restore). Module Runtime foundations, TUI (`impetus ui`), and `impetus doctor`
-are present; extension adapters and a live components/registry browser remain thin
-or stubbed in places.
-
-**Migration note:** some older docs and `task harness` still reflect the era when
-daemon was named `impetus`. Target and crates — see [TODO.md](../../TODO.md).
-
-## TARGET clients
-
-Standalone first-class client: `impetus` CLI/TUI via `HarnessClient` → `impetusd`.
-TUI reference audit: [tui-ux-audit.md](../reference/tui-ux-audit.md).
-
-Zap: own UI, Impetus as agent backend after Connect/Authorize. No duplicated
-sessions, approvals, or renderer in adapter target. Honest Implemented vs
-Planned checklist: **Zap path vs standalone CLI/TUI (#5)** in
-[ARCHITECTURE.md](../../ARCHITECTURE.md).
-
-All clients (including future remote): `HarnessClient` only — no core bypass.
+| Core libs | `crates/impetus-core` | Events, runtime, policy, effects, providers, tools, IPC types |
+| Daemon | `crates/impetusd` | Unix-socket server, provider/ACP profiles, Keychain resolver |
+| CLI | `crates/impetus` | User commands + lazy daemon start + `doctor` / `ui` |
+| TUI | `crates/impetus-tui` | Ratatui library for `impetus ui` |
+| Client | `crates/impetus-client` | `HarnessClient`, transports |
+| ACP | `crates/impetus-acp-gateway` | External ACP agents |
+| Zap | `crates/impetus-zap-adapter` | Experimental Zap baseline |
 
 ## Trust boundary
 
 ```text
-origin=user|agent → Policy → Sandbox → Capability → Execution → Durable Event
+origin=user|agent → Policy → Approval? → Sandbox → Capability → Execution → Event
 ```
 
-Credentials transient; profiles hold opaque platform-store references only (Keychain on macOS).
+Credentials: opaque Keychain references only (macOS).
 
-PolicyConfig load/reload + Approval UI payloads: see **Policy customization
-and approval UI contracts (#9)** in [ARCHITECTURE.md](../../ARCHITECTURE.md)
-(`PolicyConfig` JSON + `impetus.approval_detail.v1`).
-
-## Related docs
+## Related
 
 | Topic | Document |
 | --- | --- |
-| Module Runtime, invariants | [ARCHITECTURE.md](../../ARCHITECTURE.md) |
-| ACP Implemented / Partial / Planned | [ARCHITECTURE.md § ACP checklist (#66)](../../ARCHITECTURE.md#acp-production-hardening-checklist-66) |
-| Zap path vs CLI/TUI | [ARCHITECTURE.md § Zap path (#5)](../../ARCHITECTURE.md#zap-path-vs-standalone-clitui-5) |
-| PolicyConfig + ApprovalDetail | [ARCHITECTURE.md § Policy customization (#9)](../../ARCHITECTURE.md#policy-customization-and-approval-ui-contracts-9) |
-| Now / Next / Later | [roadmap.md](roadmap.md) |
-| Executable tasks | [TODO.md](../../TODO.md) |
-| Ubuntu 24.04 smoke vs PR CI | [ubuntu-smoke.md](../guides/ubuntu-smoke.md) |
+| Component matrix | [ARCHITECTURE.md](../../ARCHITECTURE.md) |
+| Kernel invariants | [kernel-invariants.md](kernel-invariants.md) |
+| Diagrams | [system-architecture.svg](../../assets/readme/system-architecture.svg), [execution-flow.svg](../../assets/readme/execution-flow.svg) |
+| Extensions | [EXTENSION_REPOSITORY_CONTRACT.md](../../EXTENSION_REPOSITORY_CONTRACT.md) |
+| Backlog | [TODO.md](../../TODO.md), [roadmap.md](roadmap.md) |
