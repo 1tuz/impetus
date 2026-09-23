@@ -81,3 +81,6 @@ Actionable after Now. Not priority theatre.
 
 Shipped program slices: [#315](https://github.com/1tuz/impetus/issues/315) harness unify,
 [#320](https://github.com/1tuz/impetus/issues/320) production harden baseline — follow-up [#322](https://github.com/1tuz/impetus/issues/322).
+Daemon Unix E2E gaps (#357): approvals / MCP mutate / Files-Diff landed in
+`daemon_unix_approvals_mcp_files`; GOAL §4 still open for provider-option persist
+(#328) and ACP permission mapping with mock agent.

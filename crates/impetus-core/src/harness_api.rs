@@ -132,10 +132,18 @@ pub struct Harness {
 
 impl Harness {
     /// Create a new Harness with a mock provider registered as "mock".
+    ///
+    /// When `IMPETUS_MOCK_APPROVAL_FIXTURE` is truthy (`1`/`true`/`yes`/`on`),
+    /// registers [`MockProvider::approval_e2e_fixture`] so Unix-socket E2E can
+    /// exercise Prompt → NeedsApproval → ResolveApproval without live keys.
     pub fn new(store: Arc<dyn EventStore>, policy: PolicyEngine) -> Self {
         let workspace_root = policy.scope().workspace_root.clone();
         let registry = ProviderRegistry::new();
-        let mock = Arc::new(MockProvider::default_mock());
+        let mock = Arc::new(if mock_approval_fixture_enabled() {
+            MockProvider::approval_e2e_fixture()
+        } else {
+            MockProvider::default_mock()
+        });
         registry
             .register(mock)
             .expect("failed to register mock provider");
@@ -4460,6 +4468,12 @@ fn probe_output_optimization() -> crate::SubsystemStatus {
 
 pub fn policy() -> PolicyEngine {
     PolicyEngine::new(SandboxScope::local_workspace("."))
+}
+
+fn mock_approval_fixture_enabled() -> bool {
+    std::env::var("IMPETUS_MOCK_APPROVAL_FIXTURE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 /// Compute detailed approval information with diff preview and scope estimates.
