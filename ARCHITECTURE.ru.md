@@ -1,30 +1,36 @@
 # Архитектура Impetus
 
-Canonical архитектурный контракт. Отделяет **текущий код** от **product target**.
+**Канон:** [ARCHITECTURE.md](ARCHITECTURE.md) (EN). Этот файл — RU-навигация;
+при расхождении побеждает EN.
 
 | Документ | Роль |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Инварианты, границы, ownership, module model |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Инварианты, Trusted Kernel vs Runtime vs Extensions, matrix |
 | [docs/architecture/roadmap.md](docs/architecture/roadmap.md) | Now / Next / Later narrative |
 | [TODO.md](TODO.md) | Исполнимые задачи |
 
 ## Product invariant
 
-Impetus — terminal-first, local-first, all-in-one Agent Harness for Engineering:
-durable sessions/events, agent/tool orchestration, safety, credentials и
-execution authority за заменяемыми client surfaces.
+Impetus = local AI-agent runtime/harness: маленький **Trusted Kernel** +
+заменяемые Runtime / Extensions / Clients. **`impetus-core`** — Rust crate
+(kernel + runtime libs), **не** синоним Trusted Kernel. **`impetusd`** —
+authoritative process; обычный `impetus` lazy-starts его.
 
 **Без root / sudo / password в нормальном режиме:** userspace data dirs,
-Seatbelt через `sandbox-exec`, silent Keychain (`kSecUseAuthenticationUISkip`),
-RiskGate Deny на privilege escalation, PTY без login-shell `-l`.
+Seatbelt через `sandbox-exec`, silent Keychain, RiskGate Deny на privilege
+escalation, PTY без login-shell `-l`.
 
 ## Binary topology
 
 ```text
-impetus       = user-facing CLI / future TUI
-impetusd      = authoritative daemon / runtime
+impetus       = user-facing CLI / TUI (lazy-starts daemon)
+impetusd      = authoritative daemon / process boundary
 impetus-core  = domain / runtime libraries (no standalone binary)
+impetus-cli   = legacy connect-only CLI (no lazy-start)
 ```
+
+Дальше — исторический детальный текст ниже; свежие инварианты и matrix
+всегда сверяй с EN `ARCHITECTURE.md`.
 
 Целевая схема:
 

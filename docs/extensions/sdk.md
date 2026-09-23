@@ -52,5 +52,7 @@ runs activate-time permission → SandboxScope gate (`extension_policy`), owns
 lifecycle state, exposes `ExtensionCapabilityRegistry` for AgentLoop / Context,
 spawns `host_process` children after `extension/initialize`, and dispatches
 `ExtensionHost::operate` / `cancel_operate` with crash cleanup (also via IPC
-`OperateExtensionPackage`). Mutating actions still go through Policy at action
-time.
+`OperateExtensionPackage`). **Honesty:** host_process `operate` is gated by
+manifest permission + secret-key reject + Active phase — it does **not** re-run
+the full AgentLoop `Policy → Approval → Sandbox → EffectSeam` path. Agent-origin
+mutating tools still go through that kernel path.

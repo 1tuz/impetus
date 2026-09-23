@@ -1,19 +1,23 @@
 # Impetus
 
-> **Ультралёгкий all-in-one terminal-first, local-first Agent Harness for Engineering, написанный на Rust.**
+> **Local AI-agent runtime/harness:** маленький Trusted Kernel + заменяемые
+> слои вокруг него. Terminal-first, local-first, Rust.
 
 [English version](README.md)
 
-Impetus — ультралёгкий all-in-one local agent harness на Rust: durable сессии, model/tool
-orchestration, safety decisions, credentials и execution authority собраны в
-одном runtime за заменяемыми terminal и remote clients. Клиенты передают typed
-requests и показывают durable events; они не владеют SQLite, policy, model/tool
-runtime, credentials или authoritative session state.
+**Канон (EN):** [README.md](README.md) + [ARCHITECTURE.md](ARCHITECTURE.md).
+RU-страница — краткий обзор; при расхождении побеждает EN.
 
-**Без root / sudo / password в нормальном режиме.** `impetus` / `impetusd`
-— userspace под `$HOME` (или `IMPETUS_DATA_DIR`). Seatbelt = `sandbox-exec`.
-Keychain silent (`kSecUseAuthenticationUISkip`); escalation (`sudo` /
-login-shell `-l`) запрещён policy.
+Impetus — local agent harness: durable сессии, orchestration, safety,
+credentials и execution authority в `impetusd`. Клиенты — typed IPC, не
+владеют SQLite / policy / secrets.
+
+**`impetus-core` ≠ Trusted Kernel.** Crate шире (kernel + runtime libs).
+**`impetusd`** — process boundary; обычный `impetus` **lazy-start** (не
+ручной daemon).
+
+**Без root / sudo / password в нормальном режиме.** Userspace под `$HOME`
+(или `IMPETUS_DATA_DIR`). Seatbelt = `sandbox-exec`. Keychain silent.
 
 ## Что это и зачем
 

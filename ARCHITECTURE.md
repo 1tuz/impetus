@@ -32,7 +32,9 @@ impetusd  (authoritative process)
   ├─ Runtime services — AgentLoop, Context, Tools, Providers, Workflows, …
   └─ Trusted Kernel — EventStore · Policy · Approval · Sandbox · Executor · secrets
         │
-        └─ Extension Host / SDK → replaceable packs (cannot bypass Policy)
+        └─ Extension Host / SDK → replaceable packs (sibling to kernel)
+           Activate-time permission → SandboxScope gate; host_process operate
+           uses manifest permission + secret-key reject (not full EffectSeam)
 ```
 
 Diagrams: [system-architecture.svg](assets/readme/system-architecture.svg),
@@ -52,9 +54,12 @@ Diagrams: [system-architecture.svg](assets/readme/system-architecture.svg),
   escalation; PTY refuses login-shell argv (`-l` / `--login`)
 - Trusted kernel stays small; providers, context, extensions are replaceable layers
 - Reject features whose only justification is vendor parity or feature-count optics
-- **Daemon UX:** `impetus` ensures `impetusd` is running (stale socket cleanup +
-  spawn with matching `IMPETUS_SOCKET` / `IMPETUS_DATA_DIR`). Manual `impetusd`
-  is for development, debugging, and advanced profiles.
+- **Daemon UX:** `impetus` (and `impetus ui` / `doctor`) ensure `impetusd` is
+  running: stale-socket unlink only when nothing listens; `daemon.spawn.lock`
+  serializes concurrent spawn; live socket + IPC `Incompatible` → hard stop
+  (never unlink/respawn). Spawn inherits matching `IMPETUS_SOCKET` /
+  `IMPETUS_DATA_DIR`. Manual `impetusd` is for development, debugging, and
+  advanced profiles. Legacy `impetus-cli` connects only (no lazy-start).
 
 ## Trusted kernel
 
@@ -174,9 +179,8 @@ impetus / impetus-tui / adapters
         │  versioned Unix socket (HarnessClient)
         ▼
 impetusd  — authoritative daemon
-  Harness (policy kernel)
-  AgentLoop + ToolOrchestrator
-  ProviderRegistry
+  Trusted Kernel (EventStore · Policy · Approval · Sandbox · Capability · Executor)
+  Runtime services (AgentLoop · ToolOrchestrator · ProviderRegistry · …)
   EventStore (SQLite WAL) + DurableArtifactStore
   Keychain credential resolver (macOS)
 ```
