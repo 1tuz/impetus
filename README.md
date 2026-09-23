@@ -130,7 +130,7 @@ Status labels match [ARCHITECTURE.md](ARCHITECTURE.md) (`Implemented` / `Partial
 | Worktrees / workflows / subagents | Daemon-owned; role AgentLoop for Research/Build/Review |
 | Extensions | Package SDK + host_process operate; skill packs; no marketplace |
 | PTY | Daemon-owned passthrough; live handle not restart-durable |
-| Browser / full LSP packs | Partial / extension-first — honest Absent until wired |
+| Browser / full LSP packs | Health/negotiate + coding_* **Implemented**; CDP / full LSP spec **Won't in core** (extensions) |
 
 ## Extension model
 

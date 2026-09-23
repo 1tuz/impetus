@@ -49,6 +49,7 @@ pub mod ops {
 
     // --- LspIntegration (permission `lsp`) ---
     pub const CODING_DEFINITION: &str = super::METHOD_CODING_DEFINITION;
+    pub const CODING_REFERENCES: &str = super::METHOD_CODING_REFERENCES;
     pub const CODING_HOVER: &str = super::METHOD_CODING_HOVER;
     pub const CODING_DIAGNOSTICS: &str = super::METHOD_CODING_DIAGNOSTICS;
     pub const CODING_SYMBOLS: &str = super::METHOD_CODING_SYMBOLS;
@@ -98,10 +99,12 @@ pub const FORBIDDEN_SECRET_KEYS: &[&str] = &[
 
 // --- Coding / Browser capability dispatch (extension-first; #336) ---
 // Core owns contracts + IPC + host dispatch tokens. Concrete Browser CDP /
-// WebDriver and language-pack installers live in extensions, not core.
+// WebDriver and language-pack installers live in extensions, not core (Won't).
 
 /// Extension `LspIntegration`: go-to-definition.
 pub const METHOD_CODING_DEFINITION: &str = "coding/definition";
+/// Extension `LspIntegration`: find references.
+pub const METHOD_CODING_REFERENCES: &str = "coding/references";
 /// Extension `LspIntegration`: hover.
 pub const METHOD_CODING_HOVER: &str = "coding/hover";
 /// Extension `LspIntegration`: diagnostics pull / last push.
@@ -110,9 +113,9 @@ pub const METHOD_CODING_DIAGNOSTICS: &str = "coding/diagnostics";
 pub const METHOD_CODING_SYMBOLS: &str = "coding/symbols";
 /// Extension `LspIntegration`: cancel in-flight request.
 pub const METHOD_CODING_CANCEL: &str = "coding/cancel";
-/// Extension `BrowserIntegration`: negotiate (Absent until CDP land).
+/// Extension `BrowserIntegration`: negotiate (Absent without Active pack).
 pub const METHOD_BROWSER_NEGOTIATE: &str = "browser/negotiate";
-/// Extension `BrowserIntegration`: health (Absent until CDP land).
+/// Extension `BrowserIntegration`: health (Absent without Active pack).
 pub const METHOD_BROWSER_HEALTH: &str = "browser/health";
 
 /// `extension/initialize` params.

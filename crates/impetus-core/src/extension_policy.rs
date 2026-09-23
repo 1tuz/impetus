@@ -7,6 +7,8 @@
 //! Extension-first (#336): `Lsp` / `Browser` permissions gate activation of
 //! `LspIntegration` / `BrowserIntegration` packs. Core keeps coding-tools +
 //! browser negotiate IPC contracts; CDP/WebDriver stay out of core.
+//! `Browser` activates as NeedsApproval (health/negotiate honest without
+//! allow_network); real WebBrowser/WebFetch still Policy-gated by sandbox.
 
 use impetus_extension_sdk::ExtensionPermission;
 use impetus_protocol::{ActionKind, PolicyDecision};
@@ -44,7 +46,10 @@ pub fn evaluate_permission_against_scope(
     scope: &SandboxScope,
 ) -> PolicyDecision {
     match permission {
-        ExtensionPermission::Network | ExtensionPermission::Browser => {
+        // Network capability is the coarse sandbox gate. BrowserIntegration may
+        // activate without allow_network so health/negotiate stay honest; real
+        // WebBrowser / WebFetch / WebSearch still hit Policy at action time.
+        ExtensionPermission::Network => {
             if !scope.allow_network {
                 PolicyDecision::Deny {
                     reason: format!(
@@ -65,7 +70,8 @@ pub fn evaluate_permission_against_scope(
         | ExtensionPermission::FilesystemWrite
         | ExtensionPermission::ProcessSpawn
         | ExtensionPermission::Pty
-        | ExtensionPermission::Git => PolicyDecision::NeedsApproval {
+        | ExtensionPermission::Git
+        | ExtensionPermission::Browser => PolicyDecision::NeedsApproval {
             reason: format!(
                 "extension declared `{}` (still subject to Policy at action time)",
                 permission.as_str()
@@ -118,6 +124,11 @@ mod tests {
     #[test]
     fn network_ok_when_sandbox_allows() {
         assert!(permission_eval(&[ExtensionPermission::Network], &scope(true)).is_ok());
+    }
+
+    #[test]
+    fn browser_activates_without_network_scope() {
+        assert!(permission_eval(&[ExtensionPermission::Browser], &scope(false)).is_ok());
     }
 
     #[test]

@@ -76,8 +76,10 @@ surface (migration note, не deletion).
   (`connected=false` до first tool use). Explore + Workflow Explore — один
   AgentLoop bridge. MemoryStore control-plane IPC — **Implemented** + AgentLoop
   project-scope context inject on Prompt/FollowUp/ResolveApproval resume
-  (approval-resume). Browser daemon health/negotiate — **Partial** (honest
-  Absent; CDP Parked).
+  (approval-resume). Browser health/negotiate — **Implemented** (Active
+  `BrowserIntegration` or honest Absent; CDP **Won't** in core). Coding tools —
+  **Implemented** (extension `LspIntegration` / `ProcessLspBackend`; Full LSP
+  **Won't** in core).
 - Daemon-owned PTY (`portable-pty`, IPC v12): owner-session binding, cwd
   containment; Agent Seatbelt на macOS; optional Sqlite metadata; live PTY не
   restart-durable; TUI passthrough (`Ctrl+\` / `/pty`).

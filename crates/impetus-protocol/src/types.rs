@@ -1359,8 +1359,8 @@ pub enum MemoryExportFormat {
 
 /// Honest browser provider health for daemon negotiate/health IPC.
 ///
-/// CDP/WebDriver stay Parked — production path reports Absent/Unavailable,
-/// never a fake Available.
+/// Core never invents Available without an Active `BrowserIntegration` pack.
+/// CDP/WebDriver stay **Won't in core** — extensions may report Available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum BrowserHealthStatus {
