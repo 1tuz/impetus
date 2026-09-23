@@ -21,7 +21,8 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 ## Now
 
 - [ ] crates.io publish of `impetus-extension-sdk` (git `rev` pin recipe shipped)
-- [ ] Richer `host_process` operate surface beyond initialize/shutdown (tools)
+- [ ] IPC surface for `ExtensionHost::operate` (host_process operate RPC is in
+      core/SDK; clients still go through future typed IPC)
 
 ---
 

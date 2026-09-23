@@ -8,15 +8,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
+use impetus_extension_sdk::host_protocol::{
+    OperateResult, gate_operate_permission, reject_secret_keys,
+};
 use impetus_extension_sdk::{
     CURRENT_SUPPORTED_RANGE, ExtensionCapabilityKind, ExtensionEntrypoint, ExtensionId,
     ExtensionPackageManifest, ExtensionPermission,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::extension_capability_registry::ExtensionCapabilityRegistry;
-use crate::extension_host_process::{HostProcessSession, spawn_and_initialize};
+use crate::extension_host_process::{HostProcessError, HostProcessSession, spawn_and_initialize};
 use crate::extension_policy::permission_eval;
 use crate::policy::SandboxScope;
 
@@ -110,6 +116,12 @@ pub enum ExtensionHostError {
         id: String,
         phase: ExtensionHostPhase,
     },
+    #[error("extension `{0}` has no live host_process session")]
+    NoHostProcess(String),
+    #[error("host_process operate denied: {0}")]
+    OperateDenied(String),
+    #[error("host_process operate failed: {0}")]
+    Operate(String),
 }
 
 /// In-memory package host + capability registry view.
@@ -444,6 +456,71 @@ impl ExtensionHost {
         self.disabled_ids.remove(id);
         self.persist_disabled()?;
         Ok(())
+    }
+
+    /// Typed `host_process` operate: permission gate → payload limits → RPC.
+    ///
+    /// On child crash, session is cleaned up and the package moves to Failed.
+    /// No shell ops; no raw secrets in params; no CDP/LSP in core.
+    pub fn operate(
+        &mut self,
+        id: &str,
+        request_id: &str,
+        op: &str,
+        params: Value,
+        permission: Option<ExtensionPermission>,
+        timeout: Option<Duration>,
+    ) -> Result<OperateResult, ExtensionHostError> {
+        let Some(ext) = self.loaded.get(id) else {
+            return Err(ExtensionHostError::NotFound(id.to_string()));
+        };
+        if ext.phase != ExtensionHostPhase::Active {
+            return Err(ExtensionHostError::BadPhase {
+                id: id.to_string(),
+                phase: ext.phase,
+            });
+        }
+        let declared = ext.manifest.permissions.clone();
+        gate_operate_permission(op, permission, &declared)
+            .map_err(ExtensionHostError::OperateDenied)?;
+        reject_secret_keys(&params).map_err(ExtensionHostError::OperateDenied)?;
+
+        if !self.host_processes.contains_key(id) {
+            return Err(ExtensionHostError::NoHostProcess(id.to_string()));
+        }
+
+        let result = {
+            let session = self.host_processes.get_mut(id).expect("checked");
+            session.operate(request_id, op, params, permission, timeout)
+        };
+
+        match result {
+            Ok(ok) => Ok(ok),
+            Err(err) if err.is_crash() || matches!(err, HostProcessError::Crashed) => {
+                if let Some(mut session) = self.host_processes.remove(id) {
+                    session.force_cleanup();
+                }
+                if let Some(ext) = self.loaded.get_mut(id) {
+                    ext.phase = ExtensionHostPhase::Failed;
+                    ext.last_error = Some(err.to_string());
+                }
+                Err(ExtensionHostError::Operate(err.to_string()))
+            }
+            Err(HostProcessError::Denied(msg) | HostProcessError::SecretsForbidden(msg)) => {
+                Err(ExtensionHostError::OperateDenied(msg))
+            }
+            Err(err) => Err(ExtensionHostError::Operate(err.to_string())),
+        }
+    }
+
+    /// Best-effort cancel of an in-flight operate on a live host_process.
+    pub fn cancel_operate(&mut self, id: &str, request_id: &str) -> Result<(), ExtensionHostError> {
+        let Some(session) = self.host_processes.get_mut(id) else {
+            return Err(ExtensionHostError::NoHostProcess(id.to_string()));
+        };
+        session
+            .cancel_request(request_id)
+            .map_err(|e| ExtensionHostError::Operate(e.to_string()))
     }
 
     pub fn deactivate(&mut self, id: &str) -> Result<(), ExtensionHostError> {
@@ -838,7 +915,7 @@ description = "host process"
 author = "impetus"
 extension_api_version = 1
 capabilities = ["tool"]
-permissions = ["process_spawn"]
+permissions = ["process_spawn", "filesystem_read"]
 
 [entrypoint]
 kind = "host_process"
@@ -854,10 +931,21 @@ args = []
 while IFS= read -r line; do
   case "$line" in
     *extension/initialize*)
-      echo '{"jsonrpc":"2.0","id":1,"result":{"protocol_version":1,"name":"proc"}}'
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p' | head -1)
+      [ -z "$id" ] && id=1
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol_version":1,"name":"proc","extension_api_version":1,"supported_ops":["echo","invoke"]}}'
+      ;;
+    *extension/operate*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p' | head -1)
+      rid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p' | head -1)
+      [ -z "$id" ] && id=1
+      [ -z "$rid" ] && rid=unknown
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"request_id":"'"$rid"'","op":"echo","data":{"ok":true}}}'
       ;;
     *extension/shutdown*)
-      echo '{"jsonrpc":"2.0","id":2,"result":null}'
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p' | head -1)
+      [ -z "$id" ] && id=1
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":null}'
       exit 0
       ;;
   esac
@@ -877,6 +965,50 @@ done
         );
         let reg = host.capability_registry();
         assert!(reg.host_process_ids.iter().any(|id| id == "proc-pack"));
+
+        let result = host
+            .operate(
+                "proc-pack",
+                "host-req-1",
+                "echo",
+                serde_json::json!({"message": "ping"}),
+                None,
+                Some(Duration::from_secs(5)),
+            )
+            .expect("operate echo");
+        assert_eq!(result.request_id, "host-req-1");
+        assert_eq!(result.data["ok"], true);
+
+        let denied = host
+            .operate(
+                "proc-pack",
+                "host-req-2",
+                "invoke",
+                serde_json::json!({"action": "read"}),
+                Some(ExtensionPermission::Network),
+                Some(Duration::from_secs(2)),
+            )
+            .unwrap_err();
+        assert!(
+            denied.to_string().contains("not declared") || denied.to_string().contains("Denied"),
+            "got {denied}"
+        );
+
+        let secrets = host
+            .operate(
+                "proc-pack",
+                "host-req-3",
+                "echo",
+                serde_json::json!({"token": "nope"}),
+                None,
+                Some(Duration::from_secs(2)),
+            )
+            .unwrap_err();
+        assert!(
+            secrets.to_string().contains("secret") || secrets.to_string().contains("Denied"),
+            "got {secrets}"
+        );
+
         host.deactivate("proc-pack").expect("disable");
         assert!(host.capability_registry().host_process_ids.is_empty());
     }

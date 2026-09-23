@@ -1,0 +1,14 @@
+schema_version = 1
+id = "host-process-echo"
+name = "Host Process Echo"
+version = "0.1.0"
+description = "Deterministic host_process fixture for operate RPC E2E"
+author = "impetus"
+extension_api_version = 1
+capabilities = ["tool"]
+permissions = ["process_spawn"]
+
+[entrypoint]
+kind = "host_process"
+command = "./ext.sh"
+args = []
