@@ -108,13 +108,7 @@ cargo build --release -p impetus -p impetusd
 
 ## Использование
 
-Daemon:
-
-```zsh
-impetusd
-```
-
-В другом terminal:
+Обычный UX — **без ручного `impetusd`** (CLI сам поднимает daemon):
 
 ```zsh
 impetus create
@@ -126,7 +120,11 @@ impetus approve <session-id> <approval-id>
 impetus approve <session-id> <approval-id> --reject
 ```
 
+TUI: `impetus ui`. Ручной `impetusd` — только debug / admin-профили.
+
 Конфиг провайдера: [configuration docs](docs/guides/configuration.md).
+
+Архитектура (EN SoT): [README.md](README.md) · [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Удаление
 

@@ -320,6 +320,8 @@ async fn main() -> Result<()> {
             json,
             probe_network,
         } => {
+            // Soft-start so first `doctor` after install does not require manual daemon.
+            let _ = daemon::ensure_daemon_running(&socket_path).await;
             doctor::run_diagnostics(&socket_path, json, probe_network).await?;
             return Ok(());
         }
