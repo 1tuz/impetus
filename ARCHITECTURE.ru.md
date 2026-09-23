@@ -54,7 +54,8 @@ impetus-core  = domain / runtime libraries (no standalone binary)
 impetus-cli   = legacy connect-only CLI (no lazy-start)
 ```
 
-Lazy-start: stale socket unlink только если никто не слушает; concurrent spawn
+Lazy-start через shared crate `impetus-daemon-control` (CLI — тонкий адаптер):
+stale socket unlink только если никто не слушает; concurrent spawn
 сериализуется через `daemon.spawn.lock` (`flock` — crash holder не блокирует
 autostart навсегда); live socket + IPC `Incompatible` → hard stop без
 unlink/respawn. Детали: [binary-topology.md](docs/architecture/binary-topology.md).

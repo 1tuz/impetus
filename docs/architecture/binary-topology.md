@@ -4,14 +4,30 @@ Target roles of the two Rust binaries in this repository.
 Canonical layer model: [ARCHITECTURE.md](../../ARCHITECTURE.md),
 [reader-guide.md](reader-guide.md).
 
+## Client → daemon bootstrap
+
+```text
+Clients (CLI / Desktop / …)
+        ↓
+impetus-daemon-control   ← shared lifecycle (probe, flock, spawn, readiness)
+        ↓
+     impetusd
+        ↓
+versioned Unix IPC ← HarnessClient (impetus-client)
+```
+
+`impetus-client` = transport / typed IPC.
+`impetus-daemon-control` = process bootstrap only (not EventStore / Policy / UI).
+
 ## `impetus` — client (primary UX)
 
 - CLI / TUI on top of `impetus-client::HarnessClient` (Unix socket transport).
-- **Lazy-starts** `impetusd` when the socket is down (`daemon::ensure_daemon_running`):
-  stale unlink only if nothing listens; `daemon.spawn.lock` uses exclusive
-  `flock` so concurrent CLI spawns serialize and a crash cannot permanently
-  block autostart; live socket + IPC `Incompatible` → hard stop (no
-  unlink/respawn).
+- **Lazy-starts** `impetusd` when the socket is down via shared crate
+  [`impetus-daemon-control`](../../crates/impetus-daemon-control) (CLI thin
+  adapter in `daemon::ensure_daemon_running`): stale unlink only if nothing
+  listens; `daemon.spawn.lock` uses exclusive `flock` so concurrent client
+  spawns serialize and a crash cannot permanently block autostart; live
+  socket + IPC `Incompatible` → hard stop (no unlink/respawn).
 - Does not open SQLite, does not store secrets, does not run sandbox directly —
   only typed IPC requests to `impetusd`.
 - Launch: `cargo run -p impetus -- <subcommand>` or installed `impetus …`.

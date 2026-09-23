@@ -1668,11 +1668,10 @@ dependencies = [
  "clap",
  "impetus-client",
  "impetus-core",
+ "impetus-daemon-control",
  "impetus-tui",
- "libc",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "uuid",
 ]
@@ -1753,6 +1752,18 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "impetus-daemon-control"
+version = "0.1.0"
+dependencies = [
+ "impetus-client",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

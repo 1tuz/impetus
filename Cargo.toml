@@ -2,6 +2,7 @@
 members = [
   "crates/impetus-protocol",
   "crates/impetus-core",
+  "crates/impetus-daemon-control",
   "crates/impetus",
   "crates/impetusd",
   "crates/impetus-cli",
