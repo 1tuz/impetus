@@ -243,7 +243,7 @@ fn probe_socket(report: &mut DoctorReport, socket_path: &str) {
             ProbeResult::error(
                 "socket_path",
                 format!("Socket not found: {}", socket_path),
-                "Start the daemon with: impetusd",
+                "Ensure impetusd is on PATH (impetus usually auto-starts it), or run: impetusd",
             )
             .with_details(serde_json::json!({ "path": socket_path })),
         );
@@ -415,7 +415,7 @@ async fn probe_daemon_connection(
                 ProbeResult::error(
                     "daemon_connection",
                     format!("Cannot connect to impetusd: {}", e),
-                    "Start the daemon with: impetusd",
+                    "Ensure impetusd is on PATH (impetus usually auto-starts it), or run: impetusd",
                 )
                 .with_details(serde_json::json!({ "error": e.to_string() })),
             );

@@ -1,10 +1,17 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Check if impetusd is running by attempting to connect to the socket.
+/// True when something accepts TCP-style connections on the Unix socket
+/// (bind is live). Does **not** run Hello — use before deciding to unlink.
+pub fn socket_listening(socket_path: &str) -> bool {
+    std::os::unix::net::UnixStream::connect(socket_path).is_ok()
+}
+
+/// True when daemon answers harness Hello (negotiated transport ready).
 pub async fn is_daemon_running(socket_path: &str) -> bool {
     impetus_client::UnixSocketTransport::connect(socket_path)
         .await
@@ -45,18 +52,36 @@ pub fn default_data_root() -> PathBuf {
 ///
 /// Product UX: ordinary `impetus` commands lazy-start the daemon. Manual
 /// `impetusd` is for development / debugging / advanced administration.
+///
+/// Safety:
+/// - live socket + protocol `Incompatible` → error (never unlink / respawn)
+/// - spawn serialized via exclusive `daemon.spawn.lock` under the data dir
 pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
     if is_daemon_running(socket_path).await {
         return Ok(());
     }
 
-    // Stale socket: path exists but nothing accepts.
-    let socket = Path::new(socket_path);
-    if socket.exists() {
-        std::fs::remove_file(socket).context("failed to remove stale socket")?;
+    // Listener up but Hello failed — usually version mismatch. Do not unlink.
+    if socket_listening(socket_path) {
+        match impetus_client::UnixSocketTransport::connect(socket_path).await {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.to_ascii_lowercase().contains("incompatible") {
+                    bail!(
+                        "impetusd is running at {socket_path} but IPC is incompatible ({msg}). \
+                         Upgrade/reinstall matching `impetus` and `impetusd` — refusing to respawn."
+                    );
+                }
+                bail!(
+                    "socket {socket_path} accepts connections but harness Hello failed: {msg}. \
+                     Inspect with `impetus doctor` or run `impetusd` in the foreground."
+                );
+            }
+        }
     }
 
-    let impetusd_path = find_impetusd_binary()?;
+    let socket = Path::new(socket_path);
     let data_dir = std::env::var_os("IMPETUS_DATA_DIR")
         .map(PathBuf::from)
         .or_else(|| socket.parent().map(Path::to_path_buf))
@@ -67,6 +92,36 @@ pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
     }
     let _ = std::fs::create_dir_all(&data_dir);
 
+    let lock_path = data_dir.join("daemon.spawn.lock");
+    let lock = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another CLI is spawning — wait for readiness, do not unlink.
+            return wait_until_ready(socket_path, Duration::from_secs(5)).await;
+        }
+        Err(err) => {
+            return Err(err).context("failed to create daemon.spawn.lock");
+        }
+    };
+
+    // Stale socket only when nothing listens (safe under spawn lock).
+    if socket.exists() && !socket_listening(socket_path) {
+        std::fs::remove_file(socket).context("failed to remove stale socket")?;
+    }
+
+    // Recheck after lock — peer may have finished.
+    if is_daemon_running(socket_path).await {
+        let _ = std::fs::remove_file(&lock_path);
+        drop(lock);
+        return Ok(());
+    }
+
+    let impetusd_path = find_impetusd_binary()?;
+
     Command::new(&impetusd_path)
         .env("IMPETUS_SOCKET", socket_path)
         .env("IMPETUS_DATA_DIR", &data_dir)
@@ -76,26 +131,32 @@ pub async fn ensure_daemon_running(socket_path: &str) -> Result<()> {
         .spawn()
         .context("failed to spawn impetusd")?;
 
-    // Readiness: connect succeeds (Hello negotiation happens on first request).
-    for attempt in 1..=10 {
+    let result = wait_until_ready(socket_path, Duration::from_secs(3)).await;
+    let _ = std::fs::remove_file(&lock_path);
+    drop(lock);
+    result.with_context(|| {
+        format!(
+            "impetusd did not become ready at {socket_path}. For debugging run manually: {impetusd_path}"
+        )
+    })
+}
+
+async fn wait_until_ready(socket_path: &str, budget: Duration) -> Result<()> {
+    let steps = (budget.as_millis() / 300).max(1) as u32;
+    for attempt in 1..=steps {
         sleep(Duration::from_millis(300)).await;
         if is_daemon_running(socket_path).await {
             return Ok(());
         }
-        if attempt == 10 {
-            anyhow::bail!(
-                "impetusd did not become ready within ~3s at {socket_path}. \
-                 For debugging run manually: {impetusd_path}"
-            );
+        if attempt == steps {
+            bail!("daemon not ready within {budget:?}");
         }
     }
-
     Ok(())
 }
 
 /// Find impetusd binary in PATH or next to impetus binary.
 fn find_impetusd_binary() -> Result<String> {
-    // Development mode: look for target/debug/impetusd next to current exe.
     if cfg!(debug_assertions)
         && let Ok(current_exe) = std::env::current_exe()
         && let Some(parent) = current_exe.parent()
@@ -124,7 +185,7 @@ fn find_impetusd_binary() -> Result<String> {
         }
     }
 
-    anyhow::bail!(
+    bail!(
         "impetusd not found in PATH or next to impetus binary. Install it or ensure it's in PATH."
     )
 }
@@ -138,7 +199,7 @@ mod tests {
             .find("pub async fn ensure_daemon_running")
             .expect("ensure_daemon_running present");
         let end = src[start..]
-            .find("\nfn find_impetusd_binary")
+            .find("\nasync fn wait_until_ready")
             .map(|i| start + i)
             .unwrap_or(src.len());
         let spawn_path = &src[start..end];
@@ -167,6 +228,14 @@ mod tests {
             spawn_path.contains("IMPETUS_DATA_DIR"),
             "lazy-start must pass IMPETUS_DATA_DIR for durable state colocation"
         );
+        assert!(
+            spawn_path.contains("daemon.spawn.lock"),
+            "lazy-start must serialize concurrent spawn via lock file"
+        );
+        assert!(
+            spawn_path.contains("incompatible"),
+            "lazy-start must refuse unlink/respawn on IPC Incompatible"
+        );
     }
 
     #[test]
@@ -176,7 +245,7 @@ mod tests {
             .find("pub fn discover_socket_path")
             .expect("discover_socket_path present");
         let end = src[start..]
-            .find("\npub async fn ensure_daemon_running")
+            .find("\npub fn default_data_root")
             .map(|i| start + i)
             .unwrap_or(src.len());
         let discover = &src[start..end];
@@ -202,5 +271,20 @@ mod tests {
         );
         assert!(!body.contains("/var/lib"));
         assert!(!body.contains("PrivilegedHelperTools"));
+    }
+
+    #[test]
+    fn socket_listening_is_raw_connect_not_hello() {
+        let src = include_str!("daemon.rs");
+        let start = src
+            .find("pub fn socket_listening")
+            .expect("socket_listening present");
+        let end = src[start..]
+            .find("\npub async fn is_daemon_running")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        assert!(body.contains("UnixStream::connect"));
+        assert!(!body.contains("UnixSocketTransport"));
     }
 }

@@ -95,17 +95,19 @@ backends: `IMPETUS_CREDENTIAL_BACKEND=mock` (never reads Keychain) or
 
 ## A planned interface returns `Unavailable`
 
-The IPC protocol advertises attachment and approval-detail requests, but backing
-work is still on the roadmap. Do not treat these as a complete public API yet.
+Some optional tracks (for example concrete browser CDP) still report honest
+`Unavailable` / Absent until an Active extension or backend is wired. That is
+fail-closed, not a silent stub. See [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-## Diagnostics (planned)
+## Diagnostics
 
-`impetus doctor` and `impetus doctor --json` will report versions, socket, IPC
-compatibility, store health, providers, modules, and remediation hints. Not
-implemented yet — see [TODO.md](../../TODO.md).
+`impetus doctor` / `impetus doctor --json` report versions, socket, IPC
+compatibility, store health, providers, and remediation hints. Ordinary
+`impetus` commands lazy-start `impetusd` first when needed.
 
 ## CI behaves differently from `task verify`
 
-GitLab CI runs a narrower unit-test scope for Linux Docker execution. Local
-`task verify` runs `cargo test --workspace`, including macOS integration tests.
+Local default: `task verify` = `cargo fmt --check` + `git diff --check` only.
+PR merge gate is **PR Fast** (fmt + affected `cargo check`). Deep
+`cargo test --workspace` / clippy / audit run on **Nightly Full**.
 See [development](development.md).
