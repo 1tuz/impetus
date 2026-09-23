@@ -98,7 +98,7 @@ async fn wait_status(
             .resume_session(session_id)
             .await
             .unwrap_or_else(|e| panic!("attach while waiting for {label}: {e}"));
-        if want(status.clone()) {
+        if want(status) {
             return status;
         }
         if Instant::now() > deadline {
@@ -200,7 +200,7 @@ async fn run_permission_case(accepted: bool) {
     // `impetus-core` `needs_approval_*` unit tests against the same broker.
     // Mock-agent record is best-effort: SDK permission reply can race EndTurn
     // drain; durable ApprovalResolved on the Unix wire is the daemon proof.
-    let _ = wait_permission_outcome_optional(
+    wait_permission_outcome_optional(
         &record,
         if accepted {
             "selected:allow-once"
