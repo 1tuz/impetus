@@ -3990,7 +3990,11 @@ fn extension_skill_roots(
         return Vec::new();
     };
     let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.capability_registry().skill_roots
+    if let Some(data_root) = guard.persist_root() {
+        crate::effective_skill_roots(data_root, Some(&*guard))
+    } else {
+        guard.capability_registry().skill_roots
+    }
 }
 
 fn resolve_context(

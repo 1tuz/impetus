@@ -21,15 +21,16 @@ impetus-core            # host: discovery, policy, registry, AgentLoop inject
 impetusd / IPC          # list/get/enable/disable/reload/status/caps/compat
 ```
 
-Existing Skill/MCP **install lifecycle** (`extension plan|install|…`) stays as a
-**legacy adapter** that produces / manages packages under `.impetus/`. It is not
-the SDK surface for external authors.
+Existing Skill/MCP **install lifecycle** (`extension plan|install|migrate|…`) is
+the control plane for daemon-owned inventory under `$IMPETUS_DATA_DIR`. Workspace
+`--root` layout remains for project-local installs; `extension migrate` copies
+Enabled rows into the daemon SoT without duplicate MCP/Skill activation.
 
 ## Precursors in core (do not reinvent blindly)
 
 | Existing | Role today | Relation to SDK host |
 | --- | --- | --- |
-| `extension_*` + `ExtensionRuntime` | CLI install + Enabled inventory IPC | Keep as install/control plane; feed packages into host |
+| `extension_*` + `ExtensionRuntime` | CLI install + Enabled inventory IPC | Control plane over daemon SoT (`$IMPETUS_DATA_DIR`); feeds effective inventory + legacy skill roots |
 | `module.rs` / `ModuleLifecycle` | Library OOP module states + unix IPC stubs | Reuse lifecycle state vocabulary; do not use `temp_dir` sockets as prod SoT |
 | `plugins::CapabilityRegistry` | Known permission string allowlist | Expand allowlist to SDK permission enum; wire into Policy |
 

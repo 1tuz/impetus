@@ -1,16 +1,18 @@
 //! CLI wrappers for extension lifecycle plan + install + remove + enable +
-//! disable + unload + list + doctor + repair.
+//! disable + unload + list + doctor + repair + migrate.
 //!
 //! Offline (no daemon IPC): wraps plan/apply/remove/enable/disable/unload/
-//! doctor/repair. CLI is the control plane; daemon reloads Enabled rows via
-//! `ExtensionRuntime::reload_from_store` on restart.
+//! doctor/repair/migrate. CLI is presentation/control over the same daemon
+//! SoT when `--data-dir` / `$IMPETUS_DATA_DIR` is used (no `--root`).
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use impetus_core::{
-    ExtensionInstallIntent, ExtensionLifecycleStatus, ExtensionRuntime, ExtensionStateStore,
-    InstallPlan, OwnershipStore, apply_install, disable_install, doctor_install, enable_install,
-    plan_install, remove_install, repair_install, unload_install,
+    ExtensionHost, ExtensionInstallIntent, ExtensionInstallLayout, ExtensionLifecycleStatus,
+    ExtensionRuntime, ExtensionStateStore, InstallPlan, OwnershipStore, apply_install,
+    build_effective_inventory, daemon_extension_state_db, disable_install, doctor_install,
+    enable_install, load_daemon_extension_runtime, migrate_legacy_to_daemon,
+    plan_install_with_layout, remove_install, repair_install, unload_install,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -23,16 +25,83 @@ pub enum ExtensionKind {
     Mcp,
 }
 
-fn resolve_target_root(root: Option<&Path>) -> Result<PathBuf> {
-    match root {
-        Some(path) => path
-            .canonicalize()
-            .with_context(|| format!("canonicalize target root {}", path.display())),
-        None => std::env::current_dir()
-            .context("current directory")?
-            .canonicalize()
-            .context("canonicalize current directory"),
+/// Where CLI reads/writes install state.
+#[derive(Debug, Clone)]
+enum ControlPlane {
+    /// Project `.impetus/` layout (legacy / `--root`).
+    Workspace { root: PathBuf },
+    /// Daemon `$IMPETUS_DATA_DIR` layout (canonical SoT).
+    Daemon { data_root: PathBuf },
+}
+
+impl ControlPlane {
+    fn layout(&self) -> ExtensionInstallLayout {
+        match self {
+            Self::Workspace { .. } => ExtensionInstallLayout::Workspace,
+            Self::Daemon { .. } => ExtensionInstallLayout::Daemon,
+        }
     }
+
+    fn target_root(&self) -> &Path {
+        match self {
+            Self::Workspace { root } => root,
+            Self::Daemon { data_root } => data_root,
+        }
+    }
+
+    fn open_stores(&self) -> Result<(OwnershipStore, ExtensionStateStore)> {
+        match self {
+            Self::Workspace { root } => {
+                let base = root.join(".impetus");
+                let ownership = OwnershipStore::open(base.join("ownership.db"))
+                    .context("open ownership store")?;
+                let state = ExtensionStateStore::open(base.join("install_state.db"))
+                    .context("open install state store")?;
+                Ok((ownership, state))
+            }
+            Self::Daemon { data_root } => {
+                let ownership =
+                    OwnershipStore::open(data_root.join("extensions").join("ownership.db"))
+                        .context("open daemon ownership store")?;
+                let state = ExtensionStateStore::open(daemon_extension_state_db(data_root))
+                    .context("open daemon install state store")?;
+                Ok((ownership, state))
+            }
+        }
+    }
+}
+
+/// Resolve control plane: `--root` → workspace; else `--data-dir` /
+/// `$IMPETUS_DATA_DIR` → daemon; else cwd workspace.
+fn resolve_control_plane(root: Option<&Path>, data_dir: Option<&Path>) -> Result<ControlPlane> {
+    if let Some(path) = root {
+        let root = path
+            .canonicalize()
+            .with_context(|| format!("canonicalize target root {}", path.display()))?;
+        return Ok(ControlPlane::Workspace { root });
+    }
+    if let Some(path) = data_dir {
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("create data dir {}", path.display()))?;
+        let data_root = path
+            .canonicalize()
+            .with_context(|| format!("canonicalize data dir {}", path.display()))?;
+        return Ok(ControlPlane::Daemon { data_root });
+    }
+    if let Ok(raw) = std::env::var("IMPETUS_DATA_DIR") {
+        let path = PathBuf::from(raw);
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("create IMPETUS_DATA_DIR {}", path.display()))?;
+        let data_root = path
+            .canonicalize()
+            .with_context(|| format!("canonicalize IMPETUS_DATA_DIR {}", path.display()))?;
+        return Ok(ControlPlane::Daemon { data_root });
+    }
+    let root = std::env::current_dir()
+        .context("current directory")?
+        .canonicalize()
+        .context("canonicalize current directory")?;
+    Ok(ControlPlane::Workspace { root })
 }
 
 fn intent_for(kind: ExtensionKind, path: &Path) -> ExtensionInstallIntent {
@@ -44,19 +113,6 @@ fn intent_for(kind: ExtensionKind, path: &Path) -> ExtensionInstallIntent {
             path: path.to_path_buf(),
         },
     }
-}
-
-fn impetus_dir(target_root: &Path) -> PathBuf {
-    target_root.join(".impetus")
-}
-
-fn open_stores(target_root: &Path) -> Result<(OwnershipStore, ExtensionStateStore)> {
-    let base = impetus_dir(target_root);
-    let ownership =
-        OwnershipStore::open(base.join("ownership.db")).context("open ownership store")?;
-    let state = ExtensionStateStore::open(base.join("install_state.db"))
-        .context("open install state store")?;
-    Ok((ownership, state))
 }
 
 #[derive(Serialize)]
@@ -91,10 +147,16 @@ fn print_plan_human(plan: &InstallPlan) {
 }
 
 /// Dry-run plan: print InstallPlan; do not write.
-pub async fn plan(kind: ExtensionKind, path: &Path, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
+pub async fn plan(
+    kind: ExtensionKind,
+    path: &Path,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
     let intent = intent_for(kind, path);
-    let plan = plan_install(&intent, &target_root)
+    let plan = plan_install_with_layout(&intent, plane.target_root(), plane.layout())
         .await
         .with_context(|| format!("plan install from {}", path.display()))?;
 
@@ -117,15 +179,16 @@ pub async fn install(
     kind: ExtensionKind,
     path: &Path,
     root: Option<&Path>,
+    data_dir: Option<&Path>,
     json: bool,
 ) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
+    let plane = resolve_control_plane(root, data_dir)?;
     let intent = intent_for(kind, path);
-    let plan = plan_install(&intent, &target_root)
+    let plan = plan_install_with_layout(&intent, plane.target_root(), plane.layout())
         .await
         .with_context(|| format!("plan install from {}", path.display()))?;
 
-    let (ownership, state_store) = open_stores(&target_root)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let state = apply_install(&plan, &ownership, &state_store).context("apply install")?;
 
     if json {
@@ -136,6 +199,7 @@ pub async fn install(
         println!("  module_id: {}", state.resolution.module_id);
         println!("  module_name: {}", state.resolution.module_name);
         println!("  version: {}", state.resolution.version);
+        println!("  layout: {:?}", plane.layout());
         println!("  created: {}", state.created_paths.len());
         for p in &state.created_paths {
             println!("    + {}", p.display());
@@ -150,9 +214,14 @@ pub async fn install(
 }
 
 /// Remove install by `installation_id` (ownership proof + state cleanup).
-pub fn remove(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+pub fn remove(
+    installation_id: &str,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let result = remove_install(installation_id, &ownership, &state_store)
         .with_context(|| format!("remove install {installation_id}"))?;
 
@@ -170,27 +239,42 @@ pub fn remove(installation_id: &str, root: Option<&Path>, json: bool) -> Result<
 }
 
 /// Enable a disabled or unloaded install (restore sidelined files).
-pub fn enable(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+pub fn enable(
+    installation_id: &str,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let result = enable_install(installation_id, &ownership, &state_store)
         .with_context(|| format!("enable install {installation_id}"))?;
     print_lifecycle(&result, "Enabled", json)
 }
 
 /// Disable install: sideline files; not loaded on restart.
-pub fn disable(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+pub fn disable(
+    installation_id: &str,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let result = disable_install(installation_id, &ownership, &state_store)
         .with_context(|| format!("disable install {installation_id}"))?;
     print_lifecycle(&result, "Disabled", json)
 }
 
 /// Unload install: sideline files + drop from runtime reload set.
-pub fn unload(installation_id: &str, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+pub fn unload(
+    installation_id: &str,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let result = unload_install(installation_id, &ownership, &state_store)
         .with_context(|| format!("unload install {installation_id}"))?;
     print_lifecycle(&result, "Unloaded", json)
@@ -211,12 +295,47 @@ fn print_lifecycle(result: &impetus_core::LifecycleResult, verb: &str, json: boo
     Ok(())
 }
 
-/// List install states (+ which would load on restart).
-pub fn list(root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (_ownership, state_store) = open_stores(&target_root)?;
+/// List install states (+ effective inventory when on daemon SoT).
+pub fn list(root: Option<&Path>, data_dir: Option<&Path>, json: bool) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (_ownership, state_store) = plane.open_stores()?;
     let states = state_store.list_all().context("list install states")?;
     let runtime = ExtensionRuntime::reload_from_store(&state_store).context("reload runtime")?;
+
+    if let ControlPlane::Daemon { data_root } = &plane {
+        let mut host = ExtensionHost::with_persist_root(data_root);
+        let discovery =
+            impetus_core::ExtensionDiscoveryRoots::from_data_and_workspace(data_root, None);
+        let _ = host.reload(&discovery);
+        let inventory = build_effective_inventory(data_root, &runtime, Some(&host));
+        if json {
+            println!("{}", serde_json::to_string_pretty(&inventory)?);
+            return Ok(());
+        }
+        let active: Vec<_> = inventory.active_unshadowed().collect();
+        println!(
+            "Effective inventory ({} row(s); {} unshadowed; daemon SoT {})",
+            inventory.entries.len(),
+            active.len(),
+            data_root.display()
+        );
+        if inventory.entries.is_empty() {
+            println!("  (none)");
+            return Ok(());
+        }
+        for row in &inventory.entries {
+            let shadow = if row.shadowed { " shadowed" } else { "" };
+            println!(
+                "  [{:?}/{:?}] {}  {} v{}{shadow}",
+                row.kind, row.origin, row.key, row.name, row.version
+            );
+            println!("    status: {}", row.status);
+            if let Some(path) = &row.path {
+                println!("    path: {path}");
+            }
+        }
+        return Ok(());
+    }
 
     #[derive(Serialize)]
     struct Row<'a> {
@@ -267,10 +386,85 @@ pub fn list(root: Option<&Path>, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Migrate workspace `.impetus/` Enabled installs into daemon SoT.
+pub fn migrate(from: Option<&Path>, data_dir: Option<&Path>, json: bool) -> Result<()> {
+    let legacy_root = match from {
+        Some(path) => path
+            .canonicalize()
+            .with_context(|| format!("canonicalize --from {}", path.display()))?,
+        None => std::env::current_dir()
+            .context("current directory")?
+            .canonicalize()
+            .context("canonicalize current directory")?,
+    };
+    let data_root = match data_dir {
+        Some(path) => {
+            std::fs::create_dir_all(path)?;
+            path.canonicalize()
+                .with_context(|| format!("canonicalize --data-dir {}", path.display()))?
+        }
+        None => {
+            let raw = std::env::var("IMPETUS_DATA_DIR").context(
+                "migrate requires --data-dir or IMPETUS_DATA_DIR (daemon-owned inventory SoT)",
+            )?;
+            let path = PathBuf::from(raw);
+            std::fs::create_dir_all(&path)?;
+            path.canonicalize()
+                .context("canonicalize IMPETUS_DATA_DIR")?
+        }
+    };
+
+    let marker = migrate_legacy_to_daemon(&legacy_root, &data_root)
+        .with_context(|| format!("migrate from {}", legacy_root.display()))?;
+
+    // Restart seam check: daemon reload sees migrated Enabled rows.
+    let runtime = load_daemon_extension_runtime(&data_root)
+        .context("reload daemon extension runtime after migrate")?;
+    let loaded = runtime.loaded_ids().len();
+
+    if json {
+        #[derive(Serialize)]
+        struct Out<'a> {
+            marker: &'a impetus_core::LegacyMigrationMarker,
+            loaded_on_restart: usize,
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&Out {
+                marker: &marker,
+                loaded_on_restart: loaded,
+            })?
+        );
+    } else {
+        println!("Migrated legacy inventory → daemon SoT");
+        println!("  from: {}", marker.from_root);
+        println!("  data: {}", data_root.display());
+        println!("  skills: {}", marker.migrated_skills.len());
+        for id in &marker.migrated_skills {
+            println!("    + {id}");
+        }
+        println!("  mcp: {}", marker.migrated_mcp.len());
+        for id in &marker.migrated_mcp {
+            println!("    + {id}");
+        }
+        println!("  skipped_existing: {}", marker.skipped_existing.len());
+        for id in &marker.skipped_existing {
+            println!("    = {id}");
+        }
+        println!("  loaded_on_restart: {loaded}");
+    }
+    Ok(())
+}
+
 /// Report install-state + ownership health (read-only).
-pub fn doctor(installation_id: Option<&str>, root: Option<&Path>, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+pub fn doctor(
+    installation_id: Option<&str>,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let report =
         doctor_install(installation_id, &ownership, &state_store).context("extension doctor")?;
 
@@ -297,44 +491,27 @@ fn print_doctor_human(report: &impetus_core::DoctorReport) {
         return;
     }
     for install in &report.installations {
-        let mark = if install.healthy { "ok" } else { "FAIL" };
-        println!("  [{mark}] {}", install.installation_id);
-        println!("    state_present: {}", install.state_present);
-        if let Some(res) = &install.resolution {
-            println!(
-                "    module: {} ({}) v{}",
-                res.module_name, res.module_id, res.version
-            );
-        }
-        if install.paths.is_empty() {
-            println!("    paths: (none)");
-            continue;
-        }
+        let status = if install.healthy { "ok" } else { "fail" };
+        println!(
+            "  [{status}] {} (state_present={})",
+            install.installation_id, install.state_present
+        );
         for path in &install.paths {
-            match &path.status {
-                impetus_core::PathHealthStatus::Ok => {
-                    println!("    ok  {}", path.path);
-                }
-                impetus_core::PathHealthStatus::Missing => {
-                    println!("    MISSING {}", path.path);
-                }
-                impetus_core::PathHealthStatus::DigestMismatch { expected, actual } => {
-                    println!("    DIGEST {}", path.path);
-                    println!("      expected: {expected}");
-                    println!("      actual:   {actual}");
-                }
-                impetus_core::PathHealthStatus::Unreadable { reason } => {
-                    println!("    UNREADABLE {} ({reason})", path.path);
-                }
-            }
+            println!("    {} → {:?}", path.path, path.status);
         }
     }
 }
 
-/// Repair owned paths from recorded source (`--force` for digest mismatch).
-pub fn repair(installation_id: &str, root: Option<&Path>, force: bool, json: bool) -> Result<()> {
-    let target_root = resolve_target_root(root)?;
-    let (ownership, state_store) = open_stores(&target_root)?;
+/// Restore owned paths from recorded source (digest mismatch needs force).
+pub fn repair(
+    installation_id: &str,
+    root: Option<&Path>,
+    data_dir: Option<&Path>,
+    force: bool,
+    json: bool,
+) -> Result<()> {
+    let plane = resolve_control_plane(root, data_dir)?;
+    let (ownership, state_store) = plane.open_stores()?;
     let result = repair_install(installation_id, &ownership, &state_store, force)
         .with_context(|| format!("repair install {installation_id}"))?;
 
@@ -347,13 +524,7 @@ pub fn repair(installation_id: &str, root: Option<&Path>, force: bool, json: boo
         for p in &result.repaired_paths {
             println!("    ~ {}", p.display());
         }
-        println!("  skipped (ok): {}", result.skipped_ok.len());
-        for p in &result.skipped_ok {
-            println!("    = {}", p.display());
-        }
-        if result.repaired_paths.is_empty() && result.skipped_ok.is_empty() {
-            println!("  (no ownership paths for this installation)");
-        }
+        println!("  skipped_ok: {}", result.skipped_ok.len());
     }
     Ok(())
 }
