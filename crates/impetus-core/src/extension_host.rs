@@ -159,6 +159,11 @@ impl ExtensionHost {
         &self.disabled_ids
     }
 
+    /// Daemon data root used for durable disable / mcp_bridge (when set).
+    pub fn persist_root(&self) -> Option<&Path> {
+        self.persist_root.as_deref()
+    }
+
     fn disabled_path(&self) -> Option<PathBuf> {
         self.persist_root
             .as_ref()

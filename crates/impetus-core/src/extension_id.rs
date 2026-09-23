@@ -141,8 +141,8 @@ pub fn join_under_extension_root(
 
 /// Fail closed if `path` is not the expected install leaf for `module_id`.
 ///
-/// Used by uninstall/repair so ownership rows cannot point outside
-/// `.impetus/<type>/{id}/…`.
+/// Accepts workspace (`.impetus/…`) and daemon (`extensions/legacy_skills/…`,
+/// `mcp/{id}.json`) layouts so migrate + CLI share one ownership check.
 pub fn ensure_owned_extension_path(
     path: &Path,
     type_dir: ExtensionTypeDir,
@@ -152,19 +152,28 @@ pub fn ensure_owned_extension_path(
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(ExtensionIdError::PathEscape(path.display().to_string()));
     }
-    let expected_tail = match type_dir {
-        ExtensionTypeDir::Skills => PathBuf::from(".impetus")
-            .join("skills")
-            .join(&id)
-            .join("SKILL.md"),
-        ExtensionTypeDir::Mcp => PathBuf::from(".impetus")
-            .join("mcp")
-            .join(format!("{id}.json")),
+    let tails: &[PathBuf] = match type_dir {
+        ExtensionTypeDir::Skills => &[
+            PathBuf::from(".impetus")
+                .join("skills")
+                .join(&id)
+                .join("SKILL.md"),
+            PathBuf::from("extensions")
+                .join("legacy_skills")
+                .join(&id)
+                .join("SKILL.md"),
+        ],
+        ExtensionTypeDir::Mcp => &[
+            PathBuf::from(".impetus")
+                .join("mcp")
+                .join(format!("{id}.json")),
+            PathBuf::from("mcp").join(format!("{id}.json")),
+        ],
     };
-    if !path.ends_with(&expected_tail) {
-        return Err(ExtensionIdError::PathEscape(path.display().to_string()));
+    if tails.iter().any(|tail| path.ends_with(tail)) {
+        return Ok(());
     }
-    Ok(())
+    Err(ExtensionIdError::PathEscape(path.display().to_string()))
 }
 
 #[cfg(test)]

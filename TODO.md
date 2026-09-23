@@ -33,7 +33,6 @@ Actionable after Now. Not priority theatre.
 ### Extension split follow-through
 
 - [ ] Stand up `impetus-extensions` repo against contract + demo packs
-- [ ] Unify legacy CLI Skill/MCP SoT vs package host (allowlist `#296`)
 
 ### Daemon / protocol
 

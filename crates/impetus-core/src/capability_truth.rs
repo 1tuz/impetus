@@ -192,7 +192,7 @@ impl CapabilityTruthReport {
                 entry(
                     "extension_runtime",
                     CapabilityLevel::Partial,
-                    "Skills via ExtensionCapabilityRegistry (Active instruction_pack roots); MCP live via ToolProviderRuntime → AgentLoop; package SDK + host_process JSON-RPC handshake + mcp_bridge↔MCP SoT + durable disable + permission→Policy; IPC extension_manage; daemon_unix_extensions Context skill on/off + durable disable; Remaining: crates.io SDK publish + richer host_process tools",
+                    "Skills via effective_skill_roots (Active instruction_pack + unshadowed legacy under $IMPETUS_DATA_DIR); MCP live via ToolProviderRuntime → AgentLoop; package SDK + host_process JSON-RPC handshake + mcp_bridge↔MCP SoT + durable disable + permission→Policy; IPC extension_manage; daemon effective inventory + CLI migrate/--data-dir (#330); Remaining: crates.io SDK publish + richer host_process tools (#329)",
                     Some(serde_json::json!({
                         "skills_instruction_resolver": true,
                         "extension_package_sdk": true,
