@@ -2,7 +2,11 @@
 
 ## `connect harness socket` / `Failed to connect to impetusd` fails
 
-Start the daemon before the CLI client or Zap adapter:
+Ordinary `impetus` commands **lazy-start** `impetusd`. If connect still fails:
+
+1. Confirm `impetusd` is on `PATH` (same install dir as `impetus`).
+2. Check `IMPETUS_SOCKET` / `IMPETUS_DATA_DIR` match between client and daemon.
+3. For debugging, start the daemon in the foreground:
 
 ```zsh
 task daemon
@@ -10,14 +14,17 @@ task daemon
 impetusd
 ```
 
-Client and daemon must share `IMPETUS_SOCKET`. Default:
-`~/Library/Application Support/Impetus/harness.sock`.
+Defaults:
+
+- macOS socket: `~/Library/Application Support/Impetus/harness.sock`
+- Linux: `$XDG_DATA_HOME/impetus/harness.sock` or `~/.local/share/impetus/harness.sock`
 
 ## The daemon refuses to replace a socket
 
 Another `impetusd` may still be running, or a previous run left a socket at the
-configured path. Stop the owning process before starting a new daemon. Do not
-delete a socket until you have confirmed no daemon is using it.
+configured path. Stop the owning process before starting a new daemon. The CLI
+removes a **stale** socket (path exists, nothing accepts) before spawn — do not
+delete a live socket while a daemon is healthy.
 
 ## A provider profile is rejected
 

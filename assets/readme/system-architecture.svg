@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="sys-arch-title sys-arch-desc">
+  <title id="sys-arch-title">Impetus system architecture</title>
+  <desc id="sys-arch-desc">Clients talk to impetusd over versioned IPC. Runtime services sit above a small Trusted Kernel. Extensions attach outside the kernel.</desc>
+  <defs>
+    <style>@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+    <marker id="sa-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#e4a853"/></marker>
+    <marker id="sa-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8393a2"/></marker>
+  </defs>
+  <rect width="1200" height="720" rx="24" fill="#090c10"/>
+
+  <!-- Zones -->
+  <rect x="40" y="56" width="1120" height="100" rx="12" fill="rgba(244,241,233,0.03)" stroke="#26313b" stroke-width="1"/>
+  <rect x="40" y="180" width="1120" height="360" rx="12" fill="rgba(244,241,233,0.02)" stroke="#26313b" stroke-width="1"/>
+  <rect x="72" y="320" width="720" height="196" rx="10" fill="rgba(228,168,83,0.06)" stroke="#e4a853" stroke-width="1.5"/>
+  <rect x="820" y="200" width="312" height="316" rx="10" fill="rgba(244,241,233,0.03)" stroke="#536372" stroke-width="1" stroke-dasharray="5 4"/>
+
+  <g font-family="'Geist Mono', ui-monospace, monospace" font-size="11" fill="#93a1b0" letter-spacing="0.14em">
+    <text x="56" y="78">CLIENTS</text>
+    <text x="56" y="202">IMPETUSD  AUTHORITATIVE PROCESS</text>
+    <text x="88" y="344">TRUSTED KERNEL</text>
+    <text x="836" y="224">REPLACEABLE / OPTIONAL</text>
+  </g>
+
+  <!-- Client nodes -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="64" y="92" width="150" height="48" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="80" y="122" fill="#f4f1e9" font-size="14" font-weight="600">CLI / TUI</text>
+    <rect x="230" y="92" width="150" height="48" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="246" y="122" fill="#f4f1e9" font-size="14" font-weight="600">Desktop</text>
+    <rect x="396" y="92" width="150" height="48" rx="8" fill="#141b22" stroke="#536372" stroke-width="1.5"/>
+    <text x="412" y="122" fill="#f4f1e9" font-size="14" font-weight="600">ACP / Zap</text>
+    <rect x="580" y="92" width="220" height="48" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="596" y="112" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.12em">HARNESSCLIENT</text>
+    <text x="596" y="130" fill="#f4f1e9" font-size="13" font-weight="600">versioned Unix IPC</text>
+  </g>
+
+  <!-- Runtime services -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <text x="72" y="236" fill="#b6c0ca" font-family="'Geist Mono', monospace" font-size="10" letter-spacing="0.12em">RUNTIME SERVICES</text>
+    <rect x="72" y="248" width="130" height="52" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="84" y="278" fill="#f4f1e9" font-size="13" font-weight="600">AgentLoop</text>
+    <rect x="214" y="248" width="130" height="52" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="226" y="278" fill="#f4f1e9" font-size="13" font-weight="600">Context</text>
+    <rect x="356" y="248" width="130" height="52" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="368" y="278" fill="#f4f1e9" font-size="13" font-weight="600">Tools</text>
+    <rect x="498" y="248" width="130" height="52" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="510" y="278" fill="#f4f1e9" font-size="13" font-weight="600">Providers</text>
+    <rect x="640" y="248" width="130" height="52" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="652" y="278" fill="#f4f1e9" font-size="13" font-weight="600">Workflows</text>
+  </g>
+
+  <!-- Kernel (focal, smaller visual mass) -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="96" y="368" width="100" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="108" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">EVENTS</text>
+    <text x="108" y="410" fill="#f4f1e9" font-size="12" font-weight="600">EventStore</text>
+    <rect x="208" y="368" width="100" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="220" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">POLICY</text>
+    <text x="220" y="410" fill="#f4f1e9" font-size="12" font-weight="600">Policy</text>
+    <rect x="320" y="368" width="100" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="332" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">HUMAN</text>
+    <text x="332" y="410" fill="#f4f1e9" font-size="12" font-weight="600">Approval</text>
+    <rect x="432" y="368" width="100" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="444" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">BOUND</text>
+    <text x="444" y="410" fill="#f4f1e9" font-size="12" font-weight="600">Sandbox</text>
+    <rect x="544" y="368" width="100" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="556" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">RUN</text>
+    <text x="556" y="410" fill="#f4f1e9" font-size="12" font-weight="600">Executor</text>
+    <rect x="656" y="368" width="112" height="56" rx="8" fill="#1a2027" stroke="#e4a853" stroke-width="2"/>
+    <text x="668" y="392" fill="#e4a853" font-family="'Geist Mono', monospace" font-size="9" letter-spacing="0.1em">SECRETS</text>
+    <text x="668" y="410" fill="#f4f1e9" font-size="12" font-weight="600">Keychain ref</text>
+    <text x="96" y="456" fill="#93a1b0" font-size="12">+ ArtifactStore · Capability gate  crate impetus-core is larger than this kernel</text>
+  </g>
+
+  <!-- Extensions -->
+  <g font-family="'Geist', -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="844" y="248" width="264" height="48" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="860" y="278" fill="#f4f1e9" font-size="13" font-weight="600">Extension Host / SDK</text>
+    <rect x="844" y="312" width="264" height="40" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="860" y="338" fill="#b6c0ca" font-size="12">MCP · skills · LSP · browser</text>
+    <rect x="844" y="368" width="264" height="40" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="860" y="394" fill="#b6c0ca" font-size="12">host_process · MemoryProvider</text>
+    <rect x="844" y="424" width="264" height="40" rx="8" fill="#141b22" stroke="#536372"/>
+    <text x="860" y="450" fill="#b6c0ca" font-size="12">search · instruction packs</text>
+    <text x="844" y="492" fill="#8393a2" font-size="11">cannot bypass Policy / Approval</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M690 140 V168" fill="none" stroke="#e4a853" stroke-width="2.5" marker-end="url(#sa-arrow)"/>
+  <path d="M400 300 V320" fill="none" stroke="#e4a853" stroke-width="2" marker-end="url(#sa-arrow)"/>
+  <path d="M792 400 H820" fill="none" stroke="#8393a2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#sa-muted)"/>
+
+  <path d="M40 580 H1160" stroke="#26313b" stroke-width="2"/>
+  <g font-family="'Geist Mono', ui-monospace, monospace" font-size="12" fill="#93a1b0" letter-spacing="0.04em">
+    <text x="56" y="620">SMALL STABLE CENTER  REPLACEABLE MODULES AROUND IT</text>
+    <text x="56" y="648">impetusd = process boundary · Trusted Kernel = logical security/execution core · impetus-core = Rust crate (kernel + runtime libs)</text>
+    <text x="56" y="676">Ordinary UX: impetus lazy-starts impetusd  manual daemon only for debug / admin</text>
+  </g>
+</svg>
