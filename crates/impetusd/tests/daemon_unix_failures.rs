@@ -100,6 +100,8 @@ async fn invalid_reasoning_effort_is_rejected() {
             "mock".into(),
             "mock-model".into(),
             Some("not-a-real-effort".into()),
+            None,
+            serde_json::Value::Null,
         )
         .await;
     let msg = format!("{}", err.expect_err("invalid reasoning must fail"));
@@ -126,6 +128,8 @@ async fn unavailable_model_is_rejected() {
             "mock".into(),
             "definitely-not-in-mock-catalog".into(),
             None,
+            None,
+            serde_json::Value::Null,
         )
         .await;
     let msg = format!("{}", err.expect_err("unknown model must fail"));
@@ -152,6 +156,8 @@ async fn unavailable_provider_is_rejected() {
             "no-such-provider".into(),
             "mock-model".into(),
             None,
+            None,
+            serde_json::Value::Null,
         )
         .await;
     let msg = format!("{}", err.expect_err("unknown provider must fail"));

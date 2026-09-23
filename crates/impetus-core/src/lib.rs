@@ -361,6 +361,7 @@ pub use provider_protocol_adapter::{ProviderProtocolAdapter, ToolCallAssembler};
 pub use provider_registry::{ModelProviderHealthLabel, ModelProviderStatus, ProviderRegistry};
 pub use provider_trait::{
     FinishReason, ModelCatalogEntry, ModelCatalogResult, ModelProvider, StreamEvent, StreamOptions,
+    provider_option_key_is_secretish, validate_session_provider_options,
 };
 pub use reference_store::{
     DatasetManifest, DatasetScope, ImportResult as ReferenceImportResult, PartitionStrategy,

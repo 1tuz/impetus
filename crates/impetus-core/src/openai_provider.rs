@@ -126,13 +126,7 @@ impl OpenAiProvider {
                 "tool_choice": "auto",
             }),
         };
-        if let Some(effort) = options
-            .reasoning_effort
-            .as_deref()
-            .filter(|e| !e.is_empty())
-        {
-            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
-        }
+        options.apply_to_request_body(&mut body);
         body
     }
 
@@ -576,5 +570,28 @@ mod tests {
         assert!(!tools.is_empty());
         assert_eq!(tools[0]["type"], "function");
         assert!(tools[0]["function"]["parameters"].is_object());
+    }
+
+    #[test]
+    fn request_body_includes_service_tier_and_provider_options() {
+        let provider = OpenAiProvider::new(
+            test_profile(OpenAiHttpApi::ChatCompletions),
+            RetryBudget::default(),
+        )
+        .unwrap();
+        let body = provider.request_body(
+            &[ProviderMessage::user("hi")],
+            &crate::StreamOptions {
+                model_id: Some("ovr".into()),
+                reasoning_effort: Some("high".into()),
+                service_tier: Some("priority".into()),
+                provider_options: serde_json::json!({ "temperature": 0.1 }),
+            },
+        );
+        assert_eq!(body["model"], "ovr");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["temperature"], 0.1);
+        assert!(body.get("tools").is_some());
     }
 }

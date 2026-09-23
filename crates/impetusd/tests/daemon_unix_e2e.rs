@@ -52,18 +52,66 @@ async fn daemon_unix_e2e_handshake_session_model_prompt_mcp_git_pty() {
         mock.reasoning_efforts
     );
 
+    // Prefer advertised catalog options; soft-skip when empty (should not on default mock).
+    let service_tier = mock.service_tiers.first().cloned();
+    let provider_options = if mock.provider_options.is_null()
+        || mock
+            .provider_options
+            .as_object()
+            .is_some_and(|m| m.is_empty())
+    {
+        // Free-form non-secret option still round-trips when catalog extras empty.
+        serde_json::json!({ "e2e_region": "local" })
+    } else if let Some(obj) = mock.provider_options.as_object() {
+        // Take first string / first array element as a single-key options object.
+        let mut picked = serde_json::Map::new();
+        for (key, value) in obj {
+            match value {
+                serde_json::Value::String(s) if !s.is_empty() => {
+                    picked.insert(key.clone(), serde_json::Value::String(s.clone()));
+                    break;
+                }
+                serde_json::Value::Array(items) => {
+                    if let Some(serde_json::Value::String(s)) = items.first() {
+                        picked.insert(key.clone(), serde_json::Value::String(s.clone()));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if picked.is_empty() {
+            serde_json::json!({ "e2e_region": "local" })
+        } else {
+            serde_json::Value::Object(picked)
+        }
+    } else {
+        serde_json::json!({ "e2e_region": "local" })
+    };
+
     let selection = client
         .set_session_model(
             session_id,
             "mock".into(),
             "mock-model".into(),
             Some("high".into()),
+            service_tier.clone(),
+            provider_options.clone(),
         )
         .await
         .expect("set session model + reasoning");
     assert_eq!(selection.provider_id, "mock");
     assert_eq!(selection.model_id, "mock-model");
     assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(selection.service_tier, service_tier);
+    assert_eq!(selection.provider_options, provider_options);
+
+    let got = client
+        .get_session_model(session_id)
+        .await
+        .expect("get session model after set");
+    assert_eq!(got.service_tier, service_tier);
+    assert_eq!(got.provider_options, provider_options);
 
     let status = client
         .send_message_with_intent(
@@ -168,6 +216,8 @@ async fn daemon_unix_e2e_handshake_session_model_prompt_mcp_git_pty() {
     assert_eq!(restored.provider_id, "mock");
     assert_eq!(restored.model_id, "mock-model");
     assert_eq!(restored.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(restored.service_tier, service_tier);
+    assert_eq!(restored.provider_options, provider_options);
 
     let pty_gone = client3.pty_attach(session_id, pty_id).await;
     assert!(

@@ -55,6 +55,8 @@ pub struct MockProvider {
     /// Advertised efforts for catalog/discovery tests (empty = reasoning not supported).
     reasoning_efforts: Vec<String>,
     default_reasoning_effort: Option<String>,
+    /// Advertised service tiers (empty = not supported).
+    service_tiers: Vec<String>,
     /// Extra catalog model ids sharing the same advertised efforts (tests).
     catalog_model_ids: Vec<String>,
 }
@@ -74,6 +76,7 @@ impl MockProvider {
             last_stream_options: Arc::new(Mutex::new(None)),
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
+            service_tiers: Vec::new(),
             catalog_model_ids: Vec::new(),
         }
     }
@@ -89,6 +92,15 @@ impl MockProvider {
         {
             self.default_reasoning_effort = Some("medium".into());
         }
+        self
+    }
+
+    /// Advertise service tiers in catalog discovery (tests / fixtures).
+    pub fn with_service_tiers(
+        mut self,
+        tiers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.service_tiers = tiers.into_iter().map(Into::into).collect();
         self
     }
 
@@ -143,6 +155,7 @@ impl MockProvider {
             ],
         )
         .with_reasoning_efforts(["low", "medium", "high"])
+        .with_service_tiers(["default", "flex"])
     }
 }
 
@@ -173,6 +186,7 @@ impl ModelProvider for MockProvider {
                 let mut entry = ModelCatalogEntry::id_only(model_id);
                 entry.reasoning_efforts = self.reasoning_efforts.clone();
                 entry.default_reasoning_effort = self.default_reasoning_effort.clone();
+                entry.service_tiers = self.service_tiers.clone();
                 if !entry.reasoning_efforts.is_empty() {
                     entry.capabilities.reasoning = true;
                 }

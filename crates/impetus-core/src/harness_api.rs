@@ -2213,6 +2213,8 @@ fn handle_request(
             provider_id,
             model_id,
             reasoning_effort,
+            service_tier,
+            provider_options,
         } => match store_session_model(
             &session_models,
             session_model_store.as_ref(),
@@ -2223,6 +2225,8 @@ fn handle_request(
             provider_id,
             model_id,
             reasoning_effort,
+            service_tier,
+            provider_options,
         ) {
             Ok(selection) => IpcResponse::SessionModel {
                 session_id,
@@ -3086,6 +3090,8 @@ fn get_or_default_session_model(
         model_id: provider.model_id().to_owned(),
         // Honest: do not invent a global default effort (e.g. "medium").
         reasoning_effort: None,
+        service_tier: None,
+        provider_options: serde_json::Value::Null,
     })
 }
 
@@ -3094,6 +3100,12 @@ fn validate_session_model_selection(
     provider_registry: &ProviderRegistry,
     selection: &crate::SessionModelSelection,
 ) -> Result<(), IpcResponse> {
+    crate::validate_session_provider_options(&selection.provider_options).map_err(|message| {
+        IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: format!("saved {message}"),
+        }
+    })?;
     let _provider =
         provider_registry
             .get(&selection.provider_id)
@@ -3140,6 +3152,42 @@ fn validate_session_model_selection(
             });
         }
     }
+    let advertised_tiers = {
+        let registry = provider_registry.clone();
+        let pid = selection.provider_id.clone();
+        let mid = selection.model_id.clone();
+        crate::block_on_coding_tools(
+            async move { registry.advertised_service_tiers(&pid, &mid).await },
+        )
+    }
+    .map_err(|e| IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: format!(
+            "saved session model `{}/{}` service tiers unavailable: {e}",
+            selection.provider_id, selection.model_id
+        ),
+    })?;
+    if let Some(tier) = selection.service_tier.as_deref() {
+        if advertised_tiers.is_empty() {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "saved service_tier `{tier}` rejected: model `{}` no longer advertises service tiers",
+                    selection.model_id
+                ),
+            });
+        }
+        if !advertised_tiers.iter().any(|a| a == tier) {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "saved service_tier `{tier}` no longer advertised for `{}` (advertised: {})",
+                    selection.model_id,
+                    advertised_tiers.join(", ")
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -3154,6 +3202,8 @@ fn store_session_model(
     provider_id: String,
     model_id: String,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
+    provider_options: serde_json::Value,
 ) -> Result<crate::SessionModelSelection, IpcResponse> {
     let _ = AgentRuntime::attach(store.clone(), policy_snapshot(policy), session_id)
         .map_err(runtime_error)?;
@@ -3163,6 +3213,12 @@ fn store_session_model(
             message: "provider_id and model_id are required".into(),
         });
     }
+    crate::validate_session_provider_options(&provider_options).map_err(|message| {
+        IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message,
+        }
+    })?;
     let _provider = provider_registry
         .get(&provider_id)
         .map_err(|e| IpcResponse::Error {
@@ -3200,10 +3256,43 @@ fn store_session_model(
             });
         }
     }
+    let advertised_tiers = {
+        let registry = provider_registry.clone();
+        let pid = provider_id.clone();
+        let mid = model_id.clone();
+        crate::block_on_coding_tools(
+            async move { registry.advertised_service_tiers(&pid, &mid).await },
+        )
+    }
+    .map_err(|e| IpcResponse::Error {
+        code: IpcErrorCode::Unavailable,
+        message: e.to_string(),
+    })?;
+    if let Some(tier) = service_tier.as_deref() {
+        if advertised_tiers.is_empty() {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "service_tier `{tier}` rejected: model `{model_id}` does not advertise service tiers"
+                ),
+            });
+        }
+        if !advertised_tiers.iter().any(|a| a == tier) {
+            return Err(IpcResponse::Error {
+                code: IpcErrorCode::InvalidRequest,
+                message: format!(
+                    "unsupported service_tier `{tier}` (advertised: {})",
+                    advertised_tiers.join(", ")
+                ),
+            });
+        }
+    }
     let selection = crate::SessionModelSelection {
         provider_id,
         model_id,
         reasoning_effort,
+        service_tier,
+        provider_options,
     };
     if let Some(durable) = durable {
         durable
@@ -3221,10 +3310,11 @@ fn store_session_model(
         session_id,
         EventPayload::Notice(NoticeEvent::Runtime {
             message: format!(
-                "session model set to {}/{} (effort={})",
+                "session model set to {}/{} (effort={}, tier={})",
                 selection.provider_id,
                 selection.model_id,
-                selection.reasoning_effort.as_deref().unwrap_or("default")
+                selection.reasoning_effort.as_deref().unwrap_or("default"),
+                selection.service_tier.as_deref().unwrap_or("default")
             ),
         }),
     );
@@ -3747,18 +3837,21 @@ fn launch_agent_run(
             let opts = crate::StreamOptions {
                 model_id: Some(override_sel.model_id.clone()),
                 reasoning_effort: override_sel.reasoning_effort.clone(),
+                service_tier: override_sel.service_tier.clone(),
+                provider_options: override_sel.provider_options.clone(),
             };
             (
                 override_sel.provider_id.clone(),
                 opts,
                 format!(
-                    "session model override {}/{} (effort={})",
+                    "session model override {}/{} (effort={}, tier={})",
                     override_sel.provider_id,
                     override_sel.model_id,
                     override_sel
                         .reasoning_effort
                         .as_deref()
-                        .unwrap_or("default")
+                        .unwrap_or("default"),
+                    override_sel.service_tier.as_deref().unwrap_or("default")
                 ),
             )
         } else {
@@ -3777,6 +3870,8 @@ fn launch_agent_run(
             let opts = crate::StreamOptions {
                 model_id: selected.as_ref().map(|s| s.model_id.clone()),
                 reasoning_effort: None,
+                service_tier: None,
+                provider_options: serde_json::Value::Null,
             };
             (selected_provider_id, opts, message)
         };
@@ -7631,6 +7726,8 @@ mod tests {
             provider_id: "mock".into(),
             model_id: "mock-model".into(),
             reasoning_effort: Some("not-advertised".into()),
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         };
         // Seed stale effort that mock catalog no longer advertises.
         harness.seed_session_model_ram_for_test(session_id, bad.clone());
@@ -7696,6 +7793,8 @@ mod tests {
             provider_id: before.provider_id.clone(),
             model_id: before.model_id.clone(),
             reasoning_effort: None,
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         });
         assert!(
             matches!(set, IpcResponse::SessionModel { .. }),
@@ -7857,6 +7956,8 @@ mod tests {
             provider_id: "mock".into(),
             model_id: "session-model-x".into(),
             reasoning_effort: Some("high".into()),
+            service_tier: None,
+            provider_options: serde_json::Value::Null,
         });
         assert!(
             matches!(set, IpcResponse::SessionModel { .. }),
@@ -7885,6 +7986,133 @@ mod tests {
         let opts = mock.last_stream_options().expect("stream options recorded");
         assert_eq!(opts.model_id.as_deref(), Some("session-model-x"));
         assert_eq!(opts.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn set_session_model_service_tier_and_options_reach_stream() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mock = Arc::new(
+            crate::MockProvider::default_mock()
+                .with_reasoning_efforts(["low", "high"])
+                .with_service_tiers(["default", "priority"])
+                .with_catalog_models(["mock-model", "tier-model"]),
+        );
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            mock.clone(),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let set = harness.handle(IpcRequest::SetSessionModel {
+            session_id,
+            provider_id: "mock".into(),
+            model_id: "tier-model".into(),
+            reasoning_effort: Some("high".into()),
+            service_tier: Some("priority".into()),
+            provider_options: serde_json::json!({ "temperature": 0.3 }),
+        });
+        assert!(
+            matches!(set, IpcResponse::SessionModel { .. }),
+            "set: {set:?}"
+        );
+        let rejected = harness.handle(IpcRequest::SetSessionModel {
+            session_id,
+            provider_id: "mock".into(),
+            model_id: "tier-model".into(),
+            reasoning_effort: None,
+            service_tier: Some("stale-tier".into()),
+            provider_options: serde_json::Value::Null,
+        });
+        assert!(
+            matches!(
+                rejected,
+                IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    ..
+                }
+            ),
+            "stale tier must reject: {rejected:?}"
+        );
+        let secret_rejected = harness.handle(IpcRequest::SetSessionModel {
+            session_id,
+            provider_id: "mock".into(),
+            model_id: "tier-model".into(),
+            reasoning_effort: None,
+            service_tier: None,
+            provider_options: serde_json::json!({ "api_key": "sk-test" }),
+        });
+        assert!(
+            matches!(
+                secret_rejected,
+                IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    ..
+                }
+            ),
+            "secrets must reject: {secret_rejected:?}"
+        );
+
+        let accepted = harness.handle(IpcRequest::Prompt {
+            session_id,
+            text: "tier path".into(),
+            artifact: None,
+            intent: Default::default(),
+        });
+        assert!(
+            matches!(
+                accepted,
+                IpcResponse::Status {
+                    status: RuntimeStatus::Running,
+                    ..
+                }
+            ),
+            "prompt: {accepted:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let opts = mock.last_stream_options().expect("stream options");
+        assert_eq!(opts.model_id.as_deref(), Some("tier-model"));
+        assert_eq!(opts.service_tier.as_deref(), Some("priority"));
+        assert_eq!(opts.provider_options["temperature"], 0.3);
+    }
+
+    #[test]
+    fn invalid_ram_session_model_service_tier_fails_closed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mock =
+            Arc::new(crate::MockProvider::default_mock().with_service_tiers(["default", "flex"]));
+        let harness = Harness::with_test_provider(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+            mock,
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create");
+        };
+        let bad = crate::SessionModelSelection {
+            provider_id: "mock".into(),
+            model_id: "mock-model".into(),
+            reasoning_effort: None,
+            service_tier: Some("gone".into()),
+            provider_options: serde_json::Value::Null,
+        };
+        harness.seed_session_model_ram_for_test(session_id, bad);
+        let get = harness.handle(IpcRequest::GetSessionModel { session_id });
+        assert!(
+            matches!(
+                get,
+                IpcResponse::Error {
+                    code: IpcErrorCode::InvalidRequest,
+                    ..
+                }
+            ),
+            "stale service_tier must fail-closed: {get:?}"
+        );
     }
 
     #[test]

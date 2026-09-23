@@ -1014,7 +1014,7 @@ pub struct AppState {
     /// Active session model from `Get`/`SetSessionModel` (daemon SoT).
     pub session_model: Option<impetus_client::protocol::SessionModelSelection>,
     /// Local options draft from catalog (`service_tier` / `provider_options`).
-    /// Passthrough via SetSessionModel waits on #328.
+    /// Passed through SetSessionModel as split IPC fields.
     pub session_model_options: Option<serde_json::Value>,
 }
 
