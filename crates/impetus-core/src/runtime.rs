@@ -1024,6 +1024,9 @@ impl AgentRuntime {
                 _ = cancel.cancelled() => {
                     return Err(RuntimeError::Denied("approval wait cancelled".into()));
                 }
+                // Periodic re-check: broadcast can drop if a receiver was briefly
+                // absent, and ResolveApproval must not leave ACP stuck Running.
+                _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
                 recv = notifications.recv() => {
                     match recv {
                         Ok((session_id, _)) if session_id == self.session_id => {}
