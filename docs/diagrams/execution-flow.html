@@ -80,7 +80,7 @@
     <path d="M176 172 H220" marker-end="url(#ef-arrow)"/>
     <path d="M360 172 H404" marker-end="url(#ef-arrow)"/>
     <path d="M544 172 H640" marker-end="url(#ef-arrow)"/>
-    <!-- Allow / NeedsApproval to Approval -->
+    <!-- NeedsApproval → Approval; Allow continues (diagram collapses Allow skip) -->
     <path d="M760 172 H820" marker-end="url(#ef-arrow)"/>
     <path d="M960 172 H1000" marker-end="url(#ef-arrow)"/>
     <!-- Sandbox → Capability (down then left) -->
@@ -94,9 +94,9 @@
   <path d="M700 232 V320" fill="none" stroke="#8393a2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ef-deny)"/>
 
   <g font-family="'Geist Mono', monospace" font-size="11" fill="#93a1b0">
-    <text x="768" y="128">Allow / NeedsApproval</text>
+    <text x="740" y="128">NeedsApproval</text>
     <text x="620" y="280">Deny</text>
-    <text x="56" y="520">origin=user|agent on every action · model cannot forge origin=user or self-approve</text>
+    <text x="56" y="520">Allow skips Approval · NeedsApproval pauses · Deny fail-closed · origin=user|agent</text>
   </g>
 </svg>
 
