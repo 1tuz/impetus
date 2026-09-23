@@ -139,8 +139,15 @@ impl AcpProfile {
     }
 }
 
-/// Marker on ACP agent child processes for future peer / IPC filtering.
+/// Marker on ACP agent child processes; daemon control-plane peer filter
+/// rejects peers whose exec-time environ has `IMPETUS_ACP_CHILD=1` unless they
+/// also carry `IMPETUS_ACP_CHILD_CONTROL_OK=1` (operator escape hatch; not
+/// grantable via ACP profile — treated as control-plane and blanked by overlay).
 pub const ACP_CHILD_ENV: &str = "IMPETUS_ACP_CHILD";
+
+/// Operator authorization for an ACP-marked process to open the control socket.
+/// Rejected by [`AcpProfile::validate`] (control-plane) and blanked by SDK overlay.
+pub const ACP_CHILD_CONTROL_OK_ENV: &str = "IMPETUS_ACP_CHILD_CONTROL_OK";
 
 /// Impetus control-plane names that must never reach an ACP agent child.
 ///
@@ -332,6 +339,29 @@ mod tests {
 
         assert!(profile.validate().is_err());
         assert!(profile.to_agent_config().is_err());
+    }
+
+    #[test]
+    fn profile_rejects_acp_child_control_ok_escape_hatch() {
+        let mut profile =
+            AcpProfile::manual_executable("test", "Test", PathBuf::from("/usr/bin/test"));
+        profile
+            .env
+            .insert(ACP_CHILD_CONTROL_OK_ENV.into(), "1".into());
+
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn sdk_overlay_blanks_inherited_acp_child_control_ok() {
+        let parent = [(ACP_CHILD_CONTROL_OK_ENV.into(), "1".into())];
+        let overlay = build_sdk_env_overlay(parent, &BTreeMap::new());
+        assert_eq!(
+            overlay.get(ACP_CHILD_CONTROL_OK_ENV),
+            Some(&"".into()),
+            "control-ok must not survive into ACP child via inheritance"
+        );
+        assert_eq!(overlay.get(ACP_CHILD_ENV), Some(&"1".into()));
     }
 
     #[test]

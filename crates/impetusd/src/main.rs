@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+#[cfg(unix)]
+mod peer_isolation;
+
 #[cfg(test)]
 use impetus_core::RunEvent;
 
@@ -41,10 +44,23 @@ async fn main() -> Result<()> {
         std::env::args_os().skip(1),
     )?);
     spawn_artifact_gc_loop(impetus_core::default_artifact_root());
-    let listener = UnixListener::bind(&socket_path).context("bind harness Unix socket")?;
+    // Restrictive umask before bind so the socket is born 0600; chmod follows.
+    let listener = {
+        #[cfg(unix)]
+        let previous_umask = peer_isolation::push_socket_umask();
+        let bound = UnixListener::bind(&socket_path).context("bind harness Unix socket");
+        #[cfg(unix)]
+        peer_isolation::pop_socket_umask(previous_umask);
+        bound?
+    };
     set_socket_permissions(&socket_path)?;
     loop {
         let (stream, _) = listener.accept().await.context("accept harness client")?;
+        #[cfg(unix)]
+        if let Err(error) = peer_isolation::admit_control_plane_peer(&stream) {
+            eprintln!("impetusd: rejected control-plane peer: {error}");
+            continue;
+        }
         let harness = harness.clone();
         tokio::spawn(async move {
             let _ = serve_client(stream, harness).await;
