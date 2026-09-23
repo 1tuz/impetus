@@ -263,16 +263,40 @@ impl UiBackend for ImpetusBackend {
             })
             .await?
         {
-            IpcResponse::ApprovalDetail { detail, .. } => Ok(ApprovalDetailView {
-                diff_preview: detail.diff_preview,
-                diff_observation: detail.diff_observation,
-                affected_files: detail.affected_files,
-                estimated_scope: detail.estimated_scope.map(|scope| format!("{scope:?}")),
-                attachment_refs: detail.attachment_refs,
-            }),
+            IpcResponse::ApprovalDetail { detail, .. } => {
+                let mut attachments = Vec::new();
+                for attachment_id in &detail.attachment_refs {
+                    // Session-bound fetch: owner session_id required by GetAttachment.
+                    if let Ok((content_type, content)) =
+                        self.get_attachment(session_id, *attachment_id).await
+                    {
+                        attachments.push(crate::model::FetchedAttachment {
+                            id: *attachment_id,
+                            content_type,
+                            content,
+                        });
+                    }
+                }
+                Ok(ApprovalDetailView {
+                    diff_preview: detail.diff_preview,
+                    diff_observation: detail.diff_observation,
+                    affected_files: detail.affected_files,
+                    estimated_scope: detail.estimated_scope.map(|scope| format!("{scope:?}")),
+                    attachment_refs: detail.attachment_refs,
+                    attachments,
+                })
+            }
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected approval detail response: {response:?}"),
         }
+    }
+
+    async fn get_attachment(
+        &self,
+        session_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<(String, Vec<u8>)> {
+        self.client.get_attachment(session_id, attachment_id).await
     }
 
     async fn diagnostics(&self) -> Result<String> {

@@ -1399,7 +1399,7 @@ fn handle_request(
         IpcRequest::GetAttachment {
             session_id,
             attachment_id,
-        } => match attachments.get(attachment_id) {
+        } => match attachments.get(session_id, attachment_id) {
             Ok(attachment) => IpcResponse::Attachment {
                 session_id,
                 attachment_id,
@@ -1409,6 +1409,14 @@ fn handle_request(
             Err(crate::AttachmentError::NotFound(_)) => IpcResponse::Error {
                 code: IpcErrorCode::Unavailable,
                 message: format!("attachment {attachment_id} not found"),
+            },
+            Err(crate::AttachmentError::Expired(_)) => IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: format!("attachment {attachment_id} expired"),
+            },
+            Err(crate::AttachmentError::Forbidden(_)) => IpcResponse::Error {
+                code: IpcErrorCode::Unavailable,
+                message: format!("attachment {attachment_id} denied: not owned by session"),
             },
             Err(e) => IpcResponse::Error {
                 code: IpcErrorCode::Internal,
@@ -1426,6 +1434,7 @@ fn handle_request(
                 let session_workspace = runtime.workspace_root()?;
                 let deferred = runtime.deferred_tool(approval_id)?;
                 let detail = compute_approval_detail(
+                    session_id,
                     request,
                     &session_workspace,
                     &attachments,
@@ -4460,6 +4469,7 @@ pub fn policy() -> PolicyEngine {
 /// proposed content, does not invent a delete-only fake preview; may fall back
 /// to `git diff HEAD -- <path>` when the workspace has uncommitted changes.
 fn compute_approval_detail(
+    session_id: Uuid,
     request: crate::ApprovalRequest,
     workspace_root: &Path,
     attachments: &crate::AttachmentStore,
@@ -4513,8 +4523,11 @@ fn compute_approval_detail(
                     ));
                     let preview = unified_preview(&obs, MAX_UNIFIED_PREVIEW_LINES);
                     if preview.len() < 1_000_000
-                        && let Ok(attachment_id) = attachments
-                            .store("text/x-diff".to_string(), preview.as_bytes().to_vec())
+                        && let Ok(attachment_id) = attachments.store(
+                            session_id,
+                            "text/x-diff".to_string(),
+                            preview.as_bytes().to_vec(),
+                        )
                     {
                         attachment_refs.push(attachment_id);
                     }
@@ -4537,9 +4550,11 @@ fn compute_approval_detail(
         ActionKind::SpawnProcess => {
             if let Some(cmd) = &request.action.target {
                 estimated_scope = Some(ScopeEstimate::Operations(1));
-                if let Ok(attachment_id) =
-                    attachments.store("text/plain".to_string(), cmd.as_bytes().to_vec())
-                {
+                if let Ok(attachment_id) = attachments.store(
+                    session_id,
+                    "text/plain".to_string(),
+                    cmd.as_bytes().to_vec(),
+                ) {
                     attachment_refs.push(attachment_id);
                 }
             }
@@ -5416,6 +5431,127 @@ mod tests {
         assert_eq!(obs.files_changed, 1);
         assert!(obs.insertions >= 1);
         assert!(!obs.hunks.is_empty());
+    }
+
+    #[test]
+    fn get_attachment_owner_ok_foreign_denied_missing_unavailable() {
+        let root = tempfile::tempdir().expect("root");
+        let session_workspace = root.path().join("session");
+        std::fs::create_dir(&session_workspace).expect("session workspace");
+        std::fs::write(session_workspace.join("existing.txt"), "before\n").expect("fixture");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(&session_workspace));
+        let harness = Harness::new(Arc::new(MemoryEventStore::default()), policy.clone());
+
+        let IpcResponse::Session {
+            session_id: owner, ..
+        } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: session_workspace.clone(),
+        })
+        else {
+            panic!("owner session")
+        };
+        let IpcResponse::Session {
+            session_id: foreign,
+            ..
+        } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: session_workspace,
+        })
+        else {
+            panic!("foreign session")
+        };
+
+        let runtime = AgentRuntime::attach(harness.store(), policy, owner).expect("attach");
+        runtime.submit_intent("edit").expect("intent");
+        runtime
+            .request_action(crate::Action {
+                origin: crate::ActionOrigin::Agent,
+                kind: crate::ActionKind::WriteFile,
+                summary: "edit".into(),
+                target: Some("existing.txt".into()),
+            })
+            .expect("approval");
+        let approval_id = runtime
+            .events()
+            .expect("events")
+            .into_iter()
+            .find_map(|event| match event.payload {
+                EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.id)
+                }
+                _ => None,
+            })
+            .expect("approval id");
+        runtime
+            .record_deferred_tool(
+                approval_id,
+                "write-1".into(),
+                "write_file".into(),
+                serde_json::json!({
+                    "path": "existing.txt",
+                    "content": "before\nafter\n"
+                }),
+            )
+            .expect("deferred");
+
+        let IpcResponse::ApprovalDetail { detail, .. } =
+            harness.handle(IpcRequest::GetApprovalDetail {
+                session_id: owner,
+                approval_id,
+            })
+        else {
+            panic!("approval detail")
+        };
+        let attachment_id = *detail
+            .attachment_refs
+            .first()
+            .expect("diff attachment stored for owner session");
+
+        let IpcResponse::Attachment {
+            session_id,
+            attachment_id: returned_id,
+            content,
+            ..
+        } = harness.handle(IpcRequest::GetAttachment {
+            session_id: owner,
+            attachment_id,
+        })
+        else {
+            panic!("owner GetAttachment must succeed")
+        };
+        assert_eq!(session_id, owner);
+        assert_eq!(returned_id, attachment_id);
+        assert!(!content.is_empty());
+
+        let foreign_resp = harness.handle(IpcRequest::GetAttachment {
+            session_id: foreign,
+            attachment_id,
+        });
+        assert!(
+            matches!(
+                &foreign_resp,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message
+                } if message.contains("denied")
+            ),
+            "foreign session must be denied: {foreign_resp:?}"
+        );
+
+        let missing = Uuid::new_v4();
+        let missing_resp = harness.handle(IpcRequest::GetAttachment {
+            session_id: owner,
+            attachment_id: missing,
+        });
+        assert!(
+            matches!(
+                &missing_resp,
+                IpcResponse::Error {
+                    code: IpcErrorCode::Unavailable,
+                    message
+                } if message.contains("not found")
+            ),
+            "missing attachment must error: {missing_resp:?}"
+        );
     }
 
     #[tokio::test]
