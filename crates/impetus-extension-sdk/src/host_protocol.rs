@@ -40,6 +40,24 @@ pub mod ops {
     pub const ECHO: &str = "echo";
     /// Generic capability invoke — requires `OperateParams.permission`.
     pub const INVOKE: &str = "invoke";
+
+    // --- LspIntegration (permission `lsp`) ---
+    pub const CODING_DEFINITION: &str = super::METHOD_CODING_DEFINITION;
+    pub const CODING_HOVER: &str = super::METHOD_CODING_HOVER;
+    pub const CODING_DIAGNOSTICS: &str = super::METHOD_CODING_DIAGNOSTICS;
+    pub const CODING_SYMBOLS: &str = super::METHOD_CODING_SYMBOLS;
+    pub const CODING_CANCEL: &str = super::METHOD_CODING_CANCEL;
+
+    // --- BrowserIntegration (permission `browser`) ---
+    pub const BROWSER_NEGOTIATE: &str = super::METHOD_BROWSER_NEGOTIATE;
+    pub const BROWSER_HEALTH: &str = super::METHOD_BROWSER_HEALTH;
+
+    // --- MemoryProvider (permission `memory`) — optional long-term; not MemoryStore ---
+    pub const MEMORY_RECALL: &str = "memory/recall";
+    pub const MEMORY_STORE: &str = "memory/store";
+
+    // --- ContextProvider (permission `filesystem_read` or pack-declared) ---
+    pub const CONTEXT_CONTRIBUTE: &str = "context/contribute";
 }
 
 /// JSON-RPC application error codes for operate / cancel (host + child).

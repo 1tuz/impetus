@@ -29,4 +29,50 @@ impl ExtensionCapabilityRegistry {
             && self.capabilities.is_empty()
             && self.host_process_ids.is_empty()
     }
+
+    /// First Active package that declares `kind` **and** has a live host_process.
+    ///
+    /// Used by public capability routing (LSP/Browser/Memory/Context operate).
+    pub fn active_host_for(&self, kind: ExtensionCapabilityKind) -> Option<&str> {
+        for (id, cap) in &self.capabilities {
+            if *cap != kind {
+                continue;
+            }
+            let id_str = id.as_str();
+            if self.host_process_ids.iter().any(|h| h == id_str) {
+                return Some(id_str);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use impetus_extension_sdk::ExtensionId;
+
+    #[test]
+    fn active_host_for_requires_live_process() {
+        let id = ExtensionId::new("lsp-pack").unwrap();
+        let reg = ExtensionCapabilityRegistry {
+            capabilities: vec![(id.clone(), ExtensionCapabilityKind::LspIntegration)],
+            host_process_ids: vec![],
+            ..Default::default()
+        };
+        assert!(
+            reg.active_host_for(ExtensionCapabilityKind::LspIntegration)
+                .is_none()
+        );
+
+        let reg = ExtensionCapabilityRegistry {
+            capabilities: vec![(id, ExtensionCapabilityKind::LspIntegration)],
+            host_process_ids: vec!["lsp-pack".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reg.active_host_for(ExtensionCapabilityKind::LspIntegration),
+            Some("lsp-pack")
+        );
+    }
 }

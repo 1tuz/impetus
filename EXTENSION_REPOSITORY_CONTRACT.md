@@ -50,10 +50,11 @@ no absolute command; `process_spawn` required.
 | Item | Status |
 | --- | --- |
 | crates.io publish of SDK | No — git `rev` pin only |
-| Capabilities beyond skill roots / mcp enable / host handshake | Declare-only for AgentLoop tools |
-| `BrowserIntegration` / `LspIntegration` / `MemoryProvider` capability kinds | **Declare-only** in SDK enum — no public host API yet; do not treat as Implemented |
+| Capabilities beyond skill roots / mcp enable / host handshake | SkillProvider Active; Tool/Command/AgentHook still declare-only for AgentLoop |
+| `LspIntegration` / `BrowserIntegration` host operate | **Public** (#362): coding/* + browser/* ops routed when Active host_process present; core `ProcessLspBackend` / Absent remain fallback |
+| `MemoryProvider` / `ContextProvider` operate | **Public ops** `memory/recall|store`, `context/contribute` (#362); core MemoryStore IPC stays session SoT (#363) — not a second store |
 | `impetus extension …` CLI for packages | No — that CLI is legacy Skill/MCP install |
-| Richer `host_process` tool surface | Handshake only today |
+| Concrete CDP/WebDriver / language installers | Stay in `impetus-extensions` — not core |
 
 ## Package layout
 
