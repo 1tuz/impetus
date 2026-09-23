@@ -8,8 +8,10 @@ Canonical layer model: [ARCHITECTURE.md](../../ARCHITECTURE.md),
 
 - CLI / TUI on top of `impetus-client::HarnessClient` (Unix socket transport).
 - **Lazy-starts** `impetusd` when the socket is down (`daemon::ensure_daemon_running`):
-  stale unlink only if nothing listens; `daemon.spawn.lock` serializes concurrent
-  spawn; live socket + IPC `Incompatible` → hard stop (no unlink/respawn).
+  stale unlink only if nothing listens; `daemon.spawn.lock` uses exclusive
+  `flock` so concurrent CLI spawns serialize and a crash cannot permanently
+  block autostart; live socket + IPC `Incompatible` → hard stop (no
+  unlink/respawn).
 - Does not open SQLite, does not store secrets, does not run sandbox directly —
   only typed IPC requests to `impetusd`.
 - Launch: `cargo run -p impetus -- <subcommand>` or installed `impetus …`.

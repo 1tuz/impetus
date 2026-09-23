@@ -8,8 +8,8 @@
 ```text
 Clients  →  HarnessClient / IPC  →  impetusd
                                       ├─ Runtime services
-                                      └─ Trusted Kernel
-                                           └─ Extension Host (replaceable)
+                                      ├─ Trusted Kernel
+                                      └─ Extension Host / SDK (replaceable)
 ```
 
 | Term | Meaning |

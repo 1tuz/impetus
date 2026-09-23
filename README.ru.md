@@ -38,15 +38,18 @@ impetusd  → local-first daemon (authoritative runtime)
 credential references. Клиенты не владеют authoritative state.
 
 **CURRENT.** `impetusd` + CLI `impetus` через versioned Unix-socket IPC и
-`HarnessClient`, provider registry foundation, экспериментальный Zap adapter.
-Также доступны: `impetus doctor`, `impetus ui` (Ratatui TUI) и foundations
-Module Runtime. Primary CLI — `impetus`; `impetus-cli` — legacy/secondary
+`HarnessClient`; клиенты: CLI/TUI, Desktop, ACP, экспериментальный Zap.
+Также: `impetus doctor`, `impetus ui` (Ratatui), Extension host / package SDK
+(детали — EN). Primary CLI — `impetus`; `impetus-cli` — legacy/secondary
 surface (migration note, не deletion).
 
 **TARGET.** Модульный harness: `impetus` — first-class CLI/TUI; Zap — ещё один
 `HarnessClient` consumer. Честный adapter checklist: [Architecture — Zap path
 (#5)](ARCHITECTURE.md#zap-path-vs-standalone-clitui-5). См.
 [Architecture](ARCHITECTURE.md).
+
+Диаграммы (канон EN): [system-architecture.svg](assets/readme/system-architecture.svg),
+[execution-flow.svg](assets/readme/execution-flow.svg).
 
 ## Что работает сейчас
 
