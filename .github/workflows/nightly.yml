@@ -1,0 +1,142 @@
+name: Nightly Full
+
+on:
+  schedule:
+    # 02:00 UTC+3 == 23:00 UTC
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-full
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+  CI: "1"
+  IMPETUS_NONINTERACTIVE: "1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux-quality:
+    name: Linux Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-linux
+          cache-targets: "true"
+          cache-workspace-crates: "true"
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+  linux-tests:
+    name: Linux Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-linux-tests
+          cache-targets: "true"
+          cache-workspace-crates: "true"
+      - name: Workspace tests (unit + integration + E2E)
+        env:
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          unset OPENAI_API_KEY ANTHROPIC_API_KEY TAVILY_API_KEY EXA_API_KEY GITHUB_TOKEN GH_TOKEN || true
+          # Full offline suite — ignored live/auth smokes stay ignored.
+          cargo test --workspace --all-targets -- --test-threads=2
+
+  security:
+    name: Security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-security
+          cache-targets: "false"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - run: cargo audit
+      - run: cargo deny check advisories bans sources licenses
+
+  macos-platform:
+    name: macOS Platform
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-macos
+          cache-targets: "true"
+          cache-workspace-crates: "true"
+      - name: Platform suite
+        env:
+          IMPETUS_NONINTERACTIVE: "1"
+        run: |
+          set -euo pipefail
+          cargo test -p impetus-core --test macos_sandbox_production --test macos_sandbox_spike --test approval_seatbelt_e2e -- --test-threads=1
+          cargo test -p impetusd --test daemon_userspace_no_sudo -- --test-threads=1
+          if [[ -f crates/impetusd/src/peer_isolation.rs ]]; then
+            cargo test -p impetusd --test daemon_peer_isolation -- --test-threads=1
+            cargo test -p impetusd --lib peer_isolation -- --test-threads=1
+          fi
+          cargo test -p impetus-core --lib 'pty|sandbox|seatbelt|keychain|auth' -- --test-threads=2
+          # Daemon Unix socket E2E on Darwin (platform socket behaviour).
+          cargo test -p impetusd --tests -- --test-threads=1
+
+  site:
+    name: Site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - run: npm run check
+        working-directory: site
+        env:
+          GITHUB_ACTIONS: "true"
+
+  selector:
+    name: Selector self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: ci-affected unit tests
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-affected.sh scripts/tests/ci-affected.sh
+          ./scripts/tests/ci-affected.sh

@@ -133,9 +133,13 @@ expect self rust true "$out"
 expect self workspace true "$out"
 
 # --- workflow change → full Rust workspace ---
-out="$(scope '.github/workflows/ci.yml')"
+out="$(scope '.github/workflows/pr-fast.yml')"
 expect workflow rust true "$out"
 expect workflow workspace true "$out"
+
+out="$(scope '.github/workflows/nightly.yml')"
+expect nightly rust true "$out"
+expect nightly workspace true "$out"
 
 # --- site-only ---
 out="$(scope 'site/package.json')"
