@@ -56,11 +56,10 @@ while IFS= read -r f; do
         Cargo.toml|Cargo.lock) security=true ;;
       esac
       ;;
-    # Self-test path: selector + workflow changes need full Rust scope.
-    .github/workflows/ci.yml|scripts/ci-affected.sh|scripts/tests/ci-affected.sh)
+    # Self-test path: selector + workflow changes need Rust (workspace for safety).
+    .github/workflows/pr-fast.yml|.github/workflows/nightly.yml|.github/workflows/ci.yml|scripts/ci-affected.sh|scripts/tests/ci-affected.sh)
       rust=true
       workspace=true
-      macos=true
       ;;
     # Tooling / hooks / non-CI scripts — no Rust compilation.
     Taskfile.yml|.githooks/*|scripts/*)

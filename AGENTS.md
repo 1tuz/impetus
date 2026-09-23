@@ -69,23 +69,24 @@ Keychain UI, or browser OAuth.
 ## CI and Verification
 
 - **Before push:** `task verify` (fmt + `git diff --check` only).
-- **PR CI** (`.github/workflows/ci.yml`), path-aware:
-  - **Linux** — primary Rust gate: fmt, Clippy (`-D warnings`) on affected +
-    dependants, unit (`--lib --bins`) + integration/`crates/*/tests` + daemon
-    E2E for affected packages (offline mocks).
-  - **macOS** — only when platform-sensitive paths change (Seatbelt, Keychain,
-    PTY/sandbox, no-sudo, peer isolation). Skipped otherwise (does not block Gate).
-  - **Docs-only** — no Rust/macOS; cheap Docs job.
-  - **Security** — `Cargo.toml` / `Cargo.lock` / `deny.toml`.
-  - **Site** — `site/**` only.
-  - **Gate** — sole required check; skipped jobs do not fail merge.
-  - `cancel-in-progress: true` on the workflow concurrency group.
-- Workspace `Cargo.toml` / `Cargo.lock` / CI selector changes broaden to
-  `--workspace` (and enable macOS platform job).
-- On dependency file changes, prefer CI Security job; local `task security`
-  optional. Do not ignore RustSec/CVE/license findings without a versioned
-  `deny.toml` entry.
-- Preview scope: `task ci:affected`.
+- **PR Fast** (`.github/workflows/pr-fast.yml`) — sole required check for merge:
+  - One Ubuntu job named **`PR Fast`**
+  - `git diff --check` + `cargo fmt --check`
+  - `cargo check` on **directly affected** crates only (no dependant fan-out;
+    `Cargo.toml`/`Cargo.lock` → `--workspace`)
+  - Docs/tooling-only: no Rust toolchain
+  - **No** clippy, tests, security, macOS, E2E
+  - `cancel-in-progress` per PR number
+- **Nightly Full** (`.github/workflows/nightly.yml`) — deep quality:
+  - Schedule **02:00 UTC+3** (`cron: "0 23 * * *"`) + `workflow_dispatch`
+  - Linux: fmt, clippy `-D warnings`, check, full `cargo test --workspace`
+  - Security: `cargo audit` + `cargo deny`
+  - macOS: Seatbelt / no-sudo / PTY / Unix socket platform suite
+  - Site npm check; selector self-test
+  - Concurrency group `nightly-full` (one at a time)
+- Local `task security` / `task verify:full` optional; do not ignore RustSec
+  findings without a versioned `deny.toml` entry.
+- Preview affected packages: `task ci:affected`.
 
 ## Git and Commits
 
@@ -123,11 +124,12 @@ Keychain UI, or browser OAuth.
    ```
    Or via GitHub Web UI
 6. **Enable auto-merge** in PR: `gh pr merge --auto --squash` after creation
-7. Required PR CI (**Gate**) passes → **GitHub auto-merges to main**
+7. Required check **`PR Fast`** passes → **GitHub auto-merges to main**
 8. After merge: `git checkout main && git pull` for next task
 
-Agent loop after edits: `fmt` → `git diff --check` → commit → push → read CI
-failure → fix → push. Do not run full local workspace CI before push.
+Agent loop: `fmt` → `git diff --check` → commit → push → **PR Fast** → merge.
+Full regression runs on **Nightly Full** (or manual `workflow_dispatch`).
+Do not run full local/workspace CI before every push.
 
 #### Auto-merge Setup (once per project)
 
@@ -137,8 +139,8 @@ In GitHub Repository Settings → General → Pull Requests:
 
 In Branch protection rules for `main`:
 - ✓ "Require status checks to pass before merging"
-- ✓ Required check: **only** `Gate` (workflow `CI`) — do not require
-  macOS / Linux / Security / Site individually (path-aware jobs may skip)
+- ✓ Required check: **only** `PR Fast` (job name under workflow `PR Fast`)
+- Do **not** require Nightly Full, macOS, Linux Quality, Security, or old `Gate`
 - Can enable auto-merge for each PR via `gh pr merge --auto --squash`
 
 Head branches delete automatically after merge (`delete_branch_on_merge`).

@@ -1,0 +1,128 @@
+name: PR Fast
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-fast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+  CI: "1"
+  IMPETUS_NONINTERACTIVE: "1"
+
+jobs:
+  pr-fast:
+    name: PR Fast
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Fetch base SHA
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.event.pull_request.base.sha }}"
+
+      - name: Scope
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-affected.sh
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+            export CHANGED_FILES
+            CHANGED_FILES="$(git diff --name-only "$BASE" "$HEAD" || true)"
+          else
+            export BASE_REF="HEAD~1"
+          fi
+          ./scripts/ci-affected.sh | tee /tmp/scope.txt
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_OUTPUT"
+          done < /tmp/scope.txt
+          echo "=== scope ==="
+          cat /tmp/scope.txt
+
+      - name: Diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check \
+              "${{ github.event.pull_request.base.sha }}" \
+              "${{ github.event.pull_request.head.sha }}"
+          else
+            git diff --check HEAD
+          fi
+
+      - name: Docs / tooling only
+        if: steps.scope.outputs.rust != 'true' && steps.scope.outputs.site != 'true'
+        run: echo "No Rust/site changes — PR Fast done (diff check only)."
+
+      - name: Setup Node
+        if: steps.scope.outputs.site == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Site npm
+        if: steps.scope.outputs.site == 'true'
+        working-directory: site
+        env:
+          GITHUB_ACTIONS: "true"
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run check
+
+      - name: Rust toolchain
+        if: steps.scope.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
+
+      # Registry/git only — target cache restore often slower than leaf check.
+      - name: Cargo registry cache
+        if: steps.scope.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pr-fast
+          cache-targets: "false"
+          cache-workspace-crates: "false"
+
+      - name: Format
+        if: steps.scope.outputs.rust == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: Affected cargo check
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Direct packages only (no dependant fan-out). Workspace/global → --workspace.
+          PKGS='${{ steps.scope.outputs.packages }}'
+          if [[ -z "$PKGS" || "$PKGS" == "--workspace" ]]; then
+            echo "cargo check --workspace --lib --bins"
+            cargo check --workspace --lib --bins
+          else
+            echo "cargo check $PKGS --lib --bins"
+            # shellcheck disable=SC2086
+            cargo check $PKGS --lib --bins
+          fi
