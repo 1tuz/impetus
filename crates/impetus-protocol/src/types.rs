@@ -1072,12 +1072,18 @@ mod model_provider_status_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionModelSelection {
     pub provider_id: String,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Service tier when the selected model catalog advertises tiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// Non-secret adapter request extras (never credentials). Validated on set/load.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub provider_options: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

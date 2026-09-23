@@ -138,14 +138,7 @@ impl AnthropicProvider {
         if !system_parts.is_empty() {
             body["system"] = serde_json::Value::String(system_parts.join("\n\n"));
         }
-        if let Some(effort) = options
-            .reasoning_effort
-            .as_deref()
-            .filter(|e| !e.is_empty())
-        {
-            // Vendor-neutral effort label; Anthropic may ignore unknown fields.
-            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
-        }
+        options.apply_to_request_body(&mut body);
 
         Ok(body)
     }

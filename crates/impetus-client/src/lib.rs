@@ -794,6 +794,8 @@ pub trait HarnessClient: Send + Sync {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                service_tier: None,
+                provider_options: serde_json::Value::Null,
             })
             .await?
         {

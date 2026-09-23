@@ -434,13 +434,7 @@ impl OpenAiCompatibleProvider {
             "stream": true,
             "messages": messages,
         });
-        if let Some(effort) = options
-            .reasoning_effort
-            .as_deref()
-            .filter(|e| !e.is_empty())
-        {
-            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
-        }
+        options.apply_to_request_body(&mut body);
         let mut request = self
             .client
             .post(
@@ -567,6 +561,7 @@ fn parse_openai_models_list(body: &[u8]) -> Result<Vec<crate::ModelCatalogEntry>
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
+        let service_tiers = string_list_field(&raw, &["service_tiers", "supported_service_tiers"]);
 
         let supported = string_list_field(&raw, &["supported_parameters", "supported_features"]);
         let mut capabilities = ModelCapabilityFlags {
@@ -592,6 +587,7 @@ fn parse_openai_models_list(body: &[u8]) -> Result<Vec<crate::ModelCatalogEntry>
             reasoning_efforts,
             default_reasoning_effort,
             capabilities,
+            service_tiers,
             provider_options,
         });
     }
@@ -650,27 +646,20 @@ fn extract_non_secret_extras(raw: &serde_json::Value) -> serde_json::Value {
         "reasoning_efforts",
         "supported_reasoning_efforts",
         "default_reasoning_effort",
+        "service_tiers",
+        "supported_service_tiers",
         "supported_parameters",
         "supported_features",
-    ];
-    const SECRETISH: &[&str] = &[
-        "api_key",
-        "token",
-        "secret",
-        "password",
-        "authorization",
-        "credential",
     ];
     let Some(obj) = raw.as_object() else {
         return serde_json::Value::Null;
     };
     let mut out = serde_json::Map::new();
     for (key, value) in obj {
-        let lower = key.to_ascii_lowercase();
         if SKIP.contains(&key.as_str()) {
             continue;
         }
-        if SECRETISH.iter().any(|s| lower.contains(s)) {
+        if crate::provider_option_key_is_secretish(key) {
             continue;
         }
         out.insert(key.clone(), value.clone());
@@ -1003,6 +992,8 @@ mod tests {
             let json: serde_json::Value = serde_json::from_str(body).unwrap();
             assert_eq!(json["model"], "session-override-model");
             assert_eq!(json["reasoning_effort"], "high");
+            assert_eq!(json["service_tier"], "priority");
+            assert_eq!(json["temperature"], 0.2);
             stream
                 .write_all(
                     b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: [DONE]\n\n",
@@ -1021,6 +1012,8 @@ mod tests {
         let options = crate::StreamOptions {
             model_id: Some("session-override-model".into()),
             reasoning_effort: Some("high".into()),
+            service_tier: Some("priority".into()),
+            provider_options: serde_json::json!({ "temperature": 0.2 }),
         };
         provider
             .stream_messages(
@@ -1088,6 +1081,45 @@ mod tests {
         assert_eq!(models[0].reasoning_efforts, vec!["low", "high"]);
         assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("low"));
         assert!(models[0].capabilities.reasoning);
+    }
+
+    #[test]
+    fn parse_models_list_extracts_service_tiers_and_strips_secrets() {
+        let body = br#"{
+            "data":[{
+                "id":"tiered",
+                "service_tiers":["default","priority"],
+                "owned_by":"vendor",
+                "api_key":"sk-should-not-leak",
+                "authorization":"Bearer secret"
+            }]
+        }"#;
+        let models = parse_openai_models_list(body).unwrap();
+        assert_eq!(models[0].service_tiers, vec!["default", "priority"]);
+        assert_eq!(models[0].provider_options["owned_by"], "vendor");
+        assert!(models[0].provider_options.get("api_key").is_none());
+        assert!(models[0].provider_options.get("authorization").is_none());
+        assert!(models[0].provider_options.get("service_tiers").is_none());
+    }
+
+    #[test]
+    fn stream_options_apply_skips_secret_keys_in_body_merge() {
+        let mut body = serde_json::json!({ "model": "m", "stream": true });
+        let options = crate::StreamOptions {
+            model_id: None,
+            reasoning_effort: None,
+            service_tier: Some("flex".into()),
+            provider_options: serde_json::json!({
+                "temperature": 0.5,
+                "api_key": "sk-leak",
+                "model": "hijack"
+            }),
+        };
+        options.apply_to_request_body(&mut body);
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["service_tier"], "flex");
+        assert_eq!(body["temperature"], 0.5);
+        assert!(body.get("api_key").is_none());
     }
 
     #[test]
