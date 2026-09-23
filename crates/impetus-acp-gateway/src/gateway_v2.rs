@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::session_config::{
@@ -46,15 +46,26 @@ pub enum GatewayV2Error {
     UnsupportedAuthMethod { selected: String },
 }
 
-/// Permission decision from Impetus Policy.
-#[derive(Debug, Clone)]
+/// Wire-facing ACP permission outcome after Policy/durable approval in core.
+///
+/// Transport-only: durable `NeedsApproval` is brokered by `AcpAdapter` and never
+/// reaches this enum — only exact Select or Deny cross the gateway boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
     /// Select an exact ACP option after Policy/user decision.
     Select(String),
     /// Deny the request
     Deny,
-    /// Need user approval (blocked)
-    NeedsApproval,
+}
+
+/// Map a transport decision to an ACP `RequestPermissionOutcome`.
+pub fn permission_outcome(decision: PermissionDecision) -> RequestPermissionOutcome {
+    match decision {
+        PermissionDecision::Select(option_id) => RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(PermissionOptionId::new(option_id)),
+        ),
+        PermissionDecision::Deny => RequestPermissionOutcome::Cancelled,
+    }
 }
 
 /// Streaming update from agent.
@@ -477,18 +488,6 @@ impl AcpGatewayV2 {
         self.permission_rx.lock().await.recv().await
     }
 
-    /// Respond to permission request.
-    pub async fn respond_permission(
-        &self,
-        _request_id: String,
-        _decision: PermissionDecision,
-    ) -> Result<()> {
-        // This would need to be paired with the oneshot sender from recv_permission_request
-        // For now, this is a simplified interface
-        warn!("respond_permission not fully implemented yet");
-        Ok(())
-    }
-
     async fn handle_session_notification(
         notification: SessionNotification,
         update_tx: mpsc::UnboundedSender<StreamUpdate>,
@@ -592,27 +591,16 @@ impl AcpGatewayV2 {
             return Ok(());
         }
 
-        // Wait for decision
+        // Wait for transport decision (Select|Deny only — durable approval stays in core).
         match decision_rx.await {
-            Ok(PermissionDecision::Select(option_id)) => {
-                info!("Permission option selected");
-                let _ = responder.respond(RequestPermissionResponse::new(
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                        PermissionOptionId::new(option_id),
-                    )),
-                ));
-            }
-            Ok(PermissionDecision::Deny) => {
-                info!("Permission denied");
-                let _ = responder.respond(RequestPermissionResponse::new(
-                    RequestPermissionOutcome::Cancelled,
-                ));
-            }
-            Ok(PermissionDecision::NeedsApproval) => {
-                warn!("Permission needs approval but no approval flow yet");
-                let _ = responder.respond(RequestPermissionResponse::new(
-                    RequestPermissionOutcome::Cancelled,
-                ));
+            Ok(decision) => {
+                let outcome = permission_outcome(decision);
+                if matches!(outcome, RequestPermissionOutcome::Cancelled) {
+                    info!("Permission denied");
+                } else {
+                    info!("Permission option selected");
+                }
+                let _ = responder.respond(RequestPermissionResponse::new(outcome));
             }
             Err(_) => {
                 error!("Permission decision channel closed");
