@@ -118,10 +118,11 @@ jobs:
           cargo test -p impetusd --test daemon_userspace_no_sudo -- --test-threads=1
           # Peer isolation when the module exists (landed via platform PRs).
           if [[ -f crates/impetusd/src/peer_isolation.rs ]]; then
-            cargo test -p impetusd --test daemon_peer_isolation --lib peer_isolation -- --test-threads=1
+            cargo test -p impetusd --test daemon_peer_isolation -- --test-threads=1
+            cargo test -p impetusd --lib peer_isolation -- --test-threads=1
           fi
-          # PTY / process lib filters that exercise macOS behaviour.
-          cargo test -p impetus-core --lib pty sandbox -- --test-threads=2
+          # PTY / sandbox lib filters (single TESTNAME regex).
+          cargo test -p impetus-core --lib 'pty|sandbox' -- --test-threads=2
 
   security:
     name: Security
