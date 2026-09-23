@@ -48,7 +48,7 @@ until evidence exists outside this checklist.
 | # | Proof | Why it matters | Status today |
 | --- | --- | --- | --- |
 | 1 | Install or build yields `impetus` + `impetusd` on `PATH` (or documented install dir) | Release artifact / build is usable without a macOS checkout | Planned (install script names Linux artifact; no documented clean-machine gate) |
-| 2 | Set explicit `IMPETUS_DATA_DIR` (and optional `IMPETUS_SOCKET`) under a Linux-appropriate path (e.g. XDG-style `~/.local/share/impetus`) | Default data root in code still uses macOS `Library/Application Support/Impetus` unless overridden | Planned — override required for honest Linux layout |
+| 2 | Set explicit `IMPETUS_DATA_DIR` (and optional `IMPETUS_SOCKET`) under a Linux-appropriate path (e.g. XDG-style `~/.local/share/impetus`) | Default data root uses `$XDG_DATA_HOME/impetus` or `~/.local/share/impetus` on non-macOS; override still recommended for smoke isolation | Covered by code defaults (#365/#367); override optional |
 | 3 | `impetusd` starts, creates socket + durable store under the chosen data dir, stays up | Daemon is the authority; client alone is not a smoke | Planned |
 | 4 | `impetus doctor` / `impetus doctor --json` runs against the live socket and reports versions, socket/IPC, store, and capability probes without crashing | Operator diagnostics must work on the release OS | Partial — doctor Implemented on macOS-first paths; Ubuntu clean-machine evidence missing |
 | 5 | CLI create → prompt (mock or local no-secret profile) → stream/status without requiring macOS Keychain | Core harness loop on Linux | Planned |
