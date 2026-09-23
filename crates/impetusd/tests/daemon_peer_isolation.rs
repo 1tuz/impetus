@@ -69,6 +69,9 @@ s.connect({socket_lit})
 s.sendall(b'not-json\n')
 try:
     data = s.recv(4096)
+except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+    # Linux AF_UNIX often RSTs when daemon drops unread send — still a reject.
+    sys.exit(3)
 except Exception:
     sys.exit(2)
 sys.exit(0 if data else 3)
