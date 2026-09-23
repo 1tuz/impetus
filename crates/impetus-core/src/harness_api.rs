@@ -2376,14 +2376,13 @@ fn handle_request(
             &id,
         ),
         IpcRequest::GetBrowserHealth => IpcResponse::BrowserHealth {
-            status: impetus_protocol::BrowserHealthStatus::absent(),
+            status: crate::browser_health_via_extension(extension_host.as_ref()),
         },
         IpcRequest::NegotiateBrowser { protocol_version } => IpcResponse::BrowserNegotiate {
-            result: impetus_protocol::BrowserNegotiateInfo {
+            result: crate::browser_negotiate_via_extension(
+                extension_host.as_ref(),
                 protocol_version,
-                compatible: false,
-                reason: impetus_protocol::BrowserHealthStatus::ABSENT_REASON.into(),
-            },
+            ),
         },
     }
 }

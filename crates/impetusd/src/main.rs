@@ -240,8 +240,6 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         .with_provider_steer_rewrite()
         .context("wire provider steer rewrite")?;
 
-    let harness = wire_daemon_coding_tools(harness);
-
     let workflow = Arc::new(
         impetus_core::WorkflowRuntime::with_parent_events(
             child_store,
@@ -283,6 +281,7 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     );
     let _ = extension_host.reload(&discovery);
     let extension_host = Arc::new(std::sync::Mutex::new(extension_host));
+    let harness = wire_daemon_coding_tools(harness, Arc::clone(&extension_host));
     let harness = harness
         .with_extension_runtime(extension_runtime)
         .with_extension_host(extension_host);
@@ -296,22 +295,24 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
     Ok(harness)
 }
 
-/// Attach ProcessLspBackend when a runtime binary is discoverable (#336).
+/// Wire coding-tools: Active `LspIntegration` host_process preferred; optional
+/// `ProcessLspBackend` fallback when `IMPETUS_LSP_BINARY` / `rust-analyzer` found.
 ///
-/// Discovery order: `IMPETUS_LSP_BINARY`, then `rust-analyzer` on `PATH`.
-/// Missing binary → leave Absent (coding IPC stays Unavailable — honest).
-/// Generic stdio client only — concrete language packs / Browser CDP stay
-/// extension-first (`LspIntegration` / `BrowserIntegration`). Never prompts
-/// for install privileges; userspace PATH only.
-fn wire_daemon_coding_tools(harness: Harness) -> Harness {
-    let Some(binary) = discover_lsp_binary() else {
-        return harness;
-    };
-    let backend = impetus_core::ProcessLspBackend::rust_analyzer(
-        impetus_core::LspBackendLaunchHint::with_runtime_binary(binary),
-    );
+/// Missing both → Absent (coding IPC Unavailable — honest). Never prompts for
+/// install privileges; userspace PATH only (#336 / #362).
+fn wire_daemon_coding_tools(
+    harness: Harness,
+    extension_host: Arc<std::sync::Mutex<impetus_core::ExtensionHost>>,
+) -> Harness {
+    let fallback: Option<Arc<dyn impetus_core::CodingToolsProvider>> =
+        discover_lsp_binary().map(|binary| {
+            Arc::new(impetus_core::ProcessLspBackend::rust_analyzer(
+                impetus_core::LspBackendLaunchHint::with_runtime_binary(binary),
+            )) as Arc<dyn impetus_core::CodingToolsProvider>
+        });
+    let provider = impetus_core::PreferExtensionCodingTools::new(extension_host, fallback);
     harness.with_coding_tools(Arc::new(
-        impetus_core::OptionalCodingToolsService::with_provider(Arc::new(backend)),
+        impetus_core::OptionalCodingToolsService::with_provider(Arc::new(provider)),
     ))
 }
 

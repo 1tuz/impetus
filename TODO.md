@@ -60,8 +60,8 @@ Actionable after Now. Not priority theatre.
 | Full Zap discovery/authorize | Checklist #290; production Parked |
 | Invert core → acp-gateway dependency | Parked mega-refactor |
 | Full thin-client domain split | Gradual PROTO; mega-split Parked |
-| Full LSP protocol | Parked beyond spawn + goto/hover/symbols + cancel + diagnostics cache; multi-language installers stay extension `LspIntegration` (SDK kind declare-only until host API) |
-| Extension `MemoryProvider` | Declare-only SDK kind — core MemoryStore IPC is separate Implemented seam |
+| Full LSP protocol | Parked beyond spawn + goto/hover/symbols + cancel + diagnostics cache; multi-language installers via extension `LspIntegration` operate (#362) |
+| Extension `MemoryProvider` | Optional operate (`memory/recall|store`); core MemoryStore remains session SoT (#363) |
 | macOS Instruments/authd proof | Parked — SIP interactive tooling; unit+userspace E2E cover no-sudo paths |
 | Custom TUI ANSI emulator | Won't — PTY passthrough only |
 | Hidden chain-of-thought UI | Won't — summary/intent only |

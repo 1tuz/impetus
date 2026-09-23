@@ -39,6 +39,7 @@ pub mod execution_mode;
 pub mod explore_agent_loop;
 pub mod explore_child;
 pub mod extension_adapter;
+pub mod extension_capability_bridge;
 pub mod extension_capability_registry;
 pub mod extension_compat;
 pub mod extension_host;
@@ -238,6 +239,10 @@ pub use explore_child::{
     resume_parent_after_explore, validate_explore_allowed_tools,
 };
 pub use extension_adapter::{ExtensionAdapter, ExtensionRegistry};
+pub use extension_capability_bridge::{
+    PreferExtensionCodingTools, browser_health_via_extension, browser_negotiate_via_extension,
+    context_contribute_via_extension, memory_recall_via_extension,
+};
 pub use extension_capability_registry::ExtensionCapabilityRegistry;
 pub use extension_compat::{
     AgentProfile, CanonicalModuleKind, CanonicalModuleSpec, CanonicalSkill, Command,
