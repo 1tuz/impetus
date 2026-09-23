@@ -82,6 +82,15 @@ pub(super) enum Effect {
     SetExecutionMode {
         mode: ExecutionMode,
     },
+    /// Refresh daemon provider catalog and open the model picker.
+    OpenModelPicker,
+    SetSessionModel {
+        provider_id: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+        /// Local options draft retained in AppState (IPC passthrough = #328).
+        options: Option<serde_json::Value>,
+    },
     FilesListDir {
         path: String,
     },
@@ -300,6 +309,8 @@ pub(super) fn execute_effect(
             app.status_message = "attaching".to_owned();
             app.run_state = RunState::Idle;
             app.overlay = Overlay::None;
+            app.session_model = None;
+            app.session_model_options = None;
             app.dirty = true;
 
             let backend = backend.clone();
@@ -341,9 +352,41 @@ pub(super) fn execute_effect(
                     return;
                 }
 
+                let model_bundle = fetch_session_model_bundle(backend.as_ref(), session_id).await;
+                if tx
+                    .send(AppMessage::SessionModelRestored {
+                        session_id,
+                        generation,
+                        result: model_bundle,
+                        open_picker: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+
                 let mut after_sequence = 0u64;
                 let mut backoff = Duration::from_millis(250);
+                let mut first_subscribe = true;
                 loop {
+                    if !first_subscribe {
+                        let model_bundle =
+                            fetch_session_model_bundle(backend.as_ref(), session_id).await;
+                        if tx
+                            .send(AppMessage::SessionModelRestored {
+                                session_id,
+                                generation,
+                                result: model_bundle,
+                                open_picker: false,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    first_subscribe = false;
                     let stream = backend.subscribe(session_id, after_sequence).await;
                     let mut stream = match stream {
                         Ok(stream) => {
@@ -654,6 +697,71 @@ pub(super) fn execute_effect(
                     .await;
             });
         }
+        Effect::OpenModelPicker => {
+            if !app.connection.capabilities.contains("list_providers")
+                && !app.connection.capabilities.contains("session_model")
+            {
+                app.show_toast(
+                    "Daemon missing `list_providers` / `session_model` capability.",
+                    true,
+                );
+                return;
+            }
+            let Some(session_id) = app.active_session else {
+                app.show_toast("No active session. Create or resume one first.", true);
+                return;
+            };
+            app.status_message = "loading provider catalog".to_owned();
+            app.dirty = true;
+            let generation = app.subscription_generation;
+            let backend = backend.clone();
+            let tx = tx.clone();
+            spawn_detached(async move {
+                let result = fetch_session_model_bundle(backend.as_ref(), session_id).await;
+                let _ = tx
+                    .send(AppMessage::SessionModelRestored {
+                        session_id,
+                        generation,
+                        result,
+                        open_picker: true,
+                    })
+                    .await;
+            });
+        }
+        Effect::SetSessionModel {
+            provider_id,
+            model_id,
+            reasoning_effort,
+            options,
+        } => {
+            let Some(session_id) = app.active_session else {
+                app.show_toast("No active session. Create or resume one first.", true);
+                return;
+            };
+            if !app.connection.capabilities.contains("session_model") {
+                app.show_toast("Daemon missing `session_model` capability.", true);
+                return;
+            }
+            app.status_message = format!("setting model · {provider_id}/{model_id}");
+            app.dirty = true;
+            let generation = app.subscription_generation;
+            let backend = backend.clone();
+            let tx = tx.clone();
+            spawn_detached(async move {
+                let result = backend
+                    .set_session_model(session_id, provider_id, model_id, reasoning_effort)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = tx
+                    .send(AppMessage::SessionModelUpdated {
+                        session_id,
+                        generation,
+                        result,
+                        options,
+                    })
+                    .await;
+            });
+        }
         Effect::FilesListDir { path } => {
             let Some(session_id) = app.active_session else {
                 app.show_toast("No active session. Create or resume one first.", true);
@@ -886,9 +994,8 @@ async fn upload_local_artifact(
     path: &str,
 ) -> Result<PendingArtifact, String> {
     let path_buf = PathBuf::from(path);
-    let meta = tokio::fs::metadata(&path_buf)
-        .await
-        .map_err(|error| format!("cannot stat `{path}`: {error}"))?;
+    let meta =
+        std::fs::metadata(&path_buf).map_err(|error| format!("cannot stat `{path}`: {error}"))?;
     if !meta.is_file() {
         return Err(format!("`{path}` is not a regular file"));
     }
@@ -898,9 +1005,8 @@ async fn upload_local_artifact(
             "file is too large ({byte_count} bytes). Maximum upload size is {MAX_PASTE_UPLOAD_BYTES} bytes."
         ));
     }
-    let bytes = tokio::fs::read(&path_buf)
-        .await
-        .map_err(|error| format!("cannot read `{path}`: {error}"))?;
+    let bytes =
+        std::fs::read(&path_buf).map_err(|error| format!("cannot read `{path}`: {error}"))?;
     let content_type = guess_content_type(&path_buf);
     let artifact = backend
         .upload_artifact(session_id, bytes, content_type.clone())
@@ -934,6 +1040,27 @@ async fn upload_local_artifact(
         content_type,
         label,
     })
+}
+
+async fn fetch_session_model_bundle(
+    backend: &dyn UiBackend,
+    session_id: Uuid,
+) -> Result<
+    (
+        Vec<impetus_client::protocol::ModelProviderStatus>,
+        impetus_client::protocol::SessionModelSelection,
+    ),
+    String,
+> {
+    let catalog = backend
+        .list_providers()
+        .await
+        .map_err(|error| error.to_string())?;
+    let selection = backend
+        .get_session_model(session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((catalog, selection))
 }
 
 async fn load_review_snapshot(
