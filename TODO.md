@@ -51,7 +51,7 @@ Actionable after Now. Not priority theatre.
   shipped `#417` (`declared_write_set.rs`, `schedule_with_write_lease`;
   conflict/stale denied in unit tests). Remaining: Explore/RoleChild
   production spawn wiring
-- PtyList daemon E2E: `#420` (in flight)
+- PtyList daemon E2E: shipped `#420` (`daemon_unix_pty_list.rs`)
 - host_process full EffectSeam on operate: `#421` (in flight)
 
 ### Extension split follow-through

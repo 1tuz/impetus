@@ -45,8 +45,7 @@ async fn daemon_unix_pty_list_owner_scoped_inventory() {
         "inventory must include live PTY: {all:?}"
     );
     assert!(
-        all.iter()
-            .all(|s| s.owner_session_id == session_a),
+        all.iter().all(|s| s.owner_session_id == session_a),
         "rows must be owner-scoped: {all:?}"
     );
 
