@@ -36,6 +36,8 @@ Actionable after Now. Not priority theatre.
 - ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
   evidence-preserving reduce + durable compaction anchors; raw recover via
   ArtifactStore / EventStore)
+- Eval CLI + ExperimentCapsule: shipped `#408` (offline mock fixtures,
+  capsule digest, role stubs; promotion never automatic)
 
 ### Extension split follow-through
 
