@@ -307,6 +307,6 @@ mod tests {
             Some("reload_policy_config")
         );
         assert_eq!(IPC_MIN_SUPPORTED, 12);
-        assert_eq!(IPC_VERSION, 14);
+        assert_eq!(IPC_VERSION, 15);
     }
 }

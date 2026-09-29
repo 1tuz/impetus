@@ -38,7 +38,7 @@ Example:
 In-process reload remains a library API (`PolicyEngine::reload_config*` /
 `AgentRuntime::reload_policy_config*`). Typed IPC reload: negotiate
 `reload_policy_config`, then `ReloadPolicyConfig` with `path` **or** `config_json`
-(IPC v7). Invalid reload returns an error, keeps the prior overrides, and
+(IPC v12+; current negotiate 12..=15). Invalid reload returns an error, keeps the prior overrides, and
 appends a durable `Notice` on active sessions.
 
 ## Data and socket paths

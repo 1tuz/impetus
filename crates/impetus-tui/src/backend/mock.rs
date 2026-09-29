@@ -851,6 +851,10 @@ impl UiBackend for MockBackend {
             command,
             cols: cols.unwrap_or(80),
             rows: rows.unwrap_or(24),
+            args: Vec::new(),
+            working_dir: None,
+            created_at_unix_ms: None,
+            origin: None,
         })
     }
 

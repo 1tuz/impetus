@@ -4,12 +4,18 @@
 
 Components in Impetus include:
 - **Built-in tools** (bash, read, write, edit, search) — always available, bundled with `impetus-core`
-- **External modules** — optional extensions loaded via Module Runtime (aspirational lockfile below)
+- **Extension Host packages** — sole public extension substrate
+  (`instruction_pack` / `mcp_bridge` / `host_process` via `extension.toml`)
 - **Compatibility adapters** — bridges to external formats (MCP, Agent Plugins, etc.)
 
+Legacy **Module Runtime** (`module_registry` / unix `ModuleMessage`) is
+**Deprecated** — library/tests only, not wired into `impetusd`. Do not build
+new plugins against it.
+
 **CLI note:** `impetus components list|status` prints the static built-in tool
-catalog only. It does not query `impetusd` or the live module registry. Use
-`impetus doctor` for runtime/subsystem health.
+catalog only. It does not query `impetusd` or Extension Host. Use
+`impetus doctor` for runtime/subsystem health; use IPC `extension_manage` /
+`impetus extension …` for packages.
 
 ## Component Versioning and Reproducibility
 
@@ -128,12 +134,11 @@ open — see [TODO.md](../../TODO.md) Later (marketplace) and Next (live modules
 - `impetus components status [id]` — catalog entry lookup; live health via `doctor`
 
 **Deferred (see TODO.md Later / Next):**
-- External module registration, loading, isolation
-- Update check/apply flows
-- Enable/disable/remove operations
-- Lock file generation and verification
-- Note: extension install IDs are allowlisted (`extension_id`, #296) where
-  lifecycle writes under project `.impetus/` roots.
+- Aspirational lockfile / digest reproducibility (not Module Runtime)
+- Marketplace update check/apply (Won't — use daemon Install/Remove)
+
+**Shipped elsewhere:** Extension Host package lifecycle via IPC `extension_manage`
+(list/enable/disable/install/remove) — see [docs/extensions/ipc.md](../extensions/ipc.md).
 
 **Completion criterion:** Concept documented, built-in introspection working.
 
@@ -141,6 +146,6 @@ open — see [TODO.md](../../TODO.md) Later (marketplace) and Next (live modules
 
 ## References
 
-- [ARCHITECTURE.md](../../ARCHITECTURE.md) § Module Runtime
-- [TODO.md](../../TODO.md) (extension lifecycle / Module Runtime)
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) § Extension runtime / Module Runtime Deprecated
+- [TODO.md](../../TODO.md) (extension package follow-through)
 - `impetus components --help` for CLI usage

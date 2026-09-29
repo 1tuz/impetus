@@ -5,10 +5,11 @@ use crate::types::{
     ExtensionPackageInfo, ExtensionStatusInfo, GitBranchInfo, GitChangedFile, GitCurrentBranch,
     GitDiffPayload, GitRepositoryState, GitStatusSnapshot, HoverInfo, McpServerStatus,
     McpServerUpsert, MemoryEntryInfo, MemoryEntryScope, MemoryExportFormat, MemoryProvenanceInfo,
-    MergeReadyReport, ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionState,
-    ReadOnlyToolKind, ResolvedInstructions, RuntimeStatus, SessionInfo, SessionModelSelection,
-    SourceLocation, SubsystemHealth, ToolOutcome, UserPromptIntent, WorkspaceDirListing,
-    WorkspaceFileContent, WorkspaceFileMetadata, WorkspaceSearchResult, WorktreeInfo,
+    MergeReadyReport, ModelProviderStatus, PolicyConfig, PolicyStore, PtySessionInfo,
+    PtySessionState, ReadOnlyToolKind, ResolvedInstructions, RuntimeStatus, SessionInfo,
+    SessionModelSelection, SourceLocation, SubsystemHealth, ToolOutcome, UserPromptIntent,
+    WorkspaceDirListing, WorkspaceFileContent, WorkspaceFileMetadata, WorkspaceSearchResult,
+    WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,8 +55,8 @@ fn events_frame_len(session_id: Uuid, events: &[Event]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-pub const IPC_VERSION: u16 = 14;
-/// Inclusive lower bound for Hello negotiation (clients on 12..14 accepted).
+pub const IPC_VERSION: u16 = 15;
+/// Inclusive lower bound for Hello negotiation (clients on 12..15 accepted).
 pub const IPC_MIN_SUPPORTED: u16 = 12;
 
 pub const IPC_CAPABILITIES: &[&str] = &[
@@ -123,7 +124,7 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "browser",
     // ExtensionRuntime inventory (List/Get; CLI remains control plane).
     "extension_runtime",
-    // ExtensionHost package manage (reload/enable/disable/list; IPC v14).
+    // ExtensionHost package manage (reload/enable/disable/list/install/remove; IPC v14+).
     "extension_manage",
 ];
 
@@ -432,6 +433,14 @@ pub enum IpcRequest {
         session_id: Uuid,
         pty_id: u64,
     },
+    /// List PTY sessions owned by `session_id` (metadata for Desktop multi-tab).
+    /// No presentation state (tab order/titles) — client-owned.
+    PtyList {
+        session_id: Uuid,
+        /// When true, omit Exited/Failed metadata-only rows.
+        #[serde(default)]
+        live_only: bool,
+    },
     /// List daemon MCP catalog (labels + connected flag; no env/args/secrets).
     ListMcpServers,
     /// List registered model providers (ids + health; no credentials).
@@ -559,6 +568,18 @@ pub enum IpcRequest {
     },
     /// Deactivate package; capabilities leave AgentLoop registry.
     DisableExtensionPackage {
+        id: String,
+    },
+    /// Copy a package directory into daemon global packages + reload.
+    /// Source must contain `extension.toml` / `extension.json`. Not marketplace.
+    InstallExtensionPackage {
+        source_path: std::path::PathBuf,
+        /// Replace existing global package with the same id.
+        #[serde(default)]
+        replace: bool,
+    },
+    /// Delete a **global** installed package directory + reload (not workspace/dev).
+    RemoveExtensionPackage {
         id: String,
     },
     /// Typed `host_process` operate (Active pack only). Permission token must
@@ -761,6 +782,21 @@ pub enum IpcResponse {
         command: String,
         cols: u16,
         rows: u16,
+        /// Additive IPC v15 — empty when omitted by older peers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_at_unix_ms: Option<u64>,
+        /// `user` | `agent` when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<String>,
+    },
+    /// Owner-scoped PTY inventory (`PtyList`).
+    PtySessions {
+        session_id: Uuid,
+        sessions: Vec<PtySessionInfo>,
     },
     PtyOutput {
         pty_id: u64,
@@ -950,7 +986,8 @@ pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
         | IpcRequest::PtyResize { .. }
         | IpcRequest::PtyDetach { .. }
         | IpcRequest::PtyTerminate { .. }
-        | IpcRequest::PtyStatus { .. } => "pty",
+        | IpcRequest::PtyStatus { .. }
+        | IpcRequest::PtyList { .. } => "pty",
         IpcRequest::ListMcpServers => "list_mcp",
         IpcRequest::ListModels => "list_models",
         IpcRequest::ListProviders => "list_providers",
@@ -979,6 +1016,8 @@ pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
         | IpcRequest::GetExtensionPackage { .. }
         | IpcRequest::EnableExtensionPackage { .. }
         | IpcRequest::DisableExtensionPackage { .. }
+        | IpcRequest::InstallExtensionPackage { .. }
+        | IpcRequest::RemoveExtensionPackage { .. }
         | IpcRequest::OperateExtensionPackage { .. } => "extension_manage",
     })
 }
@@ -1049,6 +1088,21 @@ pub fn validate_request_on_wire(request: &IpcRequest) -> Result<(), String> {
         | IpcRequest::DisableMcpServer { id } => {
             if id.trim().is_empty() {
                 return Err("mcp_manage: id must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::InstallExtensionPackage { source_path, .. } => {
+            if source_path.as_os_str().is_empty() {
+                return Err("install_extension_package: source_path must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::RemoveExtensionPackage { id }
+        | IpcRequest::EnableExtensionPackage { id }
+        | IpcRequest::DisableExtensionPackage { id }
+        | IpcRequest::GetExtensionPackage { id } => {
+            if id.trim().is_empty() {
+                return Err("extension_manage: id must not be empty".into());
             }
             Ok(())
         }
@@ -1525,7 +1579,7 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"extension_runtime"));
         assert!(IPC_CAPABILITIES.contains(&"extension_manage"));
         assert!(IPC_CAPABILITIES.contains(&"resolve_approval_bound"));
-        assert_eq!(IPC_VERSION, 14);
+        assert_eq!(IPC_VERSION, 15);
         assert_eq!(IPC_MIN_SUPPORTED, 12);
     }
 
@@ -1550,6 +1604,26 @@ mod sentinel_protocol {
             operate
         );
         assert_eq!(required_capability(&operate), Some("extension_manage"));
+
+        let install = IpcRequest::InstallExtensionPackage {
+            source_path: std::path::PathBuf::from("/tmp/demo-pack"),
+            replace: true,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&install).unwrap()).unwrap(),
+            install
+        );
+        assert_eq!(required_capability(&install), Some("extension_manage"));
+
+        let remove = IpcRequest::RemoveExtensionPackage {
+            id: "demo-pack".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&remove).unwrap()).unwrap(),
+            remove
+        );
+        assert_eq!(required_capability(&remove), Some("extension_manage"));
+
         let packages = IpcResponse::ExtensionPackages {
             packages: vec![ExtensionPackageInfo {
                 id: "demo-pack".into(),
@@ -1578,6 +1652,92 @@ mod sentinel_protocol {
             serde_json::from_str::<IpcResponse>(&serde_json::to_string(&operate_ok).unwrap())
                 .unwrap(),
             operate_ok
+        );
+    }
+
+    #[test]
+    fn pty_list_and_session_messages_round_trip() {
+        let session_id = Uuid::new_v4();
+        let list = IpcRequest::PtyList {
+            session_id,
+            live_only: true,
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcRequest>(&serde_json::to_string(&list).unwrap()).unwrap(),
+            list
+        );
+        assert_eq!(required_capability(&list), Some("pty"));
+
+        let list_default = serde_json::from_str::<IpcRequest>(&format!(
+            r#"{{"method":"pty_list","params":{{"session_id":"{session_id}"}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            list_default,
+            IpcRequest::PtyList {
+                session_id,
+                live_only: false,
+            }
+        );
+
+        let info = PtySessionInfo {
+            pty_id: 7,
+            owner_session_id: session_id,
+            state: PtySessionState::Running { pid: 42 },
+            command: "zsh".into(),
+            args: vec!["-l".into()],
+            cols: 120,
+            rows: 40,
+            working_dir: Some("/tmp".into()),
+            created_at_unix_ms: Some(1_700_000_000_000),
+            origin: Some("user".into()),
+        };
+        let sessions = IpcResponse::PtySessions {
+            session_id,
+            sessions: vec![info.clone()],
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&sessions).unwrap())
+                .unwrap(),
+            sessions
+        );
+
+        let session = IpcResponse::PtySession {
+            pty_id: 7,
+            owner_session_id: session_id,
+            state: PtySessionState::Running { pid: 42 },
+            command: "zsh".into(),
+            cols: 120,
+            rows: 40,
+            args: vec!["-l".into()],
+            working_dir: Some("/tmp".into()),
+            created_at_unix_ms: Some(1_700_000_000_000),
+            origin: Some("user".into()),
+        };
+        assert_eq!(
+            serde_json::from_str::<IpcResponse>(&serde_json::to_string(&session).unwrap()).unwrap(),
+            session
+        );
+
+        // Additive defaults: older peers omit v15 fields.
+        let legacy = serde_json::from_str::<IpcResponse>(&format!(
+            r#"{{"result":"pty_session","data":{{"pty_id":1,"owner_session_id":"{session_id}","state":{{"running":{{"pid":9}}}},"command":"bash","cols":80,"rows":24}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            legacy,
+            IpcResponse::PtySession {
+                pty_id: 1,
+                owner_session_id: session_id,
+                state: PtySessionState::Running { pid: 9 },
+                command: "bash".into(),
+                cols: 80,
+                rows: 24,
+                args: vec![],
+                working_dir: None,
+                created_at_unix_ms: None,
+                origin: None,
+            }
         );
     }
 

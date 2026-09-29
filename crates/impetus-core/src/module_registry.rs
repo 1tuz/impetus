@@ -6,7 +6,8 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-/// Module registry for lifecycle management
+/// Frozen legacy Module Runtime registry — **not** wired into `impetusd`.
+/// Use [`crate::ExtensionHost`] for packages.
 pub struct ModuleRegistry {
     modules: Arc<RwLock<HashMap<String, RegisteredModule>>>,
 }

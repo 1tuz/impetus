@@ -1330,6 +1330,26 @@ pub struct ExtensionStatusInfo {
     pub status: String,
 }
 
+/// Daemon-owned PTY row for list/status (labels only; no env secrets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PtySessionInfo {
+    pub pty_id: u64,
+    pub owner_session_id: uuid::Uuid,
+    pub state: PtySessionState,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<u64>,
+    /// `user` | `agent` when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
 /// ExtensionHost package row (labels only; no secrets).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionPackageInfo {

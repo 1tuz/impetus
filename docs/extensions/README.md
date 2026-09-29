@@ -22,25 +22,29 @@ See also:
 
 ## Status honesty
 
-Do **not** mark this subsystem `Implemented` in `ARCHITECTURE.md` until:
+Split status (see `ARCHITECTURE.md` matrix):
 
-1. `impetus-extension-sdk` is stable enough for an external crate to depend on
-2. Daemon can discover, validate, load, enable/disable packages
-3. AgentLoop consumes Active packs via host registry views (skills still need
-   filesystem roots for `SKILL.md` content — not install_state path hacks)
-4. Lifecycle + isolation tests + real `impetusd` E2E pass
-5. crates.io publish / tagged pin story for external `impetus-extensions`
+| Surface | Status | Gate |
+| --- | --- | --- |
+| Package lifecycle (discover/list/enable/disable/install/remove/operate) | **Implemented** | IPC `extension_manage` ≥ v14; install/remove ≥ v15 |
+| Runtime MCP/skills in AgentLoop | **Partial** | Live path works; remaining = crates.io SDK publish |
+| Marketplace / catalog browse | **Won't** | Manual/source install only |
 
-Until then: **Partial** (`instruction_pack` + `mcp_bridge` + `host_process`
-handshake shipped; SDK not crates.io yet).
+Do **not** claim the full Extension subsystem Implemented until crates.io
+publish / tagged pin for external `impetus-extensions` lands.
+
+Sole public extension substrate = **Extension Host**
+(`instruction_pack` / `mcp_bridge` / `host_process`). Legacy Module Runtime is
+**Deprecated** (library only — not wired into `impetusd`).
 
 ## Layers
 
 ```text
 impetus-extension-sdk     # public types (manifest, permissions, API version)
 impetus-core host         # discovery, validate, registry, AgentLoop inject
-impetusd IPC              # list/get/enable/disable/reload/status/caps/compat
+impetusd IPC              # list/get/enable/disable/install/remove/reload/operate
 ```
 
 Legacy CLI Skill/MCP install (`impetus extension plan|install|…`) remains a
-compatible adapter; new work authors **packages** with `extension.toml`.
+compatible adapter; new work authors **packages** with `extension.toml` and
+uses daemon Install/Remove IPC.

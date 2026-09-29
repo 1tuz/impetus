@@ -20,7 +20,8 @@
 
 ```text
 JCode Browser Provider Protocol  →  reference shapes (negotiate / health / session)
-Impetus BrowserService            →  own in-process contracts + Module Runtime
+Impetus BrowserService            →  own in-process contracts + Extension Host
+                                     (`BrowserIntegration` capability)
 Real Firefox/Chrome/WebDriver     →  optional later providers (not this slice)
 ```
 
@@ -42,7 +43,7 @@ Harness core must **not** require Chromium, Playwright, Node, or Electron.
 
 | Upstream shape | Decision | Impetus mapping / reason |
 | --- | --- | --- |
-| Design goals (one tool, many providers, negotiation) | `ADAPT` | `BrowserService` / `BrowserProvider` + Module Runtime |
+| Design goals (one tool, many providers, negotiation) | `ADAPT` | `BrowserService` / `BrowserProvider` + Extension Host |
 | `provider.describe` | `ADAPT` | `BrowserProviderDescriptor` |
 | `provider.status` (`ready` / `degraded` / `unavailable`) | `ADAPT` | `BrowserServiceStatus` |
 | Capability lists / features | `ADAPT` | `BrowserCapability` + negotiate intersection |
@@ -89,6 +90,6 @@ See `crates/impetus-core/src/web_research/browser.rs` and `real_browser.rs`.
 
 ## After this reference
 
-1. Optional real providers as Module Runtime plugins (separate issues).
+1. Optional real providers as Extension Host `BrowserIntegration` packs (separate issues).
 2. If upstream bumps protocol past `0.1`, re-pin SHA and refresh the table.
 3. Interactive page ops only when a concrete provider lands.

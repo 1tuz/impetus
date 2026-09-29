@@ -31,6 +31,9 @@ Actionable after Now. Not priority theatre.
 ### Extension split follow-through
 
 - [ ] Stand up `impetus-extensions` repo against contract + demo packs
+- [ ] CLI `extension *` package path via daemon `Install`/`Remove` IPC
+      (legacy Skill/MCP offline FS remains until migrated; best-effort
+      `ReloadExtensionPackages` when sock live)
 
 ### Daemon / protocol
 
@@ -39,10 +42,16 @@ Actionable after Now. Not priority theatre.
 ### Clients
 
 - [ ] TUI: sequence picker polish
-- [ ] Desktop: PTY UI, model picker, worktrees UI; drop any remaining local
-      MCP/provider config parse (daemon SoT only)
-- [ ] Desktop: switch to `impetus-daemon-control`; delete local spawn; pass
-      bundled `impetusd` path
+- [ ] Desktop: model picker / worktrees UI polish; PtyList attach picker
+      (PTY dock already on harness; Core `PtyList` shipped #395)
+- [ ] Desktop: delete any remaining local spawn if still present; prefer
+      bundled `impetusd` path via `impetus-daemon-control`
+
+### Module Runtime debt
+
+- [ ] Remove frozen Module Runtime library stack
+      (`module_registry` / `module_lifecycle` / `module_ipc` / `test-module`)
+      after Nightly confirms no external callers — keep `module_fallback`
 
 ---
 
@@ -52,7 +61,7 @@ Actionable after Now. Not priority theatre.
 | --- | --- |
 | Cross-machine orchestration | Parked |
 | Multi-team swarm beyond Workflow recipes | Won't near-term |
-| Plugin marketplace / large plugin ABI | Won't — CLI `extension *` stays |
+| Plugin marketplace / large plugin ABI | Won't — daemon package Install/Remove + CLI `extension *` stays |
 | Portable sessions between harnesses | Parked |
 | Deep Claude/Codex/Cursor runtime compat | Import adapters only |
 | Long-running planner/tester loops | Parked |
@@ -66,6 +75,7 @@ Actionable after Now. Not priority theatre.
 | Hidden chain-of-thought UI | Won't — summary/intent only |
 | Full LSP protocol (entire LSP spec in core) | Won't — shipped coding_* + `LspIntegration` / `ProcessLspBackend` (#391); language packs in extensions |
 | Browser CDP/WebDriver in core | Won't — health/negotiate + `BrowserIntegration` shipped (#391); CDP bridges only in extensions |
+| host_process full EffectSeam / Seatbelt | Parked — operate stays permission + secret-key reject (#395 honesty) |
 
 ---
 
@@ -84,3 +94,4 @@ Shipped program slices: [#315](https://github.com/1tuz/impetus/issues/315) harne
 Daemon Unix E2E: approvals / MCP mutate / Files-Diff (`daemon_unix_approvals_mcp_files`);
 provider-option persist (`daemon_unix_e2e`); ACP permission (`daemon_unix_acp_permission`);
 extension host_process operate (`daemon_unix_extensions` + `OperateExtensionPackage`).
+Daemon SoT close (#395): `PtyList` + package Install/Remove IPC; Module Runtime Deprecated.
