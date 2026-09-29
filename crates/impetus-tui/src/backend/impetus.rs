@@ -4,7 +4,8 @@ use impetus_client::protocol::ExecutionMode;
 use impetus_client::protocol::{
     AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
     EffectFenceEvent, Event, EventPayload, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES,
-    NoticeEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SessionEvent, ToolEvent,
+    NoticeEvent, OfflineBatchEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SessionEvent,
+    ToolEvent,
 };
 use impetus_client::{EventSubscription, HarnessClient, UnixSocketTransport};
 use std::collections::BTreeSet;
@@ -961,6 +962,15 @@ fn map_event(event: Event) -> UiEvent {
                 remediation: None,
             }
         }
+        EventPayload::OfflineBatch(batch) => UiEventKind::Notice {
+            title: "offline batch".to_owned(),
+            message: format!("{batch:?}"),
+            error: matches!(
+                batch,
+                OfflineBatchEvent::Failed { .. } | OfflineBatchEvent::Unknown { .. }
+            ),
+            remediation: None,
+        },
         EventPayload::EffectFence(fence) => {
             let (title, message, error) = match fence {
                 EffectFenceEvent::Prepared {

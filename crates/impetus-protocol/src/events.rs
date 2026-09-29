@@ -106,6 +106,8 @@ pub enum EventPayload {
     Command(CommandEvent),
     /// Write-ahead effect fence transitions (Prepared → Started → Observed/Failed/Unknown).
     EffectFence(EffectFenceEvent),
+    /// Durable offline batch submit/collect journal (#416 / parent #397).
+    OfflineBatch(OfflineBatchEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -316,6 +318,56 @@ pub enum EffectFenceEvent {
     Unknown {
         effect_id: Uuid,
         args_digest: String,
+        reason: String,
+    },
+}
+
+/// Durable offline batch lifecycle on the session EventStore.
+///
+/// Labels/digests/hashes only — never tokens, prompts, or raw provider payloads.
+/// `Unknown` must not be treated as safe to duplicate cost-bearing submission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum OfflineBatchEvent {
+    /// Write-ahead: intent persisted before provider submit.
+    Submitted {
+        batch_id: Uuid,
+        config_digest: String,
+        item_count: u32,
+    },
+    /// Provider job id observed after submit (may arrive after crash → reconcile).
+    ProviderLinked {
+        batch_id: Uuid,
+        config_digest: String,
+        provider_job_id: String,
+    },
+    Collecting {
+        batch_id: Uuid,
+        config_digest: String,
+    },
+    ItemDelivered {
+        batch_id: Uuid,
+        item_id: String,
+        result_hash: String,
+        workspace_relpath: String,
+    },
+    Delivered {
+        batch_id: Uuid,
+        config_digest: String,
+    },
+    Failed {
+        batch_id: Uuid,
+        config_digest: String,
+        reason: String,
+    },
+    Unknown {
+        batch_id: Uuid,
+        config_digest: String,
+        reason: String,
+    },
+    ResubmitRefused {
+        batch_id: Uuid,
+        config_digest: String,
         reason: String,
     },
 }

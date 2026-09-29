@@ -311,6 +311,9 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
         EventPayload::EffectFence(fence) => {
             render_block("EffectFence", &format!("{:?}", fence));
         }
+        EventPayload::OfflineBatch(batch) => {
+            render_block("OfflineBatch", &format!("{:?}", batch));
+        }
     }
 }
 
