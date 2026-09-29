@@ -52,6 +52,7 @@ pub mod extension_inventory;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
 pub mod extension_policy;
+pub mod flight_receipt;
 pub mod gap_loop;
 pub mod git_ops;
 pub mod harness_api;
@@ -304,6 +305,10 @@ pub use extension_manifest::{
 };
 pub use extension_policy::{
     action_kinds_for_permission, evaluate_permission_against_scope, permission_eval,
+};
+pub use flight_receipt::{
+    EffectFenceSummary, EffectReplayMode, FlightReceipt, FlightReceiptError, ReplayTimeline,
+    ReplayTimelineEntry, export_receipt, receipt_from_events, replay_events, replay_session,
 };
 pub use gap_loop::{GAP_LOOP_MAX_ITERATIONS, GapLoopOutcome, run_gap_loop};
 pub use git_ops::{

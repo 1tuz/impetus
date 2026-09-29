@@ -40,6 +40,9 @@ Actionable after Now. Not priority theatre.
   capsule digest, role stubs; promotion never automatic)
 - Promise/obligation ledger: shipped `#412` (ledger + CompletionGate
   fail-closed on Open required; fulfill allows Accept)
+- Flight Recorder receipts + observe-only replay: shipped `#413`
+  (`impetus receipt export` / `impetus replay`; EventStore projection only;
+  no EffectSeam re-execute)
 
 ### Extension split follow-through
 

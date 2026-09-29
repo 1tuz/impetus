@@ -7,6 +7,7 @@ mod daemon;
 mod doctor;
 mod eval;
 mod extension;
+mod receipt;
 mod skills;
 mod tui;
 
@@ -225,6 +226,25 @@ enum Commands {
     Eval {
         #[command(subcommand)]
         action: eval::EvalAction,
+    },
+    /// Flight Recorder receipt export from EventStore (observe-only; #413)
+    Receipt {
+        #[command(subcommand)]
+        action: receipt::ReceiptAction,
+    },
+    /// Observe-only EventStore timeline replay (never re-executes effects; #413)
+    Replay {
+        /// Session id
+        session_id: Uuid,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Override EventStore sqlite path
+        #[arg(long)]
+        db: Option<std::path::PathBuf>,
+        /// Daemon data root when --db omitted
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
     },
     /// Launch interactive TUI (MVP UI)
     Ui,
@@ -506,6 +526,20 @@ async fn main() -> Result<()> {
             eval::run(action).await?;
             return Ok(());
         }
+        Commands::Receipt { action } => {
+            // Offline EventStore read — no daemon, no EffectSeam execute.
+            receipt::run_receipt(action)?;
+            return Ok(());
+        }
+        Commands::Replay {
+            session_id,
+            json,
+            db,
+            data_dir,
+        } => {
+            receipt::run_replay(session_id, json, db, data_dir)?;
+            return Ok(());
+        }
         Commands::Ui => {
             daemon::ensure_daemon_running(&socket_path).await?;
             tui::run(&socket_path).await?;
@@ -527,6 +561,8 @@ async fn main() -> Result<()> {
         Commands::Skills { .. } => unreachable!("handled above"),
         Commands::Extension { .. } => unreachable!("handled above"),
         Commands::Eval { .. } => unreachable!("handled above"),
+        Commands::Receipt { .. } => unreachable!("handled above"),
+        Commands::Replay { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let workspace_root = std::env::current_dir()?.canonicalize()?;
