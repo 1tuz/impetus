@@ -564,11 +564,64 @@ impl EffectSeam {
         )
     }
 
+    /// Resume deferred effect under write-ahead Effect Fence after user approval.
+    pub fn execute_after_approval_with_fence<T, E>(
+        &self,
+        deferred: DeferredEffect,
+        resolution: ApprovalResolution,
+        current_intent_revision: u64,
+        ledger: &crate::EffectFenceLedger,
+        execution: impl FnOnce() -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
+        self.execute_after_approval_with_admission_and_fence(
+            deferred,
+            resolution,
+            current_intent_revision,
+            ledger,
+            |_| execution(),
+        )
+    }
+
     pub fn execute_after_approval_with_admission<T, E>(
         &self,
         deferred: DeferredEffect,
         resolution: ApprovalResolution,
         current_intent_revision: u64,
+        execution: impl FnOnce(&AdmittedOperation) -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
+        self.execute_after_approval_admitted(
+            deferred,
+            resolution,
+            current_intent_revision,
+            None,
+            execution,
+        )
+    }
+
+    /// Same as [`Self::execute_after_approval_with_admission`], with write-ahead fence.
+    pub fn execute_after_approval_with_admission_and_fence<T, E>(
+        &self,
+        deferred: DeferredEffect,
+        resolution: ApprovalResolution,
+        current_intent_revision: u64,
+        ledger: &crate::EffectFenceLedger,
+        execution: impl FnOnce(&AdmittedOperation) -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
+        self.execute_after_approval_admitted(
+            deferred,
+            resolution,
+            current_intent_revision,
+            Some(ledger),
+            execution,
+        )
+    }
+
+    fn execute_after_approval_admitted<T, E>(
+        &self,
+        deferred: DeferredEffect,
+        resolution: ApprovalResolution,
+        current_intent_revision: u64,
+        ledger: Option<&crate::EffectFenceLedger>,
         execution: impl FnOnce(&AdmittedOperation) -> Result<T, E>,
     ) -> Result<EffectExecution<T>, E> {
         let approval = deferred.approval;
@@ -612,7 +665,11 @@ impl EffectSeam {
                 Ok(()) => {
                     let admission =
                         AdmittedOperation::new(deferred.effect.clone(), current_intent_revision);
-                    EffectExecution::Executed(execution(&admission)?)
+                    match ledger {
+                        Some(ledger) => self
+                            .run_under_fence(&deferred.effect, ledger, || execution(&admission))?,
+                        None => EffectExecution::Executed(execution(&admission)?),
+                    }
                 }
                 Err(reason) => EffectExecution::Denied { reason },
             },
@@ -664,59 +721,85 @@ impl EffectSeam {
                 Ok(EffectExecution::NeedsApproval { reason })
             }
             EffectDecision::Deny { reason } => Ok(EffectExecution::Denied { reason }),
-            EffectDecision::Allow => {
-                let digest = crate::args_digest_for_effect(effect);
-                match ledger.check_replay_safe(&digest) {
-                    Ok(crate::FenceReplayDecision::AllowFresh) => {}
-                    Ok(crate::FenceReplayDecision::AlreadyObserved { .. }) => {
-                        return Ok(EffectExecution::Denied {
-                            reason: "effect fence already Observed — refuse blind replay".into(),
-                        });
-                    }
-                    Ok(crate::FenceReplayDecision::AlreadyFailed { reason }) => {
-                        return Ok(EffectExecution::Denied {
-                            reason: format!(
-                                "effect fence already Failed — refuse blind replay ({})",
-                                reason.unwrap_or_default()
-                            ),
-                        });
-                    }
-                    Ok(crate::FenceReplayDecision::Refuse { reason }) => {
-                        return Ok(EffectExecution::Denied { reason });
-                    }
-                    Err(err) => {
-                        return Ok(EffectExecution::Denied {
-                            reason: err.to_string(),
-                        });
-                    }
-                }
+            EffectDecision::Allow => self.run_under_fence(effect, ledger, execution),
+        }
+    }
 
-                let identity = crate::EffectInvocationIdentity::from_effect(effect);
-                if let Err(err) = ledger.prepare_and_start(&identity) {
+    /// Write-ahead fence prepare for an already-admitted (Allow) effect.
+    ///
+    /// Used by async mutating paths (MCP) that cannot wrap the side effect in
+    /// a sync `execute_with_fence` closure. Caller must `observe` / `mark_failed`
+    /// / `mark_unknown` after the side effect. Prior Unknown/Started refuse.
+    pub fn prepare_fence_for_allowed(
+        &self,
+        effect: &NormalizedEffect,
+        ledger: &crate::EffectFenceLedger,
+    ) -> Result<crate::EffectInvocationIdentity, String> {
+        self.fence_prepare(effect, ledger)
+    }
+
+    fn fence_prepare(
+        &self,
+        effect: &NormalizedEffect,
+        ledger: &crate::EffectFenceLedger,
+    ) -> Result<crate::EffectInvocationIdentity, String> {
+        let digest = crate::args_digest_for_effect(effect);
+        match ledger.check_replay_safe(&digest) {
+            Ok(crate::FenceReplayDecision::AllowFresh) => {}
+            Ok(crate::FenceReplayDecision::AlreadyObserved { .. }) => {
+                return Err("effect fence already Observed — refuse blind replay".into());
+            }
+            Ok(crate::FenceReplayDecision::AlreadyFailed { reason }) => {
+                return Err(format!(
+                    "effect fence already Failed — refuse blind replay ({})",
+                    reason.unwrap_or_default()
+                ));
+            }
+            Ok(crate::FenceReplayDecision::Refuse { reason }) => {
+                return Err(reason);
+            }
+            Err(err) => {
+                return Err(err.to_string());
+            }
+        }
+
+        let identity = crate::EffectInvocationIdentity::from_effect(effect);
+        ledger
+            .prepare_and_start(&identity)
+            .map_err(|err| err.to_string())?;
+        Ok(identity)
+    }
+
+    fn run_under_fence<T, E>(
+        &self,
+        effect: &NormalizedEffect,
+        ledger: &crate::EffectFenceLedger,
+        execution: impl FnOnce() -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
+        let identity = match self.fence_prepare(effect, ledger) {
+            Ok(identity) => identity,
+            Err(reason) => {
+                return Ok(EffectExecution::Denied { reason });
+            }
+        };
+
+        match execution() {
+            Ok(value) => {
+                if let Err(err) = ledger.observe(&identity, "executed") {
+                    // Side effect may have run; leave Started → reconcile as Unknown.
+                    let _ = ledger.mark_unknown(
+                        &identity,
+                        format!("observe persist failed after execution: {err}"),
+                    );
                     return Ok(EffectExecution::Denied {
-                        reason: err.to_string(),
+                        reason: format!("effect executed but fence observe failed: {err}"),
                     });
                 }
-
-                match execution() {
-                    Ok(value) => {
-                        if let Err(err) = ledger.observe(&identity, "executed") {
-                            // Side effect may have run; leave Started → reconcile as Unknown.
-                            let _ = ledger.mark_unknown(
-                                &identity,
-                                format!("observe persist failed after execution: {err}"),
-                            );
-                            return Ok(EffectExecution::Denied {
-                                reason: format!("effect executed but fence observe failed: {err}"),
-                            });
-                        }
-                        Ok(EffectExecution::Executed(value))
-                    }
-                    Err(err) => {
-                        let _ = ledger.mark_failed(&identity, "execution error");
-                        Err(err)
-                    }
-                }
+                Ok(EffectExecution::Executed(value))
+            }
+            Err(err) => {
+                let _ = ledger.mark_failed(&identity, "execution error");
+                Err(err)
             }
         }
     }
