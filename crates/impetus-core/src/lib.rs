@@ -29,6 +29,7 @@ pub mod context_optimizer;
 pub mod cost_estimation;
 pub mod cursor_adapter;
 pub mod daemon_wiring;
+pub mod declared_write_set;
 pub mod deepseek_harness_adapter;
 pub mod diagnostics;
 pub mod diff_observation;
@@ -203,6 +204,9 @@ pub use daemon_wiring::{
     load_daemon_extension_runtime, load_daemon_hook_prefilter, load_daemon_mcp_runtime,
     load_daemon_policy_store, open_daemon_pty_session_store, open_daemon_worktree_manager,
     remove_daemon_mcp_server, set_daemon_mcp_enabled, upsert_daemon_mcp_server,
+};
+pub use declared_write_set::{
+    DeclaredWriteSet, WriteSetError, WriterHandoffFence, WriterLeaseTable,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,

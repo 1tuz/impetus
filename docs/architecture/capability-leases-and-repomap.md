@@ -13,6 +13,8 @@ e.g. write only under `path/`, network only to `host`, then revoke.
 - Approval fingerprint + `intent_revision`
 - `PolicyConfig` overrides (session-wide, not TTL)
 - Explore `allowed_tools` / `write_roots` (structural subset, not lease)
+- `#417` `DeclaredWriteSet` / `WriterLeaseTable` — logical writer conflict
+  avoidance + generation fence (not TTL capability elevation)
 
 **Why not now:** lease id, TTL, revoke IPC, and mid-turn scope mutation need
 Harness policy to be shared mutable state plus event/audit surface. That is a
