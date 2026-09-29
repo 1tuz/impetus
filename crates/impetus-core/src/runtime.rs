@@ -367,6 +367,14 @@ impl AgentRuntime {
         ))?;
 
         let (compacted_messages, summary) = crate::compaction::compact_provider_messages(messages);
+        // Evidence Anchors from Tool::Observed in the compacted range — raw
+        // bodies stay in EventStore / ArtifactStore; summary only carries labels.
+        let evidence_anchors =
+            crate::observation_pack::anchors_from_events(&events, from_sequence, to_sequence);
+        let summary =
+            crate::observation_pack::append_anchors_to_summary(&summary, &evidence_anchors);
+        let compacted_messages =
+            crate::compaction::inject_evidence_anchors_into_summary(compacted_messages, &summary);
         let compacted_to = crate::compaction::estimate_tokens(&summary)
             + compacted_messages
                 .iter()

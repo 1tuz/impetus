@@ -33,6 +33,9 @@ Actionable after Now. Not priority theatre.
 - Effect Fence call sites: primary ToolOrchestrator write/bash + mutating MCP
   fenced (`#407`). Remaining: host_process operate, agent PTY, remote
   SSH/SFTP/tmux, direct ProcessExecution Allow outside orchestrator
+- ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
+  evidence-preserving reduce + durable compaction anchors; raw recover via
+  ArtifactStore / EventStore)
 
 ### Extension split follow-through
 

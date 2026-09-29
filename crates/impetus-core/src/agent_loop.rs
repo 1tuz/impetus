@@ -169,13 +169,26 @@ impl AgentLoop {
                 .process_tool_calls(run_id, tool_calls, &self.runtime)
                 .await?;
 
-            // Phase 4: Add observations to message history for next turn
+            // Phase 4: Add ObservationPack receipts (+ Evidence Anchors) to HOT
+            // context. Raw evidence stays in ArtifactStore / EventStore.
             // Note: Using 'user' role for observations as assistant/tool_result
             // roles are not yet implemented in ProviderMessage
             messages.push(ProviderMessage::assistant(turn_result.text));
             let artifact_store =
                 crate::DurableArtifactStore::open(crate::default_artifact_root()).ok();
             let artifact_budget = crate::TokenBudget { max_tokens: 2_000 };
+            let event_seq_by_call: std::collections::HashMap<String, u64> = self
+                .runtime
+                .events()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::Tool(crate::ToolEvent::Observed { tool_call_id, .. }) => {
+                        Some((tool_call_id.clone(), event.sequence))
+                    }
+                    _ => None,
+                })
+                .collect();
             for mut observation in observations {
                 if let Some(artifact) = observation.artifact.as_ref()
                     && let Some(store) = artifact_store.as_ref()
@@ -192,10 +205,14 @@ impl AgentLoop {
                         }
                     }
                 }
-                messages.push(ProviderMessage::tool(
-                    serde_json::to_string(&observation)
-                        .map_err(|error| ProviderError::RequestFailed(error.to_string()))?,
-                ));
+                let event_sequence = event_seq_by_call.get(&observation.tool_call_id).copied();
+                let pack =
+                    crate::ObservationPack::from_tool_observation(&observation, event_sequence)
+                        .reduce_preserving_anchors(artifact_budget);
+                messages
+                    .push(ProviderMessage::tool(pack.context_json().map_err(
+                        |error| ProviderError::RequestFailed(error.to_string()),
+                    )?));
             }
         }
     }

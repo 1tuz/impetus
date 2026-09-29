@@ -333,3 +333,106 @@ fn worktree_identity_survives_compaction_and_attach() {
     let resumed = manager.resume(session_id).expect("resume");
     assert_eq!(resumed.worktree_id, worktree_id);
 }
+
+#[test]
+fn durable_compaction_preserves_evidence_anchors_for_recovery() {
+    use impetus_core::{
+        EvidenceAnchor, ToolEvent, ToolEventOutcome, append_anchors_to_summary,
+        parse_artifact_ids_from_summary, recover_artifact_bytes,
+    };
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let artifact_root = tempfile::tempdir().expect("artifacts");
+    let artifacts = DurableArtifactStore::open(artifact_root.path()).expect("open artifact store");
+
+    let raw = b"UNIQUE_COMPACTION_EVIDENCE_BODY compiler failed";
+    let artifact = artifacts.store(raw).expect("store evidence");
+
+    let scope = SandboxScope::local_workspace(workspace.path());
+    let store = Arc::new(MemoryEventStore::default());
+    let mut runtime = AgentRuntime::create_with_workspace(
+        store.clone(),
+        PolicyEngine::new(scope),
+        workspace.path().to_path_buf(),
+    )
+    .expect("runtime");
+
+    runtime
+        .set_budget(BudgetConfig {
+            context_limit: Some(1_000),
+            compaction: CompactionPolicy {
+                threshold_percent: 50,
+                compaction_model: None,
+                min_turns_before_compaction: 1,
+            },
+            ..Default::default()
+        })
+        .expect("budget");
+
+    runtime
+        .record_event(EventPayload::Tool(ToolEvent::Observed {
+            tool_call_id: "evidence-call".into(),
+            tool_name: "shell".into(),
+            arguments_summary: "cargo test".into(),
+            outcome: ToolEventOutcome::Success,
+            preview: "truncated preview".into(),
+            artifact: Some(artifact.clone()),
+            error: None,
+        }))
+        .expect("observed");
+
+    runtime.record_turn(600).expect("seed usage");
+    assert!(runtime.compaction_needed().is_some());
+
+    let messages = vec![
+        ProviderMessage::system("rules"),
+        ProviderMessage::user("early turn with tool evidence"),
+        ProviderMessage::assistant("working"),
+        ProviderMessage::user("another early turn"),
+        ProviderMessage::assistant("still going"),
+        ProviderMessage::user("latest"),
+    ];
+
+    let compacted = runtime
+        .run_durable_compaction_with_store(messages, Some(&artifacts))
+        .expect("compact");
+
+    let summary_msg = compacted
+        .iter()
+        .find(|m| m.content().contains("[context compaction summary]"))
+        .expect("summary in HOT context");
+    assert!(
+        summary_msg.content().contains("evidence_anchor:artifact:"),
+        "compaction summary must keep Evidence Anchors"
+    );
+    assert!(
+        summary_msg
+            .content()
+            .contains(&format!("evidence_anchor:artifact:{}", artifact.id)),
+        "artifact id must appear in summary"
+    );
+
+    let events = runtime.events().expect("events");
+    let summary_artifact = events.iter().find_map(|e| match &e.payload {
+        EventPayload::Budget(BudgetEvent::CompactionCompleted {
+            summary_artifact, ..
+        }) => summary_artifact.clone(),
+        _ => None,
+    });
+    let summary_ref = summary_artifact.expect("summary artifact");
+    let summary_bytes = artifacts.read(&summary_ref.id).expect("read summary");
+    let summary_text = String::from_utf8(summary_bytes).expect("utf8");
+    let ids = parse_artifact_ids_from_summary(&summary_text);
+    assert!(
+        ids.contains(&artifact.id),
+        "summary artifact lists evidence id"
+    );
+
+    let anchor = EvidenceAnchor::artifact(artifact.id.clone(), Some(artifact.byte_count));
+    let recovered = recover_artifact_bytes(&artifacts, &anchor).expect("recover");
+    assert_eq!(recovered, raw);
+
+    // Labels alone also round-trip through append helpers.
+    let labeled = append_anchors_to_summary("base", &[anchor]);
+    assert!(parse_artifact_ids_from_summary(&labeled).contains(&artifact.id));
+}

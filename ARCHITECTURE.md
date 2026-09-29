@@ -223,7 +223,8 @@ impetusd  — authoritative daemon
 | Measured usage → budget accounting | Implemented | `record_turn_with_usage` in agent loop |
 | Context HOT/WARM/COLD + lazy descriptions | Implemented | `context_optimizer.rs`, wired in `harness_api` |
 | ContextBuilder (chunked artifact summarize) | Implemented | `context_builder.rs` |
-| Auto durable compaction (threshold → events) | Implemented | Agent loop calls `run_durable_compaction` (deterministic fold + durable budget events; **not** LLM summarizer) |
+| Auto durable compaction (threshold → events) | Implemented | Agent loop calls `run_durable_compaction` (deterministic fold + durable budget events; **not** LLM summarizer). `#406`: Evidence Anchors from `Tool::Observed` appended to summary + HOT summary message; raw bodies stay in EventStore / ArtifactStore. |
+| ObservationPack + Evidence Anchors | Implemented | `#406` (parent `#397`): `observation_pack.rs` — `ObservationPack` / `EvidenceAnchor` (artifact id + event sequence); evidence-preserving `reduce_preserving_anchors`; `pack_raw` spills oversized bodies; agent loop packs tool observations into HOT context; durable compaction injects anchor labels. Unit + `durable_compaction` recover-after-compact. |
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |

@@ -3,6 +3,8 @@
 //! Compaction appends typed budget events and (optionally) a summary artifact.
 //! Structural session state is captured separately from the text summary so
 //! policy/cwd/budgets/parent identity never depend only on model prose.
+//! Evidence Anchors collected for the compacted range are injected into the
+//! summary message so HOT context retains recoverable pointers after fold.
 
 use crate::provider::ProviderMessage;
 
@@ -67,6 +69,26 @@ pub fn estimate_tokens(text: &str) -> u64 {
     (text.len() / 4).max(1) as u64
 }
 
+/// Replace / refresh the compaction summary message body so Evidence Anchor
+/// labels from `summary_with_anchors` survive in HOT prompt after fold.
+pub fn inject_evidence_anchors_into_summary(
+    mut messages: Vec<ProviderMessage>,
+    summary_with_anchors: &str,
+) -> Vec<ProviderMessage> {
+    if !summary_with_anchors.contains("[evidence anchors]") {
+        return messages;
+    }
+    for message in &mut messages {
+        if message.role() == "user" && message.content().contains("[context compaction summary]") {
+            *message = ProviderMessage::user(format!(
+                "[context compaction summary]\n{summary_with_anchors}"
+            ));
+            return messages;
+        }
+    }
+    messages
+}
+
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     let mut truncated = text.chars().take(max_chars).collect::<String>();
     if text.chars().count() > max_chars {
@@ -110,5 +132,18 @@ mod tests {
         ];
         let (compacted, _) = compact_provider_messages(messages.clone());
         assert_eq!(compacted, messages);
+    }
+
+    #[test]
+    fn inject_evidence_anchors_refreshes_summary_message() {
+        let messages = vec![
+            ProviderMessage::system("rules"),
+            ProviderMessage::user("[context compaction summary]\nold"),
+            ProviderMessage::user("latest"),
+        ];
+        let with_anchors = "old\n[evidence anchors]\nevidence_anchor:artifact:abc:10\n";
+        let out = inject_evidence_anchors_into_summary(messages, with_anchors);
+        assert!(out[1].content().contains("evidence_anchor:artifact:abc"));
+        assert_eq!(out[2].content(), "latest");
     }
 }
