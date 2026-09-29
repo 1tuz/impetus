@@ -52,7 +52,10 @@ runs activate-time permission → SandboxScope gate (`extension_policy`), owns
 lifecycle state, exposes `ExtensionCapabilityRegistry` for AgentLoop / Context,
 spawns `host_process` children after `extension/initialize`, and dispatches
 `ExtensionHost::operate` / `cancel_operate` with crash cleanup (also via IPC
-`OperateExtensionPackage`). **Honesty:** host_process `operate` is gated by
-manifest permission + secret-key reject + Active phase — it does **not** re-run
-the full AgentLoop `Policy → Approval → Sandbox → EffectSeam` path. Agent-origin
-mutating tools still go through that kernel path.
+`OperateExtensionPackage`). **Admission (#421):** IPC `OperateExtensionPackage` /
+`ExtensionHost::operate` runs manifest permission + secret-key reject, then
+**EffectSeam** (`Policy → RiskGate → Approval when needed → Sandbox`) before
+host_process RPC. Optional `session_id` threads session execution mode / fence
+ledger; omit for harness-default Ask + workspace sandbox. Deny / NeedsApproval
+blocks RPC (no `extension/operate` dispatch). Agent-loop mutating tools still
+use the same kernel path via ToolOrchestrator.

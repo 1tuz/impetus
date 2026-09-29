@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use common::{DaemonFixture, workspace_root};
 use impetus_client::{HarnessClient, UnixSocketTransport};
-use impetus_protocol::{InstructionKind, IpcRequest, IpcResponse};
+use impetus_protocol::{ExecutionMode, InstructionKind, IpcRequest, IpcResponse};
 
 fn write_pack(data_dir: &Path, id: &str, api_version: u32, skill_id: &str) {
     let pack = data_dir.join("extensions").join("packages").join(id);
@@ -349,5 +349,52 @@ async fn daemon_unix_host_process_fixture_activates() {
             .iter()
             .any(|p| p.id == "host-process-echo" && p.phase == "disabled"),
         "host-process-echo must stay disabled across restart: {packages:?}"
+    );
+}
+
+/// EffectSeam admission blocks operate before RPC when session mode forbids mutating effects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_unix_host_process_operate_denied_in_plan_mode() {
+    let mut daemon = DaemonFixture::spawn();
+    copy_host_process_echo_fixture(daemon.data_dir.path());
+
+    let client = UnixSocketTransport::connect(&daemon.socket)
+        .await
+        .expect("connect");
+    let _ = client.hello().await.expect("hello");
+
+    let _ = client
+        .request(IpcRequest::ReloadExtensionPackages)
+        .await
+        .expect("reload");
+
+    let session_id = client
+        .create_session(workspace_root())
+        .await
+        .expect("create session");
+    client
+        .set_execution_mode(session_id, ExecutionMode::Plan)
+        .await
+        .expect("plan mode");
+
+    let denied = client
+        .request(IpcRequest::OperateExtensionPackage {
+            id: "host-process-echo".into(),
+            request_id: "plan-deny-echo".into(),
+            op: "echo".into(),
+            params: serde_json::json!({}),
+            permission: None,
+            timeout_ms: Some(5_000),
+            session_id: Some(session_id),
+        })
+        .await
+        .expect("operate response");
+    let IpcResponse::Error { message, .. } = denied else {
+        panic!("expected Error for PLAN-mode operate, got {denied:?}");
+    };
+    assert!(
+        message.contains("PLAN mode denies mutating effects")
+            || message.contains("extension operate denied"),
+        "unexpected deny message: {message}"
     );
 }

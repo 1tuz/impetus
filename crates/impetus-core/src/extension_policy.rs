@@ -10,8 +10,8 @@
 //! `Browser` activates as NeedsApproval (health/negotiate honest without
 //! allow_network); real WebBrowser/WebFetch still Policy-gated by sandbox.
 
-use impetus_extension_sdk::ExtensionPermission;
-use impetus_protocol::{ActionKind, PolicyDecision};
+use impetus_extension_sdk::{ExtensionPermission, ops};
+use impetus_protocol::{Action, ActionKind, ActionOrigin, PolicyDecision};
 
 use crate::policy::SandboxScope;
 
@@ -101,6 +101,34 @@ pub fn permission_eval(
     Ok(())
 }
 
+/// Typed policy action for `host_process` `extension/operate` (EffectSeam admission).
+pub fn action_for_host_process_operate(
+    origin: ActionOrigin,
+    extension_id: &str,
+    op: &str,
+    permission: Option<ExtensionPermission>,
+) -> Action {
+    let op = op.trim();
+    let target = format!("{extension_id}/{op}");
+    let summary = format!("extension host_process operate `{op}` on `{extension_id}`");
+    let kind = if op == ops::ECHO {
+        ActionKind::SpawnProcess
+    } else if let Some(permission) = permission {
+        action_kinds_for_permission(permission)
+            .first()
+            .copied()
+            .unwrap_or(ActionKind::SpawnProcess)
+    } else {
+        ActionKind::SpawnProcess
+    };
+    Action {
+        origin,
+        kind,
+        summary,
+        target: Some(target),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +169,13 @@ mod tests {
             action_kinds_for_permission(ExtensionPermission::FilesystemWrite),
             &[ActionKind::WriteFile]
         );
+    }
+
+    #[test]
+    fn operate_action_maps_echo_to_spawn_process() {
+        let action =
+            action_for_host_process_operate(ActionOrigin::User, "demo-pack", ops::ECHO, None);
+        assert_eq!(action.kind, ActionKind::SpawnProcess);
+        assert_eq!(action.target.as_deref(), Some("demo-pack/echo"));
     }
 }

@@ -30,9 +30,11 @@ Actionable after Now. Not priority theatre.
 
 ### Runtime reliability (#397)
 
-- Effect Fence call sites: primary ToolOrchestrator write/bash + mutating MCP
-  fenced (`#407`). Remaining: host_process operate, agent PTY, remote
-  SSH/SFTP/tmux, direct ProcessExecution Allow outside orchestrator
+- Effect Fence call sites: ToolOrchestrator write/bash + mutating MCP fenced
+  (`#407`); session-scoped mutating `OperateExtensionPackage` fenced (`#421`).
+  Remaining: agent PTY, remote SSH/SFTP/tmux, direct ProcessExecution Allow
+  outside orchestrator
+- host_process operate EffectSeam admission: shipped `#421` (refs `#397`)
 - ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
   evidence-preserving reduce + durable compaction anchors; raw recover via
   ArtifactStore / EventStore)
@@ -102,7 +104,7 @@ Actionable after Now. Not priority theatre.
 | Hidden chain-of-thought UI | Won't — summary/intent only |
 | Full LSP protocol (entire LSP spec in core) | Won't — shipped coding_* + `LspIntegration` / `ProcessLspBackend` (#391); language packs in extensions |
 | Browser CDP/WebDriver in core | Won't — health/negotiate + `BrowserIntegration` shipped (#391); CDP bridges only in extensions |
-| host_process full EffectSeam / Seatbelt | Parked — operate stays permission + secret-key reject (#395 honesty) |
+| host_process Seatbelt wrap on operate RPC | Parked — EffectSeam admission on operate shipped `#421`; macOS Seatbelt on extension child still activate/spawn path |
 
 ---
 
