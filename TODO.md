@@ -30,10 +30,11 @@ Actionable after Now. Not priority theatre.
 
 ### Runtime reliability (#397)
 
-### Runtime reliability (#397)
-
 - Effect Fence + args_digest: Partial seam path shipped `#401` — remaining
   mutating tool/process/MCP/extension call sites still on unfenced `execute`
+- ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
+  evidence-preserving reduce + durable compaction anchors; raw recover via
+  ArtifactStore / EventStore)
 
 ### Extension split follow-through
 

@@ -76,6 +76,7 @@ pub mod module_ipc;
 pub mod module_lifecycle;
 /// Frozen legacy Module Registry — not wired into `impetusd`.
 pub mod module_registry;
+pub mod observation_pack;
 pub mod observations;
 pub mod openai_compat_adapter;
 pub mod openai_native_adapter;
@@ -348,6 +349,11 @@ pub use memory_store::{
     sandbox_scope_after_memory,
 };
 pub use mock_provider::{MockProvider, MockStreamItem as MockProviderItem};
+pub use observation_pack::{
+    EvidenceAnchor, ObservationPack, ObservationPackError, anchor_from_artifact,
+    anchors_from_events, append_anchors_to_summary, parse_artifact_ids_from_summary,
+    recover_artifact_bytes, recover_event,
+};
 pub use observations::{
     DiffHunk, DiffObservation, DiffSource, PipelineJob, PipelineObservation, SearchMatch,
     SearchObservation, TestFailure, TestObservation,
