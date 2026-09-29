@@ -30,7 +30,8 @@ Actionable after Now. Not priority theatre.
 
 ### Runtime reliability (#397)
 
-- [ ] Bounded Gap Loop on CompletionGate Insufficient (follow-up #399 / #400)
+### Runtime reliability (#397)
+
 - Effect Fence + args_digest: Partial seam path shipped `#401` — remaining
   mutating tool/process/MCP/extension call sites still on unfenced `execute`
 
