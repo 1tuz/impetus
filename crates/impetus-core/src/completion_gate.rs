@@ -5,7 +5,7 @@
 //! Pure chat (no tool/effect activity) may complete without tool evidence.
 //!
 //! Not an authorization authority — Policy / Approval / Sandbox still gate
-//! effects. Gap Loop (retry on Insufficient) is a follow-up.
+//! effects. Bounded retry on Insufficient → [`crate::gap_loop`].
 
 use crate::{Event, EventPayload, RunEvent, ToolEvent, ToolEventOutcome};
 use serde::{Deserialize, Serialize};
