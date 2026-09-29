@@ -30,10 +30,9 @@ Actionable after Now. Not priority theatre.
 
 ### Runtime reliability (#397)
 
-### Runtime reliability (#397)
-
-- Effect Fence + args_digest: Partial seam path shipped `#401` — remaining
-  mutating tool/process/MCP/extension call sites still on unfenced `execute`
+- Effect Fence call sites: primary ToolOrchestrator write/bash + mutating MCP
+  fenced (`#407`). Remaining: host_process operate, agent PTY, remote
+  SSH/SFTP/tmux, direct ProcessExecution Allow outside orchestrator
 
 ### Extension split follow-through
 

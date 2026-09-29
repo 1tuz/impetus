@@ -633,37 +633,75 @@ impl ToolOrchestrator {
             }
         }
 
+        // Mutating / non-replayable MCP: write-ahead fence before the call.
+        // Read-only MCP stays unfenced (idempotent observation).
+        let ledger = runtime.effect_fence_ledger();
+        let fence_identity = if mutating {
+            match seam.prepare_fence_for_allowed(&effect, &ledger) {
+                Ok(identity) => Some(identity),
+                Err(reason) => {
+                    return Self::record_observation(
+                        runtime,
+                        tool_call,
+                        arguments_summary,
+                        ToolOutcomeStatus::Denied,
+                        String::new(),
+                        None,
+                        Some(reason),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+
         match bridge
             .call(&tool_call.name, tool_call.arguments.clone())
             .await
         {
-            crate::mcp_live::McpLiveCallResult::Ok { preview } => Self::record_observation(
-                runtime,
-                tool_call,
-                arguments_summary,
-                ToolOutcomeStatus::Success,
-                preview,
-                None,
-                None,
-            ),
-            crate::mcp_live::McpLiveCallResult::Failed { message } => Self::record_observation(
-                runtime,
-                tool_call,
-                arguments_summary,
-                ToolOutcomeStatus::Error,
-                String::new(),
-                None,
-                Some(message),
-            ),
-            crate::mcp_live::McpLiveCallResult::Unknown { message } => Self::record_observation(
-                runtime,
-                tool_call,
-                arguments_summary,
-                ToolOutcomeStatus::Error,
-                String::new(),
-                None,
-                Some(message),
-            ),
+            crate::mcp_live::McpLiveCallResult::Ok { preview } => {
+                if let Some(identity) = &fence_identity {
+                    let _ = ledger.observe(identity, "mcp ok");
+                }
+                Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Success,
+                    preview,
+                    None,
+                    None,
+                )
+            }
+            crate::mcp_live::McpLiveCallResult::Failed { message } => {
+                if let Some(identity) = &fence_identity {
+                    let _ = ledger.mark_failed(identity, &message);
+                }
+                Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(message),
+                )
+            }
+            crate::mcp_live::McpLiveCallResult::Unknown { message } => {
+                // Fail-closed: Unknown blocks safe replay of same args_digest.
+                if let Some(identity) = &fence_identity {
+                    let _ = ledger.mark_unknown(identity, &message);
+                }
+                Self::record_observation(
+                    runtime,
+                    tool_call,
+                    arguments_summary,
+                    ToolOutcomeStatus::Error,
+                    String::new(),
+                    None,
+                    Some(message),
+                )
+            }
         }
     }
 
@@ -1079,11 +1117,13 @@ impl ToolOrchestrator {
         }
         let workspace = runtime.workspace_root()?;
         let seam = Self::session_effect_seam(runtime)?;
+        let ledger = runtime.effect_fence_ledger();
         let execution = seam
-            .execute_after_approval(
+            .execute_after_approval_with_fence(
                 crate::DeferredEffect::from_durable(effect, request.clone()),
                 resolution,
                 request.intent_revision,
+                &ledger,
                 || {
                     crate::tools::write_file_in_scope(
                         &workspace,
@@ -1195,11 +1235,13 @@ impl ToolOrchestrator {
             command: command.to_owned(),
         }));
         let seam = Self::session_effect_seam(runtime)?;
+        let ledger = runtime.effect_fence_ledger();
         let execution = seam
-            .execute_after_approval_with_admission(
+            .execute_after_approval_with_admission_and_fence(
                 crate::DeferredEffect::from_durable(effect, request.clone()),
                 resolution,
                 request.intent_revision,
+                &ledger,
                 |admission| {
                     std::thread::scope(|scope| {
                         scope
@@ -1667,6 +1709,82 @@ mod tests {
             std::fs::read_to_string(workspace.path().join("note.txt")).expect("written file"),
             "approved"
         );
+        assert!(
+            runtime.events().unwrap().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::EffectFence(crate::EffectFenceEvent::Observed { .. })
+                )
+            }),
+            "approved write must observe effect fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn approved_write_refuses_when_prior_fence_unknown() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let store = Arc::new(MemoryEventStore::default());
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(store, policy.clone()));
+        runtime.submit_intent("write a note").expect("intent");
+        let orchestrator = ToolOrchestrator::new(policy, workspace.path().to_path_buf());
+        let observations = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "write-unk".into(),
+                    name: "write_file".into(),
+                    arguments: serde_json::json!({"path": "note.txt", "content": "blocked"}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("tool call");
+        assert_eq!(observations[0].outcome, ToolOutcomeStatus::ApprovalRequired);
+        let request = runtime
+            .events()
+            .unwrap()
+            .iter()
+            .find_map(|event| match &event.payload {
+                crate::EventPayload::Approval(crate::ApprovalEvent::Requested { request }) => {
+                    Some(request.clone())
+                }
+                _ => None,
+            })
+            .expect("approval request");
+        let deferred = runtime
+            .deferred_tool(request.id)
+            .expect("deferred lookup")
+            .expect("deferred tool");
+        let effect = crate::NormalizedEffect::workspace_write(
+            ActionOrigin::Agent,
+            "write_file via agent",
+            "note.txt",
+        );
+        let ledger = runtime.effect_fence_ledger();
+        let identity = crate::EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("fence start");
+        ledger
+            .mark_unknown(&identity, "crash mid-write")
+            .expect("fence unknown");
+
+        let resolution = crate::ApprovalResolution::user(&request, true);
+        runtime
+            .resolve_approval(resolution.clone())
+            .expect("resolve approval");
+        let observation =
+            ToolOrchestrator::execute_approved_write(&runtime, request, resolution, deferred)
+                .expect("denied is ok Result");
+        assert_eq!(observation.outcome, ToolOutcomeStatus::Denied);
+        assert!(
+            observation
+                .error
+                .as_deref()
+                .is_some_and(|r| r.contains("refuse") || r.contains("Unknown")),
+            "error={:?}",
+            observation.error
+        );
+        assert!(!workspace.path().join("note.txt").exists());
     }
 
     #[tokio::test]
@@ -2033,6 +2151,92 @@ mod tests {
 
         assert_eq!(observations[0].outcome, ToolOutcomeStatus::ApprovalRequired);
         assert_eq!(caller.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn live_mcp_mutating_bypass_fences_and_unknown_blocks_replay() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let policy = PolicyEngine::new(SandboxScope::local_workspace(workspace.path()));
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(MemoryEventStore::default()),
+            policy.clone(),
+        ));
+        runtime
+            .record_event(crate::EventPayload::Session(
+                crate::SessionEvent::ExecutionModeChanged {
+                    mode: crate::ExecutionMode::Bypass,
+                },
+            ))
+            .expect("bypass");
+        runtime.submit_intent("mcp mutate").expect("intent");
+
+        let tool = crate::mcp_adapter::McpTool {
+            name: "sum".into(),
+            description: "Sum".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            annotations: None,
+        };
+        let caller = Arc::new(ScriptedMcpCaller {
+            result: crate::mcp_live::McpLiveCallResult::Unknown {
+                message: "transport lost".into(),
+            },
+            calls: AtomicUsize::new(0),
+        });
+        let bridge = Arc::new(crate::mcp_live::McpLiveBridge::from_tools(
+            "mock",
+            vec![tool],
+            caller.clone(),
+        ));
+        let orchestrator =
+            ToolOrchestrator::new(policy, workspace.path().to_path_buf()).with_mcp_live(bridge);
+
+        let call = crate::ToolCall {
+            id: "mcp-unk".into(),
+            name: "mcp:mock:sum".into(),
+            arguments: serde_json::json!({}),
+        };
+        let first = orchestrator
+            .process_tool_calls(Uuid::new_v4(), vec![call.clone()], &runtime)
+            .await
+            .expect("first mcp");
+        assert_eq!(first[0].outcome, ToolOutcomeStatus::Error);
+        assert_eq!(caller.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            runtime.events().unwrap().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    crate::EventPayload::EffectFence(crate::EffectFenceEvent::Unknown { .. })
+                )
+            }),
+            "mutating MCP Unknown must durable-fence Unknown"
+        );
+
+        let second = orchestrator
+            .process_tool_calls(
+                Uuid::new_v4(),
+                vec![crate::ToolCall {
+                    id: "mcp-unk-2".into(),
+                    name: "mcp:mock:sum".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                &runtime,
+            )
+            .await
+            .expect("second mcp");
+        assert_eq!(second[0].outcome, ToolOutcomeStatus::Denied);
+        assert!(
+            second[0]
+                .error
+                .as_deref()
+                .is_some_and(|r| r.contains("refuse") || r.contains("Unknown")),
+            "error={:?}",
+            second[0].error
+        );
+        assert_eq!(
+            caller.calls.load(Ordering::SeqCst),
+            1,
+            "Unknown fence must block blind MCP replay"
+        );
     }
 
     #[tokio::test]
