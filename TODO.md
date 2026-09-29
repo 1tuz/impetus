@@ -45,15 +45,14 @@ Actionable after Now. Not priority theatre.
   no EffectSeam re-execute)
 - Durable Offline Batch + BatchProvider: Partial `#416` (parent `#397`) —
   `offline_batch.rs` + `EventPayload::OfflineBatch` journal, `MockBatchProvider`,
-  idempotent workspace collect; **Remaining:** daemon background poll/wait,
-  live provider adapter, CLI/daemon wiring
+  idempotent workspace collect; **Remaining:** `#422` daemon background
+  poll/wait, live provider adapter, harness admission
 - DeclaredWriteSet + writer lease/handoff fence: library + scheduler hook
   shipped `#417` (`declared_write_set.rs`, `schedule_with_write_lease`;
   conflict/stale denied in unit tests). Remaining: Explore/RoleChild
   production spawn wiring
-- Durable Offline Batch + BatchProvider: Partial `#416` (`offline_batch.rs`,
-  `EventPayload::OfflineBatch`, mock provider + journal; Remaining: daemon
-  background poll/collect, live provider extension, harness admission)
+- PtyList daemon E2E: shipped `#420` (`daemon_unix_pty_list.rs`)
+- host_process full EffectSeam on operate: `#421` (in flight)
 
 ### Extension split follow-through
 
