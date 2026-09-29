@@ -35,6 +35,7 @@ pub mod diff_observation;
 pub mod durable_artifacts;
 pub mod effect_fence;
 pub mod effects;
+pub mod eval;
 pub mod events;
 pub mod execution;
 pub mod execution_mode;
@@ -223,6 +224,12 @@ pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
     normalized_effect_from_action,
+};
+pub use eval::{
+    EvalAnalysis, EvalError, EvalFixture, EvalFixtureResult, EvalProposal, EvalRole, EvalRunReport,
+    ExperimentCapsule, PromotionOutcome, PromotionRequest, analyze_report,
+    builtin_offline_fixtures, default_harness_revision, default_policy_digest_labels,
+    propose_candidate, request_promotion, run_offline_eval,
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,

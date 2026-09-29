@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 mod daemon;
 mod doctor;
+mod eval;
 mod extension;
 mod skills;
 mod tui;
@@ -219,6 +220,11 @@ enum Commands {
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
+    },
+    /// Offline harness eval + ExperimentCapsule (no live keys; #408)
+    Eval {
+        #[command(subcommand)]
+        action: eval::EvalAction,
     },
     /// Launch interactive TUI (MVP UI)
     Ui,
@@ -495,6 +501,11 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Commands::Eval { action } => {
+            // Offline mock fixtures — no daemon, no live providers.
+            eval::run(action).await?;
+            return Ok(());
+        }
         Commands::Ui => {
             daemon::ensure_daemon_running(&socket_path).await?;
             tui::run(&socket_path).await?;
@@ -515,6 +526,7 @@ async fn main() -> Result<()> {
         Commands::Components { .. } => unreachable!("handled above"),
         Commands::Skills { .. } => unreachable!("handled above"),
         Commands::Extension { .. } => unreachable!("handled above"),
+        Commands::Eval { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),
         Commands::Create => {
             let workspace_root = std::env::current_dir()?.canonicalize()?;
