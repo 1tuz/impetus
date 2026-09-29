@@ -388,11 +388,10 @@ async fn daemon_unix_host_process_operate_denied_in_plan_mode() {
             timeout_ms: Some(5_000),
             session_id: Some(session_id),
         })
-        .await
-        .expect("operate response");
-    let IpcResponse::Error { message, .. } = denied else {
-        panic!("expected Error for PLAN-mode operate, got {denied:?}");
-    };
+        .await;
+    let message = denied
+        .expect_err("PLAN-mode operate must fail before RPC")
+        .to_string();
     assert!(
         message.contains("PLAN mode denies mutating effects")
             || message.contains("extension operate denied"),
