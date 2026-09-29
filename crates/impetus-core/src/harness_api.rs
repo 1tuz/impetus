@@ -3970,8 +3970,36 @@ async fn run_agent_loop(
 
     match result {
         Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
-            let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
-            true
+            // CompletionGate: side-effecting turns need durable Evidence;
+            // pure chat may Complete without tool observations (#399).
+            match runtime.evaluate_completion_gate(run_id) {
+                Ok(crate::CompletionVerdict::Accepted) => {
+                    let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
+                    true
+                }
+                Ok(crate::CompletionVerdict::Insufficient { missing }) => {
+                    let _ = runtime.finish_run(crate::RunEvent::Failed {
+                        run_id,
+                        reason: format!("NeedsEvidence: missing {}", missing.join(", ")),
+                    });
+                    false
+                }
+                Ok(crate::CompletionVerdict::Rejected { reason }) => {
+                    let _ = runtime.finish_run(crate::RunEvent::Failed {
+                        run_id,
+                        reason: format!("completion gate rejected: {reason}"),
+                    });
+                    false
+                }
+                Err(error) => {
+                    // Fail-closed: never invent Completed when gate cannot run.
+                    let _ = runtime.finish_run(crate::RunEvent::Failed {
+                        run_id,
+                        reason: format!("completion gate error: {error}"),
+                    });
+                    false
+                }
+            }
         }
         Err(_) if cancellation.is_cancelled() => {
             // Cancel IPC already finished the run and owns follow-up drain.

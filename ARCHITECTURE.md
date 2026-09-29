@@ -209,6 +209,7 @@ impetusd  — authoritative daemon
 | Ephemeral AttachmentStore (approvals/diffs) | Implemented | `attachments.rs` — session-bound `GetAttachment` (owner ok / foreign deny / missing+expired); TUI fetch via session id; intentional, not durable |
 | Process stdout/stderr → durable artifacts | Implemented | process exec stores large bodies; preview + `ArtifactRef` |
 | AgentLoop vertical (read + approval write/shell) | Implemented | `agent_loop.rs`, `v05_gate` / orchestrator tests. **Unix E2E (#357):** `daemon_unix_approvals_mcp_files` — Prompt → `AwaitingApproval` / `ApprovalRequested` → `ResolveApproval` approve + deny (fixture mock via `IMPETUS_MOCK_APPROVAL_FIXTURE=1`; no live keys). |
+| CompletionGate + durable Evidence | Partial | `#399` `completion_gate.rs`: `Evidence` / `CompletionVerdict` / `CompletionGate`; EventStore `Tool::Observed` → evidence bag; pure-chat may Complete without tool evidence; side-effect turns must gate `Accepted` before `harness_api::run_agent_loop` records `RunEvent::Completed` (else `Failed` NeedsEvidence/rejected — fail-closed). `AgentRuntime::evaluate_completion_gate`. **Remaining:** Gap Loop (bounded retry on Insufficient). |
 | Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
 | Native Anthropic Messages tool-call SSE | Partial | `anthropic_provider.rs` exported; not default daemon path |
 | OpenAI Responses API | Partial | Opt-in `openai_http_api=responses` SSE subset; not production default |

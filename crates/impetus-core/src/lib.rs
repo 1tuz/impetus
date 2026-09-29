@@ -23,6 +23,7 @@ pub mod claude_code_adapter;
 pub mod codex_adapter;
 pub mod coding_tools;
 pub mod compaction;
+pub mod completion_gate;
 pub mod context_builder;
 pub mod context_optimizer;
 pub mod cost_estimation;
@@ -174,6 +175,9 @@ pub use coding_tools::{
 };
 pub use compaction::{
     compact_provider_messages, estimate_tokens as estimate_compaction_tokens, summarize_messages,
+};
+pub use completion_gate::{
+    CompletionClaim, CompletionGate, CompletionVerdict, Evidence, EvidenceBag,
 };
 pub use context_builder::{
     ArtifactRangeSource, ContextBuilder, ContextBuilderError, MaterializedArtifact,
