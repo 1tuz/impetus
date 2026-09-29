@@ -54,7 +54,7 @@ Actionable after Now. Not priority theatre.
   conflict/stale denied in unit tests). Remaining: Explore/RoleChild
   production spawn wiring
 - PtyList daemon E2E: shipped `#420` (`daemon_unix_pty_list.rs`)
-- host_process full EffectSeam on operate: `#421` (in flight)
+- host_process EffectSeam on operate: shipped `#421` (optional `session_id`, PLAN deny E2E)
 
 ### Extension split follow-through
 
