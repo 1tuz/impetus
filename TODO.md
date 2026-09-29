@@ -28,6 +28,10 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 
 Actionable after Now. Not priority theatre.
 
+### Runtime reliability (#397)
+
+- [ ] Bounded Gap Loop on CompletionGate Insufficient (follow-up #399)
+
 ### Extension split follow-through
 
 - [ ] Stand up `impetus-extensions` repo against contract + demo packs

@@ -550,6 +550,18 @@ impl AgentRuntime {
         self.record(EventPayload::Run(outcome))
     }
 
+    /// Evaluate CompletionGate against EventStore evidence for `run_id`.
+    ///
+    /// Pure-chat turns (no tool/effect activity) → Accepted without evidence.
+    /// Side-effecting turns require successful durable tool observations.
+    pub fn evaluate_completion_gate(
+        &self,
+        run_id: Uuid,
+    ) -> Result<crate::CompletionVerdict, RuntimeError> {
+        let events = self.events()?;
+        Ok(crate::CompletionGate::evaluate_run(&events, run_id))
+    }
+
     pub fn record_agent_chunk(
         &self,
         run_id: Uuid,
