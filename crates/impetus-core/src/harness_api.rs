@@ -2431,8 +2431,13 @@ fn handle_request(
             params,
             permission,
             timeout_ms,
+            session_id,
         } => handle_operate_extension_package(
+            store.clone(),
+            &policy,
+            &workspace_root,
             extension_host.as_ref(),
+            session_id,
             &id,
             &request_id,
             &op,
@@ -2799,8 +2804,52 @@ fn handle_remove_extension_package(
     }
 }
 
+fn extension_operate_effect_seam(
+    store: Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    workspace_root: &Path,
+    session_id: Option<Uuid>,
+) -> Result<crate::EffectSeam, IpcResponse> {
+    if let Some(session_id) = session_id {
+        let runtime = AgentRuntime::attach(store, policy_snapshot(policy), session_id)
+            .map_err(runtime_error)?;
+        runtime.effect_seam().map_err(runtime_error)
+    } else {
+        Ok(crate::EffectSeam::with_admission(
+            policy_snapshot(policy),
+            crate::Sandbox::workspace(workspace_root.to_path_buf()),
+            crate::ExecutionMode::Ask,
+            crate::default_risk_gate(),
+        ))
+    }
+}
+
+fn extension_operate_ipc_error(reason: String) -> IpcResponse {
+    IpcResponse::Error {
+        code: IpcErrorCode::InvalidRequest,
+        message: reason,
+    }
+}
+
+fn extension_operate_host_result(
+    result: Result<impetus_extension_sdk::OperateResult, crate::ExtensionHostError>,
+) -> IpcResponse {
+    match result {
+        Ok(result) => IpcResponse::ExtensionOperate {
+            request_id: result.request_id,
+            op: result.op,
+            data: result.data,
+        },
+        Err(err) => extension_operate_ipc_error(err.to_string()),
+    }
+}
+
 fn handle_operate_extension_package(
+    store: Arc<dyn EventStore>,
+    policy: &Arc<Mutex<PolicyEngine>>,
+    workspace_root: &Path,
     extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    session_id: Option<Uuid>,
     id: &str,
     request_id: &str,
     op: &str,
@@ -2832,19 +2881,62 @@ fn handle_operate_extension_package(
             }
         },
     };
-    let timeout = timeout_ms.map(std::time::Duration::from_millis);
-    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    match guard.operate(id, request_id, op, params, perm, timeout) {
-        Ok(result) => IpcResponse::ExtensionOperate {
-            request_id: result.request_id,
-            op: result.op,
-            data: result.data,
-        },
-        Err(err) => IpcResponse::Error {
-            code: IpcErrorCode::InvalidRequest,
-            message: err.to_string(),
-        },
+    let action =
+        crate::extension_policy::action_for_host_process_operate(ActionOrigin::User, id, op, perm);
+    let Some(effect) = crate::normalized_effect_from_action(&action, None) else {
+        return extension_operate_ipc_error(format!(
+            "extension operate has no EffectSeam mapping for {:?}",
+            action.kind
+        ));
+    };
+    let seam =
+        match extension_operate_effect_seam(store.clone(), policy, workspace_root, session_id) {
+            Ok(seam) => seam,
+            Err(response) => return response,
+        };
+    match seam.decide(&effect) {
+        crate::EffectDecision::Deny { reason } => {
+            return extension_operate_ipc_error(format!(
+                "extension operate denied by policy: {reason}"
+            ));
+        }
+        crate::EffectDecision::NeedsApproval { reason } => {
+            return extension_operate_ipc_error(format!(
+                "extension operate needs approval before RPC: {reason}"
+            ));
+        }
+        crate::EffectDecision::Allow => {}
     }
+
+    let timeout = timeout_ms.map(std::time::Duration::from_millis);
+    let run_operate = || {
+        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.operate(id, request_id, op, params, perm, timeout)
+    };
+
+    if session_id.is_some() && crate::is_mutating_effect(&effect) {
+        if let Ok(runtime) =
+            AgentRuntime::attach(store, policy_snapshot(policy), session_id.expect("checked"))
+        {
+            let ledger = runtime.effect_fence_ledger();
+            return match seam.execute_with_fence(&effect, &ledger, run_operate) {
+                Ok(crate::EffectExecution::Executed(result)) => {
+                    extension_operate_host_result(Ok(result))
+                }
+                Ok(crate::EffectExecution::Denied { reason }) => extension_operate_ipc_error(
+                    format!("extension operate denied by effect fence: {reason}"),
+                ),
+                Ok(crate::EffectExecution::NeedsApproval { reason }) => {
+                    extension_operate_ipc_error(format!(
+                        "extension operate needs approval before RPC: {reason}"
+                    ))
+                }
+                Err(err) => extension_operate_ipc_error(err.to_string()),
+            };
+        }
+    }
+
+    extension_operate_host_result(run_operate())
 }
 
 /// After mcp_bridge enable/disable, refresh ToolProviderRuntime when wired.

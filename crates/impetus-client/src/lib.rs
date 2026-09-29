@@ -1038,6 +1038,7 @@ pub trait HarnessClient: Send + Sync {
                 params,
                 permission,
                 timeout_ms,
+                session_id: None,
             })
             .await?
         {

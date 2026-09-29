@@ -33,8 +33,8 @@ impetusd  (authoritative process)
   └─ Trusted Kernel — EventStore · Policy · Approval · Sandbox · Executor · secrets
         │
         └─ Extension Host / SDK → replaceable packs (sibling to kernel)
-           Activate-time permission → SandboxScope gate; host_process operate
-           uses manifest permission + secret-key reject (not full EffectSeam)
+           Activate-time permission → SandboxScope; host_process operate →
+           manifest permission + EffectSeam admission before RPC (#421)
 ```
 
 Diagrams: [system-architecture.svg](assets/readme/system-architecture.svg),
@@ -212,7 +212,7 @@ impetusd  — authoritative daemon
 | CompletionGate + durable Evidence | Implemented | `#399` `completion_gate.rs`: `Evidence` / `CompletionVerdict` / `CompletionGate`; EventStore `Tool::Observed` → evidence bag; pure-chat may Complete without tool evidence; side-effect turns must gate `Accepted` before `harness_api::run_agent_loop` records `RunEvent::Completed` (else `Failed` NeedsEvidence/rejected — fail-closed). `AgentRuntime::evaluate_completion_gate`. |
 | Gap Loop (bounded over CompletionGate) | Implemented | `#400` `gap_loop.rs`: `GAP_LOOP_MAX_ITERATIONS` (3) + `run_gap_loop` / `GapLoopOutcome`; retries only on `Insufficient`; `Rejected` / evaluate errors terminal fail-closed; never maps unknown/truncated/exhausted to `Completed`. Wired in `harness_api::run_agent_loop` — production gap-fill returns no cheap model re-entry after AgentLoop return → `GapLoopExhausted` / `NeedsEvidence` + `Failed`. Unit: success-after-gap, terminate-on-bound, never-completes-on-exhaust. |
 | Promise / obligation ledger | Implemented | `#412` (parent `#397`): `obligation_ledger.rs` — `Obligation` id/kind/summary + `Open\|Fulfilled\|Cancelled`; session ledger on `AgentRuntime`; `CompletionGate::evaluate_with_obligations` / `evaluate_run_with_obligations` fail-closed (`Insufficient` missing `obligation:{id}`) when required items still Open — never Accepted. Empty ledger preserves prior evidence-only behaviour. Unit: fulfill→accept, open→block. |
-| Write-ahead Effect Fence + args_digest | Implemented | `#401`/`#407` (parent `#397`): `effect_fence.rs` + `EventPayload::EffectFence` — identity/args_digest + Prepared→Started→Observed\|Failed\|Unknown; `EffectSeam::execute_with_fence` + `execute_after_approval_*_fence` + `prepare_fence_for_allowed`; wired on ToolOrchestrator approved `write_file`/`edit_file`/`bash|shell|exec` and mutating MCP Allow (Unknown→`mark_unknown`, blocks replay). **Remaining:** host_process operate, agent PTY spawn, remote SSH/SFTP/tmux, direct `ProcessExecution` Allow outside orchestrator. |
+| Write-ahead Effect Fence + args_digest | Implemented | `#401`/`#407` (parent `#397`): `effect_fence.rs` + `EventPayload::EffectFence` — identity/args_digest + Prepared→Started→Observed\|Failed\|Unknown; `EffectSeam::execute_with_fence` + `execute_after_approval_*_fence` + `prepare_fence_for_allowed`; wired on ToolOrchestrator approved `write_file`/`edit_file`/`bash|shell|exec`, mutating MCP Allow, and **session-scoped** mutating `OperateExtensionPackage` (#421). **Remaining:** agent PTY spawn, remote SSH/SFTP/tmux, direct `ProcessExecution` Allow outside orchestrator. |
 | Native OpenAI Chat Completions tool-call SSE | Implemented | `openai_provider.rs` + `OpenAiNativeAdapter`; `impetusd --provider-profile` |
 | Native Anthropic Messages tool-call SSE | Partial | `anthropic_provider.rs` exported; not default daemon path |
 | OpenAI Responses API | Partial | Opt-in `openai_http_api=responses` SSE subset; not production default |
@@ -303,7 +303,7 @@ impetusd  — sole runtime source of truth
   ├─ Runtime services — AgentLoop · Tools · Providers · Workflows · PTY · …
   └─ Extension Host (sole public extension substrate)
         instruction_pack | mcp_bridge | host_process
-        activate permission → SandboxScope; operate ≠ full EffectSeam
+        activate permission → SandboxScope; operate → EffectSeam (#421)
 ```
 
 Extensions must not grant themselves `origin=user`, skip Approval, or own

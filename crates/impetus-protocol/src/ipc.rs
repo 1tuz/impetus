@@ -594,6 +594,9 @@ pub enum IpcRequest {
         permission: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// When set, admission uses session execution mode / sandbox / fence ledger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<uuid::Uuid>,
     },
 }
 
@@ -1598,6 +1601,7 @@ mod sentinel_protocol {
             params: serde_json::json!({}),
             permission: None,
             timeout_ms: Some(5_000),
+            session_id: None,
         };
         assert_eq!(
             serde_json::from_str::<IpcRequest>(&serde_json::to_string(&operate).unwrap()).unwrap(),
