@@ -7,7 +7,7 @@
 //! Not an authorization authority — Policy / Approval / Sandbox still gate
 //! effects. Bounded retry on Insufficient → [`crate::gap_loop`].
 
-use crate::{Event, EventPayload, RunEvent, ToolEvent, ToolEventOutcome};
+use crate::{Event, EventPayload, ObligationLedger, RunEvent, ToolEvent, ToolEventOutcome};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -145,12 +145,30 @@ impl EvidenceBag {
     }
 }
 
-/// Fail-closed evaluator: side-effecting turns need successful tool evidence.
+/// Fail-closed evaluator: side-effecting turns need successful tool evidence;
+/// open required obligations also block Accepted.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CompletionGate;
 
 impl CompletionGate {
     pub fn evaluate(claim: &CompletionClaim, evidence: &[Evidence]) -> CompletionVerdict {
+        Self::evaluate_with_obligations(claim, evidence, &ObligationLedger::new())
+    }
+
+    /// Evidence check, then fail-closed on open required obligations.
+    pub fn evaluate_with_obligations(
+        claim: &CompletionClaim,
+        evidence: &[Evidence],
+        ledger: &ObligationLedger,
+    ) -> CompletionVerdict {
+        let evidence_verdict = Self::evaluate_evidence(claim, evidence);
+        match evidence_verdict {
+            CompletionVerdict::Accepted => Self::check_obligations(ledger),
+            other => other,
+        }
+    }
+
+    fn evaluate_evidence(claim: &CompletionClaim, evidence: &[Evidence]) -> CompletionVerdict {
         if !claim.side_effects_occurred {
             // Pure text / no tools — complete without tool evidence.
             return CompletionVerdict::Accepted;
@@ -176,14 +194,33 @@ impl CompletionGate {
         }
     }
 
-    /// Evaluate a run against EventStore-derived evidence.
+    /// Open required obligations → Insufficient (gap-fillable); never Accepted.
+    pub fn check_obligations(ledger: &ObligationLedger) -> CompletionVerdict {
+        if !ledger.has_open_required() {
+            return CompletionVerdict::Accepted;
+        }
+        CompletionVerdict::Insufficient {
+            missing: ledger.missing_labels(),
+        }
+    }
+
+    /// Evaluate a run against EventStore-derived evidence (empty obligation ledger).
     pub fn evaluate_run(events: &[Event], run_id: Uuid) -> CompletionVerdict {
+        Self::evaluate_run_with_obligations(events, run_id, &ObligationLedger::new())
+    }
+
+    /// Evaluate a run against evidence + obligation ledger (fail-closed).
+    pub fn evaluate_run_with_obligations(
+        events: &[Event],
+        run_id: Uuid,
+        ledger: &ObligationLedger,
+    ) -> CompletionVerdict {
         let bag = EvidenceBag::from_session_events(events, run_id);
         let claim = CompletionClaim {
             goal: format!("run:{run_id}"),
             side_effects_occurred: bag.side_effects_occurred(),
         };
-        Self::evaluate(&claim, bag.as_slice())
+        Self::evaluate_with_obligations(&claim, bag.as_slice(), ledger)
     }
 }
 
@@ -324,6 +361,61 @@ mod tests {
             CompletionGate::evaluate_run(&events, run_id),
             CompletionVerdict::Insufficient {
                 missing: vec!["tool_observation".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn open_obligation_blocks_accept_even_with_evidence() {
+        let claim = CompletionClaim {
+            goal: "ship feature".into(),
+            side_effects_occurred: true,
+        };
+        let bag = vec![evidence("tool_observation", "call-1")];
+        let mut ledger = ObligationLedger::new();
+        ledger
+            .register("todo-1", "promised_todo", "wire unit tests")
+            .expect("register");
+        assert_eq!(
+            CompletionGate::evaluate_with_obligations(&claim, &bag, &ledger),
+            CompletionVerdict::Insufficient {
+                missing: vec!["obligation:todo-1".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn fulfilled_obligation_allows_accept() {
+        let claim = CompletionClaim {
+            goal: "ship feature".into(),
+            side_effects_occurred: true,
+        };
+        let bag = vec![evidence("tool_observation", "call-1")];
+        let mut ledger = ObligationLedger::new();
+        ledger
+            .register("todo-1", "promised_todo", "wire unit tests")
+            .expect("register");
+        ledger.fulfill("todo-1").expect("fulfill");
+        assert_eq!(
+            CompletionGate::evaluate_with_obligations(&claim, &bag, &ledger),
+            CompletionVerdict::Accepted
+        );
+    }
+
+    #[test]
+    fn open_obligation_blocks_pure_chat_accept() {
+        let claim = CompletionClaim {
+            goal: "hello".into(),
+            side_effects_occurred: false,
+        };
+        let mut ledger = ObligationLedger::new();
+        ledger
+            .register("docs-1", "docs_update", "ARCHITECTURE.md")
+            .expect("register");
+        assert_eq!(
+            CompletionGate::evaluate_with_obligations(&claim, &[], &ledger),
+            CompletionVerdict::Insufficient {
+                missing: vec!["obligation:docs-1".into()],
             }
         );
     }

@@ -54,6 +54,8 @@ pub struct AgentRuntime {
     // A2 Phase 2: Store deferred effects for approval continuation.
     // Maps approval_id -> DeferredEffect so approved work can resume.
     deferred_effects: Arc<Mutex<HashMap<Uuid, DeferredEffect>>>,
+    /// Session promise/obligation ledger checked by CompletionGate (#412).
+    obligation_ledger: Arc<Mutex<crate::ObligationLedger>>,
 }
 
 fn policy_for_workspace(policy: &PolicyEngine, workspace_root: PathBuf) -> PolicyEngine {
@@ -127,6 +129,7 @@ impl AgentRuntime {
             budget: None,
             worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
+            obligation_ledger: Arc::new(Mutex::new(crate::ObligationLedger::new())),
         })
     }
 
@@ -157,6 +160,7 @@ impl AgentRuntime {
             budget: None,
             worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
+            obligation_ledger: Arc::new(Mutex::new(crate::ObligationLedger::new())),
         })
     }
 
@@ -182,6 +186,7 @@ impl AgentRuntime {
             budget: None,
             worktree_id,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
+            obligation_ledger: Arc::new(Mutex::new(crate::ObligationLedger::new())),
         })
     }
 
@@ -200,6 +205,7 @@ impl AgentRuntime {
             budget: None,
             worktree_id: None,
             deferred_effects: Arc::new(Mutex::new(HashMap::new())),
+            obligation_ledger: Arc::new(Mutex::new(crate::ObligationLedger::new())),
         })
     }
 
@@ -558,16 +564,54 @@ impl AgentRuntime {
         self.record(EventPayload::Run(outcome))
     }
 
-    /// Evaluate CompletionGate against EventStore evidence for `run_id`.
+    /// Evaluate CompletionGate against EventStore evidence + obligation ledger.
     ///
-    /// Pure-chat turns (no tool/effect activity) → Accepted without evidence.
-    /// Side-effecting turns require successful durable tool observations.
+    /// Pure-chat turns (no tool/effect activity) → Accepted without evidence
+    /// unless open required obligations remain. Side-effecting turns require
+    /// successful durable tool observations. Open obligations → Insufficient
+    /// (fail-closed; never Accepted).
     pub fn evaluate_completion_gate(
         &self,
         run_id: Uuid,
     ) -> Result<crate::CompletionVerdict, RuntimeError> {
         let events = self.events()?;
-        Ok(crate::CompletionGate::evaluate_run(&events, run_id))
+        let ledger = self
+            .obligation_ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Ok(crate::CompletionGate::evaluate_run_with_obligations(
+            &events, run_id, &ledger,
+        ))
+    }
+
+    /// Session promise/obligation ledger (CompletionGate fail-closed check).
+    pub fn obligation_ledger(&self) -> Arc<Mutex<crate::ObligationLedger>> {
+        self.obligation_ledger.clone()
+    }
+
+    /// Register a required obligation; blocks Accepted until fulfilled/cancelled.
+    pub fn register_obligation(
+        &self,
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Result<(), crate::ObligationLedgerError> {
+        let mut ledger = self
+            .obligation_ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ledger.register(id, kind, summary)?;
+        Ok(())
+    }
+
+    /// Mark obligation fulfilled so CompletionGate may Accept.
+    pub fn fulfill_obligation(&self, id: &str) -> Result<(), crate::ObligationLedgerError> {
+        let mut ledger = self
+            .obligation_ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ledger.fulfill(id)?;
+        Ok(())
     }
 
     /// Write-ahead Effect Fence ledger for this session (EventStore-backed).
