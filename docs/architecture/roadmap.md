@@ -8,23 +8,24 @@ This file stays short on purpose. Do not duplicate checkboxes here.
 
 ## Priority model
 
-1. **Now** — post-[#322](https://github.com/1tuz/impetus/issues/322): pick
-   next slice from [TODO.md](../../TODO.md) **Next** (ExtensionRuntime →
-   AgentLoop skill inject, schema/attachments, client polish). No open
-   #322 Now checklist (workflow daemon Unix E2E shipped).
+1. **Now** — pick next slice from [TODO.md](../../TODO.md) **Now/Next**
+   (crates.io SDK publish, extension repo, client polish). Kernel + daemon SoT
+   path stable; IPC negotiate **12..=15**.
 2. **Sibling desktop** ([#310](https://github.com/1tuz/impetus/issues/310)) —
-   thin shell in [`impetus-desktop`](../../../impetus-desktop); already IPC **v7**.
-   Must consume new harness Git/MCP/Files APIs (drop local `git_*` /
-   `list_mcp_servers`). Presentation backlog = desktop `TODO.md`.
+   thin shell in [`impetus-desktop`](../../../impetus-desktop); harness IPC
+   **v12..=15** (`PtyList`, `extension_manage` install/remove). Presentation
+   backlog = desktop `TODO.md` (PtyList attach picker, model/worktrees polish).
 3. **Later** — marketplaces, multi-harness portability, deep vendor runtime
    parity, large swarm/team loops, Ubuntu clean-machine automation, full Zap
    authorize, ACP dependency invert, mega thin-client split, CLI migration.
 
 Shipped: [#308](https://github.com/1tuz/impetus/issues/308) +
-[#311](https://github.com/1tuz/impetus/issues/311) (IPC v7 baseline);
+[#311](https://github.com/1tuz/impetus/issues/311) (IPC negotiate baseline);
 [#315](https://github.com/1tuz/impetus/issues/315) harness unify;
 [#320](https://github.com/1tuz/impetus/issues/320) production harden;
-[#322](https://github.com/1tuz/impetus/issues/322) production-harden follow-up.
+[#322](https://github.com/1tuz/impetus/issues/322) production-harden follow-up;
+[#395](https://github.com/1tuz/impetus/issues/395) PtyList + package Install/Remove
++ Module Runtime freeze.
 
 ## Kernel (do not dilute)
 
@@ -47,9 +48,9 @@ No parallel feature logic in GUI/TUI.
 
 ## Platform
 
-- **macOS**: primary development and PR CI (`macos-14` clippy + lib/bin tests).
-- **Linux**: PR CI fmt + `cargo check` (`ubuntu-24.04`); install target;
-  sandbox/Keychain parity Planned.
+- **macOS**: primary development; platform suite on **Nightly Full**.
+- **Linux**: **PR Fast** = Ubuntu `git diff --check` + `cargo fmt` + affected
+  `cargo check` only (no clippy/tests on PR). Nightly = full quality.
 - **Path-scope sandbox**: Implemented and fail-closed.
 - **Seatbelt profiles**: Implemented on macOS process spawn
   (`execution/sandbox.rs`); non-macOS path-scope only. Linux/Windows OS wrap

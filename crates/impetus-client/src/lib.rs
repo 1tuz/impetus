@@ -35,6 +35,12 @@ pub struct PtySessionView {
     pub command: String,
     pub cols: u16,
     pub rows: u16,
+    /// Additive IPC v15 — empty when older peers omit.
+    pub args: Vec<String>,
+    pub working_dir: Option<String>,
+    pub created_at_unix_ms: Option<u64>,
+    /// `user` | `agent` when known.
+    pub origin: Option<String>,
 }
 
 /// One drain of the bounded PTY output ring.
@@ -574,6 +580,10 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             } => Ok(PtySessionView {
                 pty_id,
                 owner_session_id,
@@ -581,6 +591,10 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             }),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
@@ -600,6 +614,10 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             } => Ok(PtySessionView {
                 pty_id,
                 owner_session_id,
@@ -607,6 +625,10 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             }),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
@@ -725,6 +747,10 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             } => Ok(PtySessionView {
                 pty_id,
                 owner_session_id,
@@ -732,7 +758,30 @@ pub trait HarnessClient: Send + Sync {
                 command,
                 cols,
                 rows,
+                args,
+                working_dir,
+                created_at_unix_ms,
+                origin,
             }),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Owner-scoped PTY inventory (`PtyList`). `live_only` omits Exited/Failed rows.
+    async fn pty_list(
+        &self,
+        session_id: uuid::Uuid,
+        live_only: bool,
+    ) -> Result<Vec<protocol::PtySessionInfo>> {
+        match self
+            .request(IpcRequest::PtyList {
+                session_id,
+                live_only,
+            })
+            .await?
+        {
+            IpcResponse::PtySessions { sessions, .. } => Ok(sessions),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }
@@ -868,6 +917,103 @@ pub trait HarnessClient: Send + Sync {
             .await?
         {
             IpcResponse::McpServers { servers } => Ok(servers),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// List ExtensionHost packages (all phases).
+    async fn list_extension_packages(&self) -> Result<Vec<protocol::ExtensionPackageInfo>> {
+        match self.request(IpcRequest::ListExtensionPackages).await? {
+            IpcResponse::ExtensionPackages { packages } => Ok(packages),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Detail for one ExtensionHost package id.
+    async fn get_extension_package(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<protocol::ExtensionPackageInfo> {
+        match self
+            .request(IpcRequest::GetExtensionPackage { id: id.into() })
+            .await?
+        {
+            IpcResponse::ExtensionPackage { package } => Ok(package),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Rediscover/validate packages under daemon extension roots.
+    /// Returns `(loaded, failed)`.
+    async fn reload_extension_packages(&self) -> Result<(u32, u32)> {
+        match self.request(IpcRequest::ReloadExtensionPackages).await? {
+            IpcResponse::ExtensionPackagesReloaded { loaded, failed } => Ok((loaded, failed)),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Activate package capabilities (instruction_pack roots, …).
+    async fn enable_extension_package(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<protocol::ExtensionPackageInfo> {
+        match self
+            .request(IpcRequest::EnableExtensionPackage { id: id.into() })
+            .await?
+        {
+            IpcResponse::ExtensionPackage { package } => Ok(package),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Deactivate package; capabilities leave AgentLoop registry.
+    async fn disable_extension_package(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<protocol::ExtensionPackageInfo> {
+        match self
+            .request(IpcRequest::DisableExtensionPackage { id: id.into() })
+            .await?
+        {
+            IpcResponse::ExtensionPackage { package } => Ok(package),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Copy a package directory into daemon global packages + reload.
+    /// Returns `(loaded, failed)`.
+    async fn install_extension_package(
+        &self,
+        source_path: PathBuf,
+        replace: bool,
+    ) -> Result<(u32, u32)> {
+        match self
+            .request(IpcRequest::InstallExtensionPackage {
+                source_path,
+                replace,
+            })
+            .await?
+        {
+            IpcResponse::ExtensionPackagesReloaded { loaded, failed } => Ok((loaded, failed)),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
+    /// Delete a global installed package directory + reload.
+    /// Returns `(loaded, failed)`.
+    async fn remove_extension_package(&self, id: impl Into<String>) -> Result<(u32, u32)> {
+        match self
+            .request(IpcRequest::RemoveExtensionPackage { id: id.into() })
+            .await?
+        {
+            IpcResponse::ExtensionPackagesReloaded { loaded, failed } => Ok((loaded, failed)),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }

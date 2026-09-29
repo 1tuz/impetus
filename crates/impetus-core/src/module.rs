@@ -1,7 +1,16 @@
+//! Deprecated Module Runtime types — **not** the live `impetusd` extension API.
+//!
+//! Sole public extension substrate is [`crate::extension_host::ExtensionHost`]
+//! (`instruction_pack` / `mcp_bridge` / `host_process`). Prefer
+//! [`crate::module_fallback`] for unknown-outcome helpers and
+//! `impetus_protocol::ExecutionSemantics` for semantics labels.
+//!
+//! Removal tracked in TODO.md (Module Runtime debt).
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Module identity and metadata
+/// Module identity and metadata (frozen legacy — do not extend).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleDescriptor {
     pub id: String,

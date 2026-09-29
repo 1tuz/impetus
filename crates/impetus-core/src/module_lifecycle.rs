@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::net::UnixStream;
 use tokio::sync::RwLock;
 
-/// Module lifecycle manager
+/// Frozen legacy Module Lifecycle — **not** wired into `impetusd`.
+/// Use [`crate::ExtensionHost`] for packages.
 pub struct ModuleLifecycle {
     registry: Arc<ModuleRegistry>,
     external_modules: Arc<RwLock<HashMap<String, Arc<ExternalModule>>>>,

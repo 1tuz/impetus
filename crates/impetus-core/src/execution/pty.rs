@@ -615,6 +615,27 @@ impl PtySessionManager {
             .collect()
     }
 
+    /// Owner-scoped inventory for IPC `PtyList`.
+    ///
+    /// When `live_only` is true, keep only Starting | Running | Detached rows.
+    pub fn list_sessions_for_owner(&self, owner: Uuid, live_only: bool) -> Vec<PtySession> {
+        self.list_sessions()
+            .into_iter()
+            .filter(|session| session.owner_session_id == owner)
+            .filter(|session| {
+                if !live_only {
+                    return true;
+                }
+                matches!(
+                    session.state,
+                    PtySessionState::Starting
+                        | PtySessionState::Running { .. }
+                        | PtySessionState::Detached { .. }
+                )
+            })
+            .collect()
+    }
+
     /// Mark session attached (Detached → Running). Live handle must still exist.
     pub fn attach(&self, session_id: PtySessionId) -> Result<PtySession, PtySessionError> {
         self.refresh_exit(session_id);
@@ -988,6 +1009,33 @@ fn build_pty_command(
             for (key, value) in env {
                 cmd.env(key, value);
             }
+            // Interactive user terminal: capable TERM even when daemon was
+            // launched from a GUI/launchd context with unset/dumb TERM.
+            // Apply after session env so weak TERM cannot win. Shells
+            // (Oh My Zsh / Starship / Powerlevel10k) need this; no
+            // theme-specific env hacks beyond standard PTY protocol.
+            let term_override = env
+                .iter()
+                .find(|(k, _)| k == "TERM")
+                .map(|(_, v)| v.as_str());
+            let term_weak = match term_override {
+                None => true,
+                Some(v) => {
+                    let s = v.trim();
+                    s.is_empty()
+                        || s.eq_ignore_ascii_case("dumb")
+                        || s.eq_ignore_ascii_case("unknown")
+                }
+            };
+            // Also override when session env omitted TERM but base env is weak —
+            // portable_pty inherits daemon process env before our overrides.
+            if term_weak {
+                cmd.env("TERM", "xterm-256color");
+            }
+            let has_colorterm = env.iter().any(|(k, _)| k == "COLORTERM");
+            if !has_colorterm {
+                cmd.env("COLORTERM", "truecolor");
+            }
             Ok((cmd, None))
         }
         ActionOrigin::Agent => {
@@ -1135,6 +1183,77 @@ mod tests {
         let session = manager.get_session(session_id);
         assert!(session.is_some());
         assert_eq!(session.unwrap().command, "bash");
+    }
+
+    #[test]
+    fn list_sessions_for_owner_filters_by_owner_and_live() {
+        let manager = PtySessionManager::new(test_seam());
+        let owner_a = Uuid::new_v4();
+        let owner_b = Uuid::new_v4();
+
+        let (id_a, _) = manager
+            .request(
+                owner_a,
+                "bash",
+                vec![],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                1,
+            )
+            .expect("request a");
+        let (_id_b, _) = manager
+            .request(
+                owner_b,
+                "sh",
+                vec![],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                1,
+            )
+            .expect("request b");
+
+        let for_a = manager.list_sessions_for_owner(owner_a, false);
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].id, id_a);
+
+        // Starting counts as live.
+        assert_eq!(manager.list_sessions_for_owner(owner_a, true).len(), 1);
+
+        let live = manager
+            .start(
+                owner_a,
+                "sleep",
+                vec!["30".into()],
+                std::env::temp_dir(),
+                ActionOrigin::User,
+                40,
+                12,
+                1,
+            )
+            .expect("start sleep");
+        manager.terminate(live.id).expect("terminate");
+
+        let all = manager.list_sessions_for_owner(owner_a, false);
+        let live_only = manager.list_sessions_for_owner(owner_a, true);
+        assert!(
+            all.iter()
+                .any(|s| matches!(s.state, PtySessionState::Exited { .. })),
+            "expected Exited row in full list"
+        );
+        assert!(
+            !live_only
+                .iter()
+                .any(|s| matches!(s.state, PtySessionState::Exited { .. })),
+            "live_only must drop Exited"
+        );
+        assert!(live_only.iter().all(|s| matches!(
+            s.state,
+            PtySessionState::Starting
+                | PtySessionState::Running { .. }
+                | PtySessionState::Detached { .. }
+        )));
+        // Other owner still isolated.
+        assert_eq!(manager.list_sessions_for_owner(owner_b, false).len(), 1);
     }
 
     #[test]

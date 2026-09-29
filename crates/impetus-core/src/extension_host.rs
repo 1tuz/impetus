@@ -122,6 +122,12 @@ pub enum ExtensionHostError {
     OperateDenied(String),
     #[error("host_process operate failed: {0}")]
     Operate(String),
+    #[error("extension `{0}` already installed globally")]
+    AlreadyInstalled(String),
+    #[error("extension `{0}` is not a removable global package")]
+    NotGlobal(String),
+    #[error("extension install failed: {0}")]
+    InstallFailed(String),
 }
 
 /// In-memory package host + capability registry view.
@@ -550,6 +556,141 @@ impl ExtensionHost {
         Ok(())
     }
 
+    /// Copy a validated package into `roots.global_packages/{id}` and reload.
+    pub fn install_package(
+        &mut self,
+        source_path: &Path,
+        replace: bool,
+        roots: &ExtensionDiscoveryRoots,
+    ) -> Result<String, ExtensionHostError> {
+        if self.persist_root.is_none() {
+            let derived = roots
+                .global_packages
+                .parent()
+                .and_then(|extensions| extensions.parent())
+                .map(Path::to_path_buf)
+                .ok_or_else(|| {
+                    ExtensionHostError::InstallFailed(
+                        "persist_root unset and cannot derive data root from global_packages"
+                            .into(),
+                    )
+                })?;
+            self.persist_root = Some(derived);
+            self.load_disabled_from_disk();
+        }
+
+        let source = source_path.canonicalize().map_err(|e| {
+            ExtensionHostError::InstallFailed(format!(
+                "canonicalize source {}: {e}",
+                source_path.display()
+            ))
+        })?;
+        if !source.is_dir() {
+            return Err(ExtensionHostError::InstallFailed(format!(
+                "source is not a directory: {}",
+                source.display()
+            )));
+        }
+
+        let loaded = Self::load_package(&source, ExtensionPackageSource::Global)?;
+        let id = loaded.id.as_str().to_string();
+        if !is_safe_package_dir_name(&id) {
+            return Err(ExtensionHostError::InstallFailed(format!(
+                "refusing path traversal in package id `{id}`"
+            )));
+        }
+
+        fs::create_dir_all(&roots.global_packages)?;
+        let dest = roots.global_packages.join(&id);
+        // Belt-and-suspenders: dest must stay under global_packages.
+        if dest
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+            || !dest.starts_with(&roots.global_packages)
+        {
+            return Err(ExtensionHostError::InstallFailed(format!(
+                "refusing unsafe install destination for `{id}`"
+            )));
+        }
+
+        if dest.exists() {
+            if !replace {
+                return Err(ExtensionHostError::AlreadyInstalled(id));
+            }
+            let was_disabled = self.disabled_ids.contains(&id);
+            if self.loaded.contains_key(&id) {
+                let _ = self.deactivate(&id);
+                if !was_disabled {
+                    self.disabled_ids.remove(&id);
+                    self.persist_disabled()?;
+                }
+            }
+            fs::remove_dir_all(&dest).map_err(|e| {
+                ExtensionHostError::InstallFailed(format!(
+                    "remove existing {}: {e}",
+                    dest.display()
+                ))
+            })?;
+        }
+
+        copy_dir_recursive(&source, &dest).map_err(|e| {
+            ExtensionHostError::InstallFailed(format!(
+                "copy {} → {}: {e}",
+                source.display(),
+                dest.display()
+            ))
+        })?;
+        let _ = self.reload(roots);
+        Ok(id)
+    }
+
+    /// Delete a **global** installed package directory and reload.
+    ///
+    /// Refuses workspace/dev sources. Allows remove when the package is loaded
+    /// as Global, or when only `global_packages/{id}` exists on disk.
+    ///
+    /// On success returns the same per-path discover results as [`Self::reload`]
+    /// (ok/err counts for `ExtensionPackagesReloaded`).
+    pub fn remove_package(
+        &mut self,
+        id: &str,
+        roots: &ExtensionDiscoveryRoots,
+    ) -> Result<Vec<(PathBuf, Result<(), String>)>, ExtensionHostError> {
+        if !is_safe_package_dir_name(id) {
+            return Err(ExtensionHostError::InstallFailed(format!(
+                "refusing path traversal in package id `{id}`"
+            )));
+        }
+
+        let global_path = roots.global_packages.join(id);
+        match self.loaded.get(id) {
+            Some(ext) => match ext.source {
+                ExtensionPackageSource::Global => {}
+                ExtensionPackageSource::Workspace | ExtensionPackageSource::Dev => {
+                    return Err(ExtensionHostError::NotGlobal(id.to_string()));
+                }
+            },
+            None => {
+                if !global_path.exists() {
+                    return Err(ExtensionHostError::NotFound(id.to_string()));
+                }
+            }
+        }
+
+        if self.loaded.contains_key(id) {
+            let _ = self.deactivate(id);
+        }
+        self.disabled_ids.remove(id);
+        self.persist_disabled()?;
+
+        if global_path.exists() {
+            fs::remove_dir_all(&global_path).map_err(|e| {
+                ExtensionHostError::InstallFailed(format!("remove {}: {e}", global_path.display()))
+            })?;
+        }
+        Ok(self.reload(roots))
+    }
+
     fn enable_mcp_module(&self, module_id: &str) -> Result<(), ExtensionHostError> {
         let Some(root) = &self.persist_root else {
             return Err(ExtensionHostError::Manifest(
@@ -675,6 +816,39 @@ fn read_manifest(dir: &Path) -> Result<ExtensionPackageManifest, ExtensionHostEr
         ExtensionPackageManifest::from_toml_str(&text)
             .map_err(|e| ExtensionHostError::Manifest(e.to_string()))
     }
+}
+
+/// True when `id` is a single path component (no traversal).
+fn is_safe_package_dir_name(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." {
+        return false;
+    }
+    let path = Path::new(id);
+    path.components().count() == 1
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        && !id.contains('/')
+        && !id.contains('\\')
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" || name == "target" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1025,5 +1199,80 @@ done
         write_demo_pack(&pack, 99);
         let err = ExtensionHost::load_package(&pack, ExtensionPackageSource::Dev).unwrap_err();
         assert!(err.to_string().contains("API version") || err.to_string().contains("above"));
+    }
+
+    #[test]
+    fn install_package_from_temp_then_remove() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let roots = ExtensionDiscoveryRoots::from_data_and_workspace(&data, None);
+        let source = tmp.path().join("src-pack");
+        write_demo_pack(&source, 1);
+
+        let mut host = ExtensionHost::with_persist_root(&data);
+        let id = host
+            .install_package(&source, false, &roots)
+            .expect("install");
+        assert_eq!(id, "demo-pack");
+        assert!(roots.global_packages.join("demo-pack").is_dir());
+        assert!(host.get("demo-pack").is_some());
+
+        host.remove_package("demo-pack", &roots).expect("remove");
+        assert!(!roots.global_packages.join("demo-pack").exists());
+        assert!(host.get("demo-pack").is_none());
+    }
+
+    #[test]
+    fn install_refuses_replace_false_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let roots = ExtensionDiscoveryRoots::from_data_and_workspace(&data, None);
+        fs::create_dir_all(&roots.global_packages).unwrap();
+        write_demo_pack(&roots.global_packages.join("demo-pack"), 1);
+
+        let source = tmp.path().join("src-pack");
+        write_demo_pack(&source, 1);
+        let mut host = ExtensionHost::with_persist_root(&data);
+        let err = host
+            .install_package(&source, false, &roots)
+            .expect_err("collide");
+        assert!(matches!(err, ExtensionHostError::AlreadyInstalled(_)));
+    }
+
+    #[test]
+    fn remove_refuses_workspace_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let workspace = tmp.path().join("ws");
+        let roots = ExtensionDiscoveryRoots::from_data_and_workspace(&data, Some(&workspace));
+        fs::create_dir_all(roots.workspace_extensions.as_ref().unwrap()).unwrap();
+        write_demo_pack(
+            &roots
+                .workspace_extensions
+                .as_ref()
+                .unwrap()
+                .join("demo-pack"),
+            1,
+        );
+
+        let mut host = ExtensionHost::with_persist_root(&data);
+        let _ = host.reload(&roots);
+        assert_eq!(
+            host.get("demo-pack").map(|e| e.source),
+            Some(ExtensionPackageSource::Workspace)
+        );
+        let err = host
+            .remove_package("demo-pack", &roots)
+            .expect_err("workspace");
+        assert!(matches!(err, ExtensionHostError::NotGlobal(_)));
+        assert!(
+            roots
+                .workspace_extensions
+                .as_ref()
+                .unwrap()
+                .join("demo-pack")
+                .is_dir(),
+            "workspace pack must remain"
+        );
     }
 }

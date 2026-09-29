@@ -199,7 +199,7 @@ impetusd  — authoritative daemon
 | Workspace Files (list/stat/read/search) | Implemented | **IPC v8+** `ListWorkspaceDir` / `StatWorkspaceFile` / `ReadWorkspaceFile` / `SearchWorkspaceFiles` + caps `workspace_*`; `workspace_files.rs` path resolve matches `memory_store` (no `..` / absolute / symlink escape); reject huge + binary; ignore `.git`/`target`/`node_modules`. TUI `Ctrl+F` / `/files` + `/` daemon search + name filter + 500-entry dir cap. Desktop FileTree list/read/search via harness (no local walk). |
 | Git (repo/branches/status/diff) | Implemented | **IPC v12** `git` + `structured_diff`; `GetRepositoryState` / `ListBranches` / `GetCurrentBranch` / `CreateBranch` / `SwitchBranch` / `GitStatus` / `ListChangedFiles` / `GetDiff` / `GetFileDiff` (`GitDiffPayload.patch` + optional `observation` hunks via `diff_observation`; wire gate for GetDiff/GetFileDiff is `git`; `structured_diff` advertises DiffObservation enrichment; WorktreeManager numstat counts overlay when `base_ref` + binding); `git_ops.rs` via system git (`status --porcelain=v1 -z`; dirty/conflict/stale refuse); session cwd prefers daemon `WorktreeManager` (`impetusd` opens `{data_root}/worktrees.sqlite3` + `worktrees/`, fail-closed; `switch_bound_branch` updates persisted `binding.branch`). TUI `Ctrl+B` branch picker. Desktop BranchSelect via harness (no local git). **Unix E2E (#357):** `daemon_unix_approvals_mcp_files` exercises `ListChangedFiles` / `GetDiff` / `GetFileDiff` over real socket (parse success; dirty workspace ok). |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
-| Daemon-owned PTY (`portable-pty`) | Implemented | IPC v12 Pty* (`session_id` required; `PtySession.owner_session_id`); cross-session deny; events → owner only; cwd containment; User vs Agent (Agent → `prepare_pty_sandbox` on macOS); ring + coalesce spill; TUI passthrough. **Durable store:** `impetusd` attaches `SqlitePtySessionStore` at `$IMPETUS_DATA_DIR/pty_sessions.sqlite3` when open succeeds — metadata survives restart; live PTY handles do not (client must re-`PtyStart`). On `set_store`, formerly-live rows → `Failed` (stale handle), `next_id` advances past max durable id (no reuse). |
+| Daemon-owned PTY (`portable-pty`) | Implemented | IPC v12+ Pty* (`session_id` required; `PtySession.owner_session_id`); **IPC v15** `PtyList` + enriched metadata (`args` / `working_dir` / `created_at_unix_ms` / `origin`) for Desktop multi-tab discovery — no tab-order presentation in daemon. Cross-session deny; events → owner only; cwd containment; User vs Agent (Agent → `prepare_pty_sandbox` on macOS); ring + coalesce spill; TUI passthrough. **Durable store:** `impetusd` attaches `SqlitePtySessionStore` at `$IMPETUS_DATA_DIR/pty_sessions.sqlite3` when open succeeds — metadata survives restart; live PTY handles do not (client must re-`PtyStart`). On `set_store`, formerly-live rows → `Failed` (stale handle), `next_id` advances past max durable id (no reuse). |
 | macOS Seatbelt (`sandbox-exec`) in tool/process exec | Implemented | Wired: `execution/sandbox.rs` + macOS path in `execution/process.rs`; Agent-origin PTY uses `prepare_pty_sandbox` (same profile rules). User-origin PTY = cwd containment only. Non-macOS stays path-scope only (`tests/macos_sandbox_production.rs`). |
 | Linux / Windows sandbox backends | Planned | Phase 9; PR CI: macOS clippy/tests (`--lib --bins`) + Linux fmt + `cargo check` |
 | Keychain API-key references (macOS) | Implemented | `impetusd` `MacosKeychainResolver` (lazy on `--provider-profile` prompt). Silent ItemSearchOptions + `kSecUseAuthenticationUISkip` — never unlock/password UI. Default daemon / CI use `NoCredentialResolver`. `CI` / `IMPETUS_NONINTERACTIVE` skip Keychain entirely (#308 / #320). |
@@ -224,8 +224,8 @@ impetusd  — authoritative daemon
 | Auto LLM compaction as durable events | Planned | Model-authored summaries still open |
 | Session shared-prefix fork + checkpoints | Implemented | `storage.rs`, IPC fork/checkpoint |
 | Extension **import** adapters (Skills/MCP/Claude/Codex/Cursor/Plugins) | Implemented | `*_adapter.rs` + unit tests |
-| Extension **runtime** MCP / skills in agent loop | Partial | **MCP live:** `$IMPETUS_DATA_DIR/mcp/*.json` → AgentLoop (`mcp_manage`). **Skills:** workspace `.impetus/skills` + Active `ExtensionHost` / migrated legacy via `effective_skill_roots` (package host shadows legacy on same skill key) → Context/Prompt/FollowUp. **Package host (#324/#329):** SDK + host + IPC `extension_manage` (v14) + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT + `host_process` spawn/handshake/`operate`/`cancel` (request id, timeout, payload limits, secret-key reject, manifest permission gate, crash cleanup) + IPC `OperateExtensionPackage` / `ExtensionOperate` + `HarnessClient::operate_extension_package` + `daemon_unix_extensions` (skill lifecycle + host-process-echo activate/operate/disable). **SoT unify (#330):** daemon-owned effective inventory + CLI `--data-dir`/`migrate`; no duplicate MCP/Skill activation. **Unix E2E (#357):** `daemon_unix_approvals_mcp_files` Upsert/Disable/Enable/Remove + list + restart durability (`HarnessClient` MCP mutate helpers). **Remaining:** crates.io SDK publish. |
-| Module Runtime foundation | Partial | Library + tests; not the live `impetusd` control plane |
+| Extension **runtime** MCP / skills in agent loop | Partial | **MCP live:** `$IMPETUS_DATA_DIR/mcp/*.json` → AgentLoop (`mcp_manage`). **Skills:** workspace `.impetus/skills` + Active `ExtensionHost` / migrated legacy via `effective_skill_roots` (package host shadows legacy on same skill key) → Context/Prompt/FollowUp. **Package host (#324/#329/#395):** SDK + host + IPC `extension_manage` (v14+) + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT + `host_process` spawn/handshake/`operate`/`cancel` + IPC `OperateExtensionPackage` / **`InstallExtensionPackage` / `RemoveExtensionPackage`** (daemon-owned copy into `extensions/packages/`; not marketplace) + `HarnessClient` package helpers + `daemon_unix_extensions`. **SoT unify (#330):** daemon-owned effective inventory + CLI `--data-dir`/`migrate`; no duplicate MCP/Skill activation. **Remaining:** crates.io SDK publish; CLI `extension *` still offline FS for legacy Skill/MCP (best-effort reload when sock live = follow-up). |
+| Module Runtime foundation | Deprecated | Legacy library (`module_registry` / `module_lifecycle` / `module_ipc`) + tests only — **not** a second public plugin API and **not** wired into `impetusd`. Sole extension substrate = **Extension Host** (`instruction_pack` / `mcp_bridge` / `host_process`). Keep `module_fallback` + `ExecutionSemantics` as internal helpers. |
 | Explore child (production daemon) | Implemented | `ExploreChildRunner` + `AgentLoopExploreExecutor` → restricted AgentLoop → `ChildResultStore` → parent-resume (`Harness::spawn_explore` / `complete_explore_and_gate`). **Production daemon:** `impetusd` wires one AgentLoop Explore executor for both `explore_spawn` and Workflow Explore steps (#320). Parent-log `Child*` Started/Finished (#315/#318). TUI `/children` + Activity fold + IPC `ListChildRuns` (#311). |
 | `hook_prefilter` on process spawn | Implemented | Live on `ProcessExecutionRequest::execute` (`spawn_stub` before OS spawn). **Production daemon:** autoload from `$IMPETUS_DATA_DIR/hooks.json` / `hooks/*.json` via `wire_daemon_runtime` → Harness → ToolOrchestrator. Not RiskGate. |
 | `SteerRewrite` (live provider) | Implemented | `ProviderSteerRewrite` one-shot via default `ModelProvider`; daemon `with_provider_steer_rewrite`; passthrough fallback offline (#285 / #311). |
@@ -236,10 +236,10 @@ impetusd  — authoritative daemon
 | Browser provider | Implemented | Daemon IPC `GetBrowserHealth` / `NegotiateBrowser`: Active `BrowserIntegration` host_process operate preferred (#362/#391); else honest Absent. Library Mock/Absent + Firefox/Chrome identity slots. Concrete CDP/WebDriver **Won't in core** — live in extensions only. Fixtures: `host-process-browser`. |
 | Coding tools (definition/refs/diagnostics/symbols/hover/cancel) | Implemented | Seam + IPC coding_* (#336). Daemon prefers Active `LspIntegration` operate (`PreferExtensionCodingTools`, `coding/references` included, #362/#391); fallback `ProcessLspBackend` when `IMPETUS_LSP_BINARY` / `rust-analyzer` on PATH; else Unavailable. Crash respawn + cancel + diagnostics cache shipped. Full LSP protocol **Won't in core**; language packs in extensions. Fixtures: `host-process-lsp` + `daemon_unix_browser_lsp`. |
 | Subagents / WorktreeManager / WorkflowEngine | Implemented | `WorkflowRuntime` live spawn; Research/Build/Review via `AgentLoopRoleExecutor` (same AgentLoop bridge as Explore — **no** `git status --short` stubs) (#322); Failed child → `fail_step` (not fake Completed); Cancelled → `cancel_with_scheduler`; `cancel_session` best-effort worktree stop/close; fair per-parent caps; Cancel/CancelWorkflow. **WorktreeManager** in `impetusd`; `ListWorktrees` without `session_id` → global non-closed catalog (#322). |
-| Extension lifecycle (plan/apply/ownership/enable/disable/unload/doctor/repair) | Implemented | CLI control plane: `extension plan|install|remove|enable|disable|unload|list|migrate|doctor|repair` + durable status (`{path}.disabled`). Daemon SoT under `$IMPETUS_DATA_DIR` (`extensions/install_state.db`, `extensions/legacy_skills/`, `mcp/`); `--root` keeps workspace `.impetus/` layout. Effective inventory merges package host + MCP SoT + legacy (shadow losers). IPC `ListExtensions` / `GetExtensionStatus` (`extension_runtime`). **Package SDK (#324/#329):** `impetus-extension-sdk` + host_process protocol (`operate`/`cancel`) + `ExtensionCapabilityRegistry` + IPC `extension_manage` + durable disable + permission→Policy + `mcp_bridge`↔MCP SoT. Allowlist `#296`. Not marketplace (Won't). |
+| Extension lifecycle (plan/apply/ownership/enable/disable/unload/doctor/repair) | Implemented | **Package path (daemon SoT):** IPC `extension_manage` — discover/`Reload` / list / get / enable / disable / **install** / **remove** / operate (#395). Install copies validated package dir → `$IMPETUS_DATA_DIR/extensions/packages/<id>/`; remove deletes **global** packs only (workspace/dev refused). Catalog/marketplace = Won't. **Legacy Skill/MCP CLI:** `extension plan|install|remove|…` still offline FS under data-dir (not a second package PM). Effective inventory merges package host + MCP SoT + legacy. IPC `ListExtensions` / `GetExtensionStatus` (`extension_runtime`). SDK + host_process + permission→Policy. |
 | MemoryStore (contextual knowledge) | Implemented | Daemon IPC List/Get/Append/Clear/Export + JSONL under `$IMPETUS_DATA_DIR/memory/`. AgentLoop injects project-scoped session entries. Distinct from SDK `MemoryProvider` operate (`memory/recall|store`, #362) — optional long-term provider, **not** a second session store (#363). |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
-| Versioned canonical schemas (`impetus.*.v1`) | Implemented | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`. Mutating validate-on-wire: daemon rejects bad PolicyConfig/PolicyStore JSON, empty mutating ids, SetSessionModel labels, MCP `env_keys` KEY=value; ApprovalDetail responses run version + full envelope. Client unix retains negotiated caps/version and gates optional calls. Adjacent-version + unsupported-cap tests (#331). `IPC_VERSION` unchanged (14). |
+| Versioned canonical schemas (`impetus.*.v1`) | Implemented | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`. Mutating validate-on-wire: daemon rejects bad PolicyConfig/PolicyStore JSON, empty mutating ids, SetSessionModel labels, MCP `env_keys` KEY=value; ApprovalDetail responses run version + full envelope. Client unix retains negotiated caps/version and gates optional calls. Adjacent-version + unsupported-cap tests (#331). `IPC_VERSION` = **15**, `IPC_MIN_SUPPORTED` = **12**. |
 | ACP as ModelProvider backend | Implemented | `--acp-profile` + gateway V2 + `AcpAdapter`; tool/status → `StreamEvent`; disconnect → `InterruptedUnknown` (never false `Completed`); registry/health/redaction (#335 / #66). Permission path: Policy → durable ApprovalRequested → ResolveApproval → exact ACP PermissionOption (`daemon_unix_acp_permission`, #360). Live smoke Partial. |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste + filesystem attach (`/attach` · `Ctrl+Shift+A`), streaming; Prompt/Steer/FollowUp; execution modes; **model picker** F8/`/model` via `ListProviders`/`SetSessionModel` (Provider→Model→Reasoning→catalog options; unavailable disabled; restore after reconnect; options via SetSessionModel (#328)) (#337); `/children`; Files `Ctrl+F`; git branch `Ctrl+B`; Review F6/`Ctrl+R`/`/review`; Activity fold; PTY `Ctrl+\` passthrough; fork `/fork`+`Ctrl+Shift+K` / checkpoints F7/`/checkpoint` / workspace path prompt on `/new` (#311/#315). Remaining: sequence picker polish. |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
@@ -247,7 +247,7 @@ impetusd  — authoritative daemon
 
 ## IPC compatibility (PROTO)
 
-- `IPC_VERSION` = 14, `IPC_MIN_SUPPORTED` = 12. **Hello negotiation:** client
+- `IPC_VERSION` = 15, `IPC_MIN_SUPPORTED` = 12. **Hello negotiation:** client
   sends preferred `version` (max) and optional `min_version` (legacy omit →
   exact). Server selects highest overlap with `[IPC_MIN_SUPPORTED, IPC_VERSION]`
   and returns that version; empty overlap → `Incompatible` with
@@ -265,8 +265,10 @@ impetusd  — authoritative daemon
   `InMemoryTransport` and pulls optional `impetus-core`; Unix socket remains the
   default production path (no core dep).
 - Wire DTOs live in runtime-free `impetus-protocol` (no rusqlite/reqwest/Harness).
-- **PTY (v12):** every `Pty*` request carries `session_id`; `PtySession`
-  response includes `owner_session_id`. Cross-session ops denied; lifecycle/
+- **PTY (v12 + list v15):** every `Pty*` request carries `session_id`; `PtySession`
+  response includes `owner_session_id` (+ additive metadata fields). `PtyList`
+  returns owner-scoped inventory for multi-tab Desktop — **no** UI tab order
+  in daemon. Cross-session ops denied; lifecycle/
   output/spill events route only to the owner session (no first-session
   fallback). Cwd must resolve inside workspace (`resolve_pty_working_dir`).
   User origin = containment only; Agent origin = macOS Seatbelt via
@@ -275,10 +277,28 @@ impetusd  — authoritative daemon
   rich activity capabilities to Hello. Current caps include workspace Files,
   Git, `structured_diff` (advertises DiffObservation enrichment on
   GetDiff/GetFileDiff; wire gate for those methods is `git`), daemon-owned
-  `pty`, read-only `list_mcp` / `list_models`, and additive `artifact_read`
+  `pty`, read-only `list_mcp` / `list_models`, `extension_manage` (install/
+  remove since v15), and additive `artifact_read`
   (Read/GetMetadata/Range; MIME on upload). First successful Hello freezes
   negotiated caps + version for the connection; re-Hello echoes the frozen
   set and must not widen (e.g. `approval_scope_full_auto`).
+
+## Trust boundary (clients → daemon → extensions)
+
+```text
+Clients (CLI / TUI / Desktop / ACP / Zap)
+        │  versioned Unix IPC (HarnessClient) · capability negotiate
+        ▼
+impetusd  — sole runtime source of truth
+  ├─ Trusted Kernel — EventStore · Policy · Approval · Sandbox · Executor · secrets
+  ├─ Runtime services — AgentLoop · Tools · Providers · Workflows · PTY · …
+  └─ Extension Host (sole public extension substrate)
+        instruction_pack | mcp_bridge | host_process
+        activate permission → SandboxScope; operate ≠ full EffectSeam
+```
+
+Extensions must not grant themselves `origin=user`, skip Approval, or own
+SQLite/Keychain/policy. Presentation state (tab order, titles) stays in clients.
 
 ## Request path
 

@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, RwLock};
 
-/// External module process handle
+/// Frozen legacy external module handle — **not** the Extension Host protocol.
 pub struct ExternalModule {
     descriptor: ModuleDescriptor,
     process: Arc<Mutex<Option<Child>>>,

@@ -2181,6 +2181,23 @@ fn handle_request(
                 Err(error) => pty_error(error),
             }
         }
+        IpcRequest::PtyList {
+            session_id,
+            live_only,
+        } => match AgentRuntime::attach(store.clone(), policy_snapshot(&policy), session_id) {
+            Ok(_) => {
+                let sessions = pty
+                    .list_sessions_for_owner(session_id, live_only)
+                    .into_iter()
+                    .map(pty_session_info)
+                    .collect();
+                IpcResponse::PtySessions {
+                    session_id,
+                    sessions,
+                }
+            }
+            Err(error) => runtime_error(error),
+        },
         // Daemon SoT catalog reads (labels/status only; never env/credentials).
         IpcRequest::ListMcpServers => {
             let servers = match tool_providers {
@@ -2375,6 +2392,34 @@ fn handle_request(
             mcp_reload.clone(),
             &id,
         ),
+        IpcRequest::InstallExtensionPackage {
+            source_path,
+            replace,
+        } => {
+            let resp = handle_install_extension_package(
+                extension_host.as_ref(),
+                mcp_sot_root.as_deref(),
+                &workspace_root,
+                &source_path,
+                replace,
+            );
+            if matches!(resp, IpcResponse::ExtensionPackage { .. }) {
+                refresh_mcp_runtime_best_effort(tool_providers.clone(), mcp_reload.clone());
+            }
+            resp
+        }
+        IpcRequest::RemoveExtensionPackage { id } => {
+            let resp = handle_remove_extension_package(
+                extension_host.as_ref(),
+                mcp_sot_root.as_deref(),
+                &workspace_root,
+                &id,
+            );
+            if matches!(resp, IpcResponse::ExtensionPackagesReloaded { .. }) {
+                refresh_mcp_runtime_best_effort(tool_providers.clone(), mcp_reload.clone());
+            }
+            resp
+        }
         IpcRequest::OperateExtensionPackage {
             id,
             request_id,
@@ -2653,6 +2698,100 @@ fn handle_disable_extension_package(
             code: IpcErrorCode::InvalidRequest,
             message: err.to_string(),
         },
+    }
+}
+
+fn handle_install_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    data_root: Option<&Path>,
+    workspace_root: &Path,
+    source_path: &Path,
+    replace: bool,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let Some(data_root) = data_root else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "Extension package install requires daemon data root ($IMPETUS_DATA_DIR)"
+                .into(),
+        };
+    };
+    let roots =
+        crate::ExtensionDiscoveryRoots::from_data_and_workspace(data_root, Some(workspace_root));
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.install_package(source_path, replace, &roots) {
+        Ok(id) => match guard.get(&id) {
+            Some(ext) => IpcResponse::ExtensionPackage {
+                package: package_info_from_loaded(ext),
+            },
+            None => IpcResponse::Error {
+                code: IpcErrorCode::Internal,
+                message: format!("extension package not found after install: {id}"),
+            },
+        },
+        Err(err) => {
+            let code = match &err {
+                crate::ExtensionHostError::AlreadyInstalled(_) => IpcErrorCode::Conflict,
+                crate::ExtensionHostError::NotFound(_)
+                | crate::ExtensionHostError::NotGlobal(_)
+                | crate::ExtensionHostError::Manifest(_)
+                | crate::ExtensionHostError::InstallFailed(_) => IpcErrorCode::InvalidRequest,
+                _ => IpcErrorCode::Internal,
+            };
+            IpcResponse::Error {
+                code,
+                message: err.to_string(),
+            }
+        }
+    }
+}
+
+fn handle_remove_extension_package(
+    extension_host: Option<&Arc<Mutex<crate::ExtensionHost>>>,
+    data_root: Option<&Path>,
+    workspace_root: &Path,
+    id: &str,
+) -> IpcResponse {
+    let Some(slot) = extension_host else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "ExtensionHost not wired on this harness".into(),
+        };
+    };
+    let Some(data_root) = data_root else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "Extension package remove requires daemon data root ($IMPETUS_DATA_DIR)"
+                .into(),
+        };
+    };
+    let roots =
+        crate::ExtensionDiscoveryRoots::from_data_and_workspace(data_root, Some(workspace_root));
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.remove_package(id, &roots) {
+        Ok(results) => {
+            // Same semantics as ReloadExtensionPackages: discover ok/err counts.
+            let loaded = results.iter().filter(|(_, r)| r.is_ok()).count() as u32;
+            let failed = results.iter().filter(|(_, r)| r.is_err()).count() as u32;
+            IpcResponse::ExtensionPackagesReloaded { loaded, failed }
+        }
+        Err(err) => {
+            let code = match &err {
+                crate::ExtensionHostError::NotFound(_) => IpcErrorCode::InvalidRequest,
+                crate::ExtensionHostError::NotGlobal(_) => IpcErrorCode::Unavailable,
+                crate::ExtensionHostError::InstallFailed(_) => IpcErrorCode::InvalidRequest,
+                _ => IpcErrorCode::Internal,
+            };
+            IpcResponse::Error {
+                code,
+                message: err.to_string(),
+            }
+        }
     }
 }
 
@@ -3051,13 +3190,38 @@ fn handle_pty_start(
 }
 
 fn pty_session_response(session: crate::PtySession) -> IpcResponse {
+    let info = pty_session_info(session);
     IpcResponse::PtySession {
+        pty_id: info.pty_id,
+        owner_session_id: info.owner_session_id,
+        state: info.state,
+        command: info.command,
+        cols: info.cols,
+        rows: info.rows,
+        args: info.args,
+        working_dir: info.working_dir,
+        created_at_unix_ms: info.created_at_unix_ms,
+        origin: info.origin,
+    }
+}
+
+fn pty_session_info(session: crate::PtySession) -> impetus_protocol::PtySessionInfo {
+    use crate::policy::ActionOrigin;
+    let origin = match session.origin {
+        ActionOrigin::User => Some("user".to_string()),
+        ActionOrigin::Agent => Some("agent".to_string()),
+    };
+    impetus_protocol::PtySessionInfo {
         pty_id: session.id.0,
         owner_session_id: session.owner_session_id,
         state: session.state,
         command: session.command,
+        args: session.args,
         cols: session.cols,
         rows: session.rows,
+        working_dir: Some(session.working_dir.display().to_string()),
+        created_at_unix_ms: Some(session.created_at_unix_ms),
+        origin,
     }
 }
 
@@ -4512,7 +4676,7 @@ fn gather_subsystem_health(
         SubsystemStatus::ok("Built-in tools registered; tool_schema validates args before policy")
             .with_details(serde_json::json!({
                 "builtin_tools": ["bash", "read", "write", "edit", "search"],
-                "module_registry": "available",
+                "extension_host": "available",
                 "tool_schema_gate": true,
                 "provider_http_tools": true,
                 "capability": capability_truth.entry("tool_schema_validation"),
@@ -4527,7 +4691,7 @@ fn gather_subsystem_health(
 
     // Optional modules + extension import vs runtime honesty
     let optional_modules = SubsystemStatus::ok(
-        "Module registry available; extension import Implemented, runtime Partial",
+        "Extension Host available; extension import Implemented, runtime Partial",
     )
     .with_details(serde_json::json!({
         "loaded_modules": 0,
