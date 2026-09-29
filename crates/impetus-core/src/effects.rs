@@ -647,6 +647,79 @@ impl EffectSeam {
             EffectDecision::Deny { reason } => EffectExecution::Denied { reason },
         })
     }
+
+    /// Admit then run under write-ahead Effect Fence.
+    ///
+    /// Persist Prepared→Started **before** the side effect starts; Observe on
+    /// success; mark Failed on known execution `Err`. Prior Unknown/Started
+    /// with same `args_digest` refuses blind replay (Denied, no execution).
+    pub fn execute_with_fence<T, E>(
+        &self,
+        effect: &NormalizedEffect,
+        ledger: &crate::EffectFenceLedger,
+        execution: impl FnOnce() -> Result<T, E>,
+    ) -> Result<EffectExecution<T>, E> {
+        match self.decide(effect) {
+            EffectDecision::NeedsApproval { reason } => {
+                Ok(EffectExecution::NeedsApproval { reason })
+            }
+            EffectDecision::Deny { reason } => Ok(EffectExecution::Denied { reason }),
+            EffectDecision::Allow => {
+                let digest = crate::args_digest_for_effect(effect);
+                match ledger.check_replay_safe(&digest) {
+                    Ok(crate::FenceReplayDecision::AllowFresh) => {}
+                    Ok(crate::FenceReplayDecision::AlreadyObserved { .. }) => {
+                        return Ok(EffectExecution::Denied {
+                            reason: "effect fence already Observed — refuse blind replay".into(),
+                        });
+                    }
+                    Ok(crate::FenceReplayDecision::AlreadyFailed { reason }) => {
+                        return Ok(EffectExecution::Denied {
+                            reason: format!(
+                                "effect fence already Failed — refuse blind replay ({})",
+                                reason.unwrap_or_default()
+                            ),
+                        });
+                    }
+                    Ok(crate::FenceReplayDecision::Refuse { reason }) => {
+                        return Ok(EffectExecution::Denied { reason });
+                    }
+                    Err(err) => {
+                        return Ok(EffectExecution::Denied {
+                            reason: err.to_string(),
+                        });
+                    }
+                }
+
+                let identity = crate::EffectInvocationIdentity::from_effect(effect);
+                if let Err(err) = ledger.prepare_and_start(&identity) {
+                    return Ok(EffectExecution::Denied {
+                        reason: err.to_string(),
+                    });
+                }
+
+                match execution() {
+                    Ok(value) => {
+                        if let Err(err) = ledger.observe(&identity, "executed") {
+                            // Side effect may have run; leave Started → reconcile as Unknown.
+                            let _ = ledger.mark_unknown(
+                                &identity,
+                                format!("observe persist failed after execution: {err}"),
+                            );
+                            return Ok(EffectExecution::Denied {
+                                reason: format!("effect executed but fence observe failed: {err}"),
+                            });
+                        }
+                        Ok(EffectExecution::Executed(value))
+                    }
+                    Err(err) => {
+                        let _ = ledger.mark_failed(&identity, "execution error");
+                        Err(err)
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

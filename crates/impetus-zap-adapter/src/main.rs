@@ -308,6 +308,9 @@ fn render_event(event: &Event, status_bar: &StatusBar) {
         EventPayload::Sandbox(sandbox) => {
             render_block("Sandbox", &format!("{:?}", sandbox));
         }
+        EventPayload::EffectFence(fence) => {
+            render_block("EffectFence", &format!("{:?}", fence));
+        }
     }
 }
 

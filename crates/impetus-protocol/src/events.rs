@@ -104,6 +104,8 @@ pub enum EventPayload {
     Pty(PtyEvent),
     /// Process/shell command lifecycle (durable; bounded previews).
     Command(CommandEvent),
+    /// Write-ahead effect fence transitions (Prepared → Started → Observed/Failed/Unknown).
+    EffectFence(EffectFenceEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +282,41 @@ pub enum CommandEvent {
         exit_code: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+    },
+}
+
+/// Write-ahead fence for a single effect invocation.
+///
+/// Labels/kinds/paths only — never tokens, private keys, or raw secret args.
+/// `Unknown` must never be treated as safe Completed / idempotent replay.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EffectFenceEvent {
+    Prepared {
+        effect_id: Uuid,
+        args_digest: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_label: Option<String>,
+    },
+    Started {
+        effect_id: Uuid,
+        args_digest: String,
+    },
+    Observed {
+        effect_id: Uuid,
+        args_digest: String,
+        summary: String,
+    },
+    Failed {
+        effect_id: Uuid,
+        args_digest: String,
+        reason: String,
+    },
+    Unknown {
+        effect_id: Uuid,
+        args_digest: String,
+        reason: String,
     },
 }
 

@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use impetus_client::protocol::ExecutionMode;
 use impetus_client::protocol::{
     AgentEvent, ApprovalEvent, ApprovalState, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
-    Event, EventPayload, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES, NoticeEvent, PtyEvent,
-    RetryEvent, RunEvent, SandboxEvent, SessionEvent, ToolEvent,
+    EffectFenceEvent, Event, EventPayload, IpcRequest, IpcResponse, MAX_IPC_LINE_BYTES,
+    NoticeEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SessionEvent, ToolEvent,
 };
 use impetus_client::{EventSubscription, HarnessClient, UnixSocketTransport};
 use std::collections::BTreeSet;
@@ -958,6 +958,62 @@ fn map_event(event: Event) -> UiEvent {
                 title,
                 message,
                 error: false,
+                remediation: None,
+            }
+        }
+        EventPayload::EffectFence(fence) => {
+            let (title, message, error) = match fence {
+                EffectFenceEvent::Prepared {
+                    effect_id,
+                    kind,
+                    args_digest,
+                    target_label,
+                } => (
+                    "effect fence · prepared".to_owned(),
+                    format!(
+                        "{kind} · {effect_id} · digest={}{}",
+                        &args_digest[..args_digest.len().min(12)],
+                        target_label.map(|t| format!(" · {t}")).unwrap_or_default()
+                    ),
+                    false,
+                ),
+                EffectFenceEvent::Started {
+                    effect_id,
+                    args_digest,
+                } => (
+                    "effect fence · started".to_owned(),
+                    format!(
+                        "{effect_id} · digest={}",
+                        &args_digest[..args_digest.len().min(12)]
+                    ),
+                    false,
+                ),
+                EffectFenceEvent::Observed {
+                    effect_id, summary, ..
+                } => (
+                    "effect fence · observed".to_owned(),
+                    format!("{effect_id} · {summary}"),
+                    false,
+                ),
+                EffectFenceEvent::Failed {
+                    effect_id, reason, ..
+                } => (
+                    "effect fence · failed".to_owned(),
+                    format!("{effect_id} · {reason}"),
+                    true,
+                ),
+                EffectFenceEvent::Unknown {
+                    effect_id, reason, ..
+                } => (
+                    "effect fence · unknown".to_owned(),
+                    format!("{effect_id} · {reason}"),
+                    true,
+                ),
+            };
+            UiEventKind::Notice {
+                title,
+                message,
+                error,
                 remediation: None,
             }
         }

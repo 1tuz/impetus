@@ -33,6 +33,7 @@ pub mod deepseek_harness_adapter;
 pub mod diagnostics;
 pub mod diff_observation;
 pub mod durable_artifacts;
+pub mod effect_fence;
 pub mod effects;
 pub mod events;
 pub mod execution;
@@ -211,6 +212,11 @@ pub use durable_artifacts::{
     ArtifactRef as DurableArtifactRef, DurableArtifactStore, default_artifact_root,
     run_artifact_gc,
 };
+pub use effect_fence::{
+    ArgsDigest, EffectFenceError, EffectFenceLedger, EffectFenceRecord, EffectInvocationIdentity,
+    FenceReplayDecision, FenceState, args_digest_for_effect, digest_args, kind_label_for_effect,
+    reconcile_for_replay, records_from_events,
+};
 pub use effects::{
     AdmittedOperation, CapabilityVersion, DeferredEffect, EffectAdmission, EffectCapability,
     EffectDecision, EffectExecution, EffectSeam, NormalizedEffect, Sandbox,
@@ -218,11 +224,11 @@ pub use effects::{
 };
 pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
-    CompactionStructuralState, EVENT_SCHEMA_VERSION, Event, EventPayload, IntentEvent,
-    MAX_ACTIVITY_PREVIEW_CHARS, MAX_CHILD_ACTION_EVENTS_PER_RUN, MAX_CHILD_PROGRESS_EVENTS_PER_RUN,
-    NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent, SandboxEvent, SandboxPrepareState,
-    SessionEvent, ToolEvent, ToolEventOutcome, bound_activity_preview, coalesce_child_action,
-    coalesce_child_progress,
+    CompactionStructuralState, EVENT_SCHEMA_VERSION, EffectFenceEvent, Event, EventPayload,
+    IntentEvent, MAX_ACTIVITY_PREVIEW_CHARS, MAX_CHILD_ACTION_EVENTS_PER_RUN,
+    MAX_CHILD_PROGRESS_EVENTS_PER_RUN, NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent,
+    SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent, ToolEventOutcome,
+    bound_activity_preview, coalesce_child_action, coalesce_child_progress,
 };
 pub use execution::{
     DEFAULT_PTY_READ_BYTES, MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES,
