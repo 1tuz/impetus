@@ -562,6 +562,11 @@ impl AgentRuntime {
         Ok(crate::CompletionGate::evaluate_run(&events, run_id))
     }
 
+    /// Write-ahead Effect Fence ledger for this session (EventStore-backed).
+    pub fn effect_fence_ledger(&self) -> crate::EffectFenceLedger {
+        crate::EffectFenceLedger::new(self.store.clone(), self.session_id)
+    }
+
     pub fn record_agent_chunk(
         &self,
         run_id: Uuid,
