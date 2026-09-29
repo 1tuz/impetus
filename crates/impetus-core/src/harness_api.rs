@@ -149,8 +149,9 @@ impl Harness {
             .expect("failed to register mock provider");
         let router_config = ModelRouterConfig::default();
         let model_router = ModelRouter::new(router_config);
-        // ponytail: PTY seam snapshots policy at harness build; ReloadPolicyConfig
-        // does not rebuild it. Upgrade — shared Arc policy inside EffectSeam.
+        // Overrides shared via Arc inside PolicyEngine; ReloadPolicyConfig updates
+        // the map in place so PTY seam / Prompt clones see the next evaluate.
+        // Scope stays owned per engine (reload does not change scope).
         let pty_seam = crate::EffectSeam::with_sandbox(
             policy.clone(),
             crate::Sandbox::workspace(workspace_root.clone()),
@@ -777,6 +778,9 @@ impl Harness {
     }
 }
 
+/// Clone live harness policy for a Prompt / attach path.
+/// Overrides are Arc-shared — mid-run `ReloadPolicyConfig` is visible on the
+/// next `evaluate` without rebuilding this snapshot.
 fn policy_snapshot(policy: &Arc<Mutex<PolicyEngine>>) -> PolicyEngine {
     policy
         .lock()

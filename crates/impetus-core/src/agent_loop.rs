@@ -592,10 +592,9 @@ mod tests {
     }
 
     #[test]
-    fn mid_run_policy_clone_ignores_later_reload() {
-        // AgentLoop::new clones PolicyEngine into ToolOrchestrator at construction.
-        // Harness ReloadPolicyConfig mutates only the live harness Mutex policy;
-        // an in-flight loop keeps the pre-reload clone until the next Prompt.
+    fn mid_run_policy_clone_sees_later_reload() {
+        // AgentLoop / ToolOrchestrator hold a PolicyEngine clone; overrides are
+        // Arc-shared, so harness ReloadPolicyConfig is visible on the next evaluate.
         use crate::{Action, ActionKind, ActionOrigin, PolicyConfig, PolicyDecision};
 
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -613,12 +612,10 @@ mod tests {
             summary: "create file".into(),
             target: Some("new.txt".into()),
         };
-        assert!(
-            matches!(
-                loop_snapshot.evaluate(&write),
-                PolicyDecision::NeedsApproval { .. }
-            ),
-            "in-flight AgentLoop clone must keep pre-reload decision"
+        assert_eq!(
+            loop_snapshot.evaluate(&write),
+            PolicyDecision::Allow,
+            "in-flight AgentLoop clone must see mid-run reload"
         );
         assert_eq!(live.evaluate(&write), PolicyDecision::Allow);
     }

@@ -2,6 +2,7 @@ use crate::policy_config::{PolicyConfig, PolicyConfigDecision, PolicyConfigError
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 /// Policy rule version for audit and replay.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,16 +141,19 @@ impl SandboxScope {
 
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
+    /// Session sandbox (owned). `reload_config` does not change scope.
     scope: SandboxScope,
     /// User overrides applied after fail-closed safety Denies.
-    overrides: BTreeMap<ActionKind, PolicyConfigDecision>,
+    /// Shared via `Arc` so `Clone` (Prompt / AgentLoop / EffectSeam) sees
+    /// live `ReloadPolicyConfig` on the next `evaluate`.
+    overrides: Arc<RwLock<BTreeMap<ActionKind, PolicyConfigDecision>>>,
 }
 
 impl PolicyEngine {
     pub fn new(scope: SandboxScope) -> Self {
         Self {
             scope,
-            overrides: BTreeMap::new(),
+            overrides: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -157,13 +161,18 @@ impl PolicyEngine {
     pub fn with_config(scope: SandboxScope, config: PolicyConfig) -> Self {
         Self {
             scope,
-            overrides: config.overrides,
+            overrides: Arc::new(RwLock::new(config.overrides)),
         }
     }
 
     /// Replace user overrides in place. Scope and fail-closed Denies stay unchanged.
+    /// Write-locks the shared map so all clones observe the new overrides.
     pub fn reload_config(&mut self, config: PolicyConfig) {
-        self.overrides = config.overrides;
+        let mut guard = self
+            .overrides
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = config.overrides;
     }
 
     /// Load JSON policy config from path and apply it. On error, prior overrides stay.
@@ -178,9 +187,14 @@ impl PolicyEngine {
 
     /// Snapshot current overrides as a PolicyConfig document.
     pub fn config(&self) -> PolicyConfig {
+        let overrides = self
+            .overrides
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         PolicyConfig {
             version: crate::policy_config::POLICY_CONFIG_VERSION,
-            overrides: self.overrides.clone(),
+            overrides,
         }
     }
 
@@ -232,8 +246,14 @@ impl PolicyEngine {
             _ => {}
         }
 
-        if let Some(overridden) = self.overrides.get(&action.kind) {
-            return overridden.to_decision();
+        {
+            let overrides = self
+                .overrides
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(overridden) = overrides.get(&action.kind) {
+                return overridden.to_decision();
+            }
         }
 
         match action.kind {
@@ -1010,5 +1030,32 @@ mod tests {
             ),
             "{decision:?}"
         );
+    }
+
+    #[test]
+    fn clone_sees_reload_config_on_shared_overrides() {
+        let workspace = std::env::current_dir().expect("current directory");
+        let mut live = PolicyEngine::new(SandboxScope::local_workspace(workspace));
+        let snapshot = live.clone();
+        let write = Action {
+            origin: ActionOrigin::Agent,
+            kind: ActionKind::WriteFile,
+            summary: "write".into(),
+            target: Some("shared-reload.txt".into()),
+        };
+        assert!(matches!(
+            snapshot.evaluate(&write),
+            PolicyDecision::NeedsApproval { .. }
+        ));
+
+        live.reload_config(
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"write_file":"allow"}}"#)
+                .expect("config"),
+        );
+
+        assert_eq!(snapshot.evaluate(&write), PolicyDecision::Allow);
+        assert_eq!(live.evaluate(&write), PolicyDecision::Allow);
+        // Scope stays owned per engine: clone does not pick up a different root.
+        assert_eq!(snapshot.scope(), live.scope());
     }
 }
