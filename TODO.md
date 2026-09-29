@@ -43,6 +43,10 @@ Actionable after Now. Not priority theatre.
 - Flight Recorder receipts + observe-only replay: shipped `#413`
   (`impetus receipt export` / `impetus replay`; EventStore projection only;
   no EffectSeam re-execute)
+- DeclaredWriteSet + writer lease/handoff fence: library + scheduler hook
+  shipped `#417` (`declared_write_set.rs`, `schedule_with_write_lease`;
+  conflict/stale denied in unit tests). Remaining: Explore/RoleChild
+  production spawn wiring (not Batch `#416`)
 
 ### Extension split follow-through
 

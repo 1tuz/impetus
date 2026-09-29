@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
+use crate::declared_write_set::{WriteSetError, WriterHandoffFence, WriterLeaseTable};
 use crate::subagent_metadata::SubagentRole;
 
 /// Role-tagged task sourced from a WorkflowEngine step.
@@ -57,6 +58,8 @@ pub enum AgentSchedulerError {
     NotAdmitted(String, ScheduleStatus),
     #[error("unknown role label: {0}")]
     UnknownRole(String),
+    #[error(transparent)]
+    WriteLease(#[from] WriteSetError),
 }
 
 /// In-memory / mock AgentScheduler.
@@ -134,6 +137,27 @@ impl InMemoryAgentScheduler {
             },
         );
         Ok(admission)
+    }
+
+    /// Schedule after DeclaredWriteSet lease admission (#417).
+    ///
+    /// On schedule reject, the just-admitted lease is released. Conflict/stale
+    /// lease errors surface as [`AgentSchedulerError::WriteLease`].
+    pub fn schedule_with_write_lease(
+        &mut self,
+        task: RoleScheduleTask,
+        leases: &mut WriterLeaseTable,
+        fence: WriterHandoffFence,
+    ) -> Result<ScheduleAdmission, AgentSchedulerError> {
+        let child_id = fence.child_id.clone();
+        leases.admit(fence)?;
+        match self.schedule(task) {
+            Ok(admission) => Ok(admission),
+            Err(err) => {
+                let _ = leases.release(&child_id);
+                Err(err)
+            }
+        }
     }
 
     /// Record an opaque result into the schedule's result slot.
@@ -252,6 +276,61 @@ mod tests {
         assert!(matches!(
             parse_step_role("Swarm"),
             Err(AgentSchedulerError::UnknownRole(_))
+        ));
+    }
+
+    #[test]
+    fn schedule_with_write_lease_denies_conflict() {
+        use crate::declared_write_set::DeclaredWriteSet;
+
+        let mut sched = InMemoryAgentScheduler::new();
+        let mut leases = WriterLeaseTable::new();
+        let set = DeclaredWriteSet::from_paths(["src/a.rs"]).unwrap();
+        sched
+            .schedule_with_write_lease(
+                task("fix-a", Some(SubagentRole::Build)),
+                &mut leases,
+                WriterHandoffFence::new("child-a", 1, set.clone()).unwrap(),
+            )
+            .unwrap();
+        let err = sched
+            .schedule_with_write_lease(
+                task("fix-b", Some(SubagentRole::Build)),
+                &mut leases,
+                WriterHandoffFence::new("child-b", 1, set).unwrap(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentSchedulerError::WriteLease(WriteSetError::Conflict { .. })
+        ));
+        assert_eq!(sched.active_count(), 1);
+    }
+
+    #[test]
+    fn schedule_with_write_lease_denies_stale() {
+        use crate::declared_write_set::DeclaredWriteSet;
+
+        let mut sched = InMemoryAgentScheduler::new();
+        let mut leases = WriterLeaseTable::new();
+        let set = DeclaredWriteSet::from_paths(["src/a.rs"]).unwrap();
+        sched
+            .schedule_with_write_lease(
+                task("fix", Some(SubagentRole::Build)),
+                &mut leases,
+                WriterHandoffFence::new("child-a", 2, set.clone()).unwrap(),
+            )
+            .unwrap();
+        let err = sched
+            .schedule_with_write_lease(
+                task("fix-stale", Some(SubagentRole::Build)),
+                &mut leases,
+                WriterHandoffFence::new("child-a", 1, set).unwrap(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentSchedulerError::WriteLease(WriteSetError::Stale { .. })
         ));
     }
 }
