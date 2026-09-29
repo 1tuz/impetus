@@ -30,7 +30,7 @@ Actionable after Now. Not priority theatre.
 
 ### Runtime reliability (#397)
 
-- [ ] Bounded Gap Loop on CompletionGate Insufficient (follow-up #399)
+- [x] Bounded Gap Loop on CompletionGate Insufficient (#400; follow-up #399)
 
 ### Extension split follow-through
 

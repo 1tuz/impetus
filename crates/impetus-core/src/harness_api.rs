@@ -3970,33 +3970,28 @@ async fn run_agent_loop(
 
     match result {
         Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
-            // CompletionGate: side-effecting turns need durable Evidence;
-            // pure chat may Complete without tool observations (#399).
-            match runtime.evaluate_completion_gate(run_id) {
-                Ok(crate::CompletionVerdict::Accepted) => {
+            // CompletionGate + bounded Gap Loop (#399 / #400): side-effecting
+            // turns need durable Evidence. On Insufficient, attempt honest
+            // gap-fill up to GAP_LOOP_MAX_ITERATIONS; never map
+            // unknown/truncated/exhausted to Completed.
+            //
+            // Production fill: AgentLoop already returned — message history
+            // is not retained here, so cheap model re-entry is unavailable.
+            // Report GapLoopExhausted / NeedsEvidence and stop fail-closed.
+            let outcome = crate::run_gap_loop(
+                || runtime.evaluate_completion_gate(run_id),
+                |_missing| Ok::<bool, crate::RuntimeError>(false),
+            );
+            match outcome {
+                crate::GapLoopOutcome::Accepted => {
                     let _ = runtime.finish_run(crate::RunEvent::Completed { run_id });
                     true
                 }
-                Ok(crate::CompletionVerdict::Insufficient { missing }) => {
-                    let _ = runtime.finish_run(crate::RunEvent::Failed {
-                        run_id,
-                        reason: format!("NeedsEvidence: missing {}", missing.join(", ")),
-                    });
-                    false
-                }
-                Ok(crate::CompletionVerdict::Rejected { reason }) => {
-                    let _ = runtime.finish_run(crate::RunEvent::Failed {
-                        run_id,
-                        reason: format!("completion gate rejected: {reason}"),
-                    });
-                    false
-                }
-                Err(error) => {
-                    // Fail-closed: never invent Completed when gate cannot run.
-                    let _ = runtime.finish_run(crate::RunEvent::Failed {
-                        run_id,
-                        reason: format!("completion gate error: {error}"),
-                    });
+                other => {
+                    let reason = other
+                        .fail_reason()
+                        .unwrap_or_else(|| "gap loop failed".into());
+                    let _ = runtime.finish_run(crate::RunEvent::Failed { run_id, reason });
                     false
                 }
             }

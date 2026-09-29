@@ -50,6 +50,7 @@ pub mod extension_inventory;
 pub mod extension_lifecycle;
 pub mod extension_manifest;
 pub mod extension_policy;
+pub mod gap_loop;
 pub mod git_ops;
 pub mod harness_api;
 pub mod hook_prefilter;
@@ -289,6 +290,7 @@ pub use extension_manifest::{
 pub use extension_policy::{
     action_kinds_for_permission, evaluate_permission_against_scope, permission_eval,
 };
+pub use gap_loop::{GAP_LOOP_MAX_ITERATIONS, GapLoopOutcome, run_gap_loop};
 pub use git_ops::{
     GIT_DIFF_MAX_BYTES, GitBranchInfo, GitChangeKind, GitChangedFile, GitCurrentBranch,
     GitDiffPayload, GitOpsError, GitRepositoryState, GitSessionCwd, GitStatusSnapshot,
