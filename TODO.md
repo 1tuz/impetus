@@ -38,6 +38,8 @@ Actionable after Now. Not priority theatre.
   ArtifactStore / EventStore)
 - Eval CLI + ExperimentCapsule: shipped `#408` (offline mock fixtures,
   capsule digest, role stubs; promotion never automatic)
+- Promise/obligation ledger: shipped `#412` (ledger + CompletionGate
+  fail-closed on Open required; fulfill allows Accept)
 - Flight Recorder receipts + observe-only replay: shipped `#413`
   (`impetus receipt export` / `impetus replay`; EventStore projection only;
   no EffectSeam re-execute)

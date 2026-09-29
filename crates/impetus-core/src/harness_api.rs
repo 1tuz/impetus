@@ -3970,9 +3970,10 @@ async fn run_agent_loop(
 
     match result {
         Ok(()) if matches!(runtime.status(), Ok(RuntimeStatus::Running)) => {
-            // CompletionGate + bounded Gap Loop (#399 / #400): side-effecting
-            // turns need durable Evidence. On Insufficient, attempt honest
-            // gap-fill up to GAP_LOOP_MAX_ITERATIONS; never map
+            // CompletionGate + bounded Gap Loop (#399 / #400 / #412):
+            // side-effecting turns need durable Evidence; open required
+            // obligations also block Accepted. On Insufficient, attempt
+            // honest gap-fill up to GAP_LOOP_MAX_ITERATIONS; never map
             // unknown/truncated/exhausted to Completed.
             //
             // Production fill: AgentLoop already returned — message history
