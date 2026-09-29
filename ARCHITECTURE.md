@@ -195,7 +195,7 @@ impetusd  — authoritative daemon
 | --- | --- | --- |
 | Durable EventStore + reconnect cursor | Implemented | `storage.rs` `list_after` + COUNT head for `append_next`; IPC Stream/Subscribe; agent Chunk coalesce (`AGENT_CHUNK_COALESCE_BYTES`) + spill over `MAX_AGENT_CHUNK_EVENT_BYTES` → DurableArtifactStore (preview + ArtifactRef); Stream/Subscribe `Events` batches trimmed to `IPC_EVENTS_FRAME_BUDGET` (≤60 KiB under `MAX_IPC_LINE_BYTES`); Criterion baselines in `benches/event_log.rs` + `docs/benchmarks/event-log-v0.2.md` (#16) |
 | Policy `Deny \| Allow \| NeedsApproval` + origin | Implemented | `policy.rs`, `tool_orchestrator.rs` |
-| PolicyConfig JSON load / reload | Implemented | **Startup load** in `impetusd` (`--policy-config` / env / `policy.json`). **IPC** `ReloadPolicyConfig` (`reload_policy_config` capability) applies live overrides without daemon restart; invalid reload keeps prior policy + audit Notice. Library `AgentRuntime::reload_policy_config*`. Soft `Allow` skips RiskGate `NeedsHuman`; hard Deny (path/network/sandbox + RiskGate Deny e.g. sudo) still wins (`effects` / `policy` tests). **Risk:** in-flight `AgentLoop` keeps a PolicyEngine clone — mid-run reload applies on next Prompt only (`mid_run_policy_clone_ignores_later_reload`). |
+| PolicyConfig JSON load / reload | Implemented | **Startup load** in `impetusd` (`--policy-config` / env / `policy.json`). **IPC** `ReloadPolicyConfig` (`reload_policy_config` capability) applies live overrides without daemon restart; invalid reload keeps prior policy + audit Notice. Library `AgentRuntime::reload_policy_config*`. Soft `Allow` skips RiskGate `NeedsHuman`; hard Deny (path/network/sandbox + RiskGate Deny e.g. sudo) still wins (`effects` / `policy` tests). **Mid-run (#398):** `PolicyEngine` shares overrides via `Arc<RwLock<_>>` — `Clone` (Prompt / AgentLoop / EffectSeam / PTY seam) sees reload on the next side-effect `evaluate` (`mid_run_policy_clone_sees_later_reload`). Scope stays owned; reload does not change scope. |
 | Workspace Files (list/stat/read/search) | Implemented | **IPC v8+** `ListWorkspaceDir` / `StatWorkspaceFile` / `ReadWorkspaceFile` / `SearchWorkspaceFiles` + caps `workspace_*`; `workspace_files.rs` path resolve matches `memory_store` (no `..` / absolute / symlink escape); reject huge + binary; ignore `.git`/`target`/`node_modules`. TUI `Ctrl+F` / `/files` + `/` daemon search + name filter + 500-entry dir cap. Desktop FileTree list/read/search via harness (no local walk). |
 | Git (repo/branches/status/diff) | Implemented | **IPC v12** `git` + `structured_diff`; `GetRepositoryState` / `ListBranches` / `GetCurrentBranch` / `CreateBranch` / `SwitchBranch` / `GitStatus` / `ListChangedFiles` / `GetDiff` / `GetFileDiff` (`GitDiffPayload.patch` + optional `observation` hunks via `diff_observation`; wire gate for GetDiff/GetFileDiff is `git`; `structured_diff` advertises DiffObservation enrichment; WorktreeManager numstat counts overlay when `base_ref` + binding); `git_ops.rs` via system git (`status --porcelain=v1 -z`; dirty/conflict/stale refuse); session cwd prefers daemon `WorktreeManager` (`impetusd` opens `{data_root}/worktrees.sqlite3` + `worktrees/`, fail-closed; `switch_bound_branch` updates persisted `binding.branch`). TUI `Ctrl+B` branch picker. Desktop BranchSelect via harness (no local git). **Unix E2E (#357):** `daemon_unix_approvals_mcp_files` exercises `ListChangedFiles` / `GetDiff` / `GetFileDiff` over real socket (parse success; dirty workspace ok). |
 | Path-scope sandbox (workspace FS) fail-closed | Implemented | `effects.rs`, `tests/sandbox_fail_closed.rs` |
@@ -415,10 +415,10 @@ JSON overrides on top of fail-closed defaults
   denies) stay **ahead** of overrides — config cannot soften them
 - Soft override `allow` is authoritative vs RiskGate `NeedsHumanApproval` only;
   RiskGate hard `Deny` (sudo / destructive) and sandbox path/network still win
-- Mid-run: `AgentLoop` / `ToolOrchestrator` hold a PolicyEngine **clone**;
-  `ReloadPolicyConfig` updates harness live policy — in-flight Prompt keeps
-  pre-reload clone until next Prompt (same for PTY seam snapshot; see harness
-  `ponytail` note). Upgrade path: shared `Arc` policy inside EffectSeam.
+- Mid-run (#398 / parent #397): overrides live in `Arc<RwLock<_>>` inside
+  `PolicyEngine`; `Clone` shares the map so `ReloadPolicyConfig` is visible on
+  the next side-effect `evaluate` (Prompt / AgentLoop / EffectSeam / PTY seam).
+  Scope remains owned per engine — reload does not change scope.
 - Secrets: none in the format or fixed decision reason strings
 
 Example:
@@ -435,7 +435,8 @@ Example:
 ```
 
 Not a shared `impetus.*.v1` registry schema today (separate `version: u32`).
-Shipped under #9: format (#193), in-process reload (#201).
+Shipped under #9: format (#193), in-process reload (#201); mid-run shared
+overrides (#398, parent #397).
 
 ### ApprovalDetail IPC UI contract
 
