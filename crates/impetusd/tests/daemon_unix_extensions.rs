@@ -301,6 +301,7 @@ async fn daemon_unix_host_process_fixture_activates() {
             params: serde_json::json!({}),
             permission: None,
             timeout_ms: Some(5_000),
+            session_id: None,
         })
         .await
         .expect("operate echo");
@@ -355,7 +356,7 @@ async fn daemon_unix_host_process_fixture_activates() {
 /// EffectSeam admission blocks operate before RPC when session mode forbids mutating effects.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_unix_host_process_operate_denied_in_plan_mode() {
-    let mut daemon = DaemonFixture::spawn();
+    let daemon = DaemonFixture::spawn();
     copy_host_process_echo_fixture(daemon.data_dir.path());
 
     let client = UnixSocketTransport::connect(&daemon.socket)
