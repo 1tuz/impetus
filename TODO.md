@@ -38,6 +38,9 @@ Actionable after Now. Not priority theatre.
   ArtifactStore / EventStore)
 - Eval CLI + ExperimentCapsule: shipped `#408` (offline mock fixtures,
   capsule digest, role stubs; promotion never automatic)
+- Flight Recorder receipts + observe-only replay: shipped `#413`
+  (`impetus receipt export` / `impetus replay`; EventStore projection only;
+  no EffectSeam re-execute)
 
 ### Extension split follow-through
 
