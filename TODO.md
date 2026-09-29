@@ -43,10 +43,17 @@ Actionable after Now. Not priority theatre.
 - Flight Recorder receipts + observe-only replay: shipped `#413`
   (`impetus receipt export` / `impetus replay`; EventStore projection only;
   no EffectSeam re-execute)
+- Durable Offline Batch + BatchProvider: Partial `#416` (parent `#397`) —
+  `offline_batch.rs` + `EventPayload::OfflineBatch` journal, `MockBatchProvider`,
+  idempotent workspace collect; **Remaining:** daemon background poll/wait,
+  live provider adapter, CLI/daemon wiring
 - DeclaredWriteSet + writer lease/handoff fence: library + scheduler hook
   shipped `#417` (`declared_write_set.rs`, `schedule_with_write_lease`;
   conflict/stale denied in unit tests). Remaining: Explore/RoleChild
-  production spawn wiring (not Batch `#416`)
+  production spawn wiring
+- Durable Offline Batch + BatchProvider: Partial `#416` (`offline_batch.rs`,
+  `EventPayload::OfflineBatch`, mock provider + journal; Remaining: daemon
+  background poll/collect, live provider extension, harness admission)
 
 ### Extension split follow-through
 

@@ -82,6 +82,7 @@ pub mod module_registry;
 pub mod obligation_ledger;
 pub mod observation_pack;
 pub mod observations;
+pub mod offline_batch;
 pub mod openai_compat_adapter;
 pub mod openai_native_adapter;
 pub mod openai_provider;
@@ -241,9 +242,9 @@ pub use events::{
     AgentEvent, ApprovalEvent, BackendEvent, BudgetEvent, ChildEvent, CommandEvent,
     CompactionStructuralState, EVENT_SCHEMA_VERSION, EffectFenceEvent, Event, EventPayload,
     IntentEvent, MAX_ACTIVITY_PREVIEW_CHARS, MAX_CHILD_ACTION_EVENTS_PER_RUN,
-    MAX_CHILD_PROGRESS_EVENTS_PER_RUN, NoticeEvent, PlanEvent, PtyEvent, RetryEvent, RunEvent,
-    SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent, ToolEventOutcome,
-    bound_activity_preview, coalesce_child_action, coalesce_child_progress,
+    MAX_CHILD_PROGRESS_EVENTS_PER_RUN, NoticeEvent, OfflineBatchEvent, PlanEvent, PtyEvent,
+    RetryEvent, RunEvent, SandboxEvent, SandboxPrepareState, SessionEvent, ToolEvent,
+    ToolEventOutcome, bound_activity_preview, coalesce_child_action, coalesce_child_progress,
 };
 pub use execution::{
     DEFAULT_PTY_READ_BYTES, MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_PREVIEW_BYTES,
@@ -377,6 +378,13 @@ pub use observation_pack::{
 pub use observations::{
     DiffHunk, DiffObservation, DiffSource, PipelineJob, PipelineObservation, SearchMatch,
     SearchObservation, TestFailure, TestObservation,
+};
+pub use offline_batch::{
+    BatchItemResult, BatchItemSpec, BatchLifecycleState, BatchOperationRecord, BatchPlan,
+    BatchPrepareOutcome, BatchProvider, BatchProviderError, BatchProviderStatus,
+    BatchResubmitDecision, BatchSubmitOutcome, CollectBatchOutcome, CollectItemOutcome,
+    DurableOfflineBatchExecutor, FrozenBatchConfig, MockBatchProvider, OfflineBatchError,
+    OfflineBatchJournal, batch_records_from_events, hash_bytes, reconcile_resubmit,
 };
 pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_native_adapter::OpenAiNativeAdapter;

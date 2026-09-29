@@ -961,6 +961,16 @@ fn map_event(event: Event) -> UiEvent {
                 remediation: None,
             }
         }
+        EventPayload::OfflineBatch(batch) => UiEventKind::Notice {
+            title: "offline batch".to_owned(),
+            message: format!("{batch:?}"),
+            error: matches!(
+                batch,
+                impetus_core::OfflineBatchEvent::Failed { .. }
+                    | impetus_core::OfflineBatchEvent::Unknown { .. }
+            ),
+            remediation: None,
+        },
         EventPayload::EffectFence(fence) => {
             let (title, message, error) = match fence {
                 EffectFenceEvent::Prepared {
@@ -1017,6 +1027,12 @@ fn map_event(event: Event) -> UiEvent {
                 remediation: None,
             }
         }
+        EventPayload::OfflineBatch(batch) => UiEventKind::Notice {
+            title: "offline batch".to_owned(),
+            message: format!("{batch:?}"),
+            error: false,
+            remediation: None,
+        },
     };
 
     UiEvent {

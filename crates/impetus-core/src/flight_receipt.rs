@@ -462,6 +462,7 @@ fn classify_payload(payload: &EventPayload) -> (String, String) {
         EventPayload::Pty(p) => ("pty".into(), format!("{p:?}")),
         EventPayload::Command(c) => ("command".into(), format!("{c:?}")),
         EventPayload::EffectFence(f) => ("effect_fence".into(), format!("{f:?}")),
+        EventPayload::OfflineBatch(b) => ("offline_batch".into(), format!("{b:?}")),
     }
 }
 
