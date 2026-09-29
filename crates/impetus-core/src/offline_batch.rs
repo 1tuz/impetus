@@ -329,6 +329,27 @@ pub struct CollectBatchOutcome {
     pub item_outcomes: Vec<(String, CollectItemOutcome)>,
 }
 
+/// One batch touched by [`DurableOfflineBatchExecutor::poll_collect_due`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PollCollectDueResult {
+    pub batch_id: Uuid,
+    pub action: PollCollectAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PollCollectAction {
+    /// In-flight batch with no entry in the caller's plan map.
+    SkippedNoPlan,
+    /// Provider still Pending/Running — no journal transition.
+    AwaitingProvider,
+    /// Terminal failure journaled from provider status.
+    MarkedFailed { reason: String },
+    /// Ambiguous provider outcome journaled as Unknown.
+    MarkedUnknown { reason: String },
+    /// Ready path ran [`DurableOfflineBatchExecutor::collect_durable_with_plan`].
+    Collected(CollectBatchOutcome),
+}
+
 /// Durable submit journal backed by EventStore.
 #[derive(Clone)]
 pub struct OfflineBatchJournal {
@@ -530,7 +551,9 @@ pub fn reconcile_resubmit(
     }
 }
 
-/// Deterministic submit + collect orchestration (library slice — no daemon poll loop).
+/// Deterministic submit + collect orchestration.
+///
+/// Daemon/harness should call [`Self::poll_collect_due`] on a tick (no sleep here).
 pub struct DurableOfflineBatchExecutor {
     pub journal: OfflineBatchJournal,
     provider: Arc<dyn BatchProvider>,
@@ -728,6 +751,97 @@ impl DurableOfflineBatchExecutor {
                 item_outcomes,
             })
         }
+    }
+
+    /// Batch ids in Submitted (provider-linked) or Collecting — candidates for poll.
+    pub fn in_flight_batch_ids(&self) -> Result<Vec<Uuid>, OfflineBatchError> {
+        let records = self.journal.load_records()?;
+        let mut ids: Vec<Uuid> = records
+            .values()
+            .filter(|r| batch_record_poll_eligible(r))
+            .map(|r| r.batch_id)
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Poll provider status for in-flight batches; collect when Ready.
+    ///
+    /// Caller supplies frozen [`BatchPlan`] per batch id (not stored in the journal).
+    /// Safe to call every daemon tick — Pending/Running does not append journal noise.
+    pub fn poll_collect_due(
+        &self,
+        plans: &HashMap<Uuid, BatchPlan>,
+    ) -> Result<Vec<PollCollectDueResult>, OfflineBatchError> {
+        let records = self.journal.load_records()?;
+        let mut in_flight: Vec<&BatchOperationRecord> = records
+            .values()
+            .filter(|r| batch_record_poll_eligible(r))
+            .collect();
+        in_flight.sort_by_key(|r| r.batch_id);
+
+        let mut results = Vec::with_capacity(in_flight.len());
+        for record in in_flight {
+            let batch_id = record.batch_id;
+            let Some(plan) = plans.get(&batch_id) else {
+                results.push(PollCollectDueResult {
+                    batch_id,
+                    action: PollCollectAction::SkippedNoPlan,
+                });
+                continue;
+            };
+            let Some(provider_job_id) = record.provider_job_id.as_deref() else {
+                continue;
+            };
+
+            let status = self.provider.status(provider_job_id)?;
+            match status {
+                BatchProviderStatus::Pending | BatchProviderStatus::Running => {
+                    results.push(PollCollectDueResult {
+                        batch_id,
+                        action: PollCollectAction::AwaitingProvider,
+                    });
+                }
+                BatchProviderStatus::Failed { reason } => {
+                    self.journal.append(OfflineBatchEvent::Failed {
+                        batch_id,
+                        config_digest: record.config_digest.clone(),
+                        reason: reason.clone(),
+                    })?;
+                    results.push(PollCollectDueResult {
+                        batch_id,
+                        action: PollCollectAction::MarkedFailed { reason },
+                    });
+                }
+                BatchProviderStatus::Unknown { reason } => {
+                    self.journal.append(OfflineBatchEvent::Unknown {
+                        batch_id,
+                        config_digest: record.config_digest.clone(),
+                        reason: reason.clone(),
+                    })?;
+                    results.push(PollCollectDueResult {
+                        batch_id,
+                        action: PollCollectAction::MarkedUnknown { reason },
+                    });
+                }
+                BatchProviderStatus::Ready => {
+                    let collected = self.collect_durable_with_plan(batch_id, plan)?;
+                    results.push(PollCollectDueResult {
+                        batch_id,
+                        action: PollCollectAction::Collected(collected),
+                    });
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+
+fn batch_record_poll_eligible(record: &BatchOperationRecord) -> bool {
+    match record.state {
+        BatchLifecycleState::Collecting => true,
+        BatchLifecycleState::Submitted => record.provider_job_id.is_some(),
+        _ => false,
     }
 }
 
@@ -927,6 +1041,31 @@ mod tests {
         let batch_id = exec.submit_durable(&plan, &config).expect("submit");
         let err = exec.collect_durable_with_plan(batch_id, &plan).unwrap_err();
         assert!(matches!(err, OfflineBatchError::Workspace(_)));
+    }
+
+    #[test]
+    fn poll_collect_due_delivers_when_provider_ready() {
+        let (_dir, exec) = executor_fixture();
+        let plan = sample_plan();
+        let config = sample_config(&plan);
+        let batch_id = exec.submit_durable(&plan, &config).expect("submit");
+        assert_eq!(
+            exec.journal.record_for(batch_id).unwrap().unwrap().state,
+            BatchLifecycleState::Submitted
+        );
+
+        let mut plans = HashMap::new();
+        plans.insert(batch_id, plan.clone());
+        let polled = exec.poll_collect_due(&plans).expect("poll");
+        assert_eq!(polled.len(), 1);
+        assert!(matches!(
+            polled[0].action,
+            PollCollectAction::Collected(ref c) if c.state == BatchLifecycleState::Delivered
+        ));
+        assert_eq!(
+            exec.journal.record_for(batch_id).unwrap().unwrap().state,
+            BatchLifecycleState::Delivered
+        );
     }
 
     #[test]
