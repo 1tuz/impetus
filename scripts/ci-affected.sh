@@ -94,7 +94,6 @@ while IFS= read -r f; do
     crates/impetusd/*) rust=true; mark_pkg impetusd ;;
     crates/impetus-cli/*) rust=true; mark_pkg impetus-cli ;;
     crates/impetus-zap-adapter/*) rust=true; mark_pkg impetus-zap-adapter ;;
-    crates/test-module/*) rust=true; mark_pkg test-module ;;
     crates/*)
       rust=true
       workspace=true

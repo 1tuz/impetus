@@ -73,12 +73,6 @@ pub mod model_router;
 pub mod module;
 /// Unknown-outcome helpers used by MCP/tools (not a plugin API).
 pub mod module_fallback;
-/// Frozen legacy Module Runtime IPC — not wired into `impetusd`.
-pub mod module_ipc;
-/// Frozen legacy Module Lifecycle — not wired into `impetusd`.
-pub mod module_lifecycle;
-/// Frozen legacy Module Registry — not wired into `impetusd`.
-pub mod module_registry;
 pub mod obligation_ledger;
 pub mod observation_pack;
 pub mod observations;

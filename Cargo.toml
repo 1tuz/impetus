@@ -11,7 +11,6 @@ members = [
   "crates/impetus-zap-adapter",
   "crates/impetus-acp-gateway",
   "crates/impetus-extension-sdk",
-  "crates/test-module",
 ]
 resolver = "2"
 

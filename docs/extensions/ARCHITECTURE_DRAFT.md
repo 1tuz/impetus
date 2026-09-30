@@ -31,7 +31,7 @@ Enabled rows into the daemon SoT without duplicate MCP/Skill activation.
 | Existing | Role today | Relation to SDK host |
 | --- | --- | --- |
 | `extension_*` + `ExtensionRuntime` | CLI install + Enabled inventory IPC | Control plane over daemon SoT (`$IMPETUS_DATA_DIR`); feeds effective inventory + legacy skill roots |
-| `module.rs` / `ModuleLifecycle` | Library OOP module states + unix IPC stubs | Reuse lifecycle state vocabulary; do not use `temp_dir` sockets as prod SoT |
+| `module.rs` / `module_fallback` | Internal `ModuleKind` + unknown-outcome helpers | Not a plugin API; Extension Host is sole substrate |
 | `plugins::CapabilityRegistry` | Known permission string allowlist | Expand allowlist to SDK permission enum; wire into Policy |
 
 ## Manifest
