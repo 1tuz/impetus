@@ -34,7 +34,10 @@ Actionable after Now. Not priority theatre.
   (`#407`); session-scoped mutating `OperateExtensionPackage` fenced (`#421`);
   agent-origin PTY spawn fenced (`#428`); agent-origin direct
   `ProcessExecution::execute_with_admission_and_fence` fenced (`#433`;
-  User-origin unfenced). Remaining: remote SSH/SFTP/tmux
+  User-origin unfenced); agent-origin remote SSH host-key save, mutating
+  SFTP Write/Delete, and tmux create/attach/kill fenced (`#434`; User-origin
+  and SFTP Read/List unfenced). Remaining: none for listed Effect Fence sites
+  (live SSH/SFTP transport still stub)
 - host_process operate EffectSeam admission: shipped `#421` (refs `#397`)
 - ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
   evidence-preserving reduce + durable compaction anchors; raw recover via

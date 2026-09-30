@@ -26,7 +26,9 @@ pub use tmux_storage::{
     SqliteTmuxSessionStore, TmuxSessionRecord, TmuxSessionStore, TmuxSessionStoreError,
 };
 
-use crate::{Action, ActionKind, ActionOrigin, EffectAdmission, EffectSeam, NormalizedEffect};
+use crate::{
+    ActionKind, ActionOrigin, EffectAdmission, EffectFenceLedger, EffectSeam, NormalizedEffect,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -43,6 +45,8 @@ pub enum SSHConnectionError {
     ConnectionFailed(String),
     #[error("approval store error: {0}")]
     ApprovalStoreError(#[from] SSHApprovalStoreError),
+    #[error("effect fence denied SSH connection: {0}")]
+    EffectFence(String),
 }
 
 /// SSH connection request with policy check and host-key verification.
@@ -65,29 +69,23 @@ impl SSHConnectionRequest {
         }
     }
 
+    /// Normalized effect identity for admission and Effect Fence digests.
+    pub fn fence_effect(&self) -> NormalizedEffect {
+        let summary = format!(
+            "SSH connect to {}@{}:{}",
+            self.profile.user, self.profile.host, self.profile.port
+        );
+        let target = format!(
+            "{}@{}:{}",
+            self.profile.user, self.profile.host, self.profile.port
+        );
+        NormalizedEffect::ssh_connect(self.origin, summary, target)
+    }
+
     /// Prepare SSH connection through policy and effect seam.
     /// Returns either immediate Allow, NeedsApproval with deferred effect, or Deny.
     pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, SSHConnectionError> {
-        let action = Action {
-            origin: self.origin,
-            kind: ActionKind::SshConnect,
-            summary: format!(
-                "SSH connect to {}@{}:{}",
-                self.profile.user, self.profile.host, self.profile.port
-            ),
-            target: Some(format!(
-                "{}@{}:{}",
-                self.profile.user, self.profile.host, self.profile.port
-            )),
-        };
-
-        let effect = NormalizedEffect::ssh_connect(
-            self.origin,
-            action.summary.clone(),
-            action.target.clone().unwrap(),
-        );
-
-        Ok(seam.request(effect, self.intent_revision))
+        Ok(seam.request(self.fence_effect(), self.intent_revision))
     }
 
     /// Verify host key matches the expected fingerprint in the profile.
@@ -133,6 +131,42 @@ impl SSHConnectionRequest {
 
         store.save_approval(&approval).await?;
         Ok(())
+    }
+
+    /// Agent-origin durable host-key save under write-ahead Effect Fence.
+    /// User-origin stays unfenced (ledger ignored).
+    pub async fn save_host_key_approval_with_fence(
+        &self,
+        fingerprint: &HostKeyFingerprint,
+        store: &dyn SSHApprovalStore,
+        seam: &EffectSeam,
+        ledger: &EffectFenceLedger,
+    ) -> Result<(), SSHConnectionError> {
+        if self.origin != ActionOrigin::Agent {
+            return self.save_host_key_approval(fingerprint, store).await;
+        }
+        let effect = self.fence_effect();
+        let identity = seam
+            .prepare_fence_for_allowed(&effect, ledger)
+            .map_err(SSHConnectionError::EffectFence)?;
+        match self.save_host_key_approval(fingerprint, store).await {
+            Ok(()) => {
+                if let Err(err) = ledger.observe(&identity, "ssh host-key approval saved") {
+                    let _ = ledger.mark_unknown(
+                        &identity,
+                        format!("observe persist failed after ssh approval save: {err}"),
+                    );
+                    return Err(SSHConnectionError::EffectFence(format!(
+                        "effect fence observe failed after ssh approval save: {err}"
+                    )));
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let _ = ledger.mark_failed(&identity, error.to_string());
+                Err(error)
+            }
+        }
     }
 
     /// Check if host-key approval exists in durable storage.
@@ -425,5 +459,96 @@ mod tests {
             .unwrap();
 
         assert!(approval.approved_at_unix_ms > 0);
+    }
+
+    fn network_allow_seam() -> EffectSeam {
+        use crate::{PolicyConfig, PolicyEngine, Sandbox, SandboxScope};
+        let workspace = std::env::temp_dir();
+        let mut scope = SandboxScope::local_workspace(workspace);
+        scope.allow_network = true;
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow"}}"#,
+        )
+        .unwrap();
+        let policy = PolicyEngine::with_config(scope.clone(), config);
+        EffectSeam::with_sandbox(policy, Sandbox::Provisioned { scope })
+    }
+
+    #[tokio::test]
+    async fn agent_ssh_host_key_save_refuses_when_prior_unknown() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use crate::{
+            EffectFenceLedger, EffectInvocationIdentity, EventStore, FenceState, MemoryEventStore,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use tempfile::tempdir;
+        use uuid::Uuid;
+
+        let temp_dir = tempdir().unwrap();
+        let store = SqliteSSHApprovalStore::open(temp_dir.path().join("ssh.db")).unwrap();
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), session);
+        let seam = network_allow_seam();
+
+        let request = SSHConnectionRequest::new(test_profile(), ActionOrigin::Agent, 1);
+        let effect = request.fence_effect();
+        let identity = EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("prepare");
+        ledger
+            .mark_unknown(&identity, "crash mid-flight")
+            .expect("unknown");
+
+        let fingerprint = HostKeyFingerprint::from_public_key(b"test_key");
+        let err = request
+            .save_host_key_approval_with_fence(&fingerprint, store.as_ref(), &seam, &ledger)
+            .await
+            .expect_err("Unknown fence must refuse");
+        assert!(
+            matches!(err, SSHConnectionError::EffectFence(ref reason) if reason.contains("Unknown") || reason.contains("refuse")),
+            "expected fence refuse, got {err:?}"
+        );
+
+        let records = records_from_events(&events.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Unknown
+                && r.identity.args_digest == identity.args_digest),
+            "durable Unknown fence must remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_ssh_host_key_save_emits_fence_observed() {
+        use crate::remote::SqliteSSHApprovalStore;
+        use crate::{
+            EffectFenceLedger, EventStore, FenceState, MemoryEventStore, args_digest_for_effect,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use tempfile::tempdir;
+        use uuid::Uuid;
+
+        let temp_dir = tempdir().unwrap();
+        let store = SqliteSSHApprovalStore::open(temp_dir.path().join("ssh.db")).unwrap();
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), session);
+        let seam = network_allow_seam();
+
+        let request = SSHConnectionRequest::new(test_profile(), ActionOrigin::Agent, 1);
+        let fingerprint = HostKeyFingerprint::from_public_key(b"test_key");
+        request
+            .save_host_key_approval_with_fence(&fingerprint, store.as_ref(), &seam, &ledger)
+            .await
+            .expect("agent fence save");
+
+        let effect = request.fence_effect();
+        let records = records_from_events(&events.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Observed
+                && r.identity.args_digest == args_digest_for_effect(&effect)),
+            "expected Observed fence; records={records:?}"
+        );
     }
 }

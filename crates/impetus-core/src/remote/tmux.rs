@@ -7,7 +7,7 @@
 //! - Policy check for tmux session creation
 
 use crate::{
-    Action, ActionKind, ActionOrigin, EffectAdmission, EffectSeam, NormalizedEffect,
+    ActionKind, ActionOrigin, EffectAdmission, EffectFenceLedger, EffectSeam, NormalizedEffect,
     SSHConnectionError, SSHProfile,
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,8 @@ pub enum TmuxError {
     CommandFailed(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("effect fence denied tmux session: {0}")]
+    EffectFence(String),
 }
 
 /// tmux session on a remote host.
@@ -108,10 +110,16 @@ impl TmuxSessionRequest {
         }
     }
 
-    /// Prepare tmux session creation through policy and effect seam.
-    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, TmuxError> {
+    /// Normalized effect for create admission (ssh_connect capability).
+    pub fn fence_effect(&self) -> NormalizedEffect {
+        self.fence_effect_for_op("create")
+    }
+
+    /// Distinct digests per mutating op so create→attach→kill are not replays.
+    pub fn fence_effect_for_op(&self, op: &str) -> NormalizedEffect {
         let summary = format!(
-            "Create tmux session '{}' on {}@{}:{}",
+            "tmux {} session '{}' on {}@{}:{}",
+            op,
             self.session.name,
             self.session.ssh_profile.user,
             self.session.ssh_profile.host,
@@ -119,26 +127,40 @@ impl TmuxSessionRequest {
         );
 
         let target = format!(
-            "{}@{}:{}",
+            "{}|{}|{}@{}:{}",
+            op,
+            self.session.name,
             self.session.ssh_profile.user,
             self.session.ssh_profile.host,
             self.session.ssh_profile.port
         );
 
-        let _action = Action {
-            origin: self.session.origin,
-            kind: ActionKind::SshConnect,
-            summary: summary.clone(),
-            target: Some(target.clone()),
-        };
+        match op {
+            "attach" => NormalizedEffect {
+                origin: self.session.origin,
+                capability: crate::EffectCapability::NetworkConnect,
+                version: crate::CapabilityVersion::V1,
+                action: crate::Action {
+                    origin: self.session.origin,
+                    kind: ActionKind::TmuxAttach,
+                    summary,
+                    target: Some(target),
+                },
+            },
+            _ => NormalizedEffect::ssh_connect(self.session.origin, summary, target),
+        }
+    }
 
-        let effect = NormalizedEffect::ssh_connect(self.session.origin, summary, target);
-
-        Ok(seam.request(effect, self.intent_revision))
+    /// Prepare tmux session creation through policy and effect seam.
+    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, TmuxError> {
+        Ok(seam.request(self.fence_effect(), self.intent_revision))
     }
 }
 
 /// tmux session manager coordinating SSH, policy, and durable storage.
+///
+/// Agent-origin create/attach/kill with a ledger runs under write-ahead Effect
+/// Fence. User-origin stays unfenced.
 pub struct TmuxSessionManager {
     seam: EffectSeam,
     sessions:
@@ -178,19 +200,73 @@ impl TmuxSessionManager {
         Ok((session_id, admission))
     }
 
-    /// Create tmux session after policy approval.
+    /// Create tmux session after policy approval (unfenced).
     /// This is a stub - actual SSH + tmux execution to be implemented.
     pub async fn create(&self, session_id: TmuxSessionId) -> Result<(), TmuxError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+        self.create_with_optional_fence(session_id, None).await
+    }
 
-        // TODO: Actual SSH connection + tmux new-session
-        // For now, simulate creation
-        session.state = TmuxSessionState::Active { windows: 1 };
+    /// Agent-origin create under write-ahead Effect Fence. User-origin ignores ledger.
+    pub async fn create_with_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: &EffectFenceLedger,
+    ) -> Result<(), TmuxError> {
+        self.create_with_optional_fence(session_id, Some(ledger))
+            .await
+    }
 
-        Ok(())
+    async fn create_with_optional_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: Option<&EffectFenceLedger>,
+    ) -> Result<(), TmuxError> {
+        let (origin, effect) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+            let request = TmuxSessionRequest::new(session.clone(), 1);
+            (session.origin, request.fence_effect_for_op("create"))
+        };
+
+        let run = || async {
+            let mut sessions = self.sessions.lock().await;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+            // TODO: Actual SSH connection + tmux new-session
+            session.state = TmuxSessionState::Active { windows: 1 };
+            Ok::<(), TmuxError>(())
+        };
+
+        match (origin, ledger) {
+            (ActionOrigin::Agent, Some(ledger)) => {
+                let identity = self
+                    .seam
+                    .prepare_fence_for_allowed(&effect, ledger)
+                    .map_err(TmuxError::EffectFence)?;
+                match run().await {
+                    Ok(()) => {
+                        if let Err(err) = ledger.observe(&identity, "tmux created") {
+                            let _ = ledger.mark_unknown(
+                                &identity,
+                                format!("observe persist failed after tmux create: {err}"),
+                            );
+                            return Err(TmuxError::EffectFence(format!(
+                                "effect fence observe failed after tmux create: {err}"
+                            )));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = ledger.mark_failed(&identity, error.to_string());
+                        Err(error)
+                    }
+                }
+            }
+            _ => run().await,
+        }
     }
 
     /// Get session state.
@@ -203,18 +279,75 @@ impl TmuxSessionManager {
         self.sessions.lock().await.values().cloned().collect()
     }
 
-    /// Attach to existing tmux session (resume).
+    /// Attach to existing tmux session (resume), unfenced.
     pub async fn attach(&self, session_id: TmuxSessionId) -> Result<(), TmuxError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+        self.attach_with_optional_fence(session_id, None).await
+    }
 
-        if let TmuxSessionState::Detached { windows } = session.state {
-            session.state = TmuxSessionState::Active { windows };
-            Ok(())
-        } else {
-            Err(TmuxError::SessionNotFound(format!("{:?}", session_id)))
+    /// Agent-origin attach under write-ahead Effect Fence.
+    pub async fn attach_with_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: &EffectFenceLedger,
+    ) -> Result<(), TmuxError> {
+        self.attach_with_optional_fence(session_id, Some(ledger))
+            .await
+    }
+
+    async fn attach_with_optional_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: Option<&EffectFenceLedger>,
+    ) -> Result<(), TmuxError> {
+        let (origin, effect) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+            let request = TmuxSessionRequest::new(session.clone(), 1);
+            (session.origin, request.fence_effect_for_op("attach"))
+        };
+
+        let run = || async {
+            let mut sessions = self.sessions.lock().await;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+
+            if let TmuxSessionState::Detached { windows } = session.state {
+                session.state = TmuxSessionState::Active { windows };
+                Ok(())
+            } else {
+                Err(TmuxError::SessionNotFound(format!("{:?}", session_id)))
+            }
+        };
+
+        match (origin, ledger) {
+            (ActionOrigin::Agent, Some(ledger)) => {
+                let identity = self
+                    .seam
+                    .prepare_fence_for_allowed(&effect, ledger)
+                    .map_err(TmuxError::EffectFence)?;
+                match run().await {
+                    Ok(()) => {
+                        if let Err(err) = ledger.observe(&identity, "tmux attached") {
+                            let _ = ledger.mark_unknown(
+                                &identity,
+                                format!("observe persist failed after tmux attach: {err}"),
+                            );
+                            return Err(TmuxError::EffectFence(format!(
+                                "effect fence observe failed after tmux attach: {err}"
+                            )));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = ledger.mark_failed(&identity, error.to_string());
+                        Err(error)
+                    }
+                }
+            }
+            _ => run().await,
         }
     }
 
@@ -233,17 +366,72 @@ impl TmuxSessionManager {
         }
     }
 
-    /// Kill tmux session.
+    /// Kill tmux session (unfenced).
     pub async fn kill(&self, session_id: TmuxSessionId) -> Result<(), TmuxError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+        self.kill_with_optional_fence(session_id, None).await
+    }
 
-        // TODO: Actual tmux kill-session command over SSH
-        session.state = TmuxSessionState::Dead;
+    /// Agent-origin kill under write-ahead Effect Fence.
+    pub async fn kill_with_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: &EffectFenceLedger,
+    ) -> Result<(), TmuxError> {
+        self.kill_with_optional_fence(session_id, Some(ledger))
+            .await
+    }
 
-        Ok(())
+    async fn kill_with_optional_fence(
+        &self,
+        session_id: TmuxSessionId,
+        ledger: Option<&EffectFenceLedger>,
+    ) -> Result<(), TmuxError> {
+        let (origin, effect) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+            let request = TmuxSessionRequest::new(session.clone(), 1);
+            (session.origin, request.fence_effect_for_op("kill"))
+        };
+
+        let run = || async {
+            let mut sessions = self.sessions.lock().await;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| TmuxError::SessionNotFound(format!("{:?}", session_id)))?;
+            // TODO: Actual tmux kill-session command over SSH
+            session.state = TmuxSessionState::Dead;
+            Ok::<(), TmuxError>(())
+        };
+
+        match (origin, ledger) {
+            (ActionOrigin::Agent, Some(ledger)) => {
+                let identity = self
+                    .seam
+                    .prepare_fence_for_allowed(&effect, ledger)
+                    .map_err(TmuxError::EffectFence)?;
+                match run().await {
+                    Ok(()) => {
+                        if let Err(err) = ledger.observe(&identity, "tmux killed") {
+                            let _ = ledger.mark_unknown(
+                                &identity,
+                                format!("observe persist failed after tmux kill: {err}"),
+                            );
+                            return Err(TmuxError::EffectFence(format!(
+                                "effect fence observe failed after tmux kill: {err}"
+                            )));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = ledger.mark_failed(&identity, error.to_string());
+                        Err(error)
+                    }
+                }
+            }
+            _ => run().await,
+        }
     }
 }
 
@@ -363,5 +551,96 @@ mod tests {
         let session = manager.get_session(session_id).await.unwrap();
         assert!(matches!(session.state, TmuxSessionState::Dead));
         assert!(!session.is_active());
+    }
+
+    fn network_allow_seam() -> EffectSeam {
+        use crate::{PolicyConfig, PolicyEngine, Sandbox, SandboxScope};
+        let workspace = std::env::temp_dir();
+        let mut scope = SandboxScope::local_workspace(workspace);
+        scope.allow_network = true;
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow"}}"#,
+        )
+        .unwrap();
+        let policy = PolicyEngine::with_config(scope.clone(), config);
+        EffectSeam::with_sandbox(policy, Sandbox::Provisioned { scope })
+    }
+
+    #[tokio::test]
+    async fn agent_tmux_create_refuses_when_prior_unknown() {
+        use crate::{
+            EffectFenceLedger, EffectInvocationIdentity, EventStore, FenceState, MemoryEventStore,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let manager = TmuxSessionManager::new(network_allow_seam());
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let owner = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), owner);
+
+        let (session_id, _) = manager
+            .request("fence-tmux", test_profile(), ActionOrigin::Agent, 1)
+            .await
+            .unwrap();
+        let session = manager.get_session(session_id).await.unwrap();
+        let request = TmuxSessionRequest::new(session, 1);
+        let effect = request.fence_effect_for_op("create");
+        let identity = EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("prepare");
+        ledger
+            .mark_unknown(&identity, "crash mid-flight")
+            .expect("unknown");
+
+        let err = manager
+            .create_with_fence(session_id, &ledger)
+            .await
+            .expect_err("Unknown fence must refuse");
+        assert!(
+            matches!(err, TmuxError::EffectFence(ref reason) if reason.contains("Unknown") || reason.contains("refuse")),
+            "expected fence refuse, got {err:?}"
+        );
+
+        let records = records_from_events(&events.list(owner).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Unknown
+                && r.identity.args_digest == identity.args_digest),
+            "durable Unknown fence must remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_tmux_create_emits_fence_observed() {
+        use crate::{
+            EffectFenceLedger, EventStore, FenceState, MemoryEventStore, args_digest_for_effect,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let manager = TmuxSessionManager::new(network_allow_seam());
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let owner = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), owner);
+
+        let (session_id, _) = manager
+            .request("fence-obs", test_profile(), ActionOrigin::Agent, 1)
+            .await
+            .unwrap();
+        manager
+            .create_with_fence(session_id, &ledger)
+            .await
+            .expect("agent create + fence");
+
+        let session = manager.get_session(session_id).await.unwrap();
+        let request = TmuxSessionRequest::new(session, 1);
+        let effect = request.fence_effect_for_op("create");
+        let records = records_from_events(&events.list(owner).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Observed
+                && r.identity.args_digest == args_digest_for_effect(&effect)),
+            "expected Observed fence; records={records:?}"
+        );
     }
 }

@@ -3,8 +3,8 @@
 //! Part of v0.6: SFTP для remote file access через SSH profiles.
 
 use crate::{
-    Action, ActionKind, ActionOrigin, AdmittedOperation, EffectAdmission, EffectSeam,
-    NormalizedEffect, SSHProfile,
+    Action, ActionKind, ActionOrigin, AdmittedOperation, EffectAdmission, EffectFenceLedger,
+    EffectSeam, NormalizedEffect, SSHProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -22,6 +22,8 @@ pub enum SftpError {
     ConnectionFailed(String),
     #[error("path outside allowed scope: {0}")]
     PathNotAllowed(String),
+    #[error("effect fence denied SFTP operation: {0}")]
+    EffectFence(String),
 }
 
 /// SFTP operation types for policy checks.
@@ -41,6 +43,11 @@ impl SftpOperation {
             Self::Delete => "delete",
             Self::List => "list",
         }
+    }
+
+    /// Write/Delete mutate remote state; Read/List are observe-only for fence policy.
+    pub fn is_mutating(self) -> bool {
+        matches!(self, Self::Write | Self::Delete)
     }
 }
 
@@ -113,9 +120,8 @@ impl SftpOperationRequest {
         }
     }
 
-    /// Prepare SFTP operation through policy and effect seam.
-    /// Returns either immediate Allow with token, NeedsApproval, or Deny.
-    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, SftpError> {
+    /// Normalized effect identity for admission and Effect Fence digests.
+    pub fn fence_effect(&self) -> NormalizedEffect {
         let target = format!(
             "{}@{}:{}",
             self.profile.user,
@@ -131,7 +137,7 @@ impl SftpOperationRequest {
             self.path.display()
         );
 
-        let effect = NormalizedEffect {
+        NormalizedEffect {
             origin: self.origin,
             capability: crate::EffectCapability::NetworkConnect,
             version: crate::CapabilityVersion::V1,
@@ -141,9 +147,13 @@ impl SftpOperationRequest {
                 summary,
                 target: Some(target),
             },
-        };
+        }
+    }
 
-        Ok(seam.request(effect, self.intent_revision))
+    /// Prepare SFTP operation through policy and effect seam.
+    /// Returns either immediate Allow with token, NeedsApproval, or Deny.
+    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, SftpError> {
+        Ok(seam.request(self.fence_effect(), self.intent_revision))
     }
 
     /// Execute SFTP operation after admission.
@@ -202,6 +212,9 @@ pub enum SftpResult {
 }
 
 /// SFTP session manager coordinates SSH, policy, and operation execution.
+///
+/// Agent-origin mutating Allow (`Write`/`Delete`) with a ledger runs under
+/// write-ahead Effect Fence. User-origin and Read/List stay unfenced.
 pub struct SftpSessionManager {
     seam: EffectSeam,
 }
@@ -236,14 +249,63 @@ impl SftpSessionManager {
         req.execute(admission)
     }
 
-    /// Request and execute in one call (convenience wrapper).
+    /// Request and execute in one call (convenience wrapper, unfenced).
     pub fn execute_with_admission(
         &self,
         req: &SftpOperationRequest,
     ) -> Result<SftpResult, SftpError> {
+        self.execute_with_admission_and_optional_fence(req, None)
+    }
+
+    /// Agent-origin mutating Allow → write-ahead fence. User / Read / List skip fence.
+    pub fn execute_with_admission_and_fence(
+        &self,
+        req: &SftpOperationRequest,
+        ledger: &EffectFenceLedger,
+    ) -> Result<SftpResult, SftpError> {
+        self.execute_with_admission_and_optional_fence(req, Some(ledger))
+    }
+
+    fn execute_with_admission_and_optional_fence(
+        &self,
+        req: &SftpOperationRequest,
+        ledger: Option<&EffectFenceLedger>,
+    ) -> Result<SftpResult, SftpError> {
         let admission = self.request(req)?;
         match admission {
-            EffectAdmission::Allow(token) => self.execute(req, &token),
+            EffectAdmission::Allow(token) => {
+                let needs_fence = req.origin == ActionOrigin::Agent
+                    && req.operation.is_mutating()
+                    && ledger.is_some();
+                if needs_fence {
+                    let ledger = ledger.expect("checked");
+                    let effect = req.fence_effect();
+                    let identity = self
+                        .seam
+                        .prepare_fence_for_allowed(&effect, ledger)
+                        .map_err(SftpError::EffectFence)?;
+                    match self.execute(req, &token) {
+                        Ok(result) => {
+                            if let Err(err) = ledger.observe(&identity, "sftp executed") {
+                                let _ = ledger.mark_unknown(
+                                    &identity,
+                                    format!("observe persist failed after sftp: {err}"),
+                                );
+                                return Err(SftpError::EffectFence(format!(
+                                    "effect fence observe failed after sftp: {err}"
+                                )));
+                            }
+                            Ok(result)
+                        }
+                        Err(error) => {
+                            let _ = ledger.mark_failed(&identity, error.to_string());
+                            Err(error)
+                        }
+                    }
+                } else {
+                    self.execute(req, &token)
+                }
+            }
             EffectAdmission::NeedsApproval(_) => Err(SftpError::ApprovalRequired),
             EffectAdmission::Deny { reason } => Err(SftpError::PolicyDenied(reason)),
         }
@@ -357,5 +419,96 @@ mod tests {
 
         let session = manager.create_session(profile, ActionOrigin::User).unwrap();
         assert!(session.is_connected());
+    }
+
+    fn network_allow_seam() -> EffectSeam {
+        use crate::{PolicyConfig, PolicyEngine, Sandbox, SandboxScope};
+        let workspace = std::env::temp_dir();
+        let mut scope = SandboxScope::local_workspace(workspace);
+        scope.allow_network = true;
+        let config = PolicyConfig::parse(
+            r#"{"version":1,"overrides":{"network_connect":"allow","ssh_connect":"allow","sftp_transfer":"allow"}}"#,
+        )
+        .unwrap();
+        let policy = PolicyEngine::with_config(scope.clone(), config);
+        EffectSeam::with_sandbox(policy, Sandbox::Provisioned { scope })
+    }
+
+    #[test]
+    fn agent_sftp_write_refuses_when_prior_unknown() {
+        use crate::{
+            EffectFenceLedger, EffectInvocationIdentity, EventStore, FenceState, MemoryEventStore,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let manager = SftpSessionManager::new(network_allow_seam());
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), session);
+
+        let request = SftpOperationRequest::new(
+            test_profile(),
+            SftpOperation::Write,
+            "/remote/file.txt",
+            ActionOrigin::Agent,
+            1,
+        );
+        let effect = request.fence_effect();
+        let identity = EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("prepare");
+        ledger
+            .mark_unknown(&identity, "crash mid-flight")
+            .expect("unknown");
+
+        let err = manager
+            .execute_with_admission_and_fence(&request, &ledger)
+            .expect_err("Unknown fence must refuse");
+        assert!(
+            matches!(err, SftpError::EffectFence(ref reason) if reason.contains("Unknown") || reason.contains("refuse")),
+            "expected fence refuse, got {err:?}"
+        );
+
+        let records = records_from_events(&events.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Unknown
+                && r.identity.args_digest == identity.args_digest),
+            "durable Unknown fence must remain"
+        );
+    }
+
+    #[test]
+    fn agent_sftp_write_emits_fence_observed() {
+        use crate::{
+            EffectFenceLedger, EventStore, FenceState, MemoryEventStore, args_digest_for_effect,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let manager = SftpSessionManager::new(network_allow_seam());
+        let events: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&events), session);
+
+        let request = SftpOperationRequest::new(
+            test_profile(),
+            SftpOperation::Write,
+            "/remote/file.txt",
+            ActionOrigin::Agent,
+            1,
+        );
+        manager
+            .execute_with_admission_and_fence(&request, &ledger)
+            .expect("agent write + fence");
+
+        let effect = request.fence_effect();
+        let records = records_from_events(&events.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Observed
+                && r.identity.args_digest == args_digest_for_effect(&effect)),
+            "expected Observed fence; records={records:?}"
+        );
     }
 }
