@@ -17,6 +17,9 @@ use tokio_util::sync::CancellationToken;
 use crate::ChildEvent;
 use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
 use crate::child_result_store::{ChildResultError, ChildResultStatus, ChildResultStore};
+use crate::declared_write_set::{
+    WriteSetError, WriterHandoffFence, WriterLeaseTable, write_set_from_roots,
+};
 use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
@@ -134,6 +137,8 @@ pub enum RoleChildError {
     Concurrency(#[from] ChildConcurrencyError),
     #[error(transparent)]
     Store(#[from] ChildResultError),
+    #[error(transparent)]
+    WriteLease(#[from] WriteSetError),
 }
 
 pub trait RoleSpawnBridge: Send + Sync {
@@ -152,6 +157,8 @@ pub struct HarnessRoleSpawn {
     pub store: Arc<ChildResultStore>,
     pub executor: Arc<dyn RoleChildExecutor>,
     pub parent_events: Option<Arc<dyn EventStore>>,
+    /// Shared writer lease table (#429). When set, admit before run / release after.
+    pub writer_leases: Option<Arc<Mutex<WriterLeaseTable>>>,
 }
 
 impl RoleSpawnBridge for HarnessRoleSpawn {
@@ -160,12 +167,30 @@ impl RoleSpawnBridge for HarnessRoleSpawn {
         request: RoleChildRequest,
         cancel: CancellationToken,
     ) -> Result<RoleChildOutcome, RoleChildError> {
-        let mut gate = self.gate.lock().expect("role child gate");
-        let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
-        if let Some(events) = self.parent_events.as_ref() {
-            runner = runner.with_parent_events(events.as_ref());
+        let write_set = write_set_from_roots(&request.cwd, &request.write_roots)?;
+        let fence = WriterHandoffFence::new(request.child_id.clone(), 1, write_set)?;
+        let child_id = request.child_id.clone();
+        if let Some(leases) = &self.writer_leases {
+            leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .admit(fence)?;
         }
-        runner.run(request, cancel, self.executor.as_ref())
+        let result = {
+            let mut gate = self.gate.lock().expect("role child gate");
+            let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
+            if let Some(events) = self.parent_events.as_ref() {
+                runner = runner.with_parent_events(events.as_ref());
+            }
+            runner.run(request, cancel, self.executor.as_ref())
+        };
+        if let Some(leases) = &self.writer_leases {
+            let _ = leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .release(&child_id);
+        }
+        result
     }
 
     fn child_results(&self) -> &ChildResultStore {
@@ -651,5 +676,55 @@ mod tests {
                 .any(|e| matches!(e, ChildEvent::Progress { .. }))
         );
         assert!(child.iter().any(|e| matches!(e, ChildEvent::Action { .. })));
+    }
+
+    #[test]
+    fn harness_role_spawn_denies_overlapping_write_lease() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(ChildResultStore::open(dir.path().join("c.db")).unwrap());
+        let leases = Arc::new(Mutex::new(WriterLeaseTable::new()));
+        let bridge = HarnessRoleSpawn {
+            gate: Arc::new(Mutex::new(
+                ChildConcurrencyGate::from_config(ChildConcurrencyConfig::fair(4, 2).unwrap())
+                    .unwrap(),
+            )),
+            store: store.clone(),
+            executor: Arc::new(ProcessRoleChildExecutor::new()),
+            parent_events: None,
+            writer_leases: Some(leases.clone()),
+        };
+
+        let mut holding = WriterLeaseTable::new();
+        holding
+            .admit(
+                WriterHandoffFence::new(
+                    "other",
+                    1,
+                    crate::DeclaredWriteSet::from_paths(["src"]).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        *leases.lock().unwrap() = holding;
+
+        let mut req = research_req("p1", "c-overlap", dir.path());
+        req.role = SubagentRole::Build;
+        req.allowed_tools = vec!["list".into(), "read".into(), "write".into()];
+        req.worktree = Some("wt-1".into());
+        req.write_roots = vec![PathBuf::from("src")];
+        req.program = Some(default_echo_program());
+        req.args = vec!["ok".into()];
+
+        let err = bridge
+            .spawn_role(req, CancellationToken::new())
+            .expect_err("overlap");
+        assert!(
+            matches!(
+                err,
+                RoleChildError::WriteLease(WriteSetError::Conflict { .. })
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(leases.lock().unwrap().active_count(), 1);
     }
 }

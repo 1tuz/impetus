@@ -25,6 +25,9 @@ use crate::child_concurrency::{ChildConcurrencyError, ChildConcurrencyGate};
 use crate::child_result_store::{
     ChildResult, ChildResultError, ChildResultStatus, ChildResultStore,
 };
+use crate::declared_write_set::{
+    WriteSetError, WriterHandoffFence, WriterLeaseTable, explore_readonly_write_set,
+};
 use crate::runtime::{AgentRuntime, ChildMidRunReporter};
 use crate::storage::EventStore;
 use crate::subagent_metadata::{ChildRunMetadata, ChildRunMetadataError, SubagentRole};
@@ -136,6 +139,8 @@ pub struct HarnessExploreSpawn {
     pub executor: Arc<dyn ExploreChildExecutor>,
     /// Parent session event log (production daemon wires the shared store).
     pub parent_events: Option<Arc<dyn EventStore>>,
+    /// Shared writer lease table (#429). When set, admit before run / release after.
+    pub writer_leases: Option<Arc<Mutex<WriterLeaseTable>>>,
 }
 
 impl ExploreSpawnBridge for HarnessExploreSpawn {
@@ -144,12 +149,30 @@ impl ExploreSpawnBridge for HarnessExploreSpawn {
         request: ExploreChildRequest,
         cancel: CancellationToken,
     ) -> Result<ExploreChildOutcome, ExploreChildError> {
-        let mut gate = self.gate.lock().unwrap();
-        let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
-        if let Some(events) = self.parent_events.as_ref() {
-            runner = runner.with_parent_events(events.as_ref());
+        let write_set = explore_readonly_write_set(&request.child_id)?;
+        let fence = WriterHandoffFence::new(request.child_id.clone(), 1, write_set)?;
+        let child_id = request.child_id.clone();
+        if let Some(leases) = &self.writer_leases {
+            leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .admit(fence)?;
         }
-        runner.run(request, cancel, self.executor.as_ref())
+        let result = {
+            let mut gate = self.gate.lock().unwrap();
+            let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
+            if let Some(events) = self.parent_events.as_ref() {
+                runner = runner.with_parent_events(events.as_ref());
+            }
+            runner.run(request, cancel, self.executor.as_ref())
+        };
+        if let Some(leases) = &self.writer_leases {
+            let _ = leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .release(&child_id);
+        }
+        result
     }
 
     fn child_results(&self) -> &ChildResultStore {
@@ -180,6 +203,8 @@ pub enum ExploreChildError {
     WrongRole(String),
     #[error("explore spawn is not configured on this harness")]
     NotConfigured,
+    #[error(transparent)]
+    WriteLease(#[from] WriteSetError),
 }
 
 /// Validate tool allowlist structurally for Explore.

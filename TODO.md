@@ -49,10 +49,10 @@ Actionable after Now. Not priority theatre.
   `offline_batch.rs` + `EventPayload::OfflineBatch` journal, `MockBatchProvider`,
   idempotent workspace collect, `poll_collect_due` library tick; **Remaining:**
   daemon session poll wiring, live provider adapter, CLI admission
-- DeclaredWriteSet + writer lease/handoff fence: library + scheduler hook
-  shipped `#417` (`declared_write_set.rs`, `schedule_with_write_lease`;
-  conflict/stale denied in unit tests). Remaining: Explore/RoleChild
-  production spawn wiring
+- DeclaredWriteSet + writer lease/handoff fence: `#417` library + `#429`
+  Explore/RoleChild production spawn admit/release (`HarnessExploreSpawn` /
+  `HarnessRoleSpawn` + daemon Explore lease table). Remaining: ensure Workflow
+  RoleSpawnBridge shares same table when wired; BatchProvider separate
 - PtyList daemon E2E: shipped `#420` (`daemon_unix_pty_list.rs`)
 - host_process EffectSeam on operate: shipped `#421` (optional `session_id`, PLAN deny E2E)
 

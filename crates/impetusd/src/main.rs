@@ -212,6 +212,7 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
         harness.policy(),
     )
     .context("wire AgentLoop role executor")?;
+    let writer_leases = Arc::new(std::sync::Mutex::new(impetus_core::WriterLeaseTable::new()));
     let explore: Arc<dyn impetus_core::ExploreSpawnBridge> =
         Arc::new(impetus_core::HarnessExploreSpawn {
             gate: Arc::new(std::sync::Mutex::new(
@@ -220,6 +221,7 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
             store: child_store.clone(),
             executor: explore_executor.clone(),
             parent_events: Some(harness.store()),
+            writer_leases: Some(writer_leases),
         });
     let harness = harness.with_explore_spawn(explore);
 
