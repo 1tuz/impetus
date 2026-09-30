@@ -8,9 +8,8 @@ Components in Impetus include:
   (`instruction_pack` / `mcp_bridge` / `host_process` via `extension.toml`)
 - **Compatibility adapters** — bridges to external formats (MCP, Agent Plugins, etc.)
 
-Legacy **Module Runtime** (`module_registry` / unix `ModuleMessage`) is
-**Deprecated** — library/tests only, not wired into `impetusd`. Do not build
-new plugins against it.
+Legacy Module Runtime (`module_registry` / unix `ModuleMessage`) was
+**Removed** (`#443`) — do not revive. Extension packages use Extension Host.
 
 **CLI note:** `impetus components list|status` prints the static built-in tool
 catalog only. It does not query `impetusd` or Extension Host. Use
@@ -146,6 +145,6 @@ open — see [TODO.md](../../TODO.md) Later (marketplace) and Next (live modules
 
 ## References
 
-- [ARCHITECTURE.md](../../ARCHITECTURE.md) § Extension runtime / Module Runtime Deprecated
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) § Extension runtime / Module Runtime Removed
 - [TODO.md](../../TODO.md) (extension package follow-through)
 - `impetus components --help` for CLI usage

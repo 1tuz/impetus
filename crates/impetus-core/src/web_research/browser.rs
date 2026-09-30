@@ -129,8 +129,9 @@ pub struct BrowserNavigateResult {
     pub title: Option<String>,
 }
 
-/// Optional Tier-2 backend contract. Concrete providers should be registered and lifecycle-managed
-/// by Module Runtime so discovery, health, compatibility and isolation stay out of Agent Loop.
+/// Optional Tier-2 backend contract. Concrete providers should be registered and
+/// lifecycle-managed by Extension Host so discovery, health, compatibility and
+/// isolation stay out of Agent Loop.
 ///
 /// Negotiation / health / session ops follow the JCode Browser Provider Protocol reference
 /// (`docs/reference/browser-provider-protocol.md`) without mandating Chromium/Playwright/Node.

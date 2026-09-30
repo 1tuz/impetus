@@ -34,8 +34,8 @@ Do **not** claim the full Extension subsystem Implemented until crates.io
 publish / tagged pin for external `impetus-extensions` lands.
 
 Sole public extension substrate = **Extension Host**
-(`instruction_pack` / `mcp_bridge` / `host_process`). Legacy Module Runtime is
-**Deprecated** (library only — not wired into `impetusd`).
+(`instruction_pack` / `mcp_bridge` / `host_process`). Legacy Module Runtime
+library stack was **Removed** (`#443`).
 
 ## Layers
 

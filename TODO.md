@@ -83,13 +83,8 @@ Actionable after Now. Not priority theatre.
 - [ ] Desktop: delete any remaining local spawn if still present; prefer
       bundled `impetusd` path via `impetus-daemon-control`
 
-### Module Runtime debt
-
-- [ ] Remove frozen Module Runtime library stack
-      (`module_registry` / `module_lifecycle` / `module_ipc` / `test-module`)
-      after Nightly confirms no external callers — keep `module_fallback`
-
 ---
+
 
 ## Later
 
@@ -130,4 +125,5 @@ Shipped program slices: [#315](https://github.com/1tuz/impetus/issues/315) harne
 Daemon Unix E2E: approvals / MCP mutate / Files-Diff (`daemon_unix_approvals_mcp_files`);
 provider-option persist (`daemon_unix_e2e`); ACP permission (`daemon_unix_acp_permission`);
 extension host_process operate (`daemon_unix_extensions` + `OperateExtensionPackage`).
-Daemon SoT close (#395): `PtyList` + package Install/Remove IPC; Module Runtime Deprecated.
+Daemon SoT close (#395): `PtyList` + package Install/Remove IPC; Module Runtime
+Removed (#443).

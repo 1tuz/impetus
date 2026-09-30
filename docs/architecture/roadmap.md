@@ -24,8 +24,8 @@ Shipped: [#308](https://github.com/1tuz/impetus/issues/308) +
 [#315](https://github.com/1tuz/impetus/issues/315) harness unify;
 [#320](https://github.com/1tuz/impetus/issues/320) production harden;
 [#322](https://github.com/1tuz/impetus/issues/322) production-harden follow-up;
-[#395](https://github.com/1tuz/impetus/issues/395) PtyList + package Install/Remove
-+ Module Runtime freeze.
+[#395](https://github.com/1tuz/impetus/issues/395) PtyList + package Install/Remove;
+[#443](https://github.com/1tuz/impetus/issues/443) Module Runtime stack removed.
 
 ## Kernel (do not dilute)
 
