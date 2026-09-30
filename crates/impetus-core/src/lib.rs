@@ -384,9 +384,9 @@ pub use offline_batch::{
     BatchItemResult, BatchItemSpec, BatchLifecycleState, BatchOperationRecord, BatchPlan,
     BatchPrepareOutcome, BatchProvider, BatchProviderError, BatchProviderStatus,
     BatchResubmitDecision, BatchSubmitOutcome, CollectBatchOutcome, CollectItemOutcome,
-    DurableOfflineBatchExecutor, FrozenBatchConfig, MockBatchProvider, OfflineBatchError,
-    OfflineBatchJournal, PollCollectAction, PollCollectDueResult, batch_records_from_events,
-    hash_bytes, reconcile_resubmit,
+    DurableOfflineBatchExecutor, FrozenBatchConfig, MockBatchProvider, OFFLINE_BATCH_POLL_INTERVAL,
+    OfflineBatchError, OfflineBatchJournal, OfflineBatchRegistry, PollCollectAction,
+    PollCollectDueResult, batch_records_from_events, hash_bytes, reconcile_resubmit,
 };
 pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_native_adapter::OpenAiNativeAdapter;
