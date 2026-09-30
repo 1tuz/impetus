@@ -1,12 +1,14 @@
-//! Offline batch CLI admission (`impetus batch`) — #439 / parent #397.
+//! Offline batch CLI admission (`impetus batch`) — #439/#441 / parent #397.
 //!
-//! Mock provider only — no live network. Journals to EventStore; plan sidecar
-//! under `$IMPETUS_DATA_DIR/offline_batch_plans/`. When Harness holds
-//! `OfflineBatchRegistry` (daemon), in-process admit registers for poll tick;
-//! this CLI path is offline journal + collect (Partial vs live IPC register).
+//! Mock provider only — no live network. When daemon sock is live and negotiates
+//! `offline_batch`, submit uses typed IPC so Harness registers plan+executor on
+//! `OfflineBatchRegistry` for the daemon poll tick. Sock down / capability absent
+//! → offline EventStore journal + plan sidecar (manual collect).
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use impetus_client::protocol::OfflineBatchItemSpec;
+use impetus_client::{HarnessClient, UnixSocketTransport};
 use impetus_core::{
     BatchItemSpec, BatchPlan, DurableOfflineBatchExecutor, Event, EventPayload, EventStore,
     FrozenBatchConfig, MockBatchProvider, OfflineBatchJournal, SessionEvent, SqliteEventStore,
@@ -18,7 +20,7 @@ use uuid::Uuid;
 
 #[derive(Subcommand)]
 pub enum BatchAction {
-    /// Admit a mock offline batch (journal + plan sidecar; no live network)
+    /// Admit a mock offline batch (IPC register when sock live; else offline journal)
     Submit {
         /// Session that owns the batch journal events (created if missing; omit to mint new)
         #[arg(long)]
@@ -64,7 +66,7 @@ pub enum BatchAction {
     },
 }
 
-pub fn run(action: BatchAction) -> Result<()> {
+pub async fn run(action: BatchAction) -> Result<()> {
     match action {
         BatchAction::Submit {
             session_id,
@@ -73,7 +75,7 @@ pub fn run(action: BatchAction) -> Result<()> {
             data_dir,
             model,
             json,
-        } => submit(session_id, items, workspace, data_dir, model, json),
+        } => submit(session_id, items, workspace, data_dir, model, json).await,
         BatchAction::Status {
             session_id,
             batch_id,
@@ -90,7 +92,7 @@ pub fn run(action: BatchAction) -> Result<()> {
     }
 }
 
-fn submit(
+async fn submit(
     session_id: Option<Uuid>,
     items: Vec<String>,
     workspace: Option<PathBuf>,
@@ -101,6 +103,22 @@ fn submit(
     let data_root = resolve_data_root(data_dir)?;
     let workspace_root = resolve_workspace(workspace)?;
     let plan = parse_plan(&items)?;
+
+    if let Some(admitted) =
+        try_admit_via_daemon(session_id, &workspace_root, &plan, &model, &data_root).await
+    {
+        let (batch_id, session_id, config_digest, item_count) = admitted?;
+        return print_submit(
+            batch_id,
+            session_id,
+            &config_digest,
+            item_count,
+            &data_root,
+            "daemon_ipc_register",
+            json,
+        );
+    }
+
     let store = open_or_create_store(&data_root)?;
     let session_id = ensure_session(store.as_ref(), session_id)?;
     let config = FrozenBatchConfig::freeze("mock", &model, vec!["temp=0".into()], &plan);
@@ -109,32 +127,122 @@ fn submit(
         session_id,
         workspace_root,
         plan.clone(),
-        None, // offline CLI: journal only; daemon Harness registers when wired in-process
+        None, // offline CLI: journal only; daemon IPC path registers above
         "mock",
         model,
         vec!["temp=0".into()],
     )
     .context("admit mock offline batch")?;
     persist_batch_plan(&data_root, batch_id, &plan).context("persist batch plan sidecar")?;
+    print_submit(
+        batch_id,
+        session_id,
+        &config.digest,
+        plan.items.len(),
+        &data_root,
+        "offline_journal",
+        json,
+    )
+}
 
+/// Best-effort daemon admit when sock exists and `offline_batch` is negotiated.
+///
+/// Returns `None` when sock absent / connect fails / capability missing (caller
+/// falls back to offline journal). `Some(Err)` = sock live but admit failed.
+async fn try_admit_via_daemon(
+    session_id: Option<Uuid>,
+    workspace_root: &Path,
+    plan: &BatchPlan,
+    model: &str,
+    data_root: &Path,
+) -> Option<Result<(Uuid, Uuid, String, usize)>> {
+    let socket_path = crate::daemon::discover_socket_path();
+    if !Path::new(&socket_path).exists() {
+        return None;
+    }
+    let client = match UnixSocketTransport::connect(&socket_path).await {
+        Ok(client) => client,
+        Err(_) => return None,
+    };
+    if !client
+        .negotiated_capabilities()
+        .iter()
+        .any(|cap| cap == "offline_batch")
+    {
+        return None;
+    }
+
+    Some(admit_via_client(client, session_id, workspace_root, plan, model, data_root).await)
+}
+
+async fn admit_via_client(
+    client: UnixSocketTransport,
+    session_id: Option<Uuid>,
+    workspace_root: &Path,
+    plan: &BatchPlan,
+    model: &str,
+    data_root: &Path,
+) -> Result<(Uuid, Uuid, String, usize)> {
+    let session_id = match session_id {
+        Some(id) => {
+            client
+                .resume_session(id)
+                .await
+                .with_context(|| format!("attach session {id} for offline batch IPC"))?;
+            id
+        }
+        None => client
+            .create_session(workspace_root.to_path_buf())
+            .await
+            .context("create session for offline batch IPC")?,
+    };
+
+    let wire_items: Vec<OfflineBatchItemSpec> = plan
+        .items
+        .iter()
+        .map(|item| OfflineBatchItemSpec {
+            item_id: item.item_id.clone(),
+            input_hash: item.input_hash.clone(),
+            output_relpath: item.output_relpath.clone(),
+        })
+        .collect();
+    let item_count = wire_items.len();
+    let (batch_id, config_digest, _) = client
+        .admit_offline_batch(session_id, workspace_root.to_path_buf(), wire_items, model)
+        .await
+        .context("daemon AdmitOfflineBatch")?;
+    // Local sidecar for offline collect fallback (daemon also persists under data root).
+    persist_batch_plan(data_root, batch_id, plan).context("persist batch plan sidecar")?;
+    Ok((batch_id, session_id, config_digest, item_count))
+}
+
+fn print_submit(
+    batch_id: Uuid,
+    session_id: Uuid,
+    config_digest: &str,
+    item_count: usize,
+    data_root: &Path,
+    admission: &str,
+    json: bool,
+) -> Result<()> {
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "batch_id": batch_id,
                 "session_id": session_id,
-                "config_digest": config.digest,
+                "config_digest": config_digest,
                 "provider": "mock",
-                "item_count": plan.items.len(),
-                "admission": "offline_journal",
+                "item_count": item_count,
+                "admission": admission,
             }))?
         );
     } else {
-        println!("Offline batch admitted (mock provider, offline journal)");
+        println!("Offline batch admitted (mock provider, {admission})");
         println!("  batch_id:      {batch_id}");
         println!("  session_id:    {session_id}");
-        println!("  config_digest: {}", config.digest);
-        println!("  items:         {}", plan.items.len());
+        println!("  config_digest: {config_digest}");
+        println!("  items:         {item_count}");
         println!(
             "  plan_sidecar:  {}",
             data_root
@@ -321,12 +429,13 @@ mod tests {
         assert_eq!(plan.items[1].input_hash, "sha256:deadbeef");
     }
 
-    #[test]
-    fn submit_status_collect_roundtrip_mock_only() {
+    #[tokio::test]
+    async fn submit_status_collect_roundtrip_mock_only() {
         let data = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let session = Uuid::new_v4();
         let items = vec!["item-a|seed-a|out/a.txt".into()];
+        // No sock → offline journal path.
         submit(
             Some(session),
             items,
@@ -335,6 +444,7 @@ mod tests {
             "mock-model".into(),
             false,
         )
+        .await
         .expect("submit");
 
         let store = open_store(data.path()).unwrap();

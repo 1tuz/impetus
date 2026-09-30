@@ -533,8 +533,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Commands::Batch { action } => {
-            // Offline mock batch admit — no live network; journal under data-dir.
-            batch::run(action)?;
+            // Mock batch: sock live → IPC register on OfflineBatchRegistry; else offline journal.
+            batch::run(action).await?;
             return Ok(());
         }
         Commands::Receipt { action } => {
