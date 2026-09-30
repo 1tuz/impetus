@@ -987,12 +987,11 @@ pub trait HarnessClient: Send + Sync {
     }
 
     /// Copy a package directory into daemon global packages + reload.
-    /// Returns `(loaded, failed)`.
     async fn install_extension_package(
         &self,
         source_path: PathBuf,
         replace: bool,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<protocol::ExtensionPackageInfo> {
         match self
             .request(IpcRequest::InstallExtensionPackage {
                 source_path,
@@ -1000,7 +999,7 @@ pub trait HarnessClient: Send + Sync {
             })
             .await?
         {
-            IpcResponse::ExtensionPackagesReloaded { loaded, failed } => Ok((loaded, failed)),
+            IpcResponse::ExtensionPackage { package } => Ok(package),
             IpcResponse::Error { message, .. } => bail!(message),
             response => bail!("unexpected response: {response:?}"),
         }

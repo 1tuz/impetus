@@ -69,9 +69,7 @@ Actionable after Now. Not priority theatre.
 ### Extension split follow-through
 
 - [ ] Stand up `impetus-extensions` repo against contract + demo packs
-- [ ] CLI `extension *` package path via daemon `Install`/`Remove` IPC
-      (legacy Skill/MCP offline FS remains until migrated; best-effort
-      `ReloadExtensionPackages` when sock live)
+      (CLI package Install/Remove via daemon IPC shipped `#447`)
 
 ### Daemon / protocol
 
