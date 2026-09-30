@@ -14,6 +14,10 @@ use uuid::Uuid;
 use crate::agent_scheduler::InMemoryAgentScheduler;
 use crate::child_concurrency::{ChildConcurrencyConfig, ChildConcurrencyGate};
 use crate::child_result_store::{ChildResultStatus, ChildResultStore};
+use crate::declared_write_set::{
+    WriteSetError, WriterHandoffFence, WriterLeaseTable, explore_readonly_write_set,
+    write_set_from_roots,
+};
 use crate::explore_child::{
     EXPLORE_ALLOWED_TOOLS, ExploreChildExecutor, ExploreChildRequest, ExploreChildRunner,
 };
@@ -37,6 +41,8 @@ pub enum WorkflowRuntimeError {
     ExploreChild(String),
     #[error("unknown session binding: {0}")]
     UnknownSession(Uuid),
+    #[error(transparent)]
+    WriteLease(#[from] WriteSetError),
 }
 
 /// Per-session workflow binding (engine + scheduler + cancel tokens).
@@ -55,6 +61,8 @@ pub struct WorkflowRuntime {
     explore_executor: Arc<dyn ExploreChildExecutor>,
     parent_events: Option<Arc<dyn EventStore>>,
     worktrees: Option<Arc<crate::WorktreeManager>>,
+    /// Same table as Explore/HarnessRoleSpawn when daemon wires leases (#437).
+    writer_leases: Option<Arc<Mutex<WriterLeaseTable>>>,
     sessions: Mutex<HashMap<Uuid, SessionWorkflow>>,
 }
 
@@ -84,6 +92,7 @@ impl WorkflowRuntime {
             explore_executor,
             parent_events,
             worktrees: None,
+            writer_leases: None,
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -91,6 +100,12 @@ impl WorkflowRuntime {
     /// Attach daemon WorktreeManager so Build steps create real worktrees.
     pub fn with_worktree_manager(mut self, manager: Arc<crate::WorktreeManager>) -> Self {
         self.worktrees = Some(manager);
+        self
+    }
+
+    /// Share [`WriterLeaseTable`] with Explore / role spawn (#437 / parent #397).
+    pub fn with_writer_leases(mut self, leases: Arc<Mutex<WriterLeaseTable>>) -> Self {
+        self.writer_leases = Some(leases);
         self
     }
 
@@ -374,14 +389,32 @@ impl WorkflowRuntime {
             program: None,
             args: vec![],
         };
-        let mut gate = self.gate.lock().expect("workflow gate");
-        let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
-        if let Some(events) = self.parent_events.as_ref() {
-            runner = runner.with_parent_events(events.as_ref());
+        let write_set = write_set_from_roots(&request.cwd, &request.write_roots)?;
+        let fence = WriterHandoffFence::new(request.child_id.clone(), 1, write_set)?;
+        let child_id = request.child_id.clone();
+        if let Some(leases) = &self.writer_leases {
+            leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .admit(fence)?;
         }
-        let out = runner
-            .run(request, cancel, self.role_executor.as_ref())
-            .map_err(|e| WorkflowRuntimeError::RoleChild(e.to_string()))?;
+        let result = {
+            let mut gate = self.gate.lock().expect("workflow gate");
+            let mut runner = RoleChildRunner::new(&mut gate, self.store.as_ref());
+            if let Some(events) = self.parent_events.as_ref() {
+                runner = runner.with_parent_events(events.as_ref());
+            }
+            runner
+                .run(request, cancel, self.role_executor.as_ref())
+                .map_err(|e| WorkflowRuntimeError::RoleChild(e.to_string()))
+        };
+        if let Some(leases) = &self.writer_leases {
+            let _ = leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .release(&child_id);
+        }
+        let out = result?;
         Ok((out.status, out.summary_label))
     }
 
@@ -405,14 +438,32 @@ impl WorkflowRuntime {
             max_time_ms: 30_000,
             max_depth: 2,
         };
-        let mut gate = self.gate.lock().expect("workflow gate");
-        let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
-        if let Some(events) = self.parent_events.as_ref() {
-            runner = runner.with_parent_events(events.as_ref());
+        let write_set = explore_readonly_write_set(&request.child_id)?;
+        let fence = WriterHandoffFence::new(request.child_id.clone(), 1, write_set)?;
+        let child_id = request.child_id.clone();
+        if let Some(leases) = &self.writer_leases {
+            leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .admit(fence)?;
         }
-        let out = runner
-            .run(request, cancel, self.explore_executor.as_ref())
-            .map_err(|e| WorkflowRuntimeError::ExploreChild(e.to_string()))?;
+        let result = {
+            let mut gate = self.gate.lock().expect("workflow gate");
+            let mut runner = ExploreChildRunner::new(&mut gate, self.store.as_ref());
+            if let Some(events) = self.parent_events.as_ref() {
+                runner = runner.with_parent_events(events.as_ref());
+            }
+            runner
+                .run(request, cancel, self.explore_executor.as_ref())
+                .map_err(|e| WorkflowRuntimeError::ExploreChild(e.to_string()))
+        };
+        if let Some(leases) = &self.writer_leases {
+            let _ = leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .release(&child_id);
+        }
+        let out = result?;
         Ok((out.status, out.summary_label))
     }
 }
@@ -756,5 +807,42 @@ mod tests {
             !provider.received_messages().is_empty(),
             "Research step must call AgentLoop/Mock provider, not git status"
         );
+    }
+
+    #[test]
+    fn workflow_role_spawn_denies_overlapping_write_lease() {
+        let dir = tempdir().unwrap();
+        let leases = Arc::new(Mutex::new(WriterLeaseTable::new()));
+        leases
+            .lock()
+            .unwrap()
+            .admit(
+                WriterHandoffFence::new(
+                    "other",
+                    1,
+                    crate::DeclaredWriteSet::from_paths(["src"]).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let rt = runtime(dir.path()).with_writer_leases(leases.clone());
+        let sid = Uuid::new_v4();
+        // Feature first step is Research → empty write_roots → unknown → Conflict.
+        rt.start(
+            sid,
+            WorkflowEngine::feature_skeleton_recipe(),
+            dir.path().join("repo"),
+        )
+        .unwrap();
+        let err = rt.run_next_ready_step(sid).expect_err("overlap");
+        assert!(
+            matches!(
+                err,
+                WorkflowRuntimeError::WriteLease(WriteSetError::Conflict { .. })
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(leases.lock().unwrap().active_count(), 1);
     }
 }
