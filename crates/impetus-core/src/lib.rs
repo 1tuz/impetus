@@ -208,6 +208,7 @@ pub use daemon_wiring::{
 };
 pub use declared_write_set::{
     DeclaredWriteSet, WriteSetError, WriterHandoffFence, WriterLeaseTable,
+    explore_readonly_write_set, write_set_from_roots,
 };
 pub use deepseek_harness_adapter::{
     DEEPSEEK_PROCESS_PROTOCOL, DeepSeekHarnessAdapter, DeepSeekHarnessManifest,

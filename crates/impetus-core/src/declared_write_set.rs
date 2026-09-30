@@ -6,7 +6,7 @@
 //! other active writer. Does **not** spawn processes or touch secrets.
 
 use std::collections::HashMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
@@ -258,6 +258,48 @@ impl WriterLeaseTable {
     }
 }
 
+/// Map role `write_roots` under `cwd` into a relative [`DeclaredWriteSet`].
+///
+/// Empty roots → unknown (conservative overlap). Absolute roots must stay under
+/// `cwd`; otherwise [`WriteSetError::PathEscape`].
+pub fn write_set_from_roots(
+    cwd: &Path,
+    write_roots: &[PathBuf],
+) -> Result<DeclaredWriteSet, WriteSetError> {
+    if write_roots.is_empty() {
+        return Ok(DeclaredWriteSet::unknown());
+    }
+    let mut set = DeclaredWriteSet::new();
+    for root in write_roots {
+        let rel = relativize_under_cwd(cwd, root)?;
+        set.add_path(rel)?;
+    }
+    Ok(set)
+}
+
+/// Explore is read-only (`write_roots` empty). Use a unique per-child lease path
+/// so concurrent Explore children do not false-conflict via unknown∩unknown,
+/// while still participating in the shared [`WriterLeaseTable`] with writers.
+pub fn explore_readonly_write_set(child_id: &str) -> Result<DeclaredWriteSet, WriteSetError> {
+    let id = child_id.trim();
+    if id.is_empty() {
+        return Err(WriteSetError::EmptyChildId);
+    }
+    DeclaredWriteSet::from_paths([format!(".impetus/explore-lease/{id}")])
+}
+
+fn relativize_under_cwd(cwd: &Path, root: &Path) -> Result<String, WriteSetError> {
+    if root.is_relative() {
+        return normalize_rel(&root.to_string_lossy());
+    }
+    let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let rel = root_canon
+        .strip_prefix(&cwd_canon)
+        .map_err(|_| WriteSetError::PathEscape(root.display().to_string()))?;
+    normalize_rel(&rel.to_string_lossy())
+}
+
 fn normalize_rel(raw: &str) -> Result<String, WriteSetError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -441,5 +483,19 @@ mod tests {
             DeclaredWriteSet::from_paths(["../outside"]),
             Err(WriteSetError::PathEscape(_))
         ));
+    }
+
+    #[test]
+    fn write_set_from_roots_empty_is_unknown() {
+        let set = write_set_from_roots(Path::new("/tmp"), &[]).unwrap();
+        assert!(set.is_unknown());
+    }
+
+    #[test]
+    fn explore_readonly_sets_are_disjoint_per_child() {
+        let a = explore_readonly_write_set("c1").unwrap();
+        let b = explore_readonly_write_set("c2").unwrap();
+        assert!(!a.overlaps(&b));
+        assert!(a.overlaps(&paths(&[".impetus/explore-lease/c1"])));
     }
 }

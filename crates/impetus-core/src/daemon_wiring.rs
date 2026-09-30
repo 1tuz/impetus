@@ -92,6 +92,7 @@ pub fn build_explore_spawn_bridge(
         store: Arc::new(child_store),
         executor,
         parent_events: Some(parent_events),
+        writer_leases: None,
     }))
 }
 

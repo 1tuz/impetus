@@ -341,6 +341,7 @@ mod tests {
             store: Arc::new(child_store),
             executor: Arc::new(executor),
             parent_events: None,
+            writer_leases: None,
         };
         let out = bridge
             .spawn_explore(
