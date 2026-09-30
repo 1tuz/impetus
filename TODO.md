@@ -49,14 +49,16 @@ Actionable after Now. Not priority theatre.
 - Flight Recorder receipts + observe-only replay: shipped `#413`
   (`impetus receipt export` / `impetus replay`; EventStore projection only;
   no EffectSeam re-execute)
-- Durable Offline Batch + BatchProvider: Partial `#416`/`#422`/`#427`/`#439`/`#441` (parent `#397`) —
+- Durable Offline Batch + BatchProvider: Implemented `#416`/`#422`/`#427`/`#439`/`#441`/`#445` (parent `#397`) —
   `offline_batch.rs` + `EventPayload::OfflineBatch` journal, `MockBatchProvider`,
+  `FsBatchProvider` (local filesystem queue / file-drop — not paid network API),
   idempotent workspace collect, `poll_collect_due` library tick,
   `OfflineBatchRegistry` on Harness + daemon `spawn_offline_batch_poll_loop`,
-  CLI `impetus batch submit|status|collect` (mock-only); sock live → typed
-  `AdmitOfflineBatch` IPC registers plan+executor for daemon poll;
-  sock down → offline journal + plan sidecar;
-  **Remaining:** live provider adapter only
+  CLI `impetus batch submit|status|collect` (`--provider mock|fs` /
+  `$IMPETUS_BATCH_PROVIDER`); sock live + mock → typed `AdmitOfflineBatch` IPC;
+  sock down / `--provider fs` → offline journal + plan sidecar (+ FS jobs under
+  `offline_batch_fs`). Remaining: none for Offline Batch core mechanisms
+  (paid Anthropic/OpenAI batch network adapters out of scope)
 - DeclaredWriteSet + writer lease/handoff fence: `#417` library + `#429`
   Explore/RoleChild production spawn + `#437` WorkflowRuntime shares same
   daemon `WriterLeaseTable` (role/explore admit+release). Remaining:

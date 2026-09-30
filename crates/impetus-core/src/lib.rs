@@ -378,10 +378,12 @@ pub use offline_batch::{
     BatchItemResult, BatchItemSpec, BatchLifecycleState, BatchOperationRecord, BatchPlan,
     BatchPrepareOutcome, BatchProvider, BatchProviderError, BatchProviderStatus,
     BatchResubmitDecision, BatchSubmitOutcome, CollectBatchOutcome, CollectItemOutcome,
-    DurableOfflineBatchExecutor, FrozenBatchConfig, MockBatchProvider, OFFLINE_BATCH_POLL_INTERVAL,
-    OfflineBatchError, OfflineBatchJournal, OfflineBatchRegistry, PollCollectAction,
-    PollCollectDueResult, admit_mock_batch, batch_records_from_events, hash_bytes, load_batch_plan,
-    offline_batch_plans_dir, persist_batch_plan, reconcile_resubmit,
+    DurableOfflineBatchExecutor, FrozenBatchConfig, FsBatchProvider, MockBatchProvider,
+    OFFLINE_BATCH_POLL_INTERVAL, OfflineBatchError, OfflineBatchJournal, OfflineBatchProviderKind,
+    OfflineBatchRegistry, PollCollectAction, PollCollectDueResult, admit_batch,
+    admit_batch_for_kind, admit_mock_batch, batch_provider_kind_from_env,
+    batch_records_from_events, hash_bytes, load_batch_plan, make_batch_provider,
+    offline_batch_fs_root, offline_batch_plans_dir, persist_batch_plan, reconcile_resubmit,
 };
 pub use openai_compat_adapter::OpenAiCompatibleAdapter;
 pub use openai_native_adapter::OpenAiNativeAdapter;

@@ -337,10 +337,12 @@ impl Harness {
         self.offline_batch_registry.clone()
     }
 
-    /// Admit offline batch via mock provider; register on daemon registry when wired.
+    /// Admit offline batch via mock or FS provider (`IMPETUS_BATCH_PROVIDER`); register
+    /// on daemon registry when wired.
     ///
     /// Returns `(batch_id, config_digest)`. Persists plan sidecar under `mcp_sot_root`
-    /// when the daemon data root is attached.
+    /// when the daemon data root is attached. FS jobs live under
+    /// `{data_root}/offline_batch_fs` — not a paid network API.
     pub fn admit_offline_batch(
         &self,
         session_id: Uuid,
@@ -350,16 +352,20 @@ impl Harness {
         option_labels: Vec<String>,
     ) -> Result<(Uuid, String), crate::OfflineBatchError> {
         let model = model_label.into();
-        let config = crate::FrozenBatchConfig::freeze("mock", &model, option_labels.clone(), &plan);
+        let kind = crate::batch_provider_kind_from_env();
+        let config =
+            crate::FrozenBatchConfig::freeze(kind.as_label(), &model, option_labels.clone(), &plan);
         let digest = config.digest.clone();
         let plan_persist = plan.clone();
-        let batch_id = crate::admit_mock_batch(
+        let batch_id = crate::admit_batch_for_kind(
             self.store(),
             session_id,
             workspace_root,
             plan,
             self.offline_batch_registry.as_deref(),
-            "mock",
+            kind,
+            self.mcp_sot_root.as_deref(),
+            None,
             model,
             option_labels,
         )?;
@@ -2558,15 +2564,19 @@ fn handle_admit_offline_batch(
             })
             .collect(),
     };
-    let config = crate::FrozenBatchConfig::freeze("mock", &model, vec!["temp=0".into()], &plan);
+    let kind = crate::batch_provider_kind_from_env();
+    let config =
+        crate::FrozenBatchConfig::freeze(kind.as_label(), &model, vec!["temp=0".into()], &plan);
     let plan_persist = plan.clone();
-    match crate::admit_mock_batch(
+    match crate::admit_batch_for_kind(
         store.clone(),
         session_id,
         workspace_root,
         plan,
         Some(registry.as_ref()),
-        "mock",
+        kind,
+        data_root,
+        None,
         model,
         vec!["temp=0".into()],
     ) {

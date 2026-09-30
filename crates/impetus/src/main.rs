@@ -228,7 +228,7 @@ enum Commands {
         #[command(subcommand)]
         action: eval::EvalAction,
     },
-    /// Offline batch admit / status / collect (mock provider only; #439)
+    /// Offline batch admit / status / collect (mock default; `--provider fs`; #439/#445)
     Batch {
         #[command(subcommand)]
         action: batch::BatchAction,
