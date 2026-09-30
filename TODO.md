@@ -49,11 +49,12 @@ Actionable after Now. Not priority theatre.
 - Flight Recorder receipts + observe-only replay: shipped `#413`
   (`impetus receipt export` / `impetus replay`; EventStore projection only;
   no EffectSeam re-execute)
-- Durable Offline Batch + BatchProvider: Partial `#416`/`#422`/`#427` (parent `#397`) —
+- Durable Offline Batch + BatchProvider: Partial `#416`/`#422`/`#427`/`#439` (parent `#397`) —
   `offline_batch.rs` + `EventPayload::OfflineBatch` journal, `MockBatchProvider`,
   idempotent workspace collect, `poll_collect_due` library tick,
-  `OfflineBatchRegistry` + daemon `spawn_offline_batch_poll_loop`; **Remaining:**
-  live provider adapter, CLI admission
+  `OfflineBatchRegistry` on Harness + daemon `spawn_offline_batch_poll_loop`,
+  CLI `impetus batch submit|status|collect` (mock-only offline journal);
+  **Remaining:** live provider adapter (CLI→daemon IPC register = Partial honesty)
 - DeclaredWriteSet + writer lease/handoff fence: `#417` library + `#429`
   Explore/RoleChild production spawn + `#437` WorkflowRuntime shares same
   daemon `WriterLeaseTable` (role/explore admit+release). Remaining:

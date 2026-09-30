@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use impetus_client::HarnessClient;
 use uuid::Uuid;
 
+mod batch;
 mod daemon;
 mod doctor;
 mod eval;
@@ -226,6 +227,11 @@ enum Commands {
     Eval {
         #[command(subcommand)]
         action: eval::EvalAction,
+    },
+    /// Offline batch admit / status / collect (mock provider only; #439)
+    Batch {
+        #[command(subcommand)]
+        action: batch::BatchAction,
     },
     /// Flight Recorder receipt export from EventStore (observe-only; #413)
     Receipt {
@@ -526,6 +532,11 @@ async fn main() -> Result<()> {
             eval::run(action).await?;
             return Ok(());
         }
+        Commands::Batch { action } => {
+            // Offline mock batch admit — no live network; journal under data-dir.
+            batch::run(action)?;
+            return Ok(());
+        }
         Commands::Receipt { action } => {
             // Offline EventStore read — no daemon, no EffectSeam execute.
             receipt::run_receipt(action)?;
@@ -561,6 +572,7 @@ async fn main() -> Result<()> {
         Commands::Skills { .. } => unreachable!("handled above"),
         Commands::Extension { .. } => unreachable!("handled above"),
         Commands::Eval { .. } => unreachable!("handled above"),
+        Commands::Batch { .. } => unreachable!("handled above"),
         Commands::Receipt { .. } => unreachable!("handled above"),
         Commands::Replay { .. } => unreachable!("handled above"),
         Commands::Ui => unreachable!("handled above"),

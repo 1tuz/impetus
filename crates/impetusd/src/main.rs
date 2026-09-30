@@ -38,13 +38,12 @@ async fn main() -> Result<()> {
     // Owner-only data tree (socket already 0600) — no shared-home leakage.
     restrict_dir_permissions(&data_root)?;
     let store = SqliteEventStore::open(data_root.join("events.sqlite3"))?;
-    let harness = Arc::new(configured_harness(
-        store,
-        &data_root,
-        std::env::args_os().skip(1),
-    )?);
-    spawn_artifact_gc_loop(impetus_core::default_artifact_root());
     let offline_batch_registry = std::sync::Arc::new(impetus_core::OfflineBatchRegistry::new());
+    let harness = Arc::new(
+        configured_harness(store, &data_root, std::env::args_os().skip(1))?
+            .with_offline_batch_registry(offline_batch_registry.clone()),
+    );
+    spawn_artifact_gc_loop(impetus_core::default_artifact_root());
     spawn_offline_batch_poll_loop(offline_batch_registry);
     // Restrictive umask before bind so the socket is born 0600; chmod follows.
     let listener = {
