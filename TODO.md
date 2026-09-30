@@ -31,9 +31,9 @@ Actionable after Now. Not priority theatre.
 ### Runtime reliability (#397)
 
 - Effect Fence call sites: ToolOrchestrator write/bash + mutating MCP fenced
-  (`#407`); session-scoped mutating `OperateExtensionPackage` fenced (`#421`).
-  Remaining: agent PTY, remote SSH/SFTP/tmux, direct ProcessExecution Allow
-  outside orchestrator
+  (`#407`); session-scoped mutating `OperateExtensionPackage` fenced (`#421`);
+  agent-origin PTY spawn fenced (`#428`). Remaining: remote SSH/SFTP/tmux,
+  direct ProcessExecution Allow outside orchestrator
 - host_process operate EffectSeam admission: shipped `#421` (refs `#397`)
 - ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
   evidence-preserving reduce + durable compaction anchors; raw recover via
