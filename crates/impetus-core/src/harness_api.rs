@@ -338,23 +338,35 @@ impl Harness {
     }
 
     /// Admit offline batch via mock provider; register on daemon registry when wired.
+    ///
+    /// Returns `(batch_id, config_digest)`. Persists plan sidecar under `mcp_sot_root`
+    /// when the daemon data root is attached.
     pub fn admit_offline_batch(
         &self,
         session_id: Uuid,
+        workspace_root: PathBuf,
         plan: crate::BatchPlan,
         model_label: impl Into<String>,
         option_labels: Vec<String>,
-    ) -> Result<Uuid, crate::OfflineBatchError> {
-        crate::admit_mock_batch(
+    ) -> Result<(Uuid, String), crate::OfflineBatchError> {
+        let model = model_label.into();
+        let config = crate::FrozenBatchConfig::freeze("mock", &model, option_labels.clone(), &plan);
+        let digest = config.digest.clone();
+        let plan_persist = plan.clone();
+        let batch_id = crate::admit_mock_batch(
             self.store(),
             session_id,
-            self.workspace_root.clone(),
+            workspace_root,
             plan,
             self.offline_batch_registry.as_deref(),
             "mock",
-            model_label,
+            model,
             option_labels,
-        )
+        )?;
+        if let Some(root) = &self.mcp_sot_root {
+            crate::persist_batch_plan(root, batch_id, &plan_persist)?;
+        }
+        Ok((batch_id, digest))
     }
 
     /// Replace PTY manager (tests / durable SqlitePtySessionStore wire).
@@ -772,6 +784,7 @@ impl Harness {
             self.workflow_runtime.clone(),
             self.explore_spawn.clone(),
             self.worktree_manager.clone(),
+            self.offline_batch_registry.clone(),
             self.pty.clone(),
             self.session_models.clone(),
             request,
@@ -899,6 +912,7 @@ fn handle_request(
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
     explore_spawn: Option<Arc<dyn crate::explore_child::ExploreSpawnBridge>>,
     worktree_manager: Option<Arc<crate::WorktreeManager>>,
+    offline_batch_registry: Option<Arc<crate::OfflineBatchRegistry>>,
     pty: Arc<crate::PtySessionManager>,
     session_models: Arc<Mutex<HashMap<uuid::Uuid, crate::SessionModelSelection>>>,
     request: IpcRequest,
@@ -2487,6 +2501,20 @@ fn handle_request(
             permission.as_deref(),
             timeout_ms,
         ),
+        IpcRequest::AdmitOfflineBatch {
+            session_id,
+            workspace_root: batch_workspace,
+            items,
+            model,
+        } => handle_admit_offline_batch(
+            &store,
+            offline_batch_registry.as_ref(),
+            mcp_sot_root.as_deref(),
+            session_id,
+            batch_workspace,
+            items,
+            model,
+        ),
         IpcRequest::GetBrowserHealth => IpcResponse::BrowserHealth {
             status: crate::browser_health_via_extension(extension_host.as_ref()),
         },
@@ -2495,6 +2523,72 @@ fn handle_request(
                 extension_host.as_ref(),
                 protocol_version,
             ),
+        },
+    }
+}
+
+fn handle_admit_offline_batch(
+    store: &Arc<dyn EventStore>,
+    registry: Option<&Arc<crate::OfflineBatchRegistry>>,
+    data_root: Option<&Path>,
+    session_id: Uuid,
+    workspace_root: PathBuf,
+    items: Vec<impetus_protocol::OfflineBatchItemSpec>,
+    model: String,
+) -> IpcResponse {
+    let Some(registry) = registry else {
+        return IpcResponse::Error {
+            code: IpcErrorCode::Unavailable,
+            message: "offline batch registry not wired on harness".into(),
+        };
+    };
+    if workspace_root.as_os_str().is_empty() {
+        return IpcResponse::Error {
+            code: IpcErrorCode::InvalidRequest,
+            message: "admit_offline_batch: workspace_root must not be empty".into(),
+        };
+    }
+    let plan = crate::BatchPlan {
+        items: items
+            .into_iter()
+            .map(|item| crate::BatchItemSpec {
+                item_id: item.item_id,
+                input_hash: item.input_hash,
+                output_relpath: item.output_relpath,
+            })
+            .collect(),
+    };
+    let config = crate::FrozenBatchConfig::freeze("mock", &model, vec!["temp=0".into()], &plan);
+    let plan_persist = plan.clone();
+    match crate::admit_mock_batch(
+        store.clone(),
+        session_id,
+        workspace_root,
+        plan,
+        Some(registry.as_ref()),
+        "mock",
+        model,
+        vec!["temp=0".into()],
+    ) {
+        Ok(batch_id) => {
+            if let Some(root) = data_root
+                && let Err(error) = crate::persist_batch_plan(root, batch_id, &plan_persist)
+            {
+                return IpcResponse::Error {
+                    code: IpcErrorCode::Internal,
+                    message: format!("persist batch plan: {error}"),
+                };
+            }
+            IpcResponse::OfflineBatchAdmitted {
+                batch_id,
+                session_id,
+                config_digest: config.digest,
+                item_count: plan_persist.items.len(),
+            }
+        }
+        Err(error) => IpcResponse::Error {
+            code: IpcErrorCode::Internal,
+            message: error.to_string(),
         },
     }
 }
@@ -8804,5 +8898,100 @@ mod tests {
                 .iter()
                 .any(|h| h.file.ends_with("README") || h.file.as_os_str() == "README")
         );
+    }
+
+    #[test]
+    fn admit_offline_batch_ipc_registers_on_registry() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let store = Arc::new(MemoryEventStore::default());
+        let registry = Arc::new(crate::OfflineBatchRegistry::new());
+        let harness = Harness::new(
+            store,
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        )
+        .with_offline_batch_registry(registry.clone())
+        .with_mcp_sot_root(data.path());
+
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+
+        let IpcResponse::Hello { capabilities, .. } = harness.handle(IpcRequest::Hello {
+            version: IPC_VERSION,
+            min_version: Some(IPC_MIN_SUPPORTED),
+            capabilities: vec!["offline_batch".into()],
+        }) else {
+            panic!("hello");
+        };
+        assert!(capabilities.iter().any(|c| c == "offline_batch"));
+
+        let IpcResponse::OfflineBatchAdmitted {
+            batch_id,
+            session_id: admitted_session,
+            config_digest,
+            item_count,
+        } = harness.handle(IpcRequest::AdmitOfflineBatch {
+            session_id,
+            workspace_root: workspace.path().to_path_buf(),
+            items: vec![impetus_protocol::OfflineBatchItemSpec {
+                item_id: "item-a".into(),
+                input_hash: crate::hash_bytes(b"seed-a"),
+                output_relpath: "out/a.txt".into(),
+            }],
+            model: "mock-model".into(),
+        })
+        else {
+            panic!("admit offline batch");
+        };
+        assert_eq!(admitted_session, session_id);
+        assert_eq!(item_count, 1);
+        assert!(config_digest.starts_with("sha256:"));
+        assert!(registry.plan(batch_id).is_some());
+        assert!(
+            data.path()
+                .join("offline_batch_plans")
+                .join(format!("{batch_id}.json"))
+                .is_file()
+        );
+
+        let polled = registry.poll_all().expect("poll");
+        assert_eq!(polled.len(), 1);
+        assert!(matches!(
+            &polled[0].action,
+            crate::PollCollectAction::Collected(c)
+                if c.state == crate::BatchLifecycleState::Delivered
+        ));
+        assert!(workspace.path().join("out/a.txt").is_file());
+    }
+
+    #[test]
+    fn admit_offline_batch_ipc_unavailable_without_registry() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = Harness::new(
+            Arc::new(MemoryEventStore::default()),
+            PolicyEngine::new(SandboxScope::local_workspace(workspace.path())),
+        );
+        let IpcResponse::Session { session_id, .. } = harness.handle(IpcRequest::CreateSession {
+            workspace_root: workspace.path().to_path_buf(),
+        }) else {
+            panic!("create session");
+        };
+        let IpcResponse::Error { code, message } = harness.handle(IpcRequest::AdmitOfflineBatch {
+            session_id,
+            workspace_root: workspace.path().to_path_buf(),
+            items: vec![impetus_protocol::OfflineBatchItemSpec {
+                item_id: "a".into(),
+                input_hash: "sha256:dead".into(),
+                output_relpath: "out.txt".into(),
+            }],
+            model: "mock-model".into(),
+        }) else {
+            panic!("expected unavailable");
+        };
+        assert_eq!(code, IpcErrorCode::Unavailable);
+        assert!(message.contains("registry"));
     }
 }

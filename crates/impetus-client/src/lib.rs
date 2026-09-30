@@ -1052,6 +1052,36 @@ pub trait HarnessClient: Send + Sync {
         }
     }
 
+    /// Admit mock offline batch on daemon registry (`offline_batch`).
+    ///
+    /// Returns `(batch_id, config_digest, item_count)`.
+    async fn admit_offline_batch(
+        &self,
+        session_id: uuid::Uuid,
+        workspace_root: PathBuf,
+        items: Vec<protocol::OfflineBatchItemSpec>,
+        model: impl Into<String>,
+    ) -> Result<(uuid::Uuid, String, usize)> {
+        match self
+            .request(IpcRequest::AdmitOfflineBatch {
+                session_id,
+                workspace_root,
+                items,
+                model: model.into(),
+            })
+            .await?
+        {
+            IpcResponse::OfflineBatchAdmitted {
+                batch_id,
+                config_digest,
+                item_count,
+                ..
+            } => Ok((batch_id, config_digest, item_count)),
+            IpcResponse::Error { message, .. } => bail!(message),
+            response => bail!("unexpected response: {response:?}"),
+        }
+    }
+
     /// Pull durable session events after `after_sequence` (non-live Stream).
     async fn stream_events(
         &self,

@@ -1416,3 +1416,11 @@ pub struct BrowserNegotiateInfo {
     pub compatible: bool,
     pub reason: String,
 }
+
+/// One offline-batch item on the wire (paths/hashes only; never secrets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflineBatchItemSpec {
+    pub item_id: String,
+    pub input_hash: String,
+    pub output_relpath: String,
+}

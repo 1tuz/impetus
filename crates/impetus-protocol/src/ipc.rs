@@ -126,6 +126,8 @@ pub const IPC_CAPABILITIES: &[&str] = &[
     "extension_runtime",
     // ExtensionHost package manage (reload/enable/disable/list/install/remove; IPC v14+).
     "extension_manage",
+    // Offline batch admit → OfflineBatchRegistry (mock provider; IPC additive).
+    "offline_batch",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -598,6 +600,19 @@ pub enum IpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<uuid::Uuid>,
     },
+    /// Admit mock offline batch and register plan+executor on daemon registry.
+    AdmitOfflineBatch {
+        session_id: Uuid,
+        workspace_root: std::path::PathBuf,
+        items: Vec<crate::OfflineBatchItemSpec>,
+        /// Model label frozen into config digest (default: mock-model).
+        #[serde(default = "default_offline_batch_model")]
+        model: String,
+    },
+}
+
+fn default_offline_batch_model() -> String {
+    "mock-model".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -888,6 +903,13 @@ pub enum IpcResponse {
         op: String,
         data: serde_json::Value,
     },
+    /// Result of `AdmitOfflineBatch` (mock provider; registry registered).
+    OfflineBatchAdmitted {
+        batch_id: Uuid,
+        session_id: Uuid,
+        config_digest: String,
+        item_count: usize,
+    },
     Incompatible {
         supported_version: u16,
         /// Inclusive lower bound the server still accepts.
@@ -1022,6 +1044,7 @@ pub fn required_capability(request: &IpcRequest) -> Option<&'static str> {
         | IpcRequest::InstallExtensionPackage { .. }
         | IpcRequest::RemoveExtensionPackage { .. }
         | IpcRequest::OperateExtensionPackage { .. } => "extension_manage",
+        IpcRequest::AdmitOfflineBatch { .. } => "offline_batch",
     })
 }
 
@@ -1097,6 +1120,39 @@ pub fn validate_request_on_wire(request: &IpcRequest) -> Result<(), String> {
         IpcRequest::InstallExtensionPackage { source_path, .. } => {
             if source_path.as_os_str().is_empty() {
                 return Err("install_extension_package: source_path must not be empty".into());
+            }
+            Ok(())
+        }
+        IpcRequest::AdmitOfflineBatch {
+            workspace_root,
+            items,
+            model,
+            ..
+        } => {
+            if workspace_root.as_os_str().is_empty() {
+                return Err("admit_offline_batch: workspace_root must not be empty".into());
+            }
+            if items.is_empty() {
+                return Err("admit_offline_batch: items must not be empty".into());
+            }
+            if model.trim().is_empty() {
+                return Err("admit_offline_batch: model must not be empty".into());
+            }
+            for item in items {
+                if item.item_id.trim().is_empty() {
+                    return Err("admit_offline_batch: item_id must not be empty".into());
+                }
+                if item.input_hash.trim().is_empty() {
+                    return Err("admit_offline_batch: input_hash must not be empty".into());
+                }
+                if item.output_relpath.trim().is_empty()
+                    || std::path::Path::new(&item.output_relpath).is_absolute()
+                {
+                    return Err(
+                        "admit_offline_batch: output_relpath must be non-empty relative path"
+                            .into(),
+                    );
+                }
             }
             Ok(())
         }
@@ -1582,6 +1638,7 @@ mod sentinel_protocol {
         assert!(IPC_CAPABILITIES.contains(&"extension_runtime"));
         assert!(IPC_CAPABILITIES.contains(&"extension_manage"));
         assert!(IPC_CAPABILITIES.contains(&"resolve_approval_bound"));
+        assert!(IPC_CAPABILITIES.contains(&"offline_batch"));
         assert_eq!(IPC_VERSION, 15);
         assert_eq!(IPC_MIN_SUPPORTED, 12);
     }
