@@ -119,6 +119,8 @@ pub struct Harness {
     workflow_runtime: Option<Arc<crate::WorkflowRuntime>>,
     /// Optional managed worktrees for session-aware Git cwd resolution.
     worktree_manager: Option<Arc<crate::WorktreeManager>>,
+    /// Daemon-owned offline batch registry (poll tick + CLI/Harness admit).
+    offline_batch_registry: Option<Arc<crate::OfflineBatchRegistry>>,
     /// Daemon-owned PTY sessions (`portable-pty`).
     pty: Arc<crate::PtySessionManager>,
     /// Per-session model override (Provider → Model); daemon SoT for picker.
@@ -186,6 +188,7 @@ impl Harness {
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            offline_batch_registry: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
@@ -321,6 +324,39 @@ impl Harness {
         self
     }
 
+    /// Attach shared [`OfflineBatchRegistry`] (daemon poll tick + admit).
+    pub fn with_offline_batch_registry(
+        mut self,
+        registry: Arc<crate::OfflineBatchRegistry>,
+    ) -> Self {
+        self.offline_batch_registry = Some(registry);
+        self
+    }
+
+    pub fn offline_batch_registry(&self) -> Option<Arc<crate::OfflineBatchRegistry>> {
+        self.offline_batch_registry.clone()
+    }
+
+    /// Admit offline batch via mock provider; register on daemon registry when wired.
+    pub fn admit_offline_batch(
+        &self,
+        session_id: Uuid,
+        plan: crate::BatchPlan,
+        model_label: impl Into<String>,
+        option_labels: Vec<String>,
+    ) -> Result<Uuid, crate::OfflineBatchError> {
+        crate::admit_mock_batch(
+            self.store(),
+            session_id,
+            self.workspace_root.clone(),
+            plan,
+            self.offline_batch_registry.as_deref(),
+            "mock",
+            model_label,
+            option_labels,
+        )
+    }
+
     /// Replace PTY manager (tests / durable SqlitePtySessionStore wire).
     pub fn with_pty_manager(mut self, pty: Arc<crate::PtySessionManager>) -> Self {
         self.pty = pty;
@@ -434,6 +470,7 @@ impl Harness {
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            offline_batch_registry: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
@@ -520,6 +557,7 @@ impl Harness {
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            offline_batch_registry: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
@@ -596,6 +634,7 @@ impl Harness {
             policy_store: Arc::new(Mutex::new(None)),
             workflow_runtime: None,
             worktree_manager: None,
+            offline_batch_registry: None,
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),

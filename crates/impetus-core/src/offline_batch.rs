@@ -214,6 +214,13 @@ impl MockBatchProvider {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Rebuild in-memory Ready job after process restart (CLI collect path).
+    pub fn rehydrate_ready(batch_id: Uuid, plan: &BatchPlan) -> Self {
+        let provider = Self::new();
+        let _ = provider.submit(batch_id, "rehydrate", plan);
+        provider
+    }
 }
 
 impl BatchProvider for MockBatchProvider {
@@ -293,6 +300,8 @@ pub enum OfflineBatchError {
     Workspace(String),
     #[error("offline batch collect conflict: {0}")]
     CollectConflict(String),
+    #[error("offline batch plan io: {0}")]
+    PlanIo(String),
 }
 
 impl From<StoreError> for OfflineBatchError {
@@ -880,6 +889,15 @@ impl OfflineBatchRegistry {
             .insert(batch_id, plan);
     }
 
+    pub fn plan(&self, batch_id: Uuid) -> Option<BatchPlan> {
+        self.state
+            .lock()
+            .expect("offline batch registry poisoned")
+            .plans
+            .get(&batch_id)
+            .cloned()
+    }
+
     /// Poll every registered executor with the shared plan map.
     /// Safe for daemon tick — errors returned to caller (log, never abort).
     pub fn poll_all(&self) -> Result<Vec<PollCollectDueResult>, OfflineBatchError> {
@@ -890,6 +908,64 @@ impl OfflineBatchRegistry {
         }
         Ok(out)
     }
+}
+
+/// Durable plan sidecar root under daemon data dir (labels/paths only).
+pub fn offline_batch_plans_dir(data_root: &Path) -> PathBuf {
+    data_root.join("offline_batch_plans")
+}
+
+pub fn persist_batch_plan(
+    data_root: &Path,
+    batch_id: Uuid,
+    plan: &BatchPlan,
+) -> Result<(), OfflineBatchError> {
+    let dir = offline_batch_plans_dir(data_root);
+    std::fs::create_dir_all(&dir).map_err(|e| OfflineBatchError::PlanIo(e.to_string()))?;
+    let path = dir.join(format!("{batch_id}.json"));
+    let body =
+        serde_json::to_vec_pretty(plan).map_err(|e| OfflineBatchError::PlanIo(e.to_string()))?;
+    std::fs::write(&path, body).map_err(|e| OfflineBatchError::PlanIo(e.to_string()))
+}
+
+pub fn load_batch_plan(data_root: &Path, batch_id: Uuid) -> Result<BatchPlan, OfflineBatchError> {
+    let path = offline_batch_plans_dir(data_root).join(format!("{batch_id}.json"));
+    let body = std::fs::read(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            OfflineBatchError::NotFound(batch_id)
+        } else {
+            OfflineBatchError::PlanIo(e.to_string())
+        }
+    })?;
+    serde_json::from_slice(&body).map_err(|e| OfflineBatchError::PlanIo(e.to_string()))
+}
+
+/// Submit via [`MockBatchProvider`], optionally register plan+executor for daemon tick.
+///
+/// No live network. Path/hash labels only — never secrets.
+pub fn admit_mock_batch(
+    store: Arc<dyn EventStore>,
+    session_id: Uuid,
+    workspace_root: PathBuf,
+    plan: BatchPlan,
+    registry: Option<&OfflineBatchRegistry>,
+    provider_label: impl Into<String>,
+    model_label: impl Into<String>,
+    option_labels: Vec<String>,
+) -> Result<Uuid, OfflineBatchError> {
+    let config = FrozenBatchConfig::freeze(provider_label, model_label, option_labels, &plan);
+    let journal = OfflineBatchJournal::new(store, session_id);
+    let exec = DurableOfflineBatchExecutor::new(
+        journal,
+        Arc::new(MockBatchProvider::new()),
+        workspace_root,
+    );
+    let batch_id = exec.submit_durable(&plan, &config)?;
+    if let Some(reg) = registry {
+        reg.register_plan(batch_id, plan);
+        reg.register_executor(exec);
+    }
+    Ok(batch_id)
 }
 
 impl Default for OfflineBatchRegistry {
@@ -1145,6 +1221,43 @@ mod tests {
             polled[0].action,
             PollCollectAction::Collected(ref c) if c.state == BatchLifecycleState::Delivered
         ));
+    }
+
+    #[test]
+    fn admit_mock_batch_registers_for_daemon_poll() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let plan = sample_plan();
+        let registry = OfflineBatchRegistry::new();
+        let batch_id = admit_mock_batch(
+            store,
+            session,
+            dir.path().to_path_buf(),
+            plan.clone(),
+            Some(&registry),
+            "mock",
+            "mock-model",
+            vec!["temp=0".into()],
+        )
+        .expect("admit");
+        assert_eq!(registry.plan(batch_id), Some(plan));
+        let polled = registry.poll_all().expect("poll");
+        assert_eq!(polled.len(), 1);
+        assert!(matches!(
+            polled[0].action,
+            PollCollectAction::Collected(ref c) if c.state == BatchLifecycleState::Delivered
+        ));
+    }
+
+    #[test]
+    fn persist_and_load_batch_plan_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = sample_plan();
+        let batch_id = Uuid::new_v4();
+        persist_batch_plan(dir.path(), batch_id, &plan).expect("persist");
+        let loaded = load_batch_plan(dir.path(), batch_id).expect("load");
+        assert_eq!(loaded, plan);
     }
 
     #[test]
