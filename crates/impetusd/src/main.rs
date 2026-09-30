@@ -251,7 +251,7 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
             store: child_store.clone(),
             executor: explore_executor.clone(),
             parent_events: Some(harness.store()),
-            writer_leases: Some(writer_leases),
+            writer_leases: Some(writer_leases.clone()),
         });
     let harness = harness.with_explore_spawn(explore);
 
@@ -280,7 +280,8 @@ fn wire_daemon_runtime(harness: Harness, data_root: &Path) -> Result<Harness> {
             Some(harness.store()),
         )
         .context("build workflow runtime")?
-        .with_worktree_manager(worktrees),
+        .with_worktree_manager(worktrees)
+        .with_writer_leases(writer_leases),
     );
     let harness = harness.with_workflow_runtime(workflow);
 
