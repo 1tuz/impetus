@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionKind, ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectAdmission,
-    EffectSeam, HookPrefilter, NormalizedEffect, SpawnStubOutcome, spawn_stub,
+    EffectFenceLedger, EffectSeam, HookPrefilter, NormalizedEffect, SpawnStubOutcome, spawn_stub,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -60,6 +60,8 @@ pub enum ProcessExecutionError {
         "security-critical hook for label `{label}` requires InDaemon trust; External matcher refused"
     )]
     PrefilterExternalForCritical { label: String },
+    #[error("effect fence denied process execution: {0}")]
+    EffectFence(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,24 +157,27 @@ impl ProcessExecutionRequest {
         self
     }
 
-    /// Prepare process execution through policy and effect seam.
-    /// Returns either immediate Allow, NeedsApproval with deferred effect, or Deny.
-    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, ProcessExecutionError> {
+    /// Normalized effect identity used for admission and Effect Fence digests.
+    pub fn fence_effect(&self) -> NormalizedEffect {
         let summary = format!("{} {}", self.command, self.args.join(" "));
         let target = self
             .working_dir
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| ".".to_string());
-
         let _action = Action {
             origin: self.origin,
             kind: ActionKind::SpawnProcess,
             summary: summary.clone(),
             target: Some(target.clone()),
         };
+        NormalizedEffect::process_spawn(self.origin, summary, target)
+    }
 
-        let effect = NormalizedEffect::process_spawn(self.origin, summary, target);
+    /// Prepare process execution through policy and effect seam.
+    /// Returns either immediate Allow, NeedsApproval with deferred effect, or Deny.
+    pub fn request(&self, seam: &EffectSeam) -> Result<EffectAdmission, ProcessExecutionError> {
+        let effect = self.fence_effect();
 
         let mut argv = vec![self.command.clone()];
         argv.extend(self.args.iter().cloned());
@@ -456,6 +461,12 @@ async fn capture_stream(
 }
 
 /// ProcessExecution wraps the request/execute lifecycle.
+///
+/// Agent-origin Allow with an attached [`EffectFenceLedger`] runs under
+/// write-ahead Effect Fence (`prepare_fence_for_allowed` → spawn → observe/fail).
+/// User-origin Allow stays unfenced (ledger ignored). ToolOrchestrator bash
+/// already fences via `execute_after_approval_*_fence` and calls
+/// [`ProcessExecutionRequest::execute`] directly — do not double-fence there.
 pub struct ProcessExecution {
     seam: EffectSeam,
 }
@@ -473,21 +484,83 @@ impl ProcessExecution {
         req.request(&self.seam)
     }
 
-    /// Execute after approval (or immediate Allow).
-    /// Returns the admission token on Allow, which must be passed to req.execute().
+    /// Execute after approval (or immediate Allow), without Effect Fence.
+    /// Prefer [`Self::execute_with_admission_and_fence`] for agent-origin callers
+    /// that own a session ledger.
     pub async fn execute_with_admission(
         &self,
         req: &ProcessExecutionRequest,
         artifacts: &DurableArtifactStore,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
+        self.execute_with_admission_and_optional_fence(req, artifacts, None)
+            .await
+    }
+
+    /// Execute after Allow. Agent-origin + ledger → write-ahead fence.
+    /// User-origin stays unfenced even when `ledger` is present.
+    pub async fn execute_with_admission_and_fence(
+        &self,
+        req: &ProcessExecutionRequest,
+        artifacts: &DurableArtifactStore,
+        ledger: &EffectFenceLedger,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
+        self.execute_with_admission_and_optional_fence(req, artifacts, Some(ledger))
+            .await
+    }
+
+    async fn execute_with_admission_and_optional_fence(
+        &self,
+        req: &ProcessExecutionRequest,
+        artifacts: &DurableArtifactStore,
+        ledger: Option<&EffectFenceLedger>,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
         let admission = self.request(req)?;
         match admission {
-            crate::EffectAdmission::Allow(token) => req.execute(&token, artifacts).await,
+            crate::EffectAdmission::Allow(token) => match (req.origin, ledger) {
+                (ActionOrigin::Agent, Some(ledger)) => {
+                    self.execute_agent_under_fence(req, &token, artifacts, ledger)
+                        .await
+                }
+                _ => req.execute(&token, artifacts).await,
+            },
             crate::EffectAdmission::NeedsApproval(_) => {
                 Err(ProcessExecutionError::ApprovalRequired)
             }
             crate::EffectAdmission::Deny { reason } => {
                 Err(ProcessExecutionError::PolicyDenied(reason))
+            }
+        }
+    }
+
+    /// Post-admission agent spawn: write-ahead fence then OS execute.
+    async fn execute_agent_under_fence(
+        &self,
+        req: &ProcessExecutionRequest,
+        admission: &crate::AdmittedOperation,
+        artifacts: &DurableArtifactStore,
+        ledger: &EffectFenceLedger,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
+        let effect = req.fence_effect();
+        let identity = self
+            .seam
+            .prepare_fence_for_allowed(&effect, ledger)
+            .map_err(ProcessExecutionError::EffectFence)?;
+        match req.execute(admission, artifacts).await {
+            Ok(output) => {
+                if let Err(err) = ledger.observe(&identity, "process executed") {
+                    let _ = ledger.mark_unknown(
+                        &identity,
+                        format!("observe persist failed after process execute: {err}"),
+                    );
+                    return Err(ProcessExecutionError::EffectFence(format!(
+                        "effect fence observe failed after process execute: {err}"
+                    )));
+                }
+                Ok(output)
+            }
+            Err(error) => {
+                let _ = ledger.mark_failed(&identity, error.to_string());
+                Err(error)
             }
         }
     }
@@ -797,5 +870,125 @@ mod tests {
         assert!(!output.truncated);
         assert!(output.artifact.is_none());
         assert_eq!(output.stdout, "tiny");
+    }
+
+    fn agent_allow_seam(workspace: &std::path::Path) -> EffectSeam {
+        use crate::{PolicyConfig, PolicyEngine, Sandbox, SandboxScope};
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"spawn_process":"allow"}}"#).unwrap();
+        let policy = PolicyEngine::with_config(SandboxScope::local_workspace(workspace), config);
+        EffectSeam::with_sandbox(policy, Sandbox::workspace(workspace))
+    }
+
+    fn agent_allow_request(command: &str, args: Vec<String>) -> ProcessExecutionRequest {
+        ProcessExecutionRequest::new(command, args, ActionOrigin::Agent, 1)
+            .with_workspace_root(test_workspace())
+            .with_working_dir(test_workspace())
+    }
+
+    #[tokio::test]
+    async fn agent_process_allow_refuses_when_prior_unknown() {
+        use crate::{
+            EffectFenceLedger, EffectInvocationIdentity, EventStore, FenceState, MemoryEventStore,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let workspace = test_workspace();
+        let seam = agent_allow_seam(&workspace);
+        let exec = ProcessExecution::new(seam);
+        let (_root, artifacts) = temp_artifacts();
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&store), session);
+
+        let request = agent_allow_request("true", vec![]);
+        let effect = request.fence_effect();
+        let identity = EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("prepare");
+        ledger
+            .mark_unknown(&identity, "crash mid-flight")
+            .expect("unknown");
+
+        let err = exec
+            .execute_with_admission_and_fence(&request, &artifacts, &ledger)
+            .await
+            .expect_err("Unknown fence must refuse blind replay");
+        assert!(
+            matches!(err, ProcessExecutionError::EffectFence(ref reason) if reason.contains("Unknown") || reason.contains("refuse")),
+            "expected fence refuse, got {err:?}"
+        );
+
+        let records = records_from_events(&store.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Unknown
+                && r.identity.args_digest == identity.args_digest),
+            "durable Unknown fence must remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_process_allow_emits_fence_observed() {
+        use crate::{
+            EffectFenceLedger, EventStore, FenceState, MemoryEventStore, args_digest_for_effect,
+            records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let workspace = test_workspace();
+        let seam = agent_allow_seam(&workspace);
+        let exec = ProcessExecution::new(seam);
+        let (_root, artifacts) = temp_artifacts();
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&store), session);
+
+        let request = agent_allow_request("true", vec![]);
+        let output = exec
+            .execute_with_admission_and_fence(&request, &artifacts, &ledger)
+            .await
+            .expect("agent allow + fence execute");
+        assert_eq!(output.exit_code, Some(0));
+
+        let effect = request.fence_effect();
+        let records = records_from_events(&store.list(session).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Observed
+                && r.identity.args_digest == args_digest_for_effect(&effect)),
+            "expected Observed fence for agent ProcessExecution; records={records:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_process_allow_stays_unfenced_with_ledger() {
+        use crate::{
+            EffectFenceLedger, EventStore, FenceState, MemoryEventStore, records_from_events,
+        };
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let seam = test_seam();
+        let exec = ProcessExecution::new(seam);
+        let (_root, artifacts) = temp_artifacts();
+        let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let ledger = EffectFenceLedger::new(Arc::clone(&store), session);
+
+        let request = user_request("true", vec![]);
+        let output = exec
+            .execute_with_admission_and_fence(&request, &artifacts, &ledger)
+            .await
+            .expect("user allow unfenced");
+        assert_eq!(output.exit_code, Some(0));
+
+        let records = records_from_events(&store.list(session).expect("list"));
+        assert!(
+            records
+                .values()
+                .all(|r| !matches!(r.state, FenceState::Observed | FenceState::Started)),
+            "user-origin must not write Effect Fence; records={records:?}"
+        );
     }
 }

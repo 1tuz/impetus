@@ -32,8 +32,9 @@ Actionable after Now. Not priority theatre.
 
 - Effect Fence call sites: ToolOrchestrator write/bash + mutating MCP fenced
   (`#407`); session-scoped mutating `OperateExtensionPackage` fenced (`#421`);
-  agent-origin PTY spawn fenced (`#428`). Remaining: remote SSH/SFTP/tmux,
-  direct ProcessExecution Allow outside orchestrator
+  agent-origin PTY spawn fenced (`#428`); agent-origin direct
+  `ProcessExecution::execute_with_admission_and_fence` fenced (`#433`;
+  User-origin unfenced). Remaining: remote SSH/SFTP/tmux
 - host_process operate EffectSeam admission: shipped `#421` (refs `#397`)
 - ObservationPack + Evidence Anchors compaction: shipped `#406` (pack +
   evidence-preserving reduce + durable compaction anchors; raw recover via
