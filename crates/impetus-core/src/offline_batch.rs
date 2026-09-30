@@ -11,8 +11,13 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// How often `impetusd` re-runs [`OfflineBatchRegistry::poll_all`] after startup.
+/// Shorter than artifact GC — offline batch Ready collect should not wait hours.
+pub const OFFLINE_BATCH_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Terminal batch lifecycle states exposed to callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -837,6 +842,62 @@ impl DurableOfflineBatchExecutor {
     }
 }
 
+/// Daemon/harness holder for offline-batch executors + frozen plans (not in journal).
+///
+/// Tick calls [`Self::poll_all`]; empty registry is a no-op.
+pub struct OfflineBatchRegistry {
+    state: Mutex<OfflineBatchRegistryState>,
+}
+
+struct OfflineBatchRegistryState {
+    executors: Vec<DurableOfflineBatchExecutor>,
+    plans: HashMap<Uuid, BatchPlan>,
+}
+
+impl OfflineBatchRegistry {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(OfflineBatchRegistryState {
+                executors: Vec::new(),
+                plans: HashMap::new(),
+            }),
+        }
+    }
+
+    pub fn register_executor(&self, executor: DurableOfflineBatchExecutor) {
+        self.state
+            .lock()
+            .expect("offline batch registry poisoned")
+            .executors
+            .push(executor);
+    }
+
+    pub fn register_plan(&self, batch_id: Uuid, plan: BatchPlan) {
+        self.state
+            .lock()
+            .expect("offline batch registry poisoned")
+            .plans
+            .insert(batch_id, plan);
+    }
+
+    /// Poll every registered executor with the shared plan map.
+    /// Safe for daemon tick — errors returned to caller (log, never abort).
+    pub fn poll_all(&self) -> Result<Vec<PollCollectDueResult>, OfflineBatchError> {
+        let state = self.state.lock().expect("offline batch registry poisoned");
+        let mut out = Vec::new();
+        for executor in &state.executors {
+            out.extend(executor.poll_collect_due(&state.plans)?);
+        }
+        Ok(out)
+    }
+}
+
+impl Default for OfflineBatchRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn batch_record_poll_eligible(record: &BatchOperationRecord) -> bool {
     match record.state {
         BatchLifecycleState::Collecting => true,
@@ -1066,6 +1127,24 @@ mod tests {
             exec.journal.record_for(batch_id).unwrap().unwrap().state,
             BatchLifecycleState::Delivered
         );
+    }
+
+    #[test]
+    fn registry_poll_all_delivers_when_provider_ready() {
+        let (_dir, exec) = executor_fixture();
+        let plan = sample_plan();
+        let config = sample_config(&plan);
+        let batch_id = exec.submit_durable(&plan, &config).expect("submit");
+
+        let registry = OfflineBatchRegistry::new();
+        registry.register_plan(batch_id, plan);
+        registry.register_executor(exec);
+        let polled = registry.poll_all().expect("registry poll");
+        assert_eq!(polled.len(), 1);
+        assert!(matches!(
+            polled[0].action,
+            PollCollectAction::Collected(ref c) if c.state == BatchLifecycleState::Delivered
+        ));
     }
 
     #[test]

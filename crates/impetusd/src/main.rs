@@ -44,6 +44,8 @@ async fn main() -> Result<()> {
         std::env::args_os().skip(1),
     )?);
     spawn_artifact_gc_loop(impetus_core::default_artifact_root());
+    let offline_batch_registry = std::sync::Arc::new(impetus_core::OfflineBatchRegistry::new());
+    spawn_offline_batch_poll_loop(offline_batch_registry);
     // Restrictive umask before bind so the socket is born 0600; chmod follows.
     let listener = {
         #[cfg(unix)]
@@ -83,6 +85,34 @@ fn spawn_artifact_gc_loop(artifact_root: PathBuf) {
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("impetusd: artifact GC failed (continuing): {error}");
+                }
+            }
+        }
+    });
+}
+
+/// Interval poll for in-flight offline batches. Empty registry is a no-op; errors log only.
+fn spawn_offline_batch_poll_loop(registry: Arc<impetus_core::OfflineBatchRegistry>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(impetus_core::OFFLINE_BATCH_POLL_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match registry.poll_all() {
+                Ok(results) => {
+                    for result in results {
+                        if let impetus_core::PollCollectAction::Collected(ref outcome) =
+                            result.action
+                        {
+                            eprintln!(
+                                "impetusd: offline batch {} collected → {:?}",
+                                result.batch_id, outcome.state
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("impetusd: offline batch poll failed (continuing): {error}");
                 }
             }
         }
@@ -938,6 +968,19 @@ mod tests {
         spawn_artifact_gc_loop(bad_root);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn offline_batch_poll_interval_is_sub_hour() {
+        assert!(impetus_core::OFFLINE_BATCH_POLL_INTERVAL.as_secs() >= 1);
+        assert!(impetus_core::OFFLINE_BATCH_POLL_INTERVAL.as_secs() < 3600);
+    }
+
+    #[tokio::test]
+    async fn offline_batch_poll_loop_empty_registry_is_fail_safe() {
+        let registry = Arc::new(impetus_core::OfflineBatchRegistry::new());
+        spawn_offline_batch_poll_loop(registry);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     #[test]
