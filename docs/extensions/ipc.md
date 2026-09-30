@@ -16,8 +16,13 @@ Clients never load packages themselves. Wire types live in `impetus-protocol`
 | `RemoveExtensionPackage { id }` | `ExtensionPackagesReloaded { … }` | Delete **global** pack only (workspace/dev refused) |
 | `OperateExtensionPackage { … }` | `ExtensionOperate { … }` | Active `host_process` only |
 
-`impetus extension …` CLI is **legacy** Skill/MCP install — not this surface
-(package Install/Remove via CLI → Next). Catalog/marketplace = Won't.
+`impetus extension install package <dir> [--replace]` and
+`impetus extension remove <id> --package` use this surface when the daemon
+sock is live and negotiates `extension_manage` (sock down → offline
+`ExtensionHost` under `$IMPETUS_DATA_DIR`). Legacy Skill/MCP
+`extension plan|install|remove|…` remains offline FS until migrated; after
+those mutates CLI best-effort calls `ReloadExtensionPackages` when sock live.
+Catalog/marketplace = Won't.
 
 Default `$IMPETUS_DATA_DIR` on macOS: `~/Library/Application Support/Impetus`
 (see getting-started guide).

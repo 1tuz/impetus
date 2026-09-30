@@ -67,27 +67,33 @@ enum ExtensionAction {
         #[arg(long)]
         json: bool,
     },
-    /// Plan then apply (ownership + install state)
+    /// Plan then apply (ownership + install state); `package` uses daemon IPC when sock live
     Install {
-        /// Extension kind: skill or mcp
+        /// Extension kind: skill, mcp, or package (`extension.toml` dir)
         #[arg(value_enum)]
         kind: extension::ExtensionKind,
-        /// Path to SKILL.md / skill dir, or MCP config JSON
+        /// Path to SKILL.md / skill dir, MCP config JSON, or package directory
         path: String,
-        /// Target project root (workspace layout; wins over --data-dir)
+        /// Target project root (workspace layout; wins over --data-dir; legacy only)
         #[arg(long)]
         root: Option<String>,
         /// Daemon data root (canonical SoT; default: $IMPETUS_DATA_DIR)
         #[arg(long)]
         data_dir: Option<String>,
+        /// Replace existing global package with the same id (`package` kind only)
+        #[arg(long)]
+        replace: bool,
         /// Emit JSON instead of human text
         #[arg(long)]
         json: bool,
     },
-    /// Uninstall by installation_id (ownership proof)
+    /// Uninstall by installation_id (ownership proof), or package id with `--package`
     Remove {
-        /// Installation ID from a prior `extension install`
+        /// Installation ID from a prior `extension install`, or package id with `--package`
         installation_id: String,
+        /// Treat id as ExtensionHost package id (daemon IPC / offline host remove)
+        #[arg(long)]
+        package: bool,
         /// Target project root (workspace layout; wins over --data-dir)
         #[arg(long)]
         root: Option<String>,
@@ -401,6 +407,7 @@ async fn main() -> Result<()> {
                     path,
                     root,
                     data_dir,
+                    replace,
                     json,
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
@@ -410,12 +417,14 @@ async fn main() -> Result<()> {
                         std::path::Path::new(path),
                         root_path.as_deref(),
                         data_path.as_deref(),
+                        *replace,
                         *json,
                     )
                     .await?;
                 }
                 ExtensionAction::Remove {
                     installation_id,
+                    package,
                     root,
                     data_dir,
                     json,
@@ -426,8 +435,10 @@ async fn main() -> Result<()> {
                         installation_id,
                         root_path.as_deref(),
                         data_path.as_deref(),
+                        *package,
                         *json,
-                    )?;
+                    )
+                    .await?;
                 }
                 ExtensionAction::Enable {
                     installation_id,
@@ -442,7 +453,8 @@ async fn main() -> Result<()> {
                         root_path.as_deref(),
                         data_path.as_deref(),
                         *json,
-                    )?;
+                    )
+                    .await?;
                 }
                 ExtensionAction::Disable {
                     installation_id,
@@ -457,7 +469,8 @@ async fn main() -> Result<()> {
                         root_path.as_deref(),
                         data_path.as_deref(),
                         *json,
-                    )?;
+                    )
+                    .await?;
                 }
                 ExtensionAction::Unload {
                     installation_id,
@@ -472,7 +485,8 @@ async fn main() -> Result<()> {
                         root_path.as_deref(),
                         data_path.as_deref(),
                         *json,
-                    )?;
+                    )
+                    .await?;
                 }
                 ExtensionAction::List {
                     root,
@@ -481,7 +495,7 @@ async fn main() -> Result<()> {
                 } => {
                     let root_path = root.as_ref().map(std::path::PathBuf::from);
                     let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
-                    extension::list(root_path.as_deref(), data_path.as_deref(), *json)?;
+                    extension::list(root_path.as_deref(), data_path.as_deref(), *json).await?;
                 }
                 ExtensionAction::Migrate {
                     from,
@@ -490,7 +504,7 @@ async fn main() -> Result<()> {
                 } => {
                     let from_path = from.as_ref().map(std::path::PathBuf::from);
                     let data_path = data_dir.as_ref().map(std::path::PathBuf::from);
-                    extension::migrate(from_path.as_deref(), data_path.as_deref(), *json)?;
+                    extension::migrate(from_path.as_deref(), data_path.as_deref(), *json).await?;
                 }
                 ExtensionAction::Doctor {
                     installation_id,
@@ -807,6 +821,7 @@ mod tests {
                 action:
                     ExtensionAction::Remove {
                         installation_id,
+                        package: false,
                         json: true,
                         root: Some(root),
                         ..
@@ -815,6 +830,58 @@ mod tests {
                 assert_eq!(installation_id, "11111111-2222-3333-4444-555555555555");
                 assert_eq!(root, "/tmp/project");
             }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_install_package_with_replace() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "install",
+            "package",
+            "./packs/demo",
+            "--replace",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Install {
+                        kind: extension::ExtensionKind::Package,
+                        path,
+                        replace: true,
+                        json: true,
+                        ..
+                    },
+            } => assert_eq!(path, "./packs/demo"),
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_extension_remove_package_flag() {
+        let cli = Cli::try_parse_from([
+            "impetus",
+            "extension",
+            "remove",
+            "demo-pack",
+            "--package",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extension {
+                action:
+                    ExtensionAction::Remove {
+                        installation_id,
+                        package: true,
+                        json: true,
+                        ..
+                    },
+            } => assert_eq!(installation_id, "demo-pack"),
             _ => panic!("unexpected command variant"),
         }
     }
