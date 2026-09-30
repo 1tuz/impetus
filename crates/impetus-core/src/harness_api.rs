@@ -157,7 +157,7 @@ impl Harness {
             crate::Sandbox::workspace(workspace_root.clone()),
         );
         let artifact_root = crate::default_artifact_root();
-        let pty = pty_manager_with_default_artifacts(pty_seam);
+        let pty = pty_manager_with_default_artifacts(pty_seam, store.clone());
         Self {
             store,
             policy: Arc::new(Mutex::new(policy)),
@@ -405,6 +405,7 @@ impl Harness {
             policy.clone(),
             crate::Sandbox::workspace(workspace_root.clone()),
         );
+        let pty = pty_manager_with_default_artifacts(pty_seam, store.clone());
         Self {
             store,
             policy: Arc::new(Mutex::new(policy)),
@@ -436,7 +437,7 @@ impl Harness {
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
-            pty: pty_manager_with_default_artifacts(pty_seam),
+            pty,
         }
     }
 
@@ -489,6 +490,7 @@ impl Harness {
             policy.clone(),
             crate::Sandbox::workspace(workspace_root.clone()),
         );
+        let pty = pty_manager_with_default_artifacts(pty_seam, store.clone());
 
         Self {
             store,
@@ -521,7 +523,7 @@ impl Harness {
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
-            pty: pty_manager_with_default_artifacts(pty_seam),
+            pty,
         }
     }
 
@@ -564,6 +566,7 @@ impl Harness {
             policy.clone(),
             crate::Sandbox::workspace(workspace_root.clone()),
         );
+        let pty = pty_manager_with_default_artifacts(pty_seam, store.clone());
 
         Self {
             store,
@@ -596,7 +599,7 @@ impl Harness {
             session_models: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: AtomicU64::new(1),
             approval_owners: Mutex::new(HashMap::new()),
-            pty: pty_manager_with_default_artifacts(pty_seam),
+            pty,
         }
     }
 
@@ -3345,8 +3348,11 @@ fn pty_error(error: crate::PtySessionError) -> IpcResponse {
     }
 }
 
-fn pty_manager_with_default_artifacts(seam: crate::EffectSeam) -> Arc<crate::PtySessionManager> {
-    let manager = crate::PtySessionManager::new(seam);
+fn pty_manager_with_default_artifacts(
+    seam: crate::EffectSeam,
+    event_store: Arc<dyn EventStore>,
+) -> Arc<crate::PtySessionManager> {
+    let manager = crate::PtySessionManager::new(seam).with_event_store(event_store);
     match DurableArtifactStore::open(crate::default_artifact_root()) {
         Ok(store) => Arc::new(manager.with_artifacts(Arc::new(store))),
         Err(_) => Arc::new(manager),
