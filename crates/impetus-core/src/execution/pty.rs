@@ -19,11 +19,12 @@
 //!   inside the session workspace (canonicalize + symlink-safe containment).
 //! - **Agent PTY** (`ActionOrigin::Agent`): same cwd rule **plus** macOS
 //!   Seatbelt wrap via the shared sandbox prepare path. Non-macOS agent spawn
-//!   is fail-closed.
+//!   is fail-closed. When an [`EventStore`] is attached, agent spawn also runs
+//!   under write-ahead Effect Fence (Prepared→Started→Observed|Failed|Unknown).
 
 use crate::{
     Action, ActionKind, ActionOrigin, DurableArtifactRef, DurableArtifactStore, EffectAdmission,
-    EffectSeam, NormalizedEffect,
+    EffectFenceLedger, EffectSeam, EventStore, NormalizedEffect,
 };
 use crate::{PtySessionRecord, PtySessionStore};
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -290,6 +291,8 @@ pub struct PtySessionManager {
     store: Mutex<Option<Arc<dyn PtySessionStore>>>,
     /// Optional durable store for ring-overflow spill. Absent → drop-only.
     artifacts: Mutex<Option<Arc<DurableArtifactStore>>>,
+    /// Session EventStore for agent-origin Effect Fence ledger. Absent → no fence.
+    event_store: Mutex<Option<Arc<dyn EventStore>>>,
     /// Ring capacity for new sessions (tests may shrink; capped at MAX).
     ring_capacity: usize,
 }
@@ -303,6 +306,7 @@ impl PtySessionManager {
             next_id: Mutex::new(1),
             store: Mutex::new(None),
             artifacts: Mutex::new(None),
+            event_store: Mutex::new(None),
             ring_capacity: MAX_PTY_RING_BYTES,
         }
     }
@@ -384,6 +388,20 @@ impl PtySessionManager {
     pub fn set_artifacts(&self, store: Arc<DurableArtifactStore>) {
         *self
             .artifacts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
+    }
+
+    /// Attach session EventStore so agent-origin spawn can write Effect Fence events.
+    pub fn with_event_store(self, store: Arc<dyn EventStore>) -> Self {
+        self.set_event_store(store);
+        self
+    }
+
+    /// Replace EventStore after construction (Harness / daemon wire).
+    pub fn set_event_store(&self, store: Arc<dyn EventStore>) {
+        *self
+            .event_store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
     }
@@ -507,8 +525,22 @@ impl PtySessionManager {
     }
 
     /// Spawn PTY session after approval (or immediate Allow).
+    ///
+    /// Agent-origin spawn with an attached EventStore runs under write-ahead
+    /// Effect Fence (`prepare_fence_for_allowed` → side effect → observe/fail).
+    /// User-origin spawn stays unfenced.
     pub fn spawn(&self, session_id: PtySessionId) -> Result<(), PtySessionError> {
-        let (command, args, working_dir, env, cols, rows, origin, owner_workspace) = {
+        let (
+            command,
+            args,
+            working_dir,
+            env,
+            cols,
+            rows,
+            origin,
+            owner_workspace,
+            owner_session_id,
+        ) = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -530,6 +562,7 @@ impl PtySessionManager {
                 session.rows,
                 session.origin,
                 session.working_dir.clone(),
+                session.owner_session_id,
             )
         };
 
@@ -547,28 +580,55 @@ impl PtySessionManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let live = match open_live_pty(
-            &command,
-            &args,
-            &working_dir,
-            &env,
-            cols,
-            rows,
-            self.ring_capacity,
-            artifacts,
-            origin,
-            &owner_workspace,
-        ) {
-            Ok(live) => live,
-            Err(error) => {
-                self.set_state(
-                    session_id,
-                    PtySessionState::Failed {
-                        reason: error.to_string(),
-                    },
-                );
-                return Err(error);
+        let open = || {
+            open_live_pty(
+                &command,
+                &args,
+                &working_dir,
+                &env,
+                cols,
+                rows,
+                self.ring_capacity,
+                artifacts.clone(),
+                origin,
+                &owner_workspace,
+            )
+        };
+
+        let live = match (origin, self.event_store_for_fence()) {
+            (ActionOrigin::Agent, Some(store)) => {
+                match self.spawn_agent_under_fence(
+                    owner_session_id,
+                    &command,
+                    &args,
+                    &working_dir,
+                    store,
+                    open,
+                ) {
+                    Ok(live) => live,
+                    Err(error) => {
+                        self.set_state(
+                            session_id,
+                            PtySessionState::Failed {
+                                reason: error.to_string(),
+                            },
+                        );
+                        return Err(error);
+                    }
+                }
             }
+            _ => match open() {
+                Ok(live) => live,
+                Err(error) => {
+                    self.set_state(
+                        session_id,
+                        PtySessionState::Failed {
+                            reason: error.to_string(),
+                        },
+                    );
+                    return Err(error);
+                }
+            },
         };
 
         let pid = live
@@ -585,6 +645,49 @@ impl PtySessionManager {
 
         self.set_state(session_id, PtySessionState::Running { pid });
         Ok(())
+    }
+
+    fn event_store_for_fence(&self) -> Option<Arc<dyn EventStore>> {
+        self.event_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Post-admission agent spawn: write-ahead fence then open PTY.
+    fn spawn_agent_under_fence(
+        &self,
+        owner_session_id: Uuid,
+        command: &str,
+        args: &[String],
+        working_dir: &Path,
+        store: Arc<dyn EventStore>,
+        open: impl FnOnce() -> Result<LivePty, PtySessionError>,
+    ) -> Result<LivePty, PtySessionError> {
+        let effect = agent_pty_fence_effect(command, args, working_dir);
+        let ledger = EffectFenceLedger::new(store, owner_session_id);
+        let identity = self
+            .seam
+            .prepare_fence_for_allowed(&effect, &ledger)
+            .map_err(|reason| PtySessionError::PolicyDenied(format!("effect fence: {reason}")))?;
+        match open() {
+            Ok(live) => {
+                if let Err(err) = ledger.observe(&identity, "pty spawned") {
+                    let _ = ledger.mark_unknown(
+                        &identity,
+                        format!("observe persist failed after pty spawn: {err}"),
+                    );
+                    return Err(PtySessionError::Storage(format!(
+                        "effect fence observe failed after pty spawn: {err}"
+                    )));
+                }
+                Ok(live)
+            }
+            Err(error) => {
+                let _ = ledger.mark_failed(&identity, error.to_string());
+                Err(error)
+            }
+        }
     }
 
     pub fn get_session(&self, session_id: PtySessionId) -> Option<PtySession> {
@@ -1069,6 +1172,18 @@ fn build_pty_command(
             }
         }
     }
+}
+
+/// Fence identity for agent PTY: digest over command + args + cwd labels only.
+fn agent_pty_fence_effect(command: &str, args: &[String], working_dir: &Path) -> NormalizedEffect {
+    let summary = format!("PTY: {} {}", command, args.join(" "));
+    let target = format!(
+        "{}|{}|{}",
+        working_dir.display(),
+        command,
+        args.join("\u{1f}")
+    );
+    NormalizedEffect::process_spawn(ActionOrigin::Agent, summary, target)
 }
 
 /// Resolve PTY cwd under workspace with symlink-escape protection.
@@ -1590,5 +1705,106 @@ mod tests {
             )
             .expect_err("agent must need approval");
         assert!(matches!(err, PtySessionError::ApprovalRequired));
+    }
+
+    fn agent_allow_seam(workspace: &std::path::Path) -> EffectSeam {
+        use crate::{PolicyConfig, PolicyEngine, Sandbox, SandboxScope};
+        let config =
+            PolicyConfig::parse(r#"{"version":1,"overrides":{"spawn_process":"allow"}}"#).unwrap();
+        let policy = PolicyEngine::with_config(SandboxScope::local_workspace(workspace), config);
+        EffectSeam::with_sandbox(policy, Sandbox::workspace(workspace))
+    }
+
+    #[test]
+    fn agent_pty_spawn_refuses_when_prior_unknown() {
+        use crate::{
+            EffectFenceLedger, EffectInvocationIdentity, FenceState, MemoryEventStore,
+            records_from_events,
+        };
+
+        let workspace = std::env::temp_dir().join(format!("pty-fence-refuse-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let store: Arc<dyn crate::EventStore> = Arc::new(MemoryEventStore::default());
+        let owner = Uuid::new_v4();
+        let manager = PtySessionManager::new(agent_allow_seam(&workspace))
+            .with_event_store(Arc::clone(&store));
+
+        let command = "true";
+        let args: Vec<String> = vec![];
+        let effect = agent_pty_fence_effect(command, &args, &workspace);
+        let ledger = EffectFenceLedger::new(Arc::clone(&store), owner);
+        let identity = EffectInvocationIdentity::from_effect(&effect);
+        ledger.prepare_and_start(&identity).expect("prepare");
+        ledger
+            .mark_unknown(&identity, "crash mid-flight")
+            .expect("unknown");
+
+        let err = manager
+            .start(
+                owner,
+                command,
+                args,
+                workspace.clone(),
+                ActionOrigin::Agent,
+                80,
+                24,
+                1,
+            )
+            .expect_err("Unknown fence must refuse blind replay");
+        assert!(
+            matches!(err, PtySessionError::PolicyDenied(ref reason) if reason.contains("effect fence")),
+            "expected fence refuse, got {err:?}"
+        );
+
+        let records = records_from_events(&store.list(owner).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Unknown
+                && r.identity.args_digest == identity.args_digest),
+            "durable Unknown fence must remain"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn agent_pty_spawn_emits_fence_observed() {
+        use crate::{
+            EffectFenceLedger, FenceState, MemoryEventStore, args_digest_for_effect,
+            records_from_events,
+        };
+
+        let workspace = std::env::temp_dir().join(format!("pty-fence-obs-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let store: Arc<dyn crate::EventStore> = Arc::new(MemoryEventStore::default());
+        let owner = Uuid::new_v4();
+        let manager = PtySessionManager::new(agent_allow_seam(&workspace))
+            .with_event_store(Arc::clone(&store));
+
+        let command = "true";
+        let args: Vec<String> = vec![];
+        let session = manager
+            .start(
+                owner,
+                command,
+                args.clone(),
+                workspace.clone(),
+                ActionOrigin::Agent,
+                40,
+                12,
+                1,
+            )
+            .expect("agent allow + fence spawn");
+
+        let effect = agent_pty_fence_effect(command, &args, &workspace);
+        let records = records_from_events(&store.list(owner).expect("list"));
+        assert!(
+            records.values().any(|r| r.state == FenceState::Observed
+                && r.identity.args_digest == args_digest_for_effect(&effect)),
+            "expected Observed fence for agent PTY spawn; records={records:?}"
+        );
+
+        let _ = manager.terminate(session.id);
+        let _ = EffectFenceLedger::new(store, owner);
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 }
