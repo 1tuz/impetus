@@ -1,8 +1,10 @@
 //! Durable offline batch execution + generic [`BatchProvider`] boundary (#416 / parent #397).
 //!
-//! Mock provider only in this slice — no live network. Submit intent is journaled
-//! to EventStore **before** cost-bearing provider submit. `Unknown` blocks blind
-//! duplicate submission. Collection is workspace-root confined and idempotent.
+//! Providers: in-memory [`MockBatchProvider`] and durable local [`FsBatchProvider`]
+//! (filesystem queue / file-drop — **not** a paid network API; no secrets).
+//! Submit intent is journaled to EventStore **before** cost-bearing provider submit.
+//! `Unknown` blocks blind duplicate submission. Collection is workspace-root
+//! confined and idempotent.
 
 use crate::storage::{EventStore, StoreError};
 use crate::workspace_files::{WorkspaceFilesError, resolve_workspace_path};
@@ -283,6 +285,270 @@ impl BatchProvider for MockBatchProvider {
         let mut guard = self.inner.lock().expect("mock batch lock");
         guard.remove(provider_job_id);
         Ok(())
+    }
+}
+
+/// Env / CLI selector for offline batch providers (`IMPETUS_BATCH_PROVIDER`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfflineBatchProviderKind {
+    /// In-memory mock (default).
+    Mock,
+    /// Durable local filesystem adapter — not a live paid API.
+    Fs,
+}
+
+impl OfflineBatchProviderKind {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Fs => "fs",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "mock" => Some(Self::Mock),
+            "fs" | "filesystem" | "file" | "file-drop" => Some(Self::Fs),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve provider kind from `$IMPETUS_BATCH_PROVIDER` (default: mock).
+pub fn batch_provider_kind_from_env() -> OfflineBatchProviderKind {
+    std::env::var("IMPETUS_BATCH_PROVIDER")
+        .ok()
+        .and_then(|raw| OfflineBatchProviderKind::parse(&raw))
+        .unwrap_or(OfflineBatchProviderKind::Mock)
+}
+
+/// Job root for [`FsBatchProvider`] under daemon/CLI data dir.
+pub fn offline_batch_fs_root(data_root: &Path) -> PathBuf {
+    data_root.join("offline_batch_fs")
+}
+
+/// Build provider for admit/collect. `fs_root` required when kind is [`OfflineBatchProviderKind::Fs`].
+pub fn make_batch_provider(
+    kind: OfflineBatchProviderKind,
+    fs_root: Option<&Path>,
+) -> Result<Arc<dyn BatchProvider>, BatchProviderError> {
+    match kind {
+        OfflineBatchProviderKind::Mock => Ok(Arc::new(MockBatchProvider::new())),
+        OfflineBatchProviderKind::Fs => {
+            let root = fs_root.ok_or_else(|| {
+                BatchProviderError::Prepare(
+                    "fs provider requires data root or IMPETUS_BATCH_FS_ROOT".into(),
+                )
+            })?;
+            Ok(Arc::new(FsBatchProvider::new(root.to_path_buf())))
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FsJobManifest {
+    batch_id: Uuid,
+    config_digest: String,
+    items: Vec<FsJobItemSpec>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FsJobItemSpec {
+    item_id: String,
+    input_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FsJobStatusFile {
+    state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Durable local filesystem [`BatchProvider`] — job state under a root directory.
+///
+/// Honest non-Mock live adapter: prepare/submit/status/collect/cancel touch the
+/// filesystem (survives process restart). Runs a **local** deterministic worker on
+/// submit (writes `results/` + marks Ready). Not Anthropic/OpenAI network; no secrets.
+#[derive(Debug, Clone)]
+pub struct FsBatchProvider {
+    root: PathBuf,
+}
+
+impl FsBatchProvider {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn jobs_dir(&self) -> PathBuf {
+        self.root.join("jobs")
+    }
+
+    fn job_dir(&self, provider_job_id: &str) -> PathBuf {
+        self.jobs_dir().join(provider_job_id)
+    }
+
+    fn write_status(
+        &self,
+        provider_job_id: &str,
+        state: &str,
+        reason: Option<&str>,
+    ) -> Result<(), BatchProviderError> {
+        let path = self.job_dir(provider_job_id).join("status.json");
+        let body = FsJobStatusFile {
+            state: state.to_string(),
+            reason: reason.map(str::to_string),
+        };
+        let bytes = serde_json::to_vec_pretty(&body)
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        std::fs::write(&path, bytes).map_err(|e| BatchProviderError::Submit(e.to_string()))
+    }
+
+    fn read_status(&self, provider_job_id: &str) -> Result<FsJobStatusFile, BatchProviderError> {
+        let path = self.job_dir(provider_job_id).join("status.json");
+        let bytes = std::fs::read(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                BatchProviderError::Status(format!("unknown job {provider_job_id}"))
+            } else {
+                BatchProviderError::Status(e.to_string())
+            }
+        })?;
+        serde_json::from_slice(&bytes).map_err(|e| BatchProviderError::Status(e.to_string()))
+    }
+
+    /// Local sync worker: write deterministic result bytes per item and mark Ready.
+    /// External file-drop can also place files under `results/` then rewrite status.
+    pub fn materialize_local_worker(
+        &self,
+        provider_job_id: &str,
+    ) -> Result<(), BatchProviderError> {
+        let job_dir = self.job_dir(provider_job_id);
+        let manifest_path = job_dir.join("manifest.json");
+        let bytes =
+            std::fs::read(&manifest_path).map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        let manifest: FsJobManifest = serde_json::from_slice(&bytes)
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        let results_dir = job_dir.join("results");
+        std::fs::create_dir_all(&results_dir)
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        for item in &manifest.items {
+            let out = results_dir.join(&item.item_id);
+            let payload = format!("fs-result-for-{}", item.item_id);
+            std::fs::write(&out, payload.as_bytes())
+                .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        }
+        self.write_status(provider_job_id, "ready", None)
+    }
+}
+
+impl BatchProvider for FsBatchProvider {
+    fn prepare(&self, plan: &BatchPlan) -> Result<BatchPrepareOutcome, BatchProviderError> {
+        if plan.items.is_empty() {
+            return Err(BatchProviderError::Prepare("empty plan".into()));
+        }
+        Ok(BatchPrepareOutcome {
+            normalized_item_count: plan.items.len() as u32,
+        })
+    }
+
+    fn submit(
+        &self,
+        batch_id: Uuid,
+        config_digest: &str,
+        plan: &BatchPlan,
+    ) -> Result<BatchSubmitOutcome, BatchProviderError> {
+        let provider_job_id = format!("fs-job-{batch_id}");
+        let job_dir = self.job_dir(&provider_job_id);
+        std::fs::create_dir_all(job_dir.join("results"))
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        let manifest = FsJobManifest {
+            batch_id,
+            config_digest: config_digest.to_string(),
+            items: plan
+                .items
+                .iter()
+                .map(|item| FsJobItemSpec {
+                    item_id: item.item_id.clone(),
+                    input_hash: item.input_hash.clone(),
+                })
+                .collect(),
+        };
+        let body = serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        std::fs::write(job_dir.join("manifest.json"), body)
+            .map_err(|e| BatchProviderError::Submit(e.to_string()))?;
+        self.write_status(&provider_job_id, "pending", None)?;
+        // Local worker (not network): durable Ready under the same job dir.
+        self.materialize_local_worker(&provider_job_id)?;
+        Ok(BatchSubmitOutcome { provider_job_id })
+    }
+
+    fn status(&self, provider_job_id: &str) -> Result<BatchProviderStatus, BatchProviderError> {
+        let file = self.read_status(provider_job_id)?;
+        Ok(match file.state.as_str() {
+            "pending" => BatchProviderStatus::Pending,
+            "running" => BatchProviderStatus::Running,
+            "ready" => BatchProviderStatus::Ready,
+            "failed" => BatchProviderStatus::Failed {
+                reason: file.reason.unwrap_or_else(|| "fs job failed".into()),
+            },
+            "cancelled" => BatchProviderStatus::Failed {
+                reason: "fs job cancelled".into(),
+            },
+            other => BatchProviderStatus::Unknown {
+                reason: format!("unrecognized fs status {other}"),
+            },
+        })
+    }
+
+    fn collect_results(
+        &self,
+        provider_job_id: &str,
+    ) -> Result<Vec<BatchItemResult>, BatchProviderError> {
+        let status = self.status(provider_job_id)?;
+        if !matches!(status, BatchProviderStatus::Ready) {
+            return Err(BatchProviderError::Collect(format!(
+                "job {provider_job_id} not ready ({status:?})"
+            )));
+        }
+        let results_dir = self.job_dir(provider_job_id).join("results");
+        let mut results = Vec::new();
+        let entries = std::fs::read_dir(&results_dir)
+            .map_err(|e| BatchProviderError::Collect(format!("results dir: {e}")))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| BatchProviderError::Collect(e.to_string()))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let item_id = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| BatchProviderError::Collect("invalid result name".into()))?
+                .to_string();
+            let result_bytes =
+                std::fs::read(&path).map_err(|e| BatchProviderError::Collect(e.to_string()))?;
+            results.push(BatchItemResult {
+                item_id,
+                result_bytes,
+            });
+        }
+        results.sort_by(|a, b| a.item_id.cmp(&b.item_id));
+        Ok(results)
+    }
+
+    fn cancel(&self, provider_job_id: &str) -> Result<(), BatchProviderError> {
+        if !self.job_dir(provider_job_id).is_dir() {
+            return Err(BatchProviderError::Cancel(format!(
+                "unknown job {provider_job_id}"
+            )));
+        }
+        self.write_status(provider_job_id, "cancelled", Some("cancelled by caller"))
+            .map_err(|e| BatchProviderError::Cancel(e.to_string()))
     }
 }
 
@@ -940,6 +1206,31 @@ pub fn load_batch_plan(data_root: &Path, batch_id: Uuid) -> Result<BatchPlan, Of
     serde_json::from_slice(&body).map_err(|e| OfflineBatchError::PlanIo(e.to_string()))
 }
 
+/// Submit via a concrete [`BatchProvider`], optionally register for daemon tick.
+///
+/// Path/hash labels only — never secrets. No live paid network API.
+pub fn admit_batch(
+    store: Arc<dyn EventStore>,
+    session_id: Uuid,
+    workspace_root: PathBuf,
+    plan: BatchPlan,
+    registry: Option<&OfflineBatchRegistry>,
+    provider: Arc<dyn BatchProvider>,
+    provider_label: impl Into<String>,
+    model_label: impl Into<String>,
+    option_labels: Vec<String>,
+) -> Result<Uuid, OfflineBatchError> {
+    let config = FrozenBatchConfig::freeze(provider_label, model_label, option_labels, &plan);
+    let journal = OfflineBatchJournal::new(store, session_id);
+    let exec = DurableOfflineBatchExecutor::new(journal, provider, workspace_root);
+    let batch_id = exec.submit_durable(&plan, &config)?;
+    if let Some(reg) = registry {
+        reg.register_plan(batch_id, plan);
+        reg.register_executor(exec);
+    }
+    Ok(batch_id)
+}
+
 /// Submit via [`MockBatchProvider`], optionally register plan+executor for daemon tick.
 ///
 /// No live network. Path/hash labels only — never secrets.
@@ -953,19 +1244,47 @@ pub fn admit_mock_batch(
     model_label: impl Into<String>,
     option_labels: Vec<String>,
 ) -> Result<Uuid, OfflineBatchError> {
-    let config = FrozenBatchConfig::freeze(provider_label, model_label, option_labels, &plan);
-    let journal = OfflineBatchJournal::new(store, session_id);
-    let exec = DurableOfflineBatchExecutor::new(
-        journal,
-        Arc::new(MockBatchProvider::new()),
+    admit_batch(
+        store,
+        session_id,
         workspace_root,
-    );
-    let batch_id = exec.submit_durable(&plan, &config)?;
-    if let Some(reg) = registry {
-        reg.register_plan(batch_id, plan);
-        reg.register_executor(exec);
-    }
-    Ok(batch_id)
+        plan,
+        registry,
+        Arc::new(MockBatchProvider::new()),
+        provider_label,
+        model_label,
+        option_labels,
+    )
+}
+
+/// Admit using env/CLI provider kind. `data_root` supplies default FS job root
+/// (`{data_root}/offline_batch_fs`); `fs_root_override` wins when set.
+pub fn admit_batch_for_kind(
+    store: Arc<dyn EventStore>,
+    session_id: Uuid,
+    workspace_root: PathBuf,
+    plan: BatchPlan,
+    registry: Option<&OfflineBatchRegistry>,
+    kind: OfflineBatchProviderKind,
+    data_root: Option<&Path>,
+    fs_root_override: Option<&Path>,
+    model_label: impl Into<String>,
+    option_labels: Vec<String>,
+) -> Result<Uuid, OfflineBatchError> {
+    let derived = data_root.map(offline_batch_fs_root);
+    let fs_root = fs_root_override.or(derived.as_deref());
+    let provider = make_batch_provider(kind, fs_root).map_err(OfflineBatchError::from)?;
+    admit_batch(
+        store,
+        session_id,
+        workspace_root,
+        plan,
+        registry,
+        provider,
+        kind.as_label(),
+        model_label,
+        option_labels,
+    )
 }
 
 impl Default for OfflineBatchRegistry {
@@ -1274,5 +1593,103 @@ mod tests {
         ));
         let results = provider.collect_results(&submit.provider_job_id).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn fs_provider_persists_ready_across_instances() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = sample_plan();
+        let batch_id = Uuid::new_v4();
+        let config = FrozenBatchConfig::freeze("fs", "fs-model", vec!["temp=0".into()], &plan);
+
+        let writer = FsBatchProvider::new(dir.path().to_path_buf());
+        writer.prepare(&plan).expect("prepare");
+        let submit = writer
+            .submit(batch_id, &config.digest, &plan)
+            .expect("submit");
+        assert!(submit.provider_job_id.starts_with("fs-job-"));
+        assert!(matches!(
+            writer.status(&submit.provider_job_id).unwrap(),
+            BatchProviderStatus::Ready
+        ));
+
+        // New process / new provider handle — state is on disk, not in memory.
+        let reader = FsBatchProvider::new(dir.path().to_path_buf());
+        assert!(matches!(
+            reader.status(&submit.provider_job_id).unwrap(),
+            BatchProviderStatus::Ready
+        ));
+        let results = reader
+            .collect_results(&submit.provider_job_id)
+            .expect("collect");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].item_id, "item-a");
+        assert_eq!(results[0].result_bytes, b"fs-result-for-item-a");
+    }
+
+    #[test]
+    fn fs_provider_cancel_marks_failed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = sample_plan();
+        let provider = FsBatchProvider::new(dir.path().to_path_buf());
+        let submit = provider
+            .submit(Uuid::new_v4(), "digest", &plan)
+            .expect("submit");
+        provider.cancel(&submit.provider_job_id).expect("cancel");
+        assert!(matches!(
+            provider.status(&submit.provider_job_id).unwrap(),
+            BatchProviderStatus::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn admit_batch_for_kind_fs_registers_and_polls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(MemoryEventStore::default());
+        let session = Uuid::new_v4();
+        let registry = OfflineBatchRegistry::new();
+        let plan = sample_plan();
+        let batch_id = admit_batch_for_kind(
+            store,
+            session,
+            dir.path().to_path_buf(),
+            plan.clone(),
+            Some(&registry),
+            OfflineBatchProviderKind::Fs,
+            Some(dir.path()),
+            None,
+            "fs-model",
+            vec!["temp=0".into()],
+        )
+        .expect("admit fs");
+        assert_eq!(registry.plan(batch_id), Some(plan));
+        let polled = registry.poll_all().expect("poll");
+        assert_eq!(polled.len(), 1);
+        assert!(matches!(
+            polled[0].action,
+            PollCollectAction::Collected(ref c) if c.state == BatchLifecycleState::Delivered
+        ));
+        let job_id = format!("fs-job-{batch_id}");
+        assert!(
+            dir.path()
+                .join("offline_batch_fs")
+                .join("jobs")
+                .join(&job_id)
+                .join("status.json")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn batch_provider_kind_parse() {
+        assert_eq!(
+            OfflineBatchProviderKind::parse("FS"),
+            Some(OfflineBatchProviderKind::Fs)
+        );
+        assert_eq!(
+            OfflineBatchProviderKind::parse("mock"),
+            Some(OfflineBatchProviderKind::Mock)
+        );
+        assert_eq!(OfflineBatchProviderKind::parse("openai"), None);
     }
 }

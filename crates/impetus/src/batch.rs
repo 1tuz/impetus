@@ -1,9 +1,11 @@
-//! Offline batch CLI admission (`impetus batch`) — #439/#441 / parent #397.
+//! Offline batch CLI admission (`impetus batch`) — #439/#441/#445 / parent #397.
 //!
-//! Mock provider only — no live network. When daemon sock is live and negotiates
-//! `offline_batch`, submit uses typed IPC so Harness registers plan+executor on
-//! `OfflineBatchRegistry` for the daemon poll tick. Sock down / capability absent
-//! → offline EventStore journal + plan sidecar (manual collect).
+//! Default provider: mock. Optional local live adapter: `--provider fs` or
+//! `$IMPETUS_BATCH_PROVIDER=fs` ([`FsBatchProvider`] filesystem queue — **not** a
+//! paid network API). When daemon sock is live and negotiates `offline_batch`,
+//! mock submit uses typed IPC so Harness registers plan+executor on
+//! `OfflineBatchRegistry`. Sock down / capability absent / `--provider fs` →
+//! offline EventStore journal + plan sidecar (manual collect).
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -11,16 +13,27 @@ use impetus_client::protocol::OfflineBatchItemSpec;
 use impetus_client::{HarnessClient, UnixSocketTransport};
 use impetus_core::{
     BatchItemSpec, BatchPlan, DurableOfflineBatchExecutor, Event, EventPayload, EventStore,
-    FrozenBatchConfig, MockBatchProvider, OfflineBatchJournal, SessionEvent, SqliteEventStore,
-    admit_mock_batch, hash_bytes, load_batch_plan, persist_batch_plan,
+    FrozenBatchConfig, FsBatchProvider, MockBatchProvider, OfflineBatchJournal,
+    OfflineBatchProviderKind, SessionEvent, SqliteEventStore, admit_batch_for_kind, hash_bytes,
+    load_batch_plan, offline_batch_fs_root, persist_batch_plan,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
+fn resolve_provider_kind(cli: Option<&str>) -> Result<OfflineBatchProviderKind> {
+    let raw = cli
+        .map(str::to_string)
+        .or_else(|| std::env::var("IMPETUS_BATCH_PROVIDER").ok())
+        .unwrap_or_else(|| "mock".into());
+    OfflineBatchProviderKind::parse(&raw).with_context(|| {
+        format!("unknown batch provider {raw:?}; expected mock or fs (local filesystem)")
+    })
+}
+
 #[derive(Subcommand)]
 pub enum BatchAction {
-    /// Admit a mock offline batch (IPC register when sock live; else offline journal)
+    /// Admit an offline batch (mock default; `--provider fs` = local FS adapter)
     Submit {
         /// Session that owns the batch journal events (created if missing; omit to mint new)
         #[arg(long)]
@@ -38,6 +51,13 @@ pub enum BatchAction {
         /// Model label frozen into config digest (default: mock-model)
         #[arg(long, default_value = "mock-model")]
         model: String,
+        /// Provider: `mock` (default) or `fs` (local filesystem; not paid API).
+        /// Also `$IMPETUS_BATCH_PROVIDER` when flag omitted.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Override FS job root (default: `$data_dir/offline_batch_fs`)
+        #[arg(long)]
+        fs_root: Option<PathBuf>,
         /// Emit JSON
         #[arg(long)]
         json: bool,
@@ -52,7 +72,7 @@ pub enum BatchAction {
         #[arg(long)]
         json: bool,
     },
-    /// Collect Ready mock results into workspace (rehydrates mock provider)
+    /// Collect Ready results into workspace (mock rehydrate or FS disk state)
     Collect {
         #[arg(long)]
         session_id: Uuid,
@@ -61,6 +81,11 @@ pub enum BatchAction {
         workspace: Option<PathBuf>,
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Provider used at submit (`mock` or `fs`); also `$IMPETUS_BATCH_PROVIDER`
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        fs_root: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -74,8 +99,22 @@ pub async fn run(action: BatchAction) -> Result<()> {
             workspace,
             data_dir,
             model,
+            provider,
+            fs_root,
             json,
-        } => submit(session_id, items, workspace, data_dir, model, json).await,
+        } => {
+            submit(
+                session_id,
+                items,
+                workspace,
+                data_dir,
+                model,
+                provider.as_deref(),
+                fs_root,
+                json,
+            )
+            .await
+        }
         BatchAction::Status {
             session_id,
             batch_id,
@@ -87,8 +126,18 @@ pub async fn run(action: BatchAction) -> Result<()> {
             batch_id,
             workspace,
             data_dir,
+            provider,
+            fs_root,
             json,
-        } => collect(session_id, batch_id, workspace, data_dir, json),
+        } => collect(
+            session_id,
+            batch_id,
+            workspace,
+            data_dir,
+            provider.as_deref(),
+            fs_root,
+            json,
+        ),
     }
 }
 
@@ -98,14 +147,19 @@ async fn submit(
     workspace: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     model: String,
+    provider: Option<&str>,
+    fs_root: Option<PathBuf>,
     json: bool,
 ) -> Result<()> {
+    let kind = resolve_provider_kind(provider)?;
     let data_root = resolve_data_root(data_dir)?;
     let workspace_root = resolve_workspace(workspace)?;
     let plan = parse_plan(&items)?;
 
-    if let Some(admitted) =
-        try_admit_via_daemon(session_id, &workspace_root, &plan, &model, &data_root).await
+    // FS admit stays local so job files land under this data_root. Mock may IPC.
+    if kind == OfflineBatchProviderKind::Mock
+        && let Some(admitted) =
+            try_admit_via_daemon(session_id, &workspace_root, &plan, &model, &data_root).await
     {
         let (batch_id, session_id, config_digest, item_count) = admitted?;
         return print_submit(
@@ -114,6 +168,7 @@ async fn submit(
             &config_digest,
             item_count,
             &data_root,
+            kind.as_label(),
             "daemon_ipc_register",
             json,
         );
@@ -121,18 +176,20 @@ async fn submit(
 
     let store = open_or_create_store(&data_root)?;
     let session_id = ensure_session(store.as_ref(), session_id)?;
-    let config = FrozenBatchConfig::freeze("mock", &model, vec!["temp=0".into()], &plan);
-    let batch_id = admit_mock_batch(
+    let config = FrozenBatchConfig::freeze(kind.as_label(), &model, vec!["temp=0".into()], &plan);
+    let batch_id = admit_batch_for_kind(
         store,
         session_id,
         workspace_root,
         plan.clone(),
         None, // offline CLI: journal only; daemon IPC path registers above
-        "mock",
+        kind,
+        Some(&data_root),
+        fs_root.as_deref(),
         model,
         vec!["temp=0".into()],
     )
-    .context("admit mock offline batch")?;
+    .with_context(|| format!("admit offline batch ({})", kind.as_label()))?;
     persist_batch_plan(&data_root, batch_id, &plan).context("persist batch plan sidecar")?;
     print_submit(
         batch_id,
@@ -140,6 +197,7 @@ async fn submit(
         &config.digest,
         plan.items.len(),
         &data_root,
+        kind.as_label(),
         "offline_journal",
         json,
     )
@@ -222,6 +280,7 @@ fn print_submit(
     config_digest: &str,
     item_count: usize,
     data_root: &Path,
+    provider: &str,
     admission: &str,
     json: bool,
 ) -> Result<()> {
@@ -232,13 +291,13 @@ fn print_submit(
                 "batch_id": batch_id,
                 "session_id": session_id,
                 "config_digest": config_digest,
-                "provider": "mock",
+                "provider": provider,
                 "item_count": item_count,
                 "admission": admission,
             }))?
         );
     } else {
-        println!("Offline batch admitted (mock provider, {admission})");
+        println!("Offline batch admitted ({provider} provider, {admission})");
         println!("  batch_id:      {batch_id}");
         println!("  session_id:    {session_id}");
         println!("  config_digest: {config_digest}");
@@ -250,6 +309,12 @@ fn print_submit(
                 .join(format!("{batch_id}.json"))
                 .display()
         );
+        if provider == OfflineBatchProviderKind::Fs.as_label() {
+            println!(
+                "  fs_jobs:       {}",
+                offline_batch_fs_root(data_root).join("jobs").display()
+            );
+        }
     }
     Ok(())
 }
@@ -299,18 +364,29 @@ fn collect(
     batch_id: Uuid,
     workspace: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    provider: Option<&str>,
+    fs_root: Option<PathBuf>,
     json: bool,
 ) -> Result<()> {
+    let kind = resolve_provider_kind(provider)?;
     let data_root = resolve_data_root(data_dir)?;
     let workspace_root = resolve_workspace(workspace)?;
     let plan = load_batch_plan(&data_root, batch_id).context("load batch plan sidecar")?;
     let store = open_store(&data_root)?;
     let journal = OfflineBatchJournal::new(store, session_id);
-    let provider = Arc::new(MockBatchProvider::rehydrate_ready(batch_id, &plan));
-    let exec = DurableOfflineBatchExecutor::new(journal, provider, workspace_root);
+    let batch_provider: Arc<dyn impetus_core::BatchProvider> = match kind {
+        OfflineBatchProviderKind::Mock => {
+            Arc::new(MockBatchProvider::rehydrate_ready(batch_id, &plan))
+        }
+        OfflineBatchProviderKind::Fs => {
+            let root = fs_root.unwrap_or_else(|| offline_batch_fs_root(&data_root));
+            Arc::new(FsBatchProvider::new(root))
+        }
+    };
+    let exec = DurableOfflineBatchExecutor::new(journal, batch_provider, workspace_root);
     let outcome = exec
         .collect_durable_with_plan(batch_id, &plan)
-        .context("collect mock offline batch")?;
+        .with_context(|| format!("collect offline batch ({})", kind.as_label()))?;
 
     if json {
         println!(
@@ -318,13 +394,18 @@ fn collect(
             serde_json::to_string_pretty(&serde_json::json!({
                 "batch_id": outcome.batch_id,
                 "state": outcome.state,
+                "provider": kind.as_label(),
                 "item_outcomes": outcome.item_outcomes.iter().map(|(id, o)| {
                     serde_json::json!({ "item_id": id, "outcome": format!("{o:?}") })
                 }).collect::<Vec<_>>(),
             }))?
         );
     } else {
-        println!("Offline batch collect {batch_id} → {:?}", outcome.state);
+        println!(
+            "Offline batch collect {batch_id} ({}) → {:?}",
+            kind.as_label(),
+            outcome.state
+        );
         for (id, item_outcome) in &outcome.item_outcomes {
             println!("  [{id}] {item_outcome:?}");
         }
@@ -442,6 +523,8 @@ mod tests {
             Some(workspace.path().to_path_buf()),
             Some(data.path().to_path_buf()),
             "mock-model".into(),
+            Some("mock"),
+            None,
             false,
         )
         .await
@@ -459,6 +542,8 @@ mod tests {
             batch_id,
             Some(workspace.path().to_path_buf()),
             Some(data.path().to_path_buf()),
+            Some("mock"),
+            None,
             false,
         )
         .expect("collect");
@@ -466,5 +551,55 @@ mod tests {
         let out = workspace.path().join("out/a.txt");
         assert!(out.is_file());
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "result-for-item-a");
+    }
+
+    #[tokio::test]
+    async fn submit_status_collect_roundtrip_fs_provider() {
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = Uuid::new_v4();
+        let items = vec!["item-a|seed-a|out/a.txt".into()];
+        submit(
+            Some(session),
+            items,
+            Some(workspace.path().to_path_buf()),
+            Some(data.path().to_path_buf()),
+            "fs-model".into(),
+            Some("fs"),
+            None,
+            false,
+        )
+        .await
+        .expect("submit fs");
+
+        let store = open_store(data.path()).unwrap();
+        let journal = OfflineBatchJournal::new(store, session);
+        let records = journal.load_records().unwrap();
+        let batch_id = *records.keys().next().unwrap();
+        assert!(
+            records[&batch_id]
+                .provider_job_id
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("fs-job-")
+        );
+
+        collect(
+            session,
+            batch_id,
+            Some(workspace.path().to_path_buf()),
+            Some(data.path().to_path_buf()),
+            Some("fs"),
+            None,
+            false,
+        )
+        .expect("collect fs");
+
+        let out = workspace.path().join("out/a.txt");
+        assert!(out.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "fs-result-for-item-a"
+        );
     }
 }
