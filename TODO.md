@@ -68,8 +68,10 @@ Actionable after Now. Not priority theatre.
 
 ### Extension split follow-through
 
-- [ ] Stand up `impetus-extensions` repo against contract + demo packs
-      (CLI package Install/Remove via daemon IPC shipped `#447`)
+- [x] Stand up `impetus-extensions` against contract + demo packs
+      (CLI package Install/Remove via daemon IPC shipped `#447`;
+      sibling catalog demos + SDK pin smoke `#451`)
+- [ ] crates.io publish of `impetus-extension-sdk` (prep `#449`; live upload TBD)
 
 ### Daemon / protocol
 

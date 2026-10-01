@@ -13,6 +13,7 @@ Human map for Impetus documentation. Architecture truth stays in repo-root
 | [development.md](guides/development.md) | `task verify`, PR CI, request-flow coverage |
 | [troubleshooting.md](guides/troubleshooting.md) | Common failures |
 | [ubuntu-smoke.md](guides/ubuntu-smoke.md) | Ubuntu 24.04 PR CI vs clean-machine proofs (#293) |
+| [extensions/README.md](extensions/README.md) | Extension Host + sibling [`impetus-extensions`](https://github.com/1tuz/impetus-extensions) |
 
 ## Architecture
 
