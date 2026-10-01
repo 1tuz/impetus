@@ -79,8 +79,10 @@ Actionable after Now. Not priority theatre.
 
 ### Clients
 
-- [ ] Desktop: model picker / worktrees UI polish; PtyList attach picker
-      (PTY dock already on harness; Core `PtyList` shipped #395)
+- [ ] Desktop: model picker / worktrees UI polish
+      (PtyList attach picker shipped sibling
+      [impetus-desktop#11](https://github.com/1tuz/impetus-desktop/issues/11);
+      Core `PtyList` #395)
 - [ ] Desktop: delete any remaining local spawn if still present; prefer
       bundled `impetusd` path via `impetus-daemon-control`
 
