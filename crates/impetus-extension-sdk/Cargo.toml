@@ -6,8 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Stable public SDK types for external impetus-extensions authors"
-# Not on crates.io yet — external authors pin via git (see docs/extensions/depending-on-sdk.md).
-publish = false
+readme = "README.md"
+# crates.io: dry-run ready; live upload needs CARGO_REGISTRY_TOKEN (issue #449).
 
 [dependencies]
 semver.workspace = true

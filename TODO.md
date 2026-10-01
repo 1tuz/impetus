@@ -20,7 +20,7 @@ Roadmap → [docs/architecture/roadmap.md](docs/architecture/roadmap.md).
 
 ## Now
 
-- [ ] crates.io publish of `impetus-extension-sdk` (git `rev` pin recipe shipped)
+- [ ] crates.io live upload of `impetus-extension-sdk` 0.1.0 (dry-run + docs ready; needs `CARGO_REGISTRY_TOKEN`)
 
 ---
 
