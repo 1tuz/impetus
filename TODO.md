@@ -75,7 +75,7 @@ Actionable after Now. Not priority theatre.
 
 ### Daemon / protocol
 
-- [ ] ACP live reconnect polish after cancel/crash (stream/registry/health/#335 landed)
+- [ ] Daemon Unix E2E ACP cancel/crash mid-turn (follow-up; library reconnect #453 shipped)
 
 ### Clients
 

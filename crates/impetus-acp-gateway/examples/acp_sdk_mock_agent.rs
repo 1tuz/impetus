@@ -5,21 +5,30 @@
 //! `session/request_permission` (Edit + allow-once) and records the client's
 //! outcome under `$IMPETUS_ACP_MOCK_RECORD`.
 //!
+//! Cancel / crash hooks (CI reconnect tests):
+//! - `IMPETUS_ACP_MOCK_SLOW_ONCE=<path>` — if path exists, delete it and delay
+//!   prompt until `session/cancel` (or timeout); cancel → `StopReason::Cancelled`.
+//! - `IMPETUS_ACP_MOCK_CRASH_ONCE=<path>` — if path exists, delete it and exit
+//!   before answering prompt (mid-turn crash); subsequent launches succeed.
+//!
 //! Build: `cargo build -p impetus-acp-gateway --example acp_sdk_mock_agent`
 //! Stdout = ACP JSON-RPC; stderr = logs. Last applied config / permission
 //! outcome written to `$IMPETUS_ACP_MOCK_RECORD` (JSON) when set.
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
-    SessionConfigValueId, SessionId, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
-    StopReason, ToolCallLocation, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    AgentCapabilities, CancelNotification, Implementation, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelectOption, SessionConfigValueId, SessionId, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, ToolCallLocation, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Result, Stdio};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Default)]
 struct Applied {
@@ -66,6 +75,22 @@ fn permission_enabled() -> bool {
     )
 }
 
+fn slow_prompt_once() -> bool {
+    let Some(path) = std::env::var_os("IMPETUS_ACP_MOCK_SLOW_ONCE").map(PathBuf::from) else {
+        return false;
+    };
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+        true
+    } else {
+        false
+    }
+}
+
+fn crash_once_path() -> Option<PathBuf> {
+    std::env::var_os("IMPETUS_ACP_MOCK_CRASH_ONCE").map(PathBuf::from)
+}
+
 fn permission_target() -> PathBuf {
     std::env::var_os("IMPETUS_ACP_MOCK_TARGET")
         .map(PathBuf::from)
@@ -99,11 +124,23 @@ fn outcome_label(outcome: &RequestPermissionOutcome) -> String {
     }
 }
 
+fn maybe_crash_once() {
+    let Some(path) = crash_once_path() else {
+        return;
+    };
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+        eprintln!("acp_sdk_mock_agent crash-once at {}", path.display());
+        std::process::exit(42);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     eprintln!("acp_sdk_mock_agent starting");
     let applied = Arc::new(Mutex::new(Applied::default()));
     let options = Arc::new(Mutex::new(initial_config_options()));
+    let cancel_requested = Arc::new(AtomicBool::new(false));
 
     Agent
         .builder()
@@ -165,45 +202,93 @@ async fn main() -> Result<()> {
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_notification(
+            {
+                let cancel_requested = Arc::clone(&cancel_requested);
+                async move |_cancel: CancelNotification, _connection| {
+                    eprintln!("session/cancel received");
+                    cancel_requested.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
         .on_receive_request(
             {
                 let applied = Arc::clone(&applied);
+                let cancel_requested = Arc::clone(&cancel_requested);
                 async move |req: PromptRequest, responder, connection| {
-                    if permission_enabled() {
-                        let target = permission_target();
-                        eprintln!("request_permission edit {}", target.display());
-                        let tool_call = ToolCallUpdate::new(
-                            "tc-edit-1",
-                            ToolCallUpdateFields::new()
-                                .kind(ToolKind::Edit)
-                                .title("Edit file")
-                                .locations(vec![ToolCallLocation::new(target)]),
-                        );
-                        let options = vec![
-                            PermissionOption::new(
-                                "allow-once",
-                                "Allow once",
-                                PermissionOptionKind::AllowOnce,
-                            ),
-                            PermissionOption::new(
-                                "reject-once",
-                                "Reject once",
-                                PermissionOptionKind::RejectOnce,
-                            ),
-                        ];
-                        let perm = RequestPermissionRequest::new(
-                            req.session_id.clone(),
-                            tool_call,
-                            options,
-                        );
-                        let response = connection.send_request(perm).block_task().await?;
-                        let label = outcome_label(&response.outcome);
-                        eprintln!("permission_outcome {label}");
-                        let mut guard = applied.lock().expect("applied");
-                        guard.permission_outcomes.push(label);
-                        flush_record(&guard);
-                    }
-                    responder.respond(PromptResponse::new(StopReason::EndTurn))?;
+                    // Spawn so session/cancel can be dispatched while prompt waits.
+                    let applied = Arc::clone(&applied);
+                    let cancel_requested = Arc::clone(&cancel_requested);
+                    let conn = connection.clone();
+                    connection.spawn(async move {
+                        maybe_crash_once();
+
+                        if permission_enabled() {
+                            let target = permission_target();
+                            eprintln!("request_permission edit {}", target.display());
+                            let tool_call = ToolCallUpdate::new(
+                                "tc-edit-1",
+                                ToolCallUpdateFields::new()
+                                    .kind(ToolKind::Edit)
+                                    .title("Edit file")
+                                    .locations(vec![ToolCallLocation::new(target)]),
+                            );
+                            let options = vec![
+                                PermissionOption::new(
+                                    "allow-once",
+                                    "Allow once",
+                                    PermissionOptionKind::AllowOnce,
+                                ),
+                                PermissionOption::new(
+                                    "reject-once",
+                                    "Reject once",
+                                    PermissionOptionKind::RejectOnce,
+                                ),
+                            ];
+                            let perm = RequestPermissionRequest::new(
+                                req.session_id.clone(),
+                                tool_call,
+                                options,
+                            );
+                            match conn.send_request(perm).block_task().await {
+                                Ok(response) => {
+                                    let label = outcome_label(&response.outcome);
+                                    eprintln!("permission_outcome {label}");
+                                    let mut guard = applied.lock().expect("applied");
+                                    guard.permission_outcomes.push(label);
+                                    flush_record(&guard);
+                                }
+                                Err(error) => {
+                                    eprintln!("permission request failed: {error}");
+                                    let _ =
+                                        responder.respond_with_internal_error(error.to_string());
+                                    return Ok(());
+                                }
+                            }
+                        }
+
+                        if slow_prompt_once() {
+                            eprintln!("slow prompt waiting for cancel or timeout");
+                            for _ in 0..300 {
+                                if cancel_requested.swap(false, Ordering::SeqCst) {
+                                    eprintln!("prompt cancelled");
+                                    let _ = responder
+                                        .respond(PromptResponse::new(StopReason::Cancelled));
+                                    return Ok(());
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        } else if cancel_requested.swap(false, Ordering::SeqCst) {
+                            eprintln!("prompt cancelled (fast path)");
+                            let _ = responder.respond(PromptResponse::new(StopReason::Cancelled));
+                            return Ok(());
+                        }
+
+                        let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        Ok(())
+                    })?;
                     Ok(())
                 }
             },

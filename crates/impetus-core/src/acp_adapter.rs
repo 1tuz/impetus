@@ -368,9 +368,10 @@ impl ModelProvider for AcpAdapter {
             strict: model_overridden || reasoning_set,
         };
 
-        // Check state
+        // Check state — Incompatible stays fail-closed; Crashed is recoverable
+        // (gateway resets on start_session / reset_after_interrupt).
         let state = self.gateway.state().await;
-        if state == GatewayState::Crashed || state == GatewayState::Incompatible {
+        if state == GatewayState::Incompatible {
             return Err(ProviderError::RequestFailed(format!(
                 "agent in bad state: {:?}",
                 state
@@ -409,6 +410,7 @@ impl ModelProvider for AcpAdapter {
                     }
                     session_handle.abort();
                     let _ = session_handle.await;
+                    self.gateway.reset_after_interrupt().await;
                     return Err(ProviderError::Cancelled);
                 }
 
