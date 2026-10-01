@@ -257,6 +257,30 @@ pub enum ItemKind {
     Budget,
 }
 
+impl ItemKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Plan => "plan",
+            Self::Tool => "tool",
+            Self::Activity => "activity",
+            Self::Approval => "approval",
+            Self::Notice => "notice",
+            Self::Error => "error",
+            Self::Budget => "budget",
+        }
+    }
+}
+
+/// Snapshot row for fork sequence picker (timeline seq + kind + title).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequencePickEntry {
+    pub sequence: u64,
+    pub kind: ItemKind,
+    pub title: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct TimelineItem {
     pub sequence: u64,
@@ -941,10 +965,17 @@ pub enum Overlay {
         title: String,
         value: String,
     },
-    /// Durable session checkpoints (list + Enter restore).
+    /// Durable session checkpoints (List + filter · Enter restore · N create).
     Checkpoints {
         selected: usize,
+        query: String,
         checkpoints: Vec<impetus_client::protocol::CheckpointInfo>,
+    },
+    /// Fork at timeline sequence (List + filter · Enter fork · Esc close).
+    SequencePicker {
+        selected: usize,
+        query: String,
+        entries: Vec<SequencePickEntry>,
     },
     /// Provider → Model → Reasoning → options from daemon catalog (#337).
     ModelPicker {

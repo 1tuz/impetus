@@ -669,6 +669,7 @@ pub(super) fn apply_message(app: &mut AppState, message: AppMessage) -> Vec<Effe
                 Ok(checkpoints) => {
                     app.overlay = Overlay::Checkpoints {
                         selected: 0,
+                        query: String::new(),
                         checkpoints,
                     };
                     app.status_message = "ready".to_owned();
