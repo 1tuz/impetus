@@ -1,7 +1,7 @@
 # Creating an extension
 
-1. Depend on `impetus-extension-sdk` via git `rev` or path
-   ([depending-on-sdk.md](./depending-on-sdk.md); not crates.io yet).
+1. Depend on `impetus-extension-sdk` via crates.io `0.1.0` (or git/path
+   fallback — [depending-on-sdk.md](./depending-on-sdk.md)).
 2. Create a package directory with `extension.toml` (see [manifest.md](./manifest.md)).
 3. For `instruction_pack`: add `skills/SKILL.md` with YAML frontmatter:
    `id`, optional `scope: global|workspace`, optional `path:` / `ecosystem:`.

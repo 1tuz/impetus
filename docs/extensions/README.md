@@ -27,11 +27,11 @@ Split status (see `ARCHITECTURE.md` matrix):
 | Surface | Status | Gate |
 | --- | --- | --- |
 | Package lifecycle (discover/list/enable/disable/install/remove/operate) | **Implemented** | IPC `extension_manage` ≥ v14; install/remove ≥ v15 |
-| Runtime MCP/skills in AgentLoop | **Partial** | Live path works; remaining = crates.io SDK publish |
+| Runtime MCP/skills in AgentLoop | **Partial** | Live path works; remaining = live crates.io upload (dry-run ready) |
 | Marketplace / catalog browse | **Won't** | Manual/source install only |
 
 Do **not** claim the full Extension subsystem Implemented until crates.io
-publish / tagged pin for external `impetus-extensions` lands.
+crate page resolves / tagged pin for external `impetus-extensions` lands.
 
 Sole public extension substrate = **Extension Host**
 (`instruction_pack` / `mcp_bridge` / `host_process`). Legacy Module Runtime

@@ -3,15 +3,16 @@
 **Audience:** maintainers of the separate `impetus-extensions` repository
 (and any third-party extension author).
 
-**Status:** **Usable via git pin** (issue #324). SDK `publish = false` — not a
-crates.io ABI yet. Pin an Impetus git `rev` (see
+**Status:** **Usable** (issue #324 / #449). Primary dependency: crates.io
+`impetus-extension-sdk = "0.1.0"`. Package is dry-run ready; live upload
+pending `CARGO_REGISTRY_TOKEN`. Git `rev` / path pin remains a fallback (see
 [docs/extensions/depending-on-sdk.md](docs/extensions/depending-on-sdk.md)).
-Docs mark the subsystem **Partial** until crates.io/tag story lands.
+Docs mark the subsystem **Partial** until the crates.io page resolves.
 
 You should **not** need to read Impetus daemon private modules to author an
 `instruction_pack`. Depend on:
 
-- crate `impetus-extension-sdk` (git/path pin)
+- crate `impetus-extension-sdk` (crates.io `0.1.0`; git/path fallback)
 - this document + `docs/extensions/`
 - wire types in `impetus-protocol` for IPC (`extension_manage`, IPC ≥ 14)
 
@@ -56,7 +57,7 @@ browser/*, `memory/recall|store`, `context/contribute` (see SDK `ops`).
 
 | Item | Status |
 | --- | --- |
-| crates.io publish of SDK | No — git `rev` pin only |
+| crates.io publish of SDK | Dry-run ready; live upload pending token (#449). Git `rev` fallback OK |
 | Tool/Command → AgentLoop tool catalog | Ops declared; AgentLoop still uses built-in + MCP tools (not extension Tool/Command catalog) |
 | `LspIntegration` / `BrowserIntegration` host operate | **Public** (#362): coding/* + browser/* ops routed when Active host_process present; core `ProcessLspBackend` / Absent remain fallback |
 | `MemoryProvider` / `ContextProvider` operate | **Public ops** `memory/recall|store`, `context/contribute` (#362); core MemoryStore IPC stays session SoT (#363) — not a second store |
@@ -76,7 +77,7 @@ under the package directory).
 
 ## Author workflow (today)
 
-1. Pin `impetus-extension-sdk` (git `rev` or path) — [depending-on-sdk.md](docs/extensions/depending-on-sdk.md).
+1. Depend on `impetus-extension-sdk` (crates.io `0.1.0`, or git/path fallback) — [depending-on-sdk.md](docs/extensions/depending-on-sdk.md).
 2. Write `extension.toml` (`instruction_pack` is the default production path).
 3. Drop under `$IMPETUS_DATA_DIR/extensions/packages/<dir>/`.
 4. IPC `ReloadExtensionPackages` (auto-activates valid instruction packs).

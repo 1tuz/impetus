@@ -2,7 +2,8 @@
 
 Crate: `impetus-extension-sdk`.
 
-**Dependency:** git `rev` or path pin — not crates.io yet. Full recipe:
+**Dependency:** crates.io `0.1.0` (primary); git `rev` / path pin as fallback.
+Dry-run ready; live crates.io upload pending token (#449). Full recipe:
 [depending-on-sdk.md](./depending-on-sdk.md).
 
 Depends on: `serde`, `serde_json`, `semver`, `thiserror`, `toml`.
