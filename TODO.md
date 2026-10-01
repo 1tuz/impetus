@@ -79,7 +79,6 @@ Actionable after Now. Not priority theatre.
 
 ### Clients
 
-- [ ] TUI: sequence picker polish
 - [ ] Desktop: model picker / worktrees UI polish; PtyList attach picker
       (PTY dock already on harness; Core `PtyList` shipped #395)
 - [ ] Desktop: delete any remaining local spawn if still present; prefer

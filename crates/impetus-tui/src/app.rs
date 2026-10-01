@@ -1351,24 +1351,22 @@ mod tests {
     }
 
     #[test]
-    fn fork_command_and_ctrl_shift_k_emit_fork_at_tip() {
+    fn fork_with_timeline_selection_emits_fork_at_item_sequence() {
         let mut app = AppState::new(connection_with_session_caps());
         let session_id = Uuid::from_u128(0xF0);
         app.active_session = Some(session_id);
         app.last_sequence = 9;
+        app.push_item(TimelineItem::new(3, 1, ItemKind::User, "you"));
+        app.push_item(TimelineItem::new(7, 2, ItemKind::Assistant, "assistant"));
+        app.selected_item = Some(0);
 
         let effects = execute_command(&mut app, CommandAction::Fork(None));
         assert!(matches!(
             effects.as_slice(),
-            [Effect::ForkSession { up_to_sequence: 9 }]
+            [Effect::ForkSession { up_to_sequence: 3 }]
         ));
 
-        let effects = execute_command(&mut app, CommandAction::Fork(Some(4)));
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::ForkSession { up_to_sequence: 4 }]
-        ));
-
+        app.selected_item = Some(1);
         let effects = handle_key(
             &mut app,
             KeyEvent::new(
@@ -1378,8 +1376,59 @@ mod tests {
         );
         assert!(matches!(
             effects.as_slice(),
+            [Effect::ForkSession { up_to_sequence: 7 }]
+        ));
+
+        let effects = execute_command(&mut app, CommandAction::Fork(Some(4)));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ForkSession { up_to_sequence: 4 }]
+        ));
+    }
+
+    #[test]
+    fn fork_without_selection_opens_sequence_picker_tip_fallback() {
+        let mut app = AppState::new(connection_with_session_caps());
+        app.active_session = Some(Uuid::from_u128(0xF1));
+        app.last_sequence = 9;
+        app.push_item(TimelineItem::new(3, 1, ItemKind::Notice, "one"));
+        app.push_item(TimelineItem::new(9, 2, ItemKind::Notice, "tip"));
+        app.selected_item = None;
+
+        let effects = execute_command(&mut app, CommandAction::Fork(None));
+        assert!(effects.is_empty());
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SequencePicker { selected, query, entries }
+                if *selected == 1
+                    && query.is_empty()
+                    && entries.len() == 2
+                    && entries[1].sequence == 9
+        ));
+
+        let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            effects.as_slice(),
             [Effect::ForkSession { up_to_sequence: 9 }]
         ));
+    }
+
+    #[test]
+    fn fork_empty_timeline_shows_toast() {
+        let mut app = AppState::new(connection_with_session_caps());
+        app.active_session = Some(Uuid::from_u128(0xF2));
+        app.last_sequence = 0;
+        assert!(app.timeline.is_empty());
+        assert!(app.selected_item.is_none());
+
+        let effects = execute_command(&mut app, CommandAction::Fork(None));
+        assert!(effects.is_empty());
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|t| t.error && t.text.contains("Nothing to fork"))
+        );
     }
 
     #[test]
@@ -1426,8 +1475,10 @@ mod tests {
         );
         assert!(matches!(
             &app.overlay,
-            Overlay::Checkpoints { selected: 0, checkpoints }
-                if checkpoints.len() == 1 && checkpoints[0].id == checkpoint_id
+            Overlay::Checkpoints { selected: 0, query, checkpoints }
+                if query.is_empty()
+                    && checkpoints.len() == 1
+                    && checkpoints[0].id == checkpoint_id
         ));
 
         let effects = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

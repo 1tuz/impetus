@@ -20,7 +20,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "fork",
         aliases: &[],
-        description: "fork active session at tip (or /fork <seq>)",
+        description: "fork @ selection, /fork <seq>, or open sequence picker",
         shortcut: "Ctrl+Shift+K",
     },
     CommandSpec {
@@ -32,7 +32,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "checkpoints",
         aliases: &["restore"],
-        description: "list checkpoints; Enter restores as new branch",
+        description: "List checkpoints; Enter restores as new branch",
         shortcut: "F7",
     },
     CommandSpec {

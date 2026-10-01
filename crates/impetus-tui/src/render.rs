@@ -589,24 +589,14 @@ fn render_overlay(frame: &mut Frame, app: &mut AppState, theme: Theme) {
         ),
         Overlay::Checkpoints {
             selected,
+            query,
             checkpoints,
-        } => {
-            let mut body = String::from("Enter restore · N create · Esc close\n\n");
-            if checkpoints.is_empty() {
-                body.push_str("(no checkpoints yet — press N to name one)");
-            } else {
-                for (idx, cp) in checkpoints.iter().enumerate() {
-                    let mark = if idx == selected { "▸" } else { " " };
-                    let id = crate::model::short_id(cp.id);
-                    body.push_str(&format!(
-                        "{mark} {id}  @{seq}  {name}\n",
-                        seq = cp.sequence,
-                        name = cp.name
-                    ));
-                }
-            }
-            render_text_modal(frame, " checkpoints ", &body, 84, 70, false, theme);
-        }
+        } => render_checkpoints(frame, selected, &query, &checkpoints, theme),
+        Overlay::SequencePicker {
+            selected,
+            query,
+            entries,
+        } => render_sequence_picker(frame, selected, &query, &entries, theme),
         Overlay::Diagnostics { text } => render_text_modal(
             frame,
             " diagnostics · redacted ",
@@ -663,8 +653,8 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  Ctrl+B            git branch picker (list/filter/switch/create)",
         "  Ctrl+\\            PTY pass-through ($SHELL; Ctrl+] detaches)",
         "  F6 / Ctrl+R       Review pane (changed files + GetFileDiff)",
-        "  F7                session checkpoints (list · Enter restore · N name)",
-        "  Ctrl+Shift+K      fork active session at tip (shared-prefix)",
+        "  F7                session checkpoints (List · Enter restore · N name)",
+        "  Ctrl+Shift+K      fork: selection seq, else sequence picker (tip default)",
         "  F3                toggle inspector",
         "  Shift+Tab         cycle ASK → ACCEPT EDITS → PLAN → AUTO (daemon IPC)",
         "  F4                execution mode picker (includes BYPASS when unlocked)",
@@ -673,9 +663,9 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  /theme            theme picker (Impetus neon + geek pack)",
         "  /attach [path]    attach local file via durable artifact_upload",
         "  /files            workspace Files overlay",
-        "  /fork [seq]       fork session at tip or sequence",
+        "  /fork [seq]       fork @ selection, seq, or open sequence picker",
         "  /checkpoint [name]  create named checkpoint (prompt if no name)",
-        "  /checkpoints      list checkpoints; Enter restores new branch",
+        "  /checkpoints      List checkpoints; Enter restores new branch",
         "  /pty [cmd…]       PTY pass-through (no ANSI emulator)",
         "  /review           Review pane (daemon Git IPC)",
         "  Ctrl+Shift+T      cycle theme",
@@ -706,11 +696,11 @@ fn render_help(frame: &mut Frame, theme: Theme) {
         "  Esc               close (approvals stay independent)",
         "",
         "FORK / CHECKPOINT",
-        "  /fork [seq]       ForkSession at tip or sequence (needs events)",
-        "  Ctrl+Shift+K      same as /fork tip",
+        "  /fork [seq]       selection → ForkSession; else sequence picker (tip default)",
+        "  Ctrl+Shift+K      same as /fork without arg",
+        "  sequence picker   filter · Enter fork @seq · Esc close (session_fork)",
         "  /checkpoint name  CreateCheckpoint at tip",
-        "  F7 /checkpoints   list · Enter RestoreCheckpoint (new branch)",
-        "  N in list         name prompt for CreateCheckpoint",
+        "  F7 /checkpoints   List · filter · Enter RestoreCheckpoint · N create",
         "  header label      shows fork@seq ← parent when SessionInfo has it",
         "",
         "BRANCH PICKER",
@@ -1030,6 +1020,149 @@ fn render_branches(
         list_state.select(Some(selected.min(filtered.len() - 1)));
     }
     frame.render_stateful_widget(List::new(items), rows[1], &mut list_state);
+}
+
+fn render_checkpoints(
+    frame: &mut Frame,
+    selected: usize,
+    query: &str,
+    checkpoints: &[impetus_client::protocol::CheckpointInfo],
+    theme: Theme,
+) {
+    let area = centered_rect(78, 70, frame.area());
+    frame.render_widget(Clear, area);
+    let block = panel_block(
+        " checkpoints · Enter restore · N create · Esc close ",
+        true,
+        theme,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter: ", Style::default().fg(theme.muted)),
+            Span::styled(query.to_owned(), Style::default().fg(theme.text)),
+            Span::styled("█", Style::default().fg(theme.accent)),
+        ])),
+        rows[0],
+    );
+    let filtered = filtered_checkpoints(checkpoints, query);
+    let items = if filtered.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            if checkpoints.is_empty() {
+                "(no checkpoints yet — press N to name one)"
+            } else {
+                "(no matches)"
+            },
+            Style::default().fg(theme.muted),
+        )))]
+    } else {
+        filtered
+            .iter()
+            .enumerate()
+            .map(|(idx, cp)| {
+                let mut style = Style::default().fg(theme.text);
+                if idx == selected {
+                    style = style.bg(theme.surface_alt).add_modifier(Modifier::BOLD);
+                }
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("@{:4}  ", cp.sequence),
+                        Style::default().fg(theme.cyan),
+                    ),
+                    Span::styled(
+                        format!("{:<12}  ", short_id(cp.id)),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(cp.name.clone(), style),
+                ]))
+            })
+            .collect()
+    };
+    let mut list_state = ListState::default();
+    if !filtered.is_empty() {
+        list_state.select(Some(selected.min(filtered.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(theme.selected()),
+        rows[1],
+        &mut list_state,
+    );
+}
+
+fn render_sequence_picker(
+    frame: &mut Frame,
+    selected: usize,
+    query: &str,
+    entries: &[crate::model::SequencePickEntry],
+    theme: Theme,
+) {
+    let area = centered_rect(78, 70, frame.area());
+    frame.render_widget(Clear, area);
+    let block = panel_block(" fork sequence · Enter fork · Esc close ", true, theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter: ", Style::default().fg(theme.muted)),
+            Span::styled(query.to_owned(), Style::default().fg(theme.text)),
+            Span::styled("█", Style::default().fg(theme.accent)),
+        ])),
+        rows[0],
+    );
+    let filtered = filtered_sequence_entries(entries, query);
+    let items = if filtered.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no matches)",
+            Style::default().fg(theme.muted),
+        )))]
+    } else {
+        filtered
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let kind_color = theme.item_color(entry.kind);
+                let mut title_style = Style::default().fg(theme.text);
+                if idx == selected {
+                    title_style = title_style
+                        .bg(theme.surface_alt)
+                        .add_modifier(Modifier::BOLD);
+                }
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("@{:4}  ", entry.sequence),
+                        Style::default().fg(theme.cyan),
+                    ),
+                    Span::styled(
+                        format!("{:<10}  ", entry.kind.label()),
+                        Style::default().fg(kind_color),
+                    ),
+                    Span::styled(truncate(&entry.title, 48), title_style),
+                ]))
+            })
+            .collect()
+    };
+    let mut list_state = ListState::default();
+    if !filtered.is_empty() {
+        list_state.select(Some(selected.min(filtered.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(theme.selected()),
+        rows[1],
+        &mut list_state,
+    );
 }
 
 fn render_session_picker(
@@ -1818,6 +1951,38 @@ pub fn filtered_branches<'a>(
     branches
         .iter()
         .filter(|branch| needle.is_empty() || branch.name.to_ascii_lowercase().contains(&needle))
+        .collect()
+}
+
+pub fn filtered_checkpoints<'a>(
+    checkpoints: &'a [impetus_client::protocol::CheckpointInfo],
+    query: &str,
+) -> Vec<&'a impetus_client::protocol::CheckpointInfo> {
+    let needle = query.trim().to_ascii_lowercase();
+    checkpoints
+        .iter()
+        .filter(|cp| {
+            needle.is_empty()
+                || cp.name.to_ascii_lowercase().contains(&needle)
+                || cp.sequence.to_string().contains(&needle)
+                || short_id(cp.id).to_ascii_lowercase().contains(&needle)
+        })
+        .collect()
+}
+
+pub fn filtered_sequence_entries<'a>(
+    entries: &'a [crate::model::SequencePickEntry],
+    query: &str,
+) -> Vec<&'a crate::model::SequencePickEntry> {
+    let needle = query.trim().to_ascii_lowercase();
+    entries
+        .iter()
+        .filter(|entry| {
+            needle.is_empty()
+                || entry.title.to_ascii_lowercase().contains(&needle)
+                || entry.kind.label().contains(&needle)
+                || entry.sequence.to_string().contains(&needle)
+        })
         .collect()
 }
 

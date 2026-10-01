@@ -17,10 +17,13 @@ use crate::hit::{HitKind, PointerClick, cycle_prompt_intent, is_double_click, re
 use crate::model::{
     AppState, EXECUTION_MODE_ALL, ExecutionMode, FilesFocus, FilesOverlayState, Focus, ItemKind,
     LARGE_PASTE_BYTES, MAX_PASTE_UPLOAD_BYTES, Overlay, ReviewFocus, ReviewOverlayState, RunState,
-    TextPromptKind, execution_mode_is_available, format_paste_placeholder, is_attach_placeholder,
-    is_paste_placeholder, max_scroll_from_bottom, normalize_paste, paste_line_count,
+    SequencePickEntry, TextPromptKind, execution_mode_is_available, format_paste_placeholder,
+    is_attach_placeholder, is_paste_placeholder, max_scroll_from_bottom, normalize_paste,
+    paste_line_count,
 };
-use crate::render::{filtered_branches, filtered_sessions};
+use crate::render::{
+    filtered_branches, filtered_checkpoints, filtered_sequence_entries, filtered_sessions,
+};
 use crate::theme::{self, THEME_CATALOG};
 
 use super::effects::Effect;
@@ -289,13 +292,51 @@ fn fork_session_effects(app: &mut AppState, sequence: Option<u64>) -> Vec<Effect
         app.show_toast("Daemon missing `session_fork` capability.", true);
         return vec![];
     }
-    let up_to_sequence = sequence.unwrap_or(app.last_sequence);
-    if up_to_sequence == 0 {
-        app.show_toast("Nothing to fork yet — wait for durable events.", true);
-        return vec![];
+    if let Some(up_to_sequence) = sequence {
+        if up_to_sequence == 0 {
+            app.show_toast("Nothing to fork yet — wait for durable events.", true);
+            return vec![];
+        }
+        app.dirty = true;
+        return vec![Effect::ForkSession { up_to_sequence }];
     }
+    // Timeline selection → fork @ item.sequence immediately.
+    if let Some(item) = app.selected_item.and_then(|index| app.timeline.get(index)) {
+        let up_to_sequence = item.sequence;
+        if up_to_sequence == 0 {
+            app.show_toast("Nothing to fork yet — wait for durable events.", true);
+            return vec![];
+        }
+        app.dirty = true;
+        return vec![Effect::ForkSession { up_to_sequence }];
+    }
+    // No selection: open sequence picker (tip = default / fallback row).
+    open_sequence_picker(app);
+    vec![]
+}
+
+fn open_sequence_picker(app: &mut AppState) {
+    if app.timeline.is_empty() || app.last_sequence == 0 {
+        app.show_toast("Nothing to fork yet — wait for durable events.", true);
+        return;
+    }
+    let entries: Vec<SequencePickEntry> = app
+        .timeline
+        .iter()
+        .map(|item| SequencePickEntry {
+            sequence: item.sequence,
+            kind: item.kind,
+            title: item.title.clone(),
+        })
+        .collect();
+    // Tip fallback: select last (newest) entry.
+    let selected = entries.len().saturating_sub(1);
+    app.overlay = Overlay::SequencePicker {
+        selected,
+        query: String::new(),
+        entries,
+    };
     app.dirty = true;
-    vec![Effect::ForkSession { up_to_sequence }]
 }
 
 pub(super) fn open_files_overlay(app: &mut AppState) -> Vec<Effect> {
@@ -797,55 +838,97 @@ pub(super) fn handle_overlay_key(app: &mut AppState, key: KeyEvent) -> Vec<Effec
         },
         Overlay::Checkpoints {
             mut selected,
+            mut query,
             checkpoints,
-        } => match key.code {
-            KeyCode::Up => {
-                selected = selected.saturating_sub(1);
-                (
-                    Overlay::Checkpoints {
-                        selected,
-                        checkpoints,
-                    },
-                    vec![],
-                )
-            }
-            KeyCode::Down => {
-                selected = (selected + 1).min(checkpoints.len().saturating_sub(1));
-                (
-                    Overlay::Checkpoints {
-                        selected,
-                        checkpoints,
-                    },
-                    vec![],
-                )
-            }
-            KeyCode::Enter => {
-                if let Some(cp) = checkpoints.get(selected) {
-                    let checkpoint_id = cp.id;
-                    app.overlay = Overlay::None;
-                    app.dirty = true;
-                    return vec![Effect::RestoreCheckpoint { checkpoint_id }];
+        } => {
+            let filtered = filtered_checkpoints(&checkpoints, &query);
+            let filtered_len = filtered.len();
+            match key.code {
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => {
+                    selected = (selected + 1).min(filtered_len.saturating_sub(1));
                 }
-                (
-                    Overlay::Checkpoints {
-                        selected,
-                        checkpoints,
-                    },
-                    vec![],
-                )
+                KeyCode::Backspace => {
+                    let _ = query.pop();
+                    selected = 0;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        || (query.is_empty()
+                            && (key.modifiers.is_empty()
+                                || key.modifiers == KeyModifiers::SHIFT)) =>
+                {
+                    open_checkpoint_name_prompt(app);
+                    return vec![];
+                }
+                KeyCode::Char(ch)
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    query.push(ch);
+                    selected = 0;
+                }
+                KeyCode::Enter => {
+                    let filtered = filtered_checkpoints(&checkpoints, &query);
+                    if let Some(cp) = filtered.get(selected) {
+                        let checkpoint_id = cp.id;
+                        app.overlay = Overlay::None;
+                        app.dirty = true;
+                        return vec![Effect::RestoreCheckpoint { checkpoint_id }];
+                    }
+                }
+                _ => {}
             }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                open_checkpoint_name_prompt(app);
-                return vec![];
-            }
-            _ => (
+            (
                 Overlay::Checkpoints {
                     selected,
+                    query,
                     checkpoints,
                 },
                 vec![],
-            ),
-        },
+            )
+        }
+        Overlay::SequencePicker {
+            mut selected,
+            mut query,
+            entries,
+        } => {
+            let filtered = filtered_sequence_entries(&entries, &query);
+            let filtered_len = filtered.len();
+            match key.code {
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => {
+                    selected = (selected + 1).min(filtered_len.saturating_sub(1));
+                }
+                KeyCode::Backspace => {
+                    let _ = query.pop();
+                    selected = 0;
+                }
+                KeyCode::Char(ch)
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    query.push(ch);
+                    selected = 0;
+                }
+                KeyCode::Enter => {
+                    let filtered = filtered_sequence_entries(&entries, &query);
+                    if let Some(entry) = filtered.get(selected) {
+                        let up_to_sequence = entry.sequence;
+                        app.overlay = Overlay::None;
+                        app.dirty = true;
+                        return vec![Effect::ForkSession { up_to_sequence }];
+                    }
+                }
+                _ => {}
+            }
+            (
+                Overlay::SequencePicker {
+                    selected,
+                    query,
+                    entries,
+                },
+                vec![],
+            )
+        }
         Overlay::AttachPath { mut path } => match key.code {
             KeyCode::Backspace => {
                 let _ = path.pop();
