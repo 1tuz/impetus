@@ -14,7 +14,8 @@ This file stays short on purpose. Do not duplicate checkboxes here.
 2. **Sibling desktop** ([#310](https://github.com/1tuz/impetus/issues/310)) —
    thin shell in [`impetus-desktop`](../../../impetus-desktop); harness IPC
    **v12..=15** (`PtyList`, `extension_manage` install/remove). Presentation
-   backlog = desktop `TODO.md` (PtyList attach picker, model/worktrees polish).
+   backlog = desktop `TODO.md` (model/worktrees polish; PtyList attach picker
+   shipped impetus-desktop#11).
 3. **Later** — marketplaces, multi-harness portability, deep vendor runtime
    parity, large swarm/team loops, Ubuntu clean-machine automation, full Zap
    authorize, ACP dependency invert, mega thin-client split, CLI migration.
