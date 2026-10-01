@@ -141,6 +141,13 @@ remain in Impetus — an extension cannot grant itself `origin=user`.
 
 Canonical contract: [EXTENSION_REPOSITORY_CONTRACT.md](EXTENSION_REPOSITORY_CONTRACT.md).
 
+Official first-party packages live in the sibling repo
+[`impetus-extensions`](https://github.com/1tuz/impetus-extensions)
+(`instruction_pack` / `mcp_bridge` / `host_process`; pin
+`impetus-extension-sdk` via that repo's `compatibility.json` `sdk.rev`).
+Installable demos: `extensions/hello-extension`, `extensions/git-tools`,
+`extensions/hello-host-process`.
+
 ## Documentation
 
 | Doc | Owns |

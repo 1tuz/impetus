@@ -1,7 +1,10 @@
 # Extension architecture
 
 Impetus core owns the **extension infrastructure**. Concrete first-party
-extensions live in the separate `impetus-extensions` repository.
+extensions live in the separate
+[`impetus-extensions`](https://github.com/1tuz/impetus-extensions) repository
+(catalog demos for `instruction_pack` / `mcp_bridge` / `host_process`;
+`compatibility.json` pins `impetus-extension-sdk`).
 
 See also:
 
