@@ -249,7 +249,7 @@ impetusd  — authoritative daemon
 | MemoryStore (contextual knowledge) | Implemented | Daemon IPC List/Get/Append/Clear/Export + JSONL under `$IMPETUS_DATA_DIR/memory/`. AgentLoop injects project-scoped session entries. Distinct from SDK `MemoryProvider` operate (`memory/recall|store`, #362) — optional long-term provider, **not** a second session store (#363). |
 | PolicyStore (governed instructions) | Implemented | `policy_store.rs` + daemon autoload; IPC `GetPolicyStore`/`ReloadPolicyStore`; CLI `impetus-cli policy …` (#311). Distinct from PolicyConfig. |
 | Versioned canonical schemas (`impetus.*.v1`) | Implemented | Shared `schema` registry: `approval_detail` + `capabilities` + `extension` + `session` + `mcp`. Mutating validate-on-wire: daemon rejects bad PolicyConfig/PolicyStore JSON, empty mutating ids, SetSessionModel labels, MCP `env_keys` KEY=value; ApprovalDetail responses run version + full envelope. Client unix retains negotiated caps/version and gates optional calls. Adjacent-version + unsupported-cap tests (#331). `IPC_VERSION` = **15**, `IPC_MIN_SUPPORTED` = **12**. |
-| ACP as ModelProvider backend | Implemented | `--acp-profile` + gateway V2 + `AcpAdapter`; tool/status → `StreamEvent`; disconnect → `InterruptedUnknown` (never false `Completed`); registry/health/redaction (#335 / #66). Permission path: Policy → durable ApprovalRequested → ResolveApproval → exact ACP PermissionOption (`daemon_unix_acp_permission`, #360). Live smoke Partial. |
+| ACP as ModelProvider backend | Implemented | `--acp-profile` + gateway V2 + `AcpAdapter`; tool/status → `StreamEvent`; disconnect → `InterruptedUnknown` (never false `Completed`); cancel → `Cancelled`; registry/health/redaction (#335 / #66); live reconnect after cancel/crash (#453). Permission path: Policy → durable ApprovalRequested → ResolveApproval → exact ACP PermissionOption (`daemon_unix_acp_permission`, #360). Live smoke Partial. |
 | TUI (`impetus ui`) | Partial | Shell, composer, paste + filesystem attach (`/attach` · `Ctrl+Shift+A`), streaming; Prompt/Steer/FollowUp; execution modes; **model picker** F8/`/model` via `ListProviders`/`SetSessionModel` (Provider→Model→Reasoning→catalog options; unavailable disabled; restore after reconnect; options via SetSessionModel (#328)) (#337); `/children`; Files `Ctrl+F`; git branch `Ctrl+B`; Review F6/`Ctrl+R`/`/review`; Activity fold; PTY `Ctrl+\` passthrough; fork `/fork`+`Ctrl+Shift+K` / checkpoints F7/`/checkpoint` / workspace path prompt on `/new` (#311/#315). Remaining: sequence picker polish. |
 | Zap as Impetus backend | Partial | Experimental `impetus-zap-adapter`; see § Zap path (#5) |
 | PR Fast / Nightly Full | Implemented | **PR Fast** (required): Ubuntu `git diff --check` + `cargo fmt` + affected `cargo check` only; docs-only skips Rust; no macOS/clippy/tests/security on PR. **Nightly Full** (02:00 UTC+3 / `workflow_dispatch`): clippy `-D warnings`, workspace tests/E2E, audit/deny, macOS platform. Local default: `task verify` = fmt + `git diff --check`. |
@@ -598,10 +598,10 @@ Pointers:
 | Explicit `auth_method_id` (never `auth_methods.first()`) | Implemented | `select_auth_method`; missing/unsupported → `Incompatible` / error |
 | `--acp-profile` daemon wiring → `ModelProvider` | Implemented | `Harness::with_acp_gateway` + `AcpAdapter` |
 | Stream via `session/update` → harness `StreamEvent` | Implemented | Text + redacted `ToolUse` → `StreamEvent::ToolCall`; status/thought → `Reasoning`; `Completed` → `Finish` |
-| Cancel via ACP `session/cancel` | Partial | `cancel_active_session` + adapter cancel path; live reconnect polish Remaining |
+| Cancel via ACP `session/cancel` | Implemented | `cancel_active_session` + adapter cancel → `ProviderError::Cancelled`; mock `CancelNotification` → `StopReason::Cancelled`; cancel-safe `active_*` clear + `reset_after_interrupt`; same gateway relaunch after cancel/crash (`acp_reconnect_cancel_crash`, #453). Daemon Unix E2E cancel/crash Remaining (follow-up) |
 | Permission → Policy → ACP option | Implemented | Gateway wire is transport-only `Select\|Deny` (`permission_outcome`); `NeedsApproval` brokered in `AcpAdapter` → durable `ApprovalRequest` + `ResolveApproval` → Select/Deny (never reaches gateway response) |
 | Explicit `GatewayState::Incompatible` | Implemented | Auth / protocol mismatch sets incompatible; not a silent continue |
-| Deterministic mock / CI tests (no secrets) | Implemented | Profile/auth/cancel unit coverage + spawned SDK mock receives `session/set_config_option` (`tests/acp_config_option_apply.rs`, `examples/acp_sdk_mock_agent.rs`). Stronger process smoke Remaining under #66 |
+| Deterministic mock / CI tests (no secrets) | Implemented | Profile/auth/cancel unit coverage + spawned SDK mock `session/set_config_option` (`acp_config_option_apply`) + mid-turn cancel/crash → second prompt (`acp_reconnect_cancel_crash`, #453) |
 | Live smoke (Codex ACP / Grok Build / peers) | Partial | `acp_v2_smoke` ignored; depends on installed CLI + agent-owned auth |
 | ACP registry / discovery / version probing | Implemented | `registry.rs` — PATH/probe-root discovery + `--version` probe; builtin candidate catalog; deterministic mock bins |
 | Health / status surface for ACP backend | Implemented | `AcpBackendStatus` / `AcpAdapter::health` from `GatewayState` + cached caps |
@@ -612,14 +612,14 @@ Pointers:
 
 ### Remaining gaps for #66 (honest)
 
-- Live reconnect polish after `session/cancel` / agent crash mid-turn
-- Stronger deterministic mock agent process tests in CI (beyond unit + config_option spawn)
+- Daemon Unix E2E cancel/crash mid-turn (follow-up after #453 library reconnect)
 - Ubuntu / live smoke slices tracked separately (e.g. #293) — not this slice
 
-Disconnect honesty (#335): adapter returns `ProviderError::InterruptedUnknown` when the
-stream ends without an ACP `stop_reason`; harness maps that to
-`RunEvent::InterruptedUnknown` — never invents `Completed`. Durable session
-events remain in SQLite across restart.
+Disconnect honesty (#335 / #453): adapter returns `ProviderError::InterruptedUnknown` when the
+stream ends without an ACP `stop_reason`; cancel maps to `Cancelled` (never false
+`Completed`). Sticky `Crashed` does not block recoverable relaunch; `Incompatible`
+stays fail-closed. Harness maps interrupt to `RunEvent::InterruptedUnknown`. Durable
+session events remain in SQLite across restart.
 
 ## Canonical schema registry
 

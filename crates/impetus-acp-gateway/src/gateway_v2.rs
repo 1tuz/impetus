@@ -228,6 +228,19 @@ impl AcpGatewayV2 {
         self.state.try_lock().map(|g| *g)
     }
 
+    /// Clear in-flight session handles and return to a relaunchable state.
+    ///
+    /// Recoverable after mid-turn cancel / agent crash. Leaves
+    /// [`GatewayState::Incompatible`] sticky (fail-closed auth/protocol).
+    pub async fn reset_after_interrupt(&self) {
+        *self.active_cancel.lock().await = None;
+        *self.active_session.lock().await = None;
+        let mut state = self.state.lock().await;
+        if !matches!(*state, GatewayState::Incompatible) {
+            *state = GatewayState::NotStarted;
+        }
+    }
+
     /// Start agent and run session with optional model/reasoning ACP config writes.
     pub async fn start_session(&self, workspace_dir: PathBuf, prompt: String) -> Result<SessionId> {
         self.start_session_with_options(workspace_dir, prompt, SessionLaunchOptions::default())
@@ -242,6 +255,27 @@ impl AcpGatewayV2 {
         prompt: String,
         launch: SessionLaunchOptions,
     ) -> Result<SessionId> {
+        // Fail-closed: auth/protocol mismatch stays sticky.
+        if matches!(*self.state.lock().await, GatewayState::Incompatible) {
+            anyhow::bail!("ACP gateway incompatible; refuse relaunch");
+        }
+
+        // Recoverable relaunch after crash / aborted prior task.
+        {
+            let mut active_cancel = self.active_cancel.lock().await;
+            if let Some(tx) = active_cancel.as_ref() {
+                if tx.is_closed() {
+                    *active_cancel = None;
+                    *self.active_session.lock().await = None;
+                } else {
+                    anyhow::bail!("an ACP session is already active");
+                }
+            }
+        }
+        if matches!(*self.state.lock().await, GatewayState::Crashed) {
+            *self.state.lock().await = GatewayState::NotStarted;
+        }
+
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<CancelCommand>(1);
         {
             let mut active_cancel = self.active_cancel.lock().await;
@@ -250,6 +284,12 @@ impl AcpGatewayV2 {
             }
             *active_cancel = Some(cancel_tx);
         }
+
+        // Cancel-safe: clear active_* if this future is dropped (adapter abort).
+        let _clear_active = ClearActiveOnDrop {
+            active_cancel: Arc::clone(&self.active_cancel),
+            active_session: Arc::clone(&self.active_session),
+        };
 
         let agent = AcpAgent::new(self.config.clone());
         let state = Arc::clone(&self.state);
@@ -439,14 +479,19 @@ impl AcpGatewayV2 {
             .await
             .map_err(|e| anyhow::anyhow!("ACP connection failed: {e:#}"));
 
+        // Explicit clear (Drop also clears if this future is aborted mid-flight).
         *self.active_cancel.lock().await = None;
         *self.active_session.lock().await = None;
 
         if let Err(error) = result {
-            if !matches!(
-                *self.state.lock().await,
-                GatewayState::AuthRequired | GatewayState::Incompatible
-            ) {
+            let current = *self.state.lock().await;
+            if matches!(current, GatewayState::Incompatible) {
+                // Fail-closed: keep sticky Incompatible.
+            } else if matches!(current, GatewayState::AuthRequired) {
+                // Preserve AuthRequired for operator surfaces.
+            } else {
+                // Mark Crashed for health, but next start_session recovers
+                // (sticky Crashed must not block recoverable relaunch).
                 *self.state.lock().await = GatewayState::Crashed;
             }
             // Honest disconnect: never imply Completed when the agent died mid-turn.
@@ -756,6 +801,24 @@ fn truncate_label(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// Clears `active_cancel` / `active_session` when `start_session` is dropped
+/// (e.g. adapter abort after `session/cancel`) so the gateway stays reusable.
+struct ClearActiveOnDrop {
+    active_cancel: Arc<Mutex<Option<mpsc::Sender<CancelCommand>>>>,
+    active_session: Arc<Mutex<Option<SessionId>>>,
+}
+
+impl Drop for ClearActiveOnDrop {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.active_cancel.try_lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.active_session.try_lock() {
+            *guard = None;
+        }
+    }
+}
+
 fn select_auth_method(
     methods: &[AuthMethod],
     selected: Option<&str>,
@@ -805,6 +868,42 @@ mod tests {
         let result = gateway.cancel_active_session().await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn reset_after_interrupt_clears_crashed_keeps_incompatible() {
+        let gateway = AcpGatewayV2::new(AcpAgentConfig::new("echo"));
+        *gateway.state.lock().await = GatewayState::Crashed;
+        gateway.reset_after_interrupt().await;
+        assert_eq!(gateway.state().await, GatewayState::NotStarted);
+
+        *gateway.state.lock().await = GatewayState::Incompatible;
+        gateway.reset_after_interrupt().await;
+        assert_eq!(gateway.state().await, GatewayState::Incompatible);
+    }
+
+    #[tokio::test]
+    async fn start_session_recovers_from_crashed_but_not_incompatible() {
+        let gateway = AcpGatewayV2::new(AcpAgentConfig::new("echo"));
+        *gateway.state.lock().await = GatewayState::Crashed;
+        // echo is not an ACP agent — expect connection error, but must leave
+        // the gate open for another attempt (Crashed → attempt → Crashed).
+        let err = gateway
+            .start_session(std::env::temp_dir(), "ping".into())
+            .await;
+        assert!(err.is_err());
+        assert_eq!(gateway.state().await, GatewayState::Crashed);
+
+        *gateway.state.lock().await = GatewayState::Incompatible;
+        let blocked = gateway
+            .start_session(std::env::temp_dir(), "ping".into())
+            .await;
+        assert!(blocked.is_err());
+        assert!(
+            blocked.unwrap_err().to_string().contains("incompatible"),
+            "Incompatible must stay fail-closed"
+        );
+        assert_eq!(gateway.state().await, GatewayState::Incompatible);
     }
 
     #[test]
