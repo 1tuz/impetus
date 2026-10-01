@@ -75,7 +75,7 @@ Actionable after Now. Not priority theatre.
 
 ### Daemon / protocol
 
-- [ ] Daemon Unix E2E ACP cancel/crash mid-turn (follow-up; library reconnect #453 shipped)
+- [x] Daemon Unix E2E ACP cancel/crash mid-turn (`daemon_unix_acp_cancel_crash`, #457; library reconnect #453)
 
 ### Clients
 
@@ -125,6 +125,7 @@ Shipped program slices: [#315](https://github.com/1tuz/impetus/issues/315) harne
 [#320](https://github.com/1tuz/impetus/issues/320) production harden baseline — follow-up [#322](https://github.com/1tuz/impetus/issues/322).
 Daemon Unix E2E: approvals / MCP mutate / Files-Diff (`daemon_unix_approvals_mcp_files`);
 provider-option persist (`daemon_unix_e2e`); ACP permission (`daemon_unix_acp_permission`);
+ACP cancel/crash mid-turn (`daemon_unix_acp_cancel_crash`, #457);
 extension host_process operate (`daemon_unix_extensions` + `OperateExtensionPackage`).
 Daemon SoT close (#395): `PtyList` + package Install/Remove IPC; Module Runtime
 Removed (#443).
